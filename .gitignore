@@ -1,0 +1,9 @@
+/build/
+/out/
+/.qtcreator/
+/.cache/
+/.idea/
+/.vscode/
+*.user
+*.autosave
+compile_commands.json

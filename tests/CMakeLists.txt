@@ -1,0 +1,11 @@
+add_executable(document_tests document_tests.cpp)
+target_link_libraries(document_tests PRIVATE solidar_model)
+add_test(NAME document_tests COMMAND document_tests)
+
+add_executable(project_file_tests project_file_tests.cpp)
+target_link_libraries(project_file_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME project_file_tests COMMAND project_file_tests)
+
+add_executable(editor_smoke_tests editor_smoke_tests.cpp)
+target_link_libraries(editor_smoke_tests PRIVATE solidar_editor solidar_home Qt6::Widgets)
+add_test(NAME editor_smoke_tests COMMAND editor_smoke_tests)
