@@ -134,12 +134,21 @@ void Sketch::updateBounds() noexcept {
 
 bool Sketch::isClosed() const noexcept {
   if (lines_.empty()) return false;
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    const auto& current = lines_[index];
-    const auto& next = lines_[(index + 1) % lines_.size()];
-    if (std::abs(current.end.xMm - next.start.xMm) > 1e-9 ||
-        std::abs(current.end.yMm - next.start.yMm) > 1e-9)
-      return false;
+  const auto samePoint = [](Point first, Point second) {
+    return std::abs(first.xMm - second.xMm) <= 1e-7 &&
+           std::abs(first.yMm - second.yMm) <= 1e-7;
+  };
+  // Every vertex of one or several independent closed loops has degree two.
+  // This also permits Ctrl-selection of multiple extrusion regions.
+  for (const auto& line : lines_) {
+    for (const Point vertex : {line.start, line.end}) {
+      std::size_t degree = 0;
+      for (const auto& candidate : lines_) {
+        if (samePoint(vertex, candidate.start)) ++degree;
+        if (samePoint(vertex, candidate.end)) ++degree;
+      }
+      if (degree != 2) return false;
+    }
   }
   return true;
 }

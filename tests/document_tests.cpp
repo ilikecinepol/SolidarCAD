@@ -43,5 +43,10 @@ int main() {
     sketchRejected = true;
   }
   assert(sketchRejected);
+
+  solidar::sketch::Sketch multipleRegions;
+  multipleRegions.addRectangle({0.0, 0.0}, {10.0, 10.0});
+  multipleRegions.addRectangle({20.0, 20.0}, {30.0, 30.0});
+  assert(multipleRegions.isClosed());
   return 0;
 }

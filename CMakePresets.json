@@ -4,11 +4,11 @@
   "configurePresets": [
     {
       "name": "dev",
-      "displayName": "Developer build",
+      "displayName": "Developer build (safe, with debug info)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/dev",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "SOLIDAR_BUILD_TESTS": "ON"
       }

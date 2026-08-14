@@ -9,14 +9,6 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
-int qInitResources_icons();
-
-namespace {
-void initializeModelIcons() {
-  ::qInitResources_icons();
-}
-}  // namespace
-
 namespace solidar {
 namespace {
 
@@ -57,7 +49,6 @@ QFrame* separator(QWidget* parent) {
 }  // namespace
 
 ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
-  initializeModelIcons();
   setObjectName("modelRibbon");
   setFixedHeight(124);
   auto* root = new QHBoxLayout(this);

@@ -1,10 +1,19 @@
 #include "ui/MainWindow.h"
 
+#include <algorithm>
+#include <cmath>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
+#include <QFrame>
+#include <QIcon>
 #include <QInputDialog>
+#include <QDoubleSpinBox>
+#include <QLabel>
+#include <QPushButton>
 #include <QAction>
+#include <QHBoxLayout>
 #include <QKeySequence>
 #include <QMenuBar>
 #include <QVBoxLayout>
@@ -18,6 +27,10 @@
 #include <QStackedWidget>
 #include <QTreeWidget>
 #include <QSignalBlocker>
+#include <QScrollArea>
+#include <QShortcut>
+#include <QSlider>
+#include <QToolButton>
 
 #include "drawing/EskdRenderer.h"
 #include "project/ProjectFile.h"
@@ -63,9 +76,38 @@ void MainWindow::buildMenus() {
   connect(createAction, &QAction::triggered, this, &MainWindow::createProject);
   connect(openAction, &QAction::triggered, this, &MainWindow::openProject);
   connect(saveAction, &QAction::triggered, this, &MainWindow::saveProject);
-  connect(undoAction_, &QAction::triggered, sketchCanvas_, &SketchCanvas::undo);
-  connect(sketchCanvas_, &SketchCanvas::undoAvailable, undoAction_,
-          &QAction::setEnabled);
+  connect(undoAction_, &QAction::triggered, this, &MainWindow::undoLastAction);
+  connect(sketchCanvas_, &SketchCanvas::undoAvailable, this,
+          [this](bool) { updateUndoAvailability(); });
+}
+
+void MainWindow::pushUndoAction(std::function<void()> action) {
+  if (applyingUndo_) return;
+  modelUndoStack_.push_back(std::move(action));
+  if (modelUndoStack_.size() > 100) modelUndoStack_.erase(modelUndoStack_.begin());
+  updateUndoAvailability();
+}
+
+void MainWindow::updateUndoAvailability() {
+  if (!undoAction_) return;
+  const bool sketchUndo = workspaceStack_ &&
+                          workspaceStack_->currentWidget() == sketchCanvas_ &&
+                          sketchCanvas_->canUndo();
+  undoAction_->setEnabled(sketchUndo || !modelUndoStack_.empty());
+}
+
+void MainWindow::undoLastAction() {
+  if (workspaceStack_->currentWidget() == sketchCanvas_ &&
+      sketchCanvas_->canUndo()) {
+    sketchCanvas_->undo();
+  } else if (!modelUndoStack_.empty()) {
+    auto action = std::move(modelUndoStack_.back());
+    modelUndoStack_.pop_back();
+    applyingUndo_ = true;
+    action();
+    applyingUndo_ = false;
+  }
+  updateUndoAvailability();
 }
 
 void MainWindow::createProject() {
@@ -88,9 +130,16 @@ void MainWindow::createProject() {
   extrusionSourceSketch_.reset();
   selectedExtrusionSurface_.clear();
   currentSketchSupport_ = QStringLiteral("XY");
+  if (extrusionDock_) extrusionDock_->hide();
+  viewport_->hideExtrusionManipulator();
   viewport_->resetScene();
   viewport_->setBox(document_.box());
+  sketchHistory_.clear();
+  modelUndoStack_.clear();
+  historyPosition_ = 0;
+  editingSketchIndex_.reset();
   rebuildFeatureTree();
+  rebuildHistoryPanel();
   workspaceStack_->setCurrentWidget(viewport_);
   statusBar()->showMessage(QString::fromUtf8("Создан новый проект"), 3000);
 }
@@ -147,6 +196,73 @@ void MainWindow::buildUi() {
   workspaceStack_->addWidget(sketchCanvas_);
   setCentralWidget(workspaceStack_);
 
+  extrusionDock_ = new QDockWidget(QString::fromUtf8("Выдавливание"), this);
+  extrusionDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  extrusionDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  auto* extrusionPanel = new QWidget(extrusionDock_);
+  auto* extrusionPanelLayout = new QVBoxLayout(extrusionPanel);
+  extrusionPanelLayout->setContentsMargins(16, 14, 16, 14);
+  extrusionPanelLayout->setSpacing(12);
+  auto* extrusionHint = new QLabel(QString::fromUtf8(
+      "Потяните синюю стрелку в 3D-виде или введите точное значение."),
+      extrusionPanel);
+  extrusionHint->setWordWrap(true);
+  extrusionHint->setStyleSheet("color:#607493;");
+  auto* extrusionForm = new QFormLayout;
+  extrusionLengthSpin_ = new QDoubleSpinBox(extrusionPanel);
+  extrusionLengthSpin_->setRange(-100000.0, 100000.0);
+  extrusionLengthSpin_->setDecimals(2);
+  extrusionLengthSpin_->setSuffix(QStringLiteral(" mm"));
+  extrusionLengthSpin_->setValue(document_.box().heightMm);
+  extrusionForm->addRow(QString::fromUtf8("Длина:"), extrusionLengthSpin_);
+  auto* extrusionButtons = new QHBoxLayout;
+  auto* cancelExtrusion = new QPushButton(QString::fromUtf8("Отмена"), extrusionPanel);
+  auto* acceptExtrusion = new QPushButton(QString::fromUtf8("Применить"), extrusionPanel);
+  acceptExtrusion->setDefault(true);
+  acceptExtrusion->setStyleSheet(
+      "QPushButton{background:#0874f9;color:white;border:none;border-radius:6px;"
+      "padding:8px 14px;font-weight:600;} QPushButton:hover{background:#0665dc;}");
+  extrusionButtons->addWidget(cancelExtrusion);
+  extrusionButtons->addWidget(acceptExtrusion);
+  extrusionPanelLayout->addWidget(extrusionHint);
+  extrusionPanelLayout->addLayout(extrusionForm);
+  extrusionPanelLayout->addStretch();
+  extrusionPanelLayout->addLayout(extrusionButtons);
+  extrusionDock_->setWidget(extrusionPanel);
+  extrusionDock_->setMinimumWidth(250);
+  addDockWidget(Qt::RightDockWidgetArea, extrusionDock_);
+  extrusionDock_->hide();
+  connect(extrusionLengthSpin_, &QDoubleSpinBox::valueChanged,
+          viewport_, &Viewport::setExtrusionPreviewLength);
+  connect(viewport_, &Viewport::extrusionPreviewLengthChanged, this,
+          [this](double value) {
+            const QSignalBlocker blocker(extrusionLengthSpin_);
+            extrusionLengthSpin_->setValue(value);
+          });
+  connect(viewport_, &Viewport::bodyMoveCommitted, this,
+          [this](QPointF previous, QPointF) {
+            pushUndoAction(
+                [this, previous] { viewport_->setBodyPosition(previous); });
+          });
+  connect(acceptExtrusion, &QPushButton::clicked, this, &MainWindow::extrudeSketch);
+  const auto applyExtrusionOnEnter = [this] {
+    if (extrusionDock_->isVisible()) extrudeSketch();
+  };
+  auto* returnShortcut = new QShortcut(QKeySequence(Qt::Key_Return), extrusionDock_);
+  returnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  returnShortcut->setAutoRepeat(false);
+  connect(returnShortcut, &QShortcut::activated, this, applyExtrusionOnEnter);
+  auto* keypadEnterShortcut = new QShortcut(QKeySequence(Qt::Key_Enter), extrusionDock_);
+  keypadEnterShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  keypadEnterShortcut->setAutoRepeat(false);
+  connect(keypadEnterShortcut, &QShortcut::activated, this,
+          applyExtrusionOnEnter);
+  connect(cancelExtrusion, &QPushButton::clicked, this, [this] {
+    viewport_->hideExtrusionManipulator();
+    extrusionDock_->hide();
+    selectedExtrusionSurface_.clear();
+  });
+
   sketchRibbon_ = new SketchRibbon(sketchCanvas_, this);
   modelRibbon_ = new ModelRibbon(this);
   ribbonStack_ = new QStackedWidget(this);
@@ -157,6 +273,7 @@ void MainWindow::buildUi() {
   ribbonStack_->addWidget(drawingRibbonPlaceholder);
   connect(modelRibbon_, &ModelRibbon::createSketchRequested, this,
           [this] {
+            editingSketchIndex_.reset();
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите базовую плоскость или грань тела"));
             for (auto* item : featureTree_->findItems(
@@ -198,10 +315,12 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::extrusionSurfacePicked, this,
           [this](const QString& surface) {
-            modelRibbon_->clearActiveTool();
             selectedExtrusionSurface_ = surface;
             statusBar()->showMessage(QString::fromUtf8("Поверхность: ") + surface);
-            extrudeSketch();
+            extrusionLengthSpin_->setValue(document_.box().heightMm);
+            viewport_->showExtrusionManipulator(extrusionLengthSpin_->value());
+            extrusionDock_->show();
+            extrusionDock_->raise();
           });
   connect(sketchRibbon_, &SketchRibbon::finishRequested, this,
           &MainWindow::finishSketch);
@@ -224,6 +343,19 @@ void MainWindow::buildUi() {
           [this](QTreeWidgetItem* item, int) {
             const int kind = item->data(0, Qt::UserRole).toInt();
             const bool visible = item->checkState(0) == Qt::Checked;
+            if (!applyingUndo_ && kind != 0) {
+              pushUndoAction([this, kind, visible] {
+                for (auto* candidate : featureTree_->findItems(
+                         QStringLiteral("*"),
+                         Qt::MatchWildcard | Qt::MatchRecursive)) {
+                  if (candidate->data(0, Qt::UserRole).toInt() == kind) {
+                    candidate->setCheckState(
+                        0, visible ? Qt::Unchecked : Qt::Checked);
+                    break;
+                  }
+                }
+              });
+            }
             if (kind == 1) viewport_->setOriginVisible(visible);
             if (kind == 2) viewport_->setSketchVisible(visible);
             if (kind == 3) viewport_->setSolidVisible(visible && hasExtrusion_);
@@ -234,6 +366,14 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::selectionChanged, this,
           [this](const QString& text) {
+            if (text == QStringLiteral("__cancel_tools__")) {
+              selectedExtrusionSurface_.clear();
+              if (extrusionDock_) extrusionDock_->hide();
+              modelRibbon_->clearActiveTool();
+              statusBar()->showMessage(
+                  QString::fromUtf8("Инструменты сброшены"), 2000);
+              return;
+            }
             statusBar()->showMessage(text.isEmpty()
                                          ? QString::fromUtf8("Выделение снято")
                                          : text);
@@ -249,6 +389,48 @@ void MainWindow::buildUi() {
   )");
   modelDock->setWidget(featureTree_);
   addDockWidget(Qt::LeftDockWidgetArea, modelDock);
+
+  auto* historyDock = new QDockWidget(QString::fromUtf8("История построений"), this);
+  historyDock->setAllowedAreas(Qt::BottomDockWidgetArea);
+  historyDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  historyDock->setMinimumHeight(96);
+  historyDock->setMaximumHeight(108);
+  auto* historyHost = new QWidget(historyDock);
+  auto* historyHostLayout = new QVBoxLayout(historyHost);
+  historyHostLayout->setContentsMargins(8, 2, 8, 3);
+  historyHostLayout->setSpacing(1);
+  auto* historyScroll = new QScrollArea(historyDock);
+  historyScroll->setWidgetResizable(true);
+  historyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  historyScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  historyScroll->setFrameShape(QFrame::NoFrame);
+  historyContent_ = new QWidget(historyScroll);
+  historyLayout_ = new QHBoxLayout(historyContent_);
+  historyLayout_->setContentsMargins(12, 7, 12, 7);
+  historyLayout_->setSpacing(8);
+  historyLayout_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  historyScroll->setWidget(historyContent_);
+  historySlider_ = new QSlider(Qt::Horizontal, historyHost);
+  historySlider_->setRange(0, 0);
+  historySlider_->setSingleStep(1);
+  historySlider_->setPageStep(1);
+  historySlider_->setTickPosition(QSlider::TicksBelow);
+  historySlider_->setTickInterval(1);
+  historySlider_->setFixedHeight(20);
+  historySlider_->setToolTip(QString::fromUtf8(
+      "Переместите маркер, чтобы откатить историю"));
+  historySlider_->setStyleSheet(
+      "QSlider::groove:horizontal{height:3px;background:#c8d5e8;border-radius:1px;}"
+      "QSlider::sub-page:horizontal{background:#1671e8;}"
+      "QSlider::handle:horizontal{width:12px;margin:-5px 0;background:#fff;"
+      "border:2px solid #1671e8;border-radius:6px;}");
+  connect(historySlider_, &QSlider::valueChanged, this,
+          &MainWindow::applyHistoryPosition);
+  historyHostLayout->addWidget(historyScroll, 1);
+  historyHostLayout->addWidget(historySlider_);
+  historyDock->setWidget(historyHost);
+  addDockWidget(Qt::BottomDockWidgetArea, historyDock);
+  rebuildHistoryPanel();
 
   statusBar()->showMessage(
       QString::fromUtf8("Готово — профиль ЕСКД, лист A4"));
@@ -276,21 +458,63 @@ void MainWindow::finishSketch() {
     return;
   }
   updateFromSketch(sketch.widthMm(), sketch.heightMm());
-  viewport_->addSketch(sketch, currentSketchSupport_);
-  ++sketchCount_;
+  if (editingSketchIndex_ && *editingSketchIndex_ < sketchHistory_.size()) {
+    const std::size_t index = *editingSketchIndex_;
+    const SketchHistoryEntry previous = sketchHistory_[index];
+    pushUndoAction([this, index, previous] {
+      if (index >= sketchHistory_.size()) return;
+      sketchHistory_[index] = previous;
+      viewport_->updateSketch(index, previous.geometry, previous.support);
+      if (hasExtrusion_ && extrusionSourceSketch_ == index)
+        viewport_->setSolidSketch(previous.geometry);
+      rebuildFeatureTree();
+      rebuildHistoryPanel();
+    });
+    sketchHistory_[index] = {sketch, currentSketchSupport_};
+    viewport_->updateSketch(index, sketch, currentSketchSupport_);
+    if (hasExtrusion_ && extrusionSourceSketch_ == index)
+      viewport_->setSolidSketch(sketch);
+    statusBar()->showMessage(
+        QString::fromUtf8("Эскиз %1 обновлён").arg(index + 1), 3000);
+  } else {
+    const std::size_t index = sketchHistory_.size();
+    pushUndoAction([this, index] {
+      if (index >= sketchHistory_.size()) return;
+      sketchHistory_.erase(sketchHistory_.begin() +
+                           static_cast<std::ptrdiff_t>(index));
+      viewport_->removeSketch(index);
+      sketchCanvas_->resetSketch();
+      viewport_->setSketch(sketch::Sketch{});
+      sketchCount_ = sketchHistory_.size();
+      historyPosition_ = static_cast<int>(sketchHistory_.size()) +
+                         (hasExtrusion_ ? 1 : 0);
+      rebuildFeatureTree();
+      rebuildHistoryPanel();
+    });
+    viewport_->addSketch(sketch, currentSketchSupport_);
+    sketchHistory_.push_back({sketch, currentSketchSupport_});
+    ++sketchCount_;
+  }
+  editingSketchIndex_.reset();
+  historyPosition_ = static_cast<int>(sketchHistory_.size()) +
+                     (hasExtrusion_ ? 1 : 0);
   rebuildFeatureTree();
+  rebuildHistoryPanel();
   workspaceStack_->setCurrentWidget(viewport_);
   statusBar()->showMessage(
       QString::fromUtf8("Эскиз завершён — модель перестроена"), 3000);
 }
 
 void MainWindow::extrudeSketch() {
-  const auto& pickedSketch = viewport_->extrusionCandidateSketch();
-  const auto& sketch = (pickedSketch.lines().empty() && pickedSketch.circles().empty())
-                           ? sketchCanvas_->sketch()
-                           : pickedSketch;
   const bool fromBodyFace = selectedExtrusionSurface_.startsWith(
       QString::fromUtf8("Грань тела"));
+  const auto& pickedSketch = viewport_->extrusionCandidateSketch();
+  const auto& sketch = fromBodyFace
+                           ? viewport_->solidSketch()
+                           : (pickedSketch.lines().empty() &&
+                                      pickedSketch.circles().empty()
+                                  ? sketchCanvas_->sketch()
+                                  : pickedSketch);
   if (!fromBodyFace && sketch.lines().empty() && sketch.circles().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
@@ -302,23 +526,41 @@ void MainWindow::extrudeSketch() {
     return;
   }
 
-  bool accepted = false;
-  const double height = QInputDialog::getDouble(
-      this, QString::fromUtf8("Выдавливание"),
-      QString::fromUtf8("Расстояние, мм:"), document_.box().heightMm,
-      0.01, 100000.0, 2, &accepted);
-  if (!accepted) return;
+  const double height = extrusionLengthSpin_->value();
+
+  const Document previousDocument = document_;
+  const bool previousHasExtrusion = hasExtrusion_;
+  const auto previousSource = extrusionSourceSketch_;
+  const sketch::Sketch previousSolidSketch = viewport_->solidSketch();
+  const QString previousSolidSupport = viewport_->solidSupport();
+  pushUndoAction([this, previousDocument, previousHasExtrusion, previousSource,
+                  previousSolidSketch, previousSolidSupport] {
+    document_ = previousDocument;
+    hasExtrusion_ = previousHasExtrusion;
+    extrusionSourceSketch_ = previousSource;
+    viewport_->setBox(document_.box());
+    viewport_->setSolidSketch(previousSolidSketch);
+    viewport_->setSolidSupport(previousSolidSupport);
+    viewport_->setSolidVisible(previousHasExtrusion);
+    historyPosition_ = static_cast<int>(sketchHistory_.size()) +
+                       (hasExtrusion_ ? 1 : 0);
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
 
   document_.setBox({fromBodyFace ? document_.box().widthMm : sketch.widthMm(),
                     fromBodyFace ? document_.box().depthMm : sketch.heightMm(),
-                    height});
+                    fromBodyFace ? document_.box().heightMm + std::abs(height)
+                                 : std::abs(height)});
   viewport_->setSketch(sketch);
   viewport_->setSolidSketch(sketch);
   const QString pickedSupport = viewport_->extrusionCandidateSupport();
-  viewport_->setSolidSupport(fromBodyFace ? selectedExtrusionSurface_
+  viewport_->setSolidSupport(fromBodyFace ? previousSolidSupport
                                           : pickedSupport.isEmpty()
                                                 ? currentSketchSupport_
                                                 : pickedSupport);
+  if (height < 0.0 && !fromBodyFace)
+    viewport_->setSolidSupport(viewport_->solidSupport() + QStringLiteral("|NEG"));
   viewport_->setBox(document_.box());
   viewport_->setSolidVisible(true);
   hasExtrusion_ = true;
@@ -329,10 +571,118 @@ void MainWindow::extrudeSketch() {
                                      ? std::optional<std::size_t>(sketchCount_ - 1)
                                      : std::nullopt;
   selectedExtrusionSurface_.clear();
+  viewport_->hideExtrusionManipulator();
+  extrusionDock_->hide();
+  modelRibbon_->clearActiveTool();
+  historyPosition_ = static_cast<int>(sketchHistory_.size()) + 1;
   rebuildFeatureTree();
+  rebuildHistoryPanel();
   workspaceStack_->setCurrentWidget(viewport_);
   statusBar()->showMessage(
       QString::fromUtf8("Создано твёрдое тело: выдавливание %1 мм").arg(height), 4000);
+}
+
+void MainWindow::rebuildHistoryPanel() {
+  if (!historyLayout_) return;
+  while (QLayoutItem* item = historyLayout_->takeAt(0)) {
+    delete item->widget();
+    delete item;
+  }
+  auto addStep = [this](const QIcon& icon, const QString& title,
+                        const QString& tooltip, auto action) {
+    auto* button = new QToolButton(historyContent_);
+    button->setIcon(icon);
+    button->setIconSize(QSize(6, 6));
+    button->setText(title);
+    button->setToolTip(tooltip);
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    button->setFixedSize(74, 28);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setStyleSheet(
+        "QToolButton{background:#fff;border:1px solid #cfdaea;border-radius:8px;"
+        "color:#173f7d;padding:2px;font-size:11px;}"
+        "QToolButton:hover{background:#e8f2ff;border:2px solid #6fa8f7;}"
+        "QToolButton:pressed{background:#d7e9ff;}");
+    connect(button, &QToolButton::clicked, this, action);
+    historyLayout_->addWidget(button);
+  };
+  for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
+    addStep(QIcon(QStringLiteral(":/icons/create-sketch.png")),
+            QString::fromUtf8("Эскиз %1").arg(index + 1),
+            QString::fromUtf8("Вернуться к эскизу и изменить его"),
+            [this, index] { editSketchStep(index); });
+  }
+  if (hasExtrusion_) {
+    addStep(QIcon(QStringLiteral(":/icons/extrude.png")),
+            QString::fromUtf8("Выдавливание"),
+            QString::fromUtf8("Изменить глубину выдавливания"),
+            [this] { editExtrusionStep(); });
+  }
+  if (historySlider_) {
+    const QSignalBlocker blocker(historySlider_);
+    const int lastPosition = static_cast<int>(sketchHistory_.size()) +
+                             (hasExtrusion_ ? 1 : 0);
+    historySlider_->setRange(0, lastPosition);
+    historySlider_->setFixedWidth(std::max(40, lastPosition * 82));
+    historyPosition_ = std::clamp(historyPosition_, 0, lastPosition);
+    historySlider_->setValue(historyPosition_);
+  }
+}
+
+void MainWindow::applyHistoryPosition(int position) {
+  const int lastPosition = static_cast<int>(sketchHistory_.size()) +
+                           (hasExtrusion_ ? 1 : 0);
+  historyPosition_ = std::clamp(position, 0, lastPosition);
+  const std::size_t activeSketches = std::min<std::size_t>(
+      static_cast<std::size_t>(historyPosition_), sketchHistory_.size());
+  const bool solidActive = hasExtrusion_ &&
+                           historyPosition_ > static_cast<int>(sketchHistory_.size());
+  viewport_->setSolidVisible(solidActive);
+  for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
+    const bool consumedBySolid = solidActive && extrusionSourceSketch_ == index;
+    viewport_->setSketchVisible(index, index < activeSketches && !consumedBySolid);
+  }
+  rebuildFeatureTree();
+  statusBar()->showMessage(
+      historyPosition_ == lastPosition
+          ? QString::fromUtf8("Активно последнее состояние модели")
+          : QString::fromUtf8("История откачена до шага %1").arg(historyPosition_),
+      2500);
+}
+
+void MainWindow::editSketchStep(std::size_t index) {
+  if (index >= sketchHistory_.size()) return;
+  editingSketchIndex_ = index;
+  currentSketchSupport_ = sketchHistory_[index].support;
+  sketchCanvas_->loadSketch(sketchHistory_[index].geometry);
+  sketchCanvas_->setReferenceBody(document_.box(), currentSketchSupport_,
+                                  hasExtrusion_);
+  workspaceStack_->setCurrentWidget(sketchCanvas_);
+  ribbonStack_->setCurrentWidget(sketchRibbon_);
+  statusBar()->showMessage(
+      QString::fromUtf8("Редактируется эскиз %1 • Завершите эскиз для перестроения")
+          .arg(index + 1));
+}
+
+void MainWindow::editExtrusionStep() {
+  if (!hasExtrusion_) return;
+  bool accepted = false;
+  const double height = QInputDialog::getDouble(
+      this, QString::fromUtf8("Изменить выдавливание"),
+      QString::fromUtf8("Расстояние, мм:"), document_.box().heightMm,
+      0.01, 100000.0, 2, &accepted);
+  if (!accepted) return;
+  const BoxParameters previousBox = document_.box();
+  pushUndoAction([this, previousBox] {
+    document_.setBox(previousBox);
+    viewport_->setBox(previousBox);
+  });
+  auto box = document_.box();
+  box.heightMm = height;
+  document_.setBox(box);
+  viewport_->setBox(box);
+  statusBar()->showMessage(
+      QString::fromUtf8("Выдавливание изменено: %1 мм").arg(height), 3000);
 }
 
 void MainWindow::rebuildFeatureTree() {
@@ -357,15 +707,19 @@ void MainWindow::rebuildFeatureTree() {
   }
 
   auto* drawings = new QTreeWidgetItem(project, {QString::fromUtf8("Чертежи")});
-  if (sketchCount_ == 0) {
+  const std::size_t activeSketchCount = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(historyPosition_, 0)), sketchCount_);
+  const bool activeExtrusion = hasExtrusion_ &&
+      historyPosition_ > static_cast<int>(sketchHistory_.size());
+  if (activeSketchCount == 0) {
     new QTreeWidgetItem(drawings, {QString::fromUtf8("Эскизов нет")});
   } else {
-    for (std::size_t index = 0; index < sketchCount_; ++index) {
+    for (std::size_t index = 0; index < activeSketchCount; ++index) {
       auto* sketchItem = new QTreeWidgetItem(
           drawings, {QString::fromUtf8("⌞  Эскиз %1").arg(index + 1)});
       sketchItem->setData(0, Qt::UserRole, 20 + static_cast<int>(index));
       sketchItem->setFlags(sketchItem->flags() | Qt::ItemIsUserCheckable);
-      const bool visible = !extrusionSourceSketch_.has_value() ||
+      const bool visible = !activeExtrusion || !extrusionSourceSketch_.has_value() ||
                            index != *extrusionSourceSketch_;
       sketchItem->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
       viewport_->setSketchVisible(index, visible);
@@ -373,9 +727,11 @@ void MainWindow::rebuildFeatureTree() {
   }
   auto* models = new QTreeWidgetItem(project, {QString::fromUtf8("Модели")});
   auto* bodyItem = new QTreeWidgetItem(
-      models, {hasExtrusion_ ? QString::fromUtf8("▣  Выдавливание 1")
+      models, {hasExtrusion_ ? QString::fromUtf8("▣  Тело 1")
                              : QString::fromUtf8("Твёрдых тел нет")});
-  if (hasExtrusion_) {
+  if (!activeExtrusion)
+    bodyItem->setText(0, QString::fromUtf8("Твёрдых тел нет"));
+  if (activeExtrusion) {
     bodyItem->setData(0, Qt::UserRole, 3);
     bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
     bodyItem->setCheckState(0, Qt::Checked);

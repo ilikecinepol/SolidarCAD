@@ -29,6 +29,7 @@ class SketchCanvas final : public QWidget {
   void setTool(Tool tool);
   void clearSketch();
   void resetSketch();
+  void loadSketch(const sketch::Sketch& sketch);
   void deleteSelection();
   void undo();
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);

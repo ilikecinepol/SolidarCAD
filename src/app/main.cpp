@@ -1,6 +1,5 @@
 #include <QApplication>
 #include <QPointer>
-#include <QStyleFactory>
 
 #include "home/HomeWindow.h"
 #include "ui/MainWindow.h"
@@ -9,7 +8,6 @@ int main(int argc, char* argv[]) {
   QApplication application(argc, argv);
   QApplication::setApplicationName(QString::fromUtf8("Солидарность CAD"));
   QApplication::setOrganizationName("Solidar CAD");
-  application.setStyle(QStyleFactory::create("Fusion"));
 
   if (argc > 1) {
     solidar::MainWindow editor;

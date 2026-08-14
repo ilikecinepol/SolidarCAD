@@ -107,6 +107,19 @@ void SketchCanvas::resetSketch() {
   notifyGeometryChanged();
 }
 
+void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
+  hideDimensionEditor();
+  sketch_ = sketch;
+  undoStack_.clear();
+  selectionKind_ = SelectionKind::None;
+  anchor_.reset();
+  dragging_ = false;
+  setTool(Tool::Select);
+  notifyGeometryChanged();
+  emit undoAvailable(false);
+  update();
+}
+
 bool SketchCanvas::canUndo() const noexcept { return !undoStack_.empty(); }
 
 void SketchCanvas::undo() {
@@ -220,7 +233,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     painter.drawRect(bodyRect.normalized());
   }
   if (referenceBodyVisible_ && referenceProfileVisible_) {
-    painter.setBrush(QColor(126, 138, 150, 75));
+    painter.setBrush(Qt::NoBrush);
     painter.setPen(QPen(QColor("#596570"), 1.6));
     for (const auto& line : referenceProfile_.lines())
       painter.drawLine(mapPoint(line.start), mapPoint(line.end));
@@ -248,6 +261,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
                           selectionIndex_ == index;
     painter.setPen(QPen(selected ? QColor("#ff8a24") : QColor("#1469d7"),
                         selected ? 3.0 : 2.0));
+    painter.setBrush(Qt::NoBrush);
     const QPointF center = mapPoint(circle.center);
     const double radius = circle.radiusMm * pixelsPerMm_;
     painter.drawEllipse(center, radius, radius);

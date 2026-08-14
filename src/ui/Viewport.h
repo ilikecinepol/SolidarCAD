@@ -1,21 +1,24 @@
 #pragma once
 
-#include <QOpenGLFunctions>
-#include <QOpenGLWidget>
 #include <QPoint>
+#include <QPainterPath>
 #include <QPolygonF>
 #include <QString>
+#include <QWidget>
 #include <vector>
 
 #include "model/Document.h"
 #include "sketch/Sketch.h"
 
 class QMouseEvent;
+class QPaintEvent;
 class QWheelEvent;
+class QKeyEvent;
+class QDoubleSpinBox;
 
 namespace solidar {
 
-class Viewport final : public QOpenGLWidget, protected QOpenGLFunctions {
+class Viewport final : public QWidget {
   Q_OBJECT
 
  public:
@@ -27,12 +30,18 @@ class Viewport final : public QOpenGLWidget, protected QOpenGLFunctions {
   void setSolidSupport(const QString& supportName);
   void setSketchVisible(bool visible);
   void addSketch(const sketch::Sketch& sketch, const QString& supportName);
+  void updateSketch(std::size_t index, const sketch::Sketch& sketch,
+                    const QString& supportName);
+  void removeSketch(std::size_t index);
   void setSketchVisible(std::size_t index, bool visible);
   void setOriginVisible(bool visible);
   void setBasePlaneVisible(int plane, bool visible);
   void resetScene();
   void beginSketchPlaneSelection();
   void beginExtrusionSurfaceSelection();
+  void showExtrusionManipulator(double lengthMm);
+  void hideExtrusionManipulator();
+  void setExtrusionPreviewLength(double lengthMm);
   [[nodiscard]] bool hasSelectedFace() const noexcept;
   [[nodiscard]] QString selectedFaceName() const;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
@@ -40,22 +49,29 @@ class Viewport final : public QOpenGLWidget, protected QOpenGLFunctions {
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
   [[nodiscard]] const sketch::Sketch& solidSketch() const noexcept;
   [[nodiscard]] QString solidSupport() const;
+  [[nodiscard]] QPointF bodyPosition() const noexcept;
+  void setBodyPosition(QPointF position);
 
  signals:
   void selectionChanged(const QString& description);
   void sketchPlanePicked(const QString& planeName);
   void extrusionSurfacePicked(const QString& surfaceName);
+  void extrusionPreviewLengthChanged(double lengthMm);
+  void bodyMoveCommitted(QPointF previous, QPointF current);
 
  protected:
-  void initializeGL() override;
-  void resizeGL(int width, int height) override;
-  void paintGL() override;
+  void paintEvent(QPaintEvent* event) override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
 
  private:
   void updateExtrusionHover(QPointF position);
+  void refreshSelectedExtrusionPolygon();
+  [[nodiscard]] QPointF extrusionScreenOffset() const;
+  void rebuildSelectedExtrusionSketch();
   enum class PickMode { None, SketchPlane, ExtrusionSurface };
   BoxParameters box_;
   sketch::Sketch sketch_;
@@ -73,7 +89,15 @@ class Viewport final : public QOpenGLWidget, protected QOpenGLFunctions {
   bool basePlanesVisible_[3]{false, false, false};
   PickMode pickMode_{PickMode::None};
   int selectedFace_{-1};
+  int selectedBasePlane_{-1};
+  int selectedVertex_{-1};
+  bool selectedOrigin_{false};
   QPolygonF extrusionHoverPolygon_;
+  QPainterPath extrusionHoverPath_;
+  QPolygonF selectedExtrusionPolygon_;
+  std::vector<QPolygonF> selectedExtrusionPolygons_;
+  std::vector<QPainterPath> selectedExtrusionPaths_;
+  std::vector<sketch::Sketch> selectedExtrusionRegionSketches_;
   sketch::Sketch hoveredExtrusionSketch_;
   sketch::Sketch selectedExtrusionSketch_;
   QString hoveredExtrusionSupport_;
@@ -81,7 +105,18 @@ class Viewport final : public QOpenGLWidget, protected QOpenGLFunctions {
   QString hoveredExtrusionSurface_;
   std::size_t hoveredExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
+  QDoubleSpinBox* extrusionLengthEditor_{nullptr};
+  QPointF extrusionManipulatorAnchor_;
+  double extrusionPreviewLengthMm_{25.0};
+  bool extrusionManipulatorVisible_{false};
+  bool selectedExtrusionBodyFace_{false};
+  bool hoveredExtrusionOnBodyCap_{false};
+  bool selectedExtrusionOnBodyCap_{false};
+  bool draggingExtrusionHandle_{false};
+  bool panningView_{false};
+  QPointF cameraPan_;
   bool draggingBody_{false};
+  QPointF bodyDragStart_;
   float offsetX_{0.0F};
   float offsetY_{0.0F};
   QPoint lastMousePosition_;
