@@ -68,6 +68,7 @@ class Viewport final : public QWidget {
   void keyPressEvent(QKeyEvent* event) override;
 
  private:
+  void updateSketchPlaneHover(QPointF position);
   void updateExtrusionHover(QPointF position);
   void refreshSelectedExtrusionPolygon();
   [[nodiscard]] QPointF extrusionScreenOffset() const;

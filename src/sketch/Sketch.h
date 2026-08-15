@@ -15,11 +15,13 @@ struct Line {
   Point start;
   Point end;
   std::size_t elementId{};
+  bool dashed{false};
 };
 
 struct Circle {
   Point center;
   double radiusMm{};
+  bool dashed{false};
 };
 
 class Sketch final {
@@ -30,11 +32,14 @@ class Sketch final {
   void setRectangle(double widthMm, double heightMm);
   void addLine(Point start, Point end);
   void addRectangle(Point firstCorner, Point oppositeCorner);
+  void addRectangle(Point first, Point second, Point third, Point fourth);
   void addCircle(Point center, double radiusMm);
   void removeLine(std::size_t index);
   void removeCircle(std::size_t index);
   void removeElement(std::size_t elementId);
   void translateElement(std::size_t elementId, double dxMm, double dyMm);
+  void setElementDashed(std::size_t elementId, bool dashed);
+  void setCircleDashed(std::size_t index, bool dashed);
   void translateCircle(std::size_t index, double dxMm, double dyMm);
   [[nodiscard]] double widthMm() const noexcept;
   [[nodiscard]] double heightMm() const noexcept;

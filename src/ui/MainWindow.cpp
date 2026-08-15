@@ -10,6 +10,9 @@
 #include <QIcon>
 #include <QInputDialog>
 #include <QDoubleSpinBox>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QButtonGroup>
 #include <QLabel>
 #include <QPushButton>
 #include <QAction>
@@ -263,6 +266,189 @@ void MainWindow::buildUi() {
     selectedExtrusionSurface_.clear();
   });
 
+  sketchSettingsDock_ =
+      new QDockWidget(QString::fromUtf8("Свойства эскиза"), this);
+  sketchSettingsDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  sketchSettingsDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  auto* settingsPanel = new QWidget(sketchSettingsDock_);
+  auto* settingsLayout = new QVBoxLayout(settingsPanel);
+  settingsLayout->setContentsMargins(16, 14, 16, 14);
+  settingsLayout->setSpacing(12);
+  auto* gridCheck = new QCheckBox(QString::fromUtf8("Сетка"), settingsPanel);
+  gridCheck->setChecked(true);
+  auto* snapCheck =
+      new QCheckBox(QString::fromUtf8("Привязка к сетке"), settingsPanel);
+  snapCheck->setChecked(true);
+  auto* lineTypeLabel =
+      new QLabel(QString::fromUtf8("Тип линии"), settingsPanel);
+  sketchLineTypeCombo_ = new QComboBox(settingsPanel);
+  sketchLineTypeCombo_->addItem(QString::fromUtf8("Сплошная линия"));
+  sketchLineTypeCombo_->addItem(QString::fromUtf8("Пунктирная линия"));
+  sketchLineTypeCombo_->setEnabled(false);
+  settingsLayout->addWidget(gridCheck);
+  settingsLayout->addWidget(snapCheck);
+  settingsLayout->addSpacing(8);
+  settingsLayout->addWidget(lineTypeLabel);
+  settingsLayout->addWidget(sketchLineTypeCombo_);
+
+  auto* circlePropertiesSection = new QFrame(settingsPanel);
+  circlePropertiesSection->setObjectName(QStringLiteral("circlePropertiesSection"));
+  circlePropertiesSection->setStyleSheet(
+      "QFrame#circlePropertiesSection{border-top:1px solid #d8e1ef;"
+      "margin-top:8px;padding-top:10px;}");
+  auto* circleLayout = new QFormLayout(circlePropertiesSection);
+  circleLayout->setContentsMargins(0, 12, 0, 0);
+  circleLayout->setSpacing(10);
+  auto* circleTitle = new QLabel(QString::fromUtf8("Окружность"),
+                                 circlePropertiesSection);
+  QFont circleTitleFont = circleTitle->font();
+  circleTitleFont.setBold(true);
+  circleTitle->setFont(circleTitleFont);
+  circleLayout->addRow(circleTitle);
+  auto* circleDiameterSpin = new QDoubleSpinBox(circlePropertiesSection);
+  circleDiameterSpin->setRange(0.01, 100000.0);
+  circleDiameterSpin->setDecimals(2);
+  circleDiameterSpin->setValue(20.0);
+  circleDiameterSpin->setSuffix(QString::fromUtf8(" мм"));
+  auto* circleModeButtons = new QWidget(circlePropertiesSection);
+  auto* circleModeLayout = new QHBoxLayout(circleModeButtons);
+  circleModeLayout->setContentsMargins(0, 0, 0, 0);
+  circleModeLayout->setSpacing(4);
+  auto* circleModeGroup = new QButtonGroup(circleModeButtons);
+  circleModeGroup->setExclusive(true);
+  struct CircleModeButtonSpec {
+    const char* icon;
+    const char* tooltip;
+  };
+  const CircleModeButtonSpec circleModes[] = {
+      {":/icons/sketch/circle/center-radius.png", "Из центра"},
+      {":/icons/sketch/circle/two-points.png", "По двум точкам"},
+      {":/icons/sketch/circle/three-points.png", "По трём точкам"},
+      {":/icons/sketch/circle/three-tangents.png", "По трём прямым"},
+      {":/icons/sketch/circle/two-tangents-radius.png",
+       "По двум прямым и радиусу"},
+  };
+  for (int index = 0; index < 5; ++index) {
+    auto* button = new QToolButton(circleModeButtons);
+    button->setCheckable(true);
+    button->setAutoExclusive(true);
+    button->setIcon(QIcon(QString::fromUtf8(circleModes[index].icon)));
+    button->setIconSize(QSize(26, 26));
+    button->setFixedSize(36, 36);
+    button->setToolTip(QString::fromUtf8(circleModes[index].tooltip));
+    button->setStyleSheet(
+        "QToolButton{border:1px solid transparent;border-radius:6px;"
+        "background:transparent;padding:4px;}"
+        "QToolButton:hover{background:#edf5ff;border-color:#9bc4ff;}"
+        "QToolButton:checked{background:#dcecff;border:2px solid #0a72ff;}");
+    circleModeGroup->addButton(button, index);
+    circleModeLayout->addWidget(button);
+    if (index == 0) button->setChecked(true);
+  }
+  circleLayout->addRow(QString::fromUtf8("Диаметр:"), circleDiameterSpin);
+  circleLayout->addRow(circleModeButtons);
+  settingsLayout->addWidget(circlePropertiesSection);
+  circlePropertiesSection->hide();
+
+  auto* rectanglePropertiesSection = new QFrame(settingsPanel);
+  rectanglePropertiesSection->setObjectName(
+      QStringLiteral("rectanglePropertiesSection"));
+  rectanglePropertiesSection->setStyleSheet(
+      "QFrame#rectanglePropertiesSection{border-top:1px solid #d8e1ef;"
+      "margin-top:8px;padding-top:10px;}");
+  auto* rectangleLayout = new QVBoxLayout(rectanglePropertiesSection);
+  rectangleLayout->setContentsMargins(0, 12, 0, 0);
+  rectangleLayout->setSpacing(10);
+  auto* rectangleTitle = new QLabel(QString::fromUtf8("Прямоугольник"),
+                                    rectanglePropertiesSection);
+  QFont rectangleTitleFont = rectangleTitle->font();
+  rectangleTitleFont.setBold(true);
+  rectangleTitle->setFont(rectangleTitleFont);
+  rectangleLayout->addWidget(rectangleTitle);
+  auto* rectangleModeButtons = new QWidget(rectanglePropertiesSection);
+  auto* rectangleModeLayout = new QHBoxLayout(rectangleModeButtons);
+  rectangleModeLayout->setContentsMargins(0, 0, 0, 0);
+  rectangleModeLayout->setSpacing(4);
+  auto* rectangleModeGroup = new QButtonGroup(rectangleModeButtons);
+  rectangleModeGroup->setExclusive(true);
+  const CircleModeButtonSpec rectangleModes[] = {
+      {":/icons/sketch/rectangle/two-points.png", "По двум точкам"},
+      {":/icons/sketch/rectangle/three-points.png", "По трём точкам"},
+      {":/icons/sketch/rectangle/from-center.png", "Из центра"},
+  };
+  for (int index = 0; index < 3; ++index) {
+    auto* button = new QToolButton(rectangleModeButtons);
+    button->setCheckable(true);
+    button->setAutoExclusive(true);
+    button->setIcon(QIcon(QString::fromUtf8(rectangleModes[index].icon)));
+    button->setIconSize(QSize(26, 26));
+    button->setFixedSize(36, 36);
+    button->setToolTip(QString::fromUtf8(rectangleModes[index].tooltip));
+    button->setStyleSheet(
+        "QToolButton{border:1px solid transparent;border-radius:6px;"
+        "background:transparent;padding:4px;}"
+        "QToolButton:hover{background:#edf5ff;border-color:#9bc4ff;}"
+        "QToolButton:checked{background:#dcecff;border:2px solid #0a72ff;}");
+    rectangleModeGroup->addButton(button, index);
+    rectangleModeLayout->addWidget(button);
+    if (index == 0) button->setChecked(true);
+  }
+  rectangleLayout->addWidget(rectangleModeButtons);
+  settingsLayout->addWidget(rectanglePropertiesSection);
+  rectanglePropertiesSection->hide();
+  settingsLayout->addStretch();
+  sketchSettingsDock_->setWidget(settingsPanel);
+  sketchSettingsDock_->setMinimumWidth(250);
+  addDockWidget(Qt::RightDockWidgetArea, sketchSettingsDock_);
+  sketchSettingsDock_->hide();
+  connect(gridCheck, &QCheckBox::toggled, sketchCanvas_,
+          &SketchCanvas::setGridVisible);
+  connect(snapCheck, &QCheckBox::toggled, sketchCanvas_,
+          &SketchCanvas::setSnapEnabled);
+  connect(sketchLineTypeCombo_, &QComboBox::currentIndexChanged, sketchCanvas_,
+          [this](int index) { sketchCanvas_->setSelectedDashed(index == 1); });
+  connect(circleDiameterSpin, &QDoubleSpinBox::valueChanged, sketchCanvas_,
+          &SketchCanvas::setCircleDiameter);
+  connect(circleModeGroup, &QButtonGroup::idClicked, sketchCanvas_,
+          [this](int index) {
+            sketchCanvas_->setCircleMode(
+                static_cast<SketchCanvas::CircleMode>(index));
+          });
+  connect(rectangleModeGroup, &QButtonGroup::idClicked, sketchCanvas_,
+          [this](int index) {
+            sketchCanvas_->setRectangleMode(
+                static_cast<SketchCanvas::RectangleMode>(index));
+          });
+  connect(sketchCanvas_, &SketchCanvas::primaryDimensionChanged, this,
+          [this, circleDiameterSpin](double value) {
+            if (sketchCanvas_->tool() != SketchCanvas::Tool::Circle) return;
+            const QSignalBlocker blocker(circleDiameterSpin);
+            circleDiameterSpin->setValue(value);
+          });
+  connect(sketchCanvas_, &SketchCanvas::lineStyleSelectionChanged, this,
+          [this](bool elementSelected, bool dashed) {
+            const QSignalBlocker blocker(sketchLineTypeCombo_);
+            sketchLineTypeCombo_->setEnabled(elementSelected);
+            sketchLineTypeCombo_->setCurrentIndex(dashed ? 1 : 0);
+            if (elementSelected) {
+              sketchSettingsDock_->show();
+              sketchSettingsDock_->raise();
+            }
+          });
+  connect(sketchCanvas_, &SketchCanvas::toolChanged, this,
+          [this, circlePropertiesSection,
+           rectanglePropertiesSection](SketchCanvas::Tool tool) {
+            circlePropertiesSection->setVisible(
+                tool == SketchCanvas::Tool::Circle);
+            rectanglePropertiesSection->setVisible(
+                tool == SketchCanvas::Tool::Rectangle);
+            if (tool != SketchCanvas::Tool::Select) {
+              sketchLineTypeCombo_->setEnabled(false);
+              sketchSettingsDock_->show();
+              sketchSettingsDock_->raise();
+            }
+          });
+
   sketchRibbon_ = new SketchRibbon(sketchCanvas_, this);
   modelRibbon_ = new ModelRibbon(this);
   ribbonStack_ = new QStackedWidget(this);
@@ -327,9 +513,11 @@ void MainWindow::buildUi() {
   connect(sketchCanvas_, &SketchCanvas::geometryChanged, this,
           &MainWindow::updateFromSketch);
   connect(workspaceStack_, &QStackedWidget::currentChanged, this, [this](int index) {
+    const bool sketchMode = workspaceStack_->widget(index) == sketchCanvas_;
     ribbonStack_->setCurrentWidget(workspaceStack_->widget(index) == viewport_
                                        ? static_cast<QWidget*>(modelRibbon_)
                                        : static_cast<QWidget*>(sketchRibbon_));
+    if (!sketchMode && sketchSettingsDock_) sketchSettingsDock_->hide();
   });
   workspaceStack_->setCurrentWidget(viewport_);
   ribbonStack_->setCurrentWidget(modelRibbon_);

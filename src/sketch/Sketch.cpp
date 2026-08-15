@@ -55,6 +55,15 @@ void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
   updateBounds();
 }
 
+void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) {
+  const auto elementId = nextElementId_++;
+  lines_.push_back({first, second, elementId});
+  lines_.push_back({second, third, elementId});
+  lines_.push_back({third, fourth, elementId});
+  lines_.push_back({fourth, first, elementId});
+  updateBounds();
+}
+
 void Sketch::addCircle(Point center, double radiusMm) {
   if (radiusMm <= 0.0) return;
   circles_.push_back({center, radiusMm});
@@ -88,6 +97,16 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
     line.end.yMm += dyMm;
   }
   updateBounds();
+}
+
+void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
+  for (auto& line : lines_) {
+    if (line.elementId == elementId) line.dashed = dashed;
+  }
+}
+
+void Sketch::setCircleDashed(std::size_t index, bool dashed) {
+  if (index < circles_.size()) circles_[index].dashed = dashed;
 }
 
 void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
@@ -133,7 +152,9 @@ void Sketch::updateBounds() noexcept {
 }
 
 bool Sketch::isClosed() const noexcept {
-  if (lines_.empty()) return false;
+  if (std::none_of(lines_.begin(), lines_.end(),
+                   [](const Line& line) { return !line.dashed; }))
+    return false;
   const auto samePoint = [](Point first, Point second) {
     return std::abs(first.xMm - second.xMm) <= 1e-7 &&
            std::abs(first.yMm - second.yMm) <= 1e-7;
@@ -141,9 +162,11 @@ bool Sketch::isClosed() const noexcept {
   // Every vertex of one or several independent closed loops has degree two.
   // This also permits Ctrl-selection of multiple extrusion regions.
   for (const auto& line : lines_) {
+    if (line.dashed) continue;
     for (const Point vertex : {line.start, line.end}) {
       std::size_t degree = 0;
       for (const auto& candidate : lines_) {
+        if (candidate.dashed) continue;
         if (samePoint(vertex, candidate.start)) ++degree;
         if (samePoint(vertex, candidate.end)) ++degree;
       }

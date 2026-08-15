@@ -23,6 +23,14 @@ class SketchCanvas final : public QWidget {
 
  public:
   enum class Tool { Select, Line, Rectangle, Circle };
+  enum class CircleMode {
+    CenterRadius,
+    TwoPoints,
+    ThreePoints,
+    ThreeTangents,
+    TwoTangentsRadius
+  };
+  enum class RectangleMode { TwoPoints, ThreePoints, FromCenter };
 
   explicit SketchCanvas(QWidget* parent = nullptr);
   void setRectangle(double widthMm, double heightMm);
@@ -31,6 +39,14 @@ class SketchCanvas final : public QWidget {
   void resetSketch();
   void loadSketch(const sketch::Sketch& sketch);
   void deleteSelection();
+  void setPrimaryDimension(double value);
+  void setSelectedDashed(bool dashed);
+  void commitCurrentDimension();
+  void setGridVisible(bool visible);
+  void setSnapEnabled(bool enabled);
+  void setCircleMode(CircleMode mode);
+  void setCircleDiameter(double diameterMm);
+  void setRectangleMode(RectangleMode mode);
   void undo();
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
   void setReferenceProfile(const sketch::Sketch& profile, bool visible);
@@ -43,6 +59,8 @@ signals:
   void selectionChanged(const QString& description);
   void toolChanged(Tool tool);
   void undoAvailable(bool available);
+  void primaryDimensionChanged(double value);
+  void lineStyleSelectionChanged(bool lineSelected, bool dashed);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -63,10 +81,13 @@ signals:
   void commitPoint(sketch::Point point);
   void showDimensionEditor(QPoint position);
   void updateDimensionEditor();
+  void positionDimensionEditor();
   void commitDimensionEditor();
   void hideDimensionEditor();
   void notifyGeometryChanged();
   void pushUndoState();
+  void commitCirclePoint(sketch::Point point);
+  void commitRectanglePoint(sketch::Point point);
 
   sketch::Sketch sketch_;
   std::vector<sketch::Sketch> undoStack_;
@@ -83,6 +104,13 @@ signals:
   double pixelsPerMm_{5.0};
   double snapStepMm_{5.0};
   bool snapEnabled_{true};
+  bool gridVisible_{true};
+  CircleMode circleMode_{CircleMode::CenterRadius};
+  double circleDiameterMm_{20.0};
+  std::vector<sketch::Point> circlePoints_;
+  std::vector<sketch::Line> circleGuideLines_;
+  RectangleMode rectangleMode_{RectangleMode::TwoPoints};
+  std::vector<sketch::Point> rectanglePoints_;
   BoxParameters referenceBox_{};
   QString referenceSupport_;
   bool referenceBodyVisible_{false};

@@ -15,6 +15,8 @@ class QHBoxLayout;
 class QSlider;
 class QDockWidget;
 class QDoubleSpinBox;
+class QPushButton;
+class QComboBox;
 
 namespace solidar {
 
@@ -71,6 +73,8 @@ class MainWindow final : public QMainWindow {
   QSlider* historySlider_{nullptr};
   QDockWidget* extrusionDock_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
+  QDockWidget* sketchSettingsDock_{nullptr};
+  QComboBox* sketchLineTypeCombo_{nullptr};
   int historyPosition_{0};
   struct SketchHistoryEntry {
     sketch::Sketch geometry;
