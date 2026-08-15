@@ -2,5 +2,14 @@
   <qresource prefix="/icons">
     <file alias="create-sketch.png">create-sketch.png</file>
     <file alias="extrude.png">extrude.png</file>
+    <file alias="sketch/line.png">sketch/line.png</file>
+    <file alias="sketch/rectangle.png">sketch/rectangle.png</file>
+    <file alias="sketch/circle.png">sketch/circle.png</file>
+    <file alias="sketch/arc.png">sketch/arc.png</file>
+    <file alias="sketch/polygon.png">sketch/polygon.png</file>
+    <file alias="sketch/slot.png">sketch/slot.png</file>
+    <file alias="sketch/text.png">sketch/text.png</file>
+    <file alias="sketch/mirror.png">sketch/mirror.png</file>
+    <file alias="sketch/dimension.png">sketch/dimension.png</file>
   </qresource>
 </RCC>

@@ -12,7 +12,7 @@ int main(int argc, char* argv[]) {
   if (argc > 1) {
     solidar::MainWindow editor;
     editor.setProjectPath(QString::fromLocal8Bit(argv[1]));
-    editor.show();
+    editor.showMaximized();
     return application.exec();
   }
 
@@ -29,12 +29,12 @@ int main(int argc, char* argv[]) {
                      editor->setAttribute(Qt::WA_DeleteOnClose);
                      editor->setProjectPath(path);
                      QObject::connect(editor, &QObject::destroyed, &home, [&home] {
-                       home.show();
+                       home.showMaximized();
                        home.raise();
                      });
                      home.hide();
-                     editor->show();
+                     editor->showMaximized();
                    });
-  home.show();
+  home.showMaximized();
   return application.exec();
 }
