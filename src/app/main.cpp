@@ -1,6 +1,6 @@
 #include <QApplication>
+#include <QMessageBox>
 #include <QPointer>
-#include <QStyleFactory>
 
 #include "home/HomeWindow.h"
 #include "ui/MainWindow.h"
@@ -9,12 +9,15 @@ int main(int argc, char* argv[]) {
   QApplication application(argc, argv);
   QApplication::setApplicationName(QString::fromUtf8("Солидарность CAD"));
   QApplication::setOrganizationName("Solidar CAD");
-  application.setStyle(QStyleFactory::create("Fusion"));
 
   if (argc > 1) {
     solidar::MainWindow editor;
-    editor.setProjectPath(QString::fromLocal8Bit(argv[1]));
-    editor.show();
+    QString error;
+    if (!editor.loadProject(QString::fromLocal8Bit(argv[1]), &error)) {
+      QMessageBox::critical(nullptr, QString::fromUtf8("Ошибка открытия"), error);
+      return 1;
+    }
+    editor.showMaximized();
     return application.exec();
   }
 
@@ -29,14 +32,21 @@ int main(int argc, char* argv[]) {
                      }
                      editor = new solidar::MainWindow;
                      editor->setAttribute(Qt::WA_DeleteOnClose);
-                     editor->setProjectPath(path);
+                     QString error;
+                     if (!editor->loadProject(path, &error)) {
+                       QMessageBox::critical(&home,
+                                             QString::fromUtf8("Ошибка открытия"),
+                                             error);
+                       delete editor.data();
+                       return;
+                     }
                      QObject::connect(editor, &QObject::destroyed, &home, [&home] {
-                       home.show();
+                       home.showMaximized();
                        home.raise();
                      });
                      home.hide();
-                     editor->show();
+                     editor->showMaximized();
                    });
-  home.show();
+  home.showMaximized();
   return application.exec();
 }
