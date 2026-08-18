@@ -90,8 +90,68 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
           {"offset", dimension.offsetMm},
           {"angle", dimension.angleRad}});
     }
-    sketches.append(QJsonObject{{"support", saved.support}, {"lines", lines},
-                                {"circles", circles}, {"dimensions", dimensions}});
+    QJsonArray constraints;
+    for (const auto& constraint : saved.geometry.constraints()) {
+      qint64 firstGeometry = -1;
+      qint64 secondGeometry = -1;
+      qint64 firstPointLine = -1;
+      qint64 secondPointLine = -1;
+
+      auto linePosition = [&saved](sketch::GeometryId id) -> qint64 {
+        const auto index = saved.geometry.lineIndex(id);
+        return index ? static_cast<qint64>(*index) : -1;
+      };
+      auto circlePosition = [&saved](sketch::GeometryId id) -> qint64 {
+        const auto index = saved.geometry.circleIndex(id);
+        return index ? static_cast<qint64>(*index) : -1;
+      };
+
+      QString firstKind;
+      QString secondKind;
+
+      if (constraint.firstGeometry != sketch::kInvalidGeometryId) {
+        firstGeometry = linePosition(constraint.firstGeometry);
+        if (firstGeometry >= 0) {
+          firstKind = QStringLiteral("line");
+        } else {
+          firstGeometry = circlePosition(constraint.firstGeometry);
+          if (firstGeometry >= 0) firstKind = QStringLiteral("circle");
+        }
+      }
+      if (constraint.secondGeometry != sketch::kInvalidGeometryId) {
+        secondGeometry = linePosition(constraint.secondGeometry);
+        if (secondGeometry >= 0) {
+          secondKind = QStringLiteral("line");
+        } else {
+          secondGeometry = circlePosition(constraint.secondGeometry);
+          if (secondGeometry >= 0) secondKind = QStringLiteral("circle");
+        }
+      }
+
+      if (constraint.firstPoint.lineId != sketch::kInvalidGeometryId)
+        firstPointLine = linePosition(constraint.firstPoint.lineId);
+      if (constraint.secondPoint.lineId != sketch::kInvalidGeometryId)
+        secondPointLine = linePosition(constraint.secondPoint.lineId);
+
+      constraints.append(QJsonObject{
+          {"id", static_cast<qint64>(constraint.id)},
+          {"type", static_cast<int>(constraint.type)},
+          {"firstGeometryKind", firstKind},
+          {"firstGeometry", firstGeometry},
+          {"secondGeometryKind", secondKind},
+          {"secondGeometry", secondGeometry},
+          {"firstPointLine", firstPointLine},
+          {"firstPointStart", constraint.firstPoint.start},
+          {"secondPointLine", secondPointLine},
+          {"secondPointStart", constraint.secondPoint.start},
+          {"value", constraint.value}});
+    }
+
+    sketches.append(QJsonObject{{"support", saved.support},
+                                {"lines", lines},
+                                {"circles", circles},
+                                {"dimensions", dimensions},
+                                {"constraints", constraints}});
   }
   root["sketches"] = sketches;
   QJsonObject extrusion{{"enabled", data.hasExtrusion}};
@@ -200,6 +260,54 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
 
       saved.geometry.storeDimension(dimension);
     }
+
+    for (const auto constraintValue : savedObject.value("constraints").toArray()) {
+      const auto object = constraintValue.toObject();
+      sketch::Constraint constraint;
+      constraint.id =
+          static_cast<sketch::ConstraintId>(object.value("id").toInteger());
+      constraint.type =
+          static_cast<sketch::ConstraintType>(object.value("type").toInt());
+      constraint.value = object.value("value").toDouble();
+
+      const auto resolveGeometry =
+          [&saved](const QString& kind, qint64 position) -> sketch::GeometryId {
+        if (position < 0) return sketch::kInvalidGeometryId;
+        const auto index = static_cast<std::size_t>(position);
+        if (kind == QStringLiteral("line"))
+          return saved.geometry.lineId(index);
+        if (kind == QStringLiteral("circle"))
+          return saved.geometry.circleId(index);
+        return sketch::kInvalidGeometryId;
+      };
+
+      constraint.firstGeometry = resolveGeometry(
+          object.value("firstGeometryKind").toString(),
+          object.value("firstGeometry").toInteger(-1));
+      constraint.secondGeometry = resolveGeometry(
+          object.value("secondGeometryKind").toString(),
+          object.value("secondGeometry").toInteger(-1));
+
+      const qint64 firstPointLine = object.value("firstPointLine").toInteger(-1);
+      if (firstPointLine >= 0) {
+        constraint.firstPoint.lineId =
+            saved.geometry.lineId(static_cast<std::size_t>(firstPointLine));
+        constraint.firstPoint.start =
+            object.value("firstPointStart").toBool(true);
+      }
+
+      const qint64 secondPointLine =
+          object.value("secondPointLine").toInteger(-1);
+      if (secondPointLine >= 0) {
+        constraint.secondPoint.lineId =
+            saved.geometry.lineId(static_cast<std::size_t>(secondPointLine));
+        constraint.secondPoint.start =
+            object.value("secondPointStart").toBool(true);
+      }
+
+      saved.geometry.addConstraint(constraint);
+    }
+
     loaded.sketches.push_back(std::move(saved));
   }
   const auto extrusion = root.value("extrusion").toObject();

@@ -10,6 +10,9 @@ namespace solidar::sketch {
 using GeometryId = std::uint64_t;
 inline constexpr GeometryId kInvalidGeometryId = 0;
 
+using ConstraintId = std::uint64_t;
+inline constexpr ConstraintId kInvalidConstraintId = 0;
+
 struct Point {
   double xMm{};
   double yMm{};
@@ -43,6 +46,30 @@ struct Dimension {
   double valueMm{};
   double offsetMm{4.0};
   double angleRad{};
+};
+
+enum class ConstraintType {
+  Horizontal,
+  Vertical,
+  Coincident,
+  Distance,
+  Length,
+  Radius,
+  Diameter,
+  Parallel,
+  Perpendicular,
+  Equal,
+  Angle
+};
+
+struct Constraint {
+  ConstraintId id{kInvalidConstraintId};
+  ConstraintType type{ConstraintType::Horizontal};
+  GeometryId firstGeometry{kInvalidGeometryId};
+  GeometryId secondGeometry{kInvalidGeometryId};
+  PointReference firstPoint{};
+  PointReference secondPoint{};
+  double value{};
 };
 
 class Sketch final {
@@ -85,6 +112,12 @@ class Sketch final {
   bool setDimensionPlacement(std::size_t index, double offsetMm,
                              double angleRad);
   bool setDimensionValue(std::size_t index, double valueMm);
+
+  ConstraintId addConstraint(Constraint constraint);
+  bool removeConstraint(ConstraintId id);
+  void clearConstraints();
+  [[nodiscard]] const std::vector<Constraint>& constraints() const noexcept;
+
   [[nodiscard]] double widthMm() const noexcept;
   [[nodiscard]] double heightMm() const noexcept;
   [[nodiscard]] const std::vector<Line>& lines() const noexcept;
@@ -103,8 +136,10 @@ class Sketch final {
   std::vector<GeometryId> lineIds_;
   std::vector<GeometryId> circleIds_;
   std::vector<Dimension> dimensions_;
+  std::vector<Constraint> constraints_;
   std::size_t nextElementId_{1};
   GeometryId nextGeometryId_{1};
+  ConstraintId nextConstraintId_{1};
 };
 
 }  // namespace solidar::sketch

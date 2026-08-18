@@ -15,6 +15,7 @@ void Sketch::clear() {
   lineIds_.clear();
   circleIds_.clear();
   dimensions_.clear();
+  constraints_.clear();
   widthMm_ = 0.0;
   heightMm_ = 0.0;
 }
@@ -104,6 +105,13 @@ void Sketch::removeLine(std::size_t index) {
     return false;
   });
 
+  std::erase_if(constraints_, [removedId](const Constraint& constraint) {
+    return constraint.firstGeometry == removedId ||
+           constraint.secondGeometry == removedId ||
+           constraint.firstPoint.lineId == removedId ||
+           constraint.secondPoint.lineId == removedId;
+  });
+
   updateBounds();
 }
 
@@ -118,6 +126,11 @@ void Sketch::removeCircle(std::size_t index) {
   std::erase_if(dimensions, [removedId](const Dimension& dimension) {
     return dimension.kind == DimensionKind::CircleDiameter &&
            dimension.geometryId == removedId;
+  });
+
+  std::erase_if(constraints_, [removedId](const Constraint& constraint) {
+    return constraint.firstGeometry == removedId ||
+           constraint.secondGeometry == removedId;
   });
 
   updateBounds();
@@ -147,6 +160,13 @@ void Sketch::removeElement(std::size_t elementId) {
         return wasRemoved(dimension.firstPoint.lineId) ||
                wasRemoved(dimension.secondPoint.lineId);
       return false;
+    });
+
+    std::erase_if(constraints_, [&wasRemoved](const Constraint& constraint) {
+      return wasRemoved(constraint.firstGeometry) ||
+             wasRemoved(constraint.secondGeometry) ||
+             wasRemoved(constraint.firstPoint.lineId) ||
+             wasRemoved(constraint.secondPoint.lineId);
     });
   }
 
@@ -306,6 +326,29 @@ bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
   if (index >= dimensions.size() || valueMm <= 0.0) return false;
   dimensions[index].valueMm = valueMm;
   return true;
+}
+
+ConstraintId Sketch::addConstraint(Constraint constraint) {
+  if (constraint.id == kInvalidConstraintId)
+    constraint.id = nextConstraintId_++;
+  else
+    nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
+  constraints_.push_back(constraint);
+  return constraint.id;
+}
+
+bool Sketch::removeConstraint(ConstraintId id) {
+  const auto oldSize = constraints_.size();
+  std::erase_if(constraints_, [id](const Constraint& constraint) {
+    return constraint.id == id;
+  });
+  return constraints_.size() != oldSize;
+}
+
+void Sketch::clearConstraints() { constraints_.clear(); }
+
+const std::vector<Constraint>& Sketch::constraints() const noexcept {
+  return constraints_;
 }
 
 double Sketch::widthMm() const noexcept { return widthMm_; }
