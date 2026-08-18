@@ -143,11 +143,23 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
                                QString::fromUtf8("Авторазмер"), this);
   toolGroup->addButton(dimension);
   constraintsLayout->addWidget(dimension);
+
+  auto* orthogonalTool = new QPushButton(QString::fromUtf8("↔↕"), this);
+  orthogonalTool->setObjectName("toolButton");
+  orthogonalTool->setCheckable(true);
+  orthogonalTool->setFixedSize(54, 54);
+  orthogonalTool->setFocusPolicy(Qt::NoFocus);
+  orthogonalTool->setCursor(Qt::PointingHandCursor);
+  orthogonalTool->setToolTip(
+      QString::fromUtf8("Горизонтально/вертикально"));
+  toolGroup->addButton(orthogonalTool);
+  constraintsLayout->addWidget(orthogonalTool);
   auto* constraintLabels = new QVBoxLayout;
   auto* snap = new QLabel(QString::fromUtf8("●  Привязка к сетке"), this);
   snap->setObjectName("constraintReady");
-  auto* orthogonal = new QLabel(QString::fromUtf8("○  Автоограничения — далее"), this);
-  orthogonal->setObjectName("constraintMuted");
+  auto* orthogonal = new QLabel(
+      QString::fromUtf8("●  Горизонт./вертик. — готово"), this);
+  orthogonal->setObjectName("constraintReady");
   constraintLabels->addWidget(snap);
   constraintLabels->addWidget(orthogonal);
   constraintsLayout->addLayout(constraintLabels);
@@ -170,6 +182,10 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           [canvas] { canvas->setTool(SketchCanvas::Tool::Circle); });
   connect(dimension, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::AutoDimension); });
+  connect(orthogonalTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::OrthogonalConstraint);
+          });
   connect(canvas, &SketchCanvas::toolChanged, this,
           [toolGroup](SketchCanvas::Tool tool) {
             if (tool != SketchCanvas::Tool::Select) return;

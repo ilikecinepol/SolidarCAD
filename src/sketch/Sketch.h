@@ -93,6 +93,8 @@ class Sketch final {
   void translateCircleById(GeometryId id, double dxMm, double dyMm);
   bool setLineLengthById(GeometryId id, double lengthMm);
   bool setCircleDiameterById(GeometryId id, double diameterMm);
+  bool setLineHorizontalById(GeometryId id);
+  bool setLineVerticalById(GeometryId id);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;

@@ -1,5 +1,7 @@
 #include "sketch/Sketch.h"
 
+#include "sketch/SketchSolver.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -222,6 +224,44 @@ bool Sketch::setCircleDiameterById(GeometryId id, double diameterMm) {
   return index ? setCircleDiameter(*index, diameterMm) : false;
 }
 
+bool Sketch::setLineHorizontalById(GeometryId id) {
+  const auto index = lineIndex(id);
+  if (!index) return false;
+
+  const Point oldEnd = lines_[*index].end;
+  const Point newEnd{oldEnd.xMm, lines_[*index].start.yMm};
+
+  const auto same = [](Point first, Point second) {
+    return std::hypot(first.xMm - second.xMm, first.yMm - second.yMm) <= 1e-7;
+  };
+
+  for (auto& line : lines_) {
+    if (same(line.start, oldEnd)) line.start = newEnd;
+    if (same(line.end, oldEnd)) line.end = newEnd;
+  }
+  updateBounds();
+  return true;
+}
+
+bool Sketch::setLineVerticalById(GeometryId id) {
+  const auto index = lineIndex(id);
+  if (!index) return false;
+
+  const Point oldEnd = lines_[*index].end;
+  const Point newEnd{lines_[*index].start.xMm, oldEnd.yMm};
+
+  const auto same = [](Point first, Point second) {
+    return std::hypot(first.xMm - second.xMm, first.yMm - second.yMm) <= 1e-7;
+  };
+
+  for (auto& line : lines_) {
+    if (same(line.start, oldEnd)) line.start = newEnd;
+    if (same(line.end, oldEnd)) line.end = newEnd;
+  }
+  updateBounds();
+  return true;
+}
+
 GeometryId Sketch::lineId(std::size_t index) const noexcept {
   return index < lineIds_.size() ? lineIds_[index] : kInvalidGeometryId;
 }
@@ -334,6 +374,7 @@ ConstraintId Sketch::addConstraint(Constraint constraint) {
   else
     nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
   constraints_.push_back(constraint);
+  BasicSketchSolver::solve(*this);
   return constraint.id;
 }
 

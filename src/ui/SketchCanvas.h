@@ -22,7 +22,14 @@ class SketchCanvas final : public QWidget {
   Q_OBJECT
 
  public:
-  enum class Tool { Select, Line, Rectangle, Circle, AutoDimension };
+  enum class Tool {
+    Select,
+    Line,
+    Rectangle,
+    Circle,
+    AutoDimension,
+    OrthogonalConstraint
+  };
   enum class CircleMode {
     CenterRadius,
     TwoPoints,
@@ -90,6 +97,7 @@ signals:
   void commitCirclePoint(sketch::Point point);
   void commitRectanglePoint(sketch::Point point);
   void handleAutoDimensionClick(QPointF position);
+  void handleOrthogonalConstraintClick(QPointF position);
   void commitAutoDimension();
   [[nodiscard]] bool dimensionSegment(std::size_t index, QPointF& first,
                                       QPointF& second) const;

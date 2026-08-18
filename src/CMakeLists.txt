@@ -12,6 +12,8 @@ add_library(solidar_model
   model/SolidFeature.h
   sketch/Sketch.cpp
   sketch/Sketch.h
+  sketch/SketchSolver.cpp
+  sketch/SketchSolver.h
 )
 target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(solidar_model PUBLIC cxx_std_20)

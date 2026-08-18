@@ -706,6 +706,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   setProperty("selectedDimension", QVariant());
   if (tool_ == Tool::AutoDimension) {
     handleAutoDimensionClick(event->position());
+  } else if (tool_ == Tool::OrthogonalConstraint) {
+    handleOrthogonalConstraintClick(event->position());
   } else if (tool_ == Tool::Select) {
     selectAt(event->position());
     if (selectionKind_ != SelectionKind::None) {
@@ -1139,6 +1141,73 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
       return index;
   }
   return std::nullopt;
+}
+
+void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
+  constexpr double hitTolerance = 9.0;
+  double bestDistance = hitTolerance;
+  std::optional<std::size_t> bestIndex;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const double distance = pointSegmentDistance(
+        position, mapPoint(line.start), mapPoint(line.end));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+
+  if (!bestIndex) return;
+
+  const auto& line = sketch_.lines()[*bestIndex];
+  const double dx = std::abs(line.end.xMm - line.start.xMm);
+  const double dy = std::abs(line.end.yMm - line.start.yMm);
+  const auto id = sketch_.lineId(*bestIndex);
+  if (id == sketch::kInvalidGeometryId) return;
+
+  const auto type = dy > dx ? sketch::ConstraintType::Vertical
+                            : sketch::ConstraintType::Horizontal;
+
+  // Avoid stacking duplicate H/V constraints on the same primitive.
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.firstGeometry == id && constraint.type == type) {
+      emit selectionChanged(
+          type == sketch::ConstraintType::Vertical
+              ? QString::fromUtf8("Линия уже вертикальна")
+              : QString::fromUtf8("Линия уже горизонтальна"));
+      return;
+    }
+  }
+
+  pushUndoState();
+
+  // If the same line had the opposite orthogonal constraint, replace it.
+  std::vector<sketch::ConstraintId> opposite;
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.firstGeometry != id) continue;
+    if ((type == sketch::ConstraintType::Vertical &&
+         constraint.type == sketch::ConstraintType::Horizontal) ||
+        (type == sketch::ConstraintType::Horizontal &&
+         constraint.type == sketch::ConstraintType::Vertical))
+      opposite.push_back(constraint.id);
+  }
+  for (const auto constraintId : opposite)
+    sketch_.removeConstraint(constraintId);
+
+  sketch::Constraint constraint;
+  constraint.type = type;
+  constraint.firstGeometry = id;
+  sketch_.addConstraint(constraint);
+
+  selectionKind_ = SelectionKind::Line;
+  selectionElementId_ = line.elementId;
+  emit selectionChanged(
+      type == sketch::ConstraintType::Vertical
+          ? QString::fromUtf8("Ограничение: вертикально")
+          : QString::fromUtf8("Ограничение: горизонтально"));
+  notifyGeometryChanged();
+  update();
 }
 
 void SketchCanvas::handleAutoDimensionClick(QPointF position) {
