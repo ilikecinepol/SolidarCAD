@@ -4,14 +4,31 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace solidar::sketch {
+namespace {
+
+using DimensionRegistry =
+    std::unordered_map<const Sketch*, std::vector<Dimension>>;
+
+DimensionRegistry& dimensionRegistry() {
+  static DimensionRegistry registry;
+  return registry;
+}
+
+std::vector<Dimension>& storedDimensions(const Sketch* sketch) {
+  return dimensionRegistry()[sketch];
+}
+
+}  // namespace
 
 Sketch::Sketch() { clear(); }
 
 void Sketch::clear() {
   lines_.clear();
   circles_.clear();
+  storedDimensions(this).clear();
   widthMm_ = 0.0;
   heightMm_ = 0.0;
 }
@@ -55,6 +72,15 @@ void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
   updateBounds();
 }
 
+void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) {
+  const auto elementId = nextElementId_++;
+  lines_.push_back({first, second, elementId});
+  lines_.push_back({second, third, elementId});
+  lines_.push_back({third, fourth, elementId});
+  lines_.push_back({fourth, first, elementId});
+  updateBounds();
+}
+
 void Sketch::addCircle(Point center, double radiusMm) {
   if (radiusMm <= 0.0) return;
   circles_.push_back({center, radiusMm});
@@ -63,11 +89,13 @@ void Sketch::addCircle(Point center, double radiusMm) {
 
 void Sketch::removeLine(std::size_t index) {
   if (index < lines_.size()) lines_.erase(lines_.begin() + index);
+  storedDimensions(this).clear();
   updateBounds();
 }
 
 void Sketch::removeCircle(std::size_t index) {
   if (index < circles_.size()) circles_.erase(circles_.begin() + index);
+  storedDimensions(this).clear();
   updateBounds();
 }
 
@@ -75,6 +103,7 @@ void Sketch::removeElement(std::size_t elementId) {
   std::erase_if(lines_, [elementId](const Line& line) {
     return line.elementId == elementId;
   });
+  storedDimensions(this).clear();
   updateBounds();
 }
 
@@ -90,6 +119,16 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
   updateBounds();
 }
 
+void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
+  for (auto& line : lines_) {
+    if (line.elementId == elementId) line.dashed = dashed;
+  }
+}
+
+void Sketch::setCircleDashed(std::size_t index, bool dashed) {
+  if (index < circles_.size()) circles_[index].dashed = dashed;
+}
+
 void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
   if (index >= circles_.size()) return;
   circles_[index].center.xMm += dxMm;
@@ -97,10 +136,96 @@ void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
   updateBounds();
 }
 
+std::optional<Point> Sketch::referencedPoint(
+    PointReference reference) const noexcept {
+  if (reference.lineIndex >= lines_.size()) return std::nullopt;
+  const auto& line = lines_[reference.lineIndex];
+  return reference.start ? line.start : line.end;
+}
+
+bool Sketch::setLineLength(std::size_t index, double lengthMm) {
+  if (index >= lines_.size() || lengthMm <= 0.0) return false;
+  const Point start = lines_[index].start;
+  const Point oldEnd = lines_[index].end;
+  const double dx = oldEnd.xMm - start.xMm;
+  const double dy = oldEnd.yMm - start.yMm;
+  const double oldLength = std::hypot(dx, dy);
+  if (oldLength <= 1e-9) return false;
+  const Point newEnd{start.xMm + dx / oldLength * lengthMm,
+                     start.yMm + dy / oldLength * lengthMm};
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+  for (auto& line : lines_) {
+    if (same(line.start, oldEnd)) line.start = newEnd;
+    if (same(line.end, oldEnd)) line.end = newEnd;
+  }
+  updateBounds();
+  return true;
+}
+
+bool Sketch::setPointDistance(PointReference firstReference,
+                              PointReference secondReference,
+                              double distanceMm) {
+  const auto first = referencedPoint(firstReference);
+  const auto second = referencedPoint(secondReference);
+  if (!first || !second || distanceMm <= 0.0) return false;
+  const double dx = second->xMm - first->xMm;
+  const double dy = second->yMm - first->yMm;
+  const double oldDistance = std::hypot(dx, dy);
+  if (oldDistance <= 1e-9) return false;
+  const Point moved{first->xMm + dx / oldDistance * distanceMm,
+                    first->yMm + dy / oldDistance * distanceMm};
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+  for (auto& line : lines_) {
+    if (same(line.start, *second)) line.start = moved;
+    if (same(line.end, *second)) line.end = moved;
+  }
+  updateBounds();
+  return true;
+}
+
+bool Sketch::setCircleDiameter(std::size_t index, double diameterMm) {
+  if (index >= circles_.size() || diameterMm <= 0.0) return false;
+  circles_[index].radiusMm = diameterMm * 0.5;
+  updateBounds();
+  return true;
+}
+
+void Sketch::addDimension(Dimension dimension) { storeDimension(dimension); }
+
+void Sketch::storeDimension(const Dimension& dimension) {
+  if (dimension.valueMm > 0.0)
+    storedDimensions(this).push_back(dimension);
+}
+
+void Sketch::clearDimensions() { storedDimensions(this).clear(); }
+
+bool Sketch::setDimensionPlacement(std::size_t index, double offsetMm,
+                                   double angleRad) {
+  auto& dimensions = storedDimensions(this);
+  if (index >= dimensions.size()) return false;
+  dimensions[index].offsetMm = offsetMm;
+  dimensions[index].angleRad = angleRad;
+  return true;
+}
+
+bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
+  auto& dimensions = storedDimensions(this);
+  if (index >= dimensions.size() || valueMm <= 0.0) return false;
+  dimensions[index].valueMm = valueMm;
+  return true;
+}
+
 double Sketch::widthMm() const noexcept { return widthMm_; }
 double Sketch::heightMm() const noexcept { return heightMm_; }
 const std::vector<Line>& Sketch::lines() const noexcept { return lines_; }
 const std::vector<Circle>& Sketch::circles() const noexcept { return circles_; }
+const std::vector<Dimension>& Sketch::dimensions() const {
+  return storedDimensions(this);
+}
 
 void Sketch::updateBounds() noexcept {
   if (lines_.empty() && circles_.empty()) {
@@ -133,13 +258,26 @@ void Sketch::updateBounds() noexcept {
 }
 
 bool Sketch::isClosed() const noexcept {
-  if (lines_.empty()) return false;
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    const auto& current = lines_[index];
-    const auto& next = lines_[(index + 1) % lines_.size()];
-    if (std::abs(current.end.xMm - next.start.xMm) > 1e-9 ||
-        std::abs(current.end.yMm - next.start.yMm) > 1e-9)
-      return false;
+  if (std::none_of(lines_.begin(), lines_.end(),
+                   [](const Line& line) { return !line.dashed; }))
+    return false;
+  const auto samePoint = [](Point first, Point second) {
+    return std::abs(first.xMm - second.xMm) <= 1e-7 &&
+           std::abs(first.yMm - second.yMm) <= 1e-7;
+  };
+  // Every vertex of one or several independent closed loops has degree two.
+  // This also permits Ctrl-selection of multiple extrusion regions.
+  for (const auto& line : lines_) {
+    if (line.dashed) continue;
+    for (const Point vertex : {line.start, line.end}) {
+      std::size_t degree = 0;
+      for (const auto& candidate : lines_) {
+        if (candidate.dashed) continue;
+        if (samePoint(vertex, candidate.start)) ++degree;
+        if (samePoint(vertex, candidate.end)) ++degree;
+      }
+      if (degree != 2) return false;
+    }
   }
   return true;
 }

@@ -2,12 +2,21 @@
 
 #include <QMainWindow>
 #include <optional>
+#include <functional>
+#include <vector>
 
 #include "model/Document.h"
+#include "sketch/Sketch.h"
 
 class QTreeWidget;
 class QStackedWidget;
 class QAction;
+class QHBoxLayout;
+class QSlider;
+class QDockWidget;
+class QDoubleSpinBox;
+class QPushButton;
+class QComboBox;
 
 namespace solidar {
 
@@ -23,6 +32,7 @@ class MainWindow final : public QMainWindow {
  public:
   explicit MainWindow(QWidget* parent = nullptr);
   void setProjectPath(const QString& path);
+  bool loadProject(const QString& path, QString* error = nullptr);
 
  private:
   void buildUi();
@@ -30,12 +40,20 @@ class MainWindow final : public QMainWindow {
   void createProject();
   void openProject();
   void saveProject();
+  void exportStl();
   void updateFromSketch(double widthMm, double heightMm);
   void finishSketch();
   void extrudeSketch();
   void rebuildFeatureTree();
+  void rebuildHistoryPanel();
+  void applyHistoryPosition(int position);
+  void editSketchStep(std::size_t index);
+  void editExtrusionStep();
   void exportPdf();
   void printDrawing();
+  void undoLastAction();
+  void pushUndoAction(std::function<void()> action);
+  void updateUndoAvailability();
 
   Document document_;
   Viewport* viewport_{nullptr};
@@ -52,6 +70,22 @@ class MainWindow final : public QMainWindow {
   QString selectedExtrusionSurface_;
   QString currentSketchSupport_{QStringLiteral("XY")};
   QAction* undoAction_{nullptr};
+  QWidget* historyContent_{nullptr};
+  QHBoxLayout* historyLayout_{nullptr};
+  QSlider* historySlider_{nullptr};
+  QDockWidget* extrusionDock_{nullptr};
+  QDoubleSpinBox* extrusionLengthSpin_{nullptr};
+  QDockWidget* sketchSettingsDock_{nullptr};
+  QComboBox* sketchLineTypeCombo_{nullptr};
+  int historyPosition_{0};
+  struct SketchHistoryEntry {
+    sketch::Sketch geometry;
+    QString support;
+  };
+  std::vector<SketchHistoryEntry> sketchHistory_;
+  std::optional<std::size_t> editingSketchIndex_;
+  std::vector<std::function<void()>> modelUndoStack_;
+  bool applyingUndo_{false};
 };
 
 }  // namespace solidar

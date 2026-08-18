@@ -4,10 +4,9 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPolygonF>
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QVBoxLayout>
@@ -16,26 +15,6 @@
 
 namespace solidar::home {
 namespace {
-
-QPixmap makeLogo() {
-  QPixmap logo(52, 52);
-  logo.fill(Qt::transparent);
-  QPainter painter(&logo);
-  painter.setRenderHint(QPainter::Antialiasing);
-  QPolygonF top{{26, 3}, {48, 15}, {26, 28}, {4, 15}};
-  QPolygonF left{{4, 15}, {26, 28}, {26, 50}, {4, 37}};
-  QPolygonF right{{26, 28}, {48, 15}, {48, 37}, {26, 50}};
-  painter.setPen(Qt::NoPen);
-  painter.setBrush(QColor("#2385ff"));
-  painter.drawPolygon(top);
-  painter.setBrush(QColor("#075ee8"));
-  painter.drawPolygon(left);
-  painter.setBrush(QColor("#49a9ff"));
-  painter.drawPolygon(right);
-  painter.setBrush(Qt::white);
-  painter.drawEllipse(QPointF(26, 27), 6, 6);
-  return logo;
-}
 
 QFrame* makeActionCard(const QString& icon, const QString& title,
                        const QString& description, const QString& buttonText,
@@ -94,26 +73,42 @@ void HomeWindow::buildUi() {
   sidebarLayout->setSpacing(18);
 
   auto* brand = new QWidget(sidebar);
-  auto* brandLayout = new QHBoxLayout(brand);
+  auto* brandLayout = new QVBoxLayout(brand);
   brandLayout->setContentsMargins(0, 0, 0, 20);
   auto* logo = new QLabel(brand);
-  logo->setPixmap(makeLogo());
-  auto* brandName = new QLabel(QString::fromUtf8("Солидарность 3D"), brand);
-  brandName->setObjectName("brandName");
+  logo->setObjectName("brandLogo");
+  logo->setFixedHeight(82);
+  logo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  const QPixmap logoPixmap(QStringLiteral(":/icons/solidarity-3d-logo.png"));
+  logo->setPixmap(logoPixmap.scaled(218, 82, Qt::KeepAspectRatio,
+                                    Qt::SmoothTransformation));
   brandLayout->addWidget(logo);
-  brandLayout->addWidget(brandName);
-  brandLayout->addStretch();
   sidebarLayout->addWidget(brand);
 
-  auto* overview = new QPushButton(QString::fromUtf8("⌂    Главная"), sidebar);
+  auto* overview = new QPushButton(
+      QIcon(QStringLiteral(":/icons/home.png")),
+      QString::fromUtf8("Главная"), sidebar);
   overview->setObjectName("navActive");
   overview->setMinimumHeight(54);
+  overview->setIconSize(QSize(30, 30));
   overview->setCursor(Qt::PointingHandCursor);
-  auto* projects = new QPushButton(QString::fromUtf8("◇    Проекты"), sidebar);
+  auto* projects = new QPushButton(
+      QIcon(QStringLiteral(":/icons/projects.png")),
+      QString::fromUtf8("Проекты"), sidebar);
   projects->setObjectName("navButton");
   projects->setMinimumHeight(48);
+  projects->setIconSize(QSize(30, 30));
+  projects->setCursor(Qt::PointingHandCursor);
+  auto* settings = new QPushButton(
+      QIcon(QStringLiteral(":/icons/settings.png")),
+      QString::fromUtf8("Настройки"), sidebar);
+  settings->setObjectName("navButton");
+  settings->setMinimumHeight(48);
+  settings->setIconSize(QSize(30, 30));
+  settings->setCursor(Qt::PointingHandCursor);
   sidebarLayout->addWidget(overview);
   sidebarLayout->addWidget(projects);
+  sidebarLayout->addWidget(settings);
   sidebarLayout->addStretch();
 
   auto* version = new QLabel(QString::fromUtf8("Открытая параметрическая САПР\nВерсия 0.1.0"), sidebar);
@@ -170,7 +165,6 @@ void HomeWindow::buildUi() {
   setStyleSheet(R"(
     QWidget#root, QWidget#content { background: #f8faff; }
     QFrame#sidebar { background: #ffffff; border-right: 1px solid #dce5f3; }
-    QLabel#brandName { color: #0965dc; font-size: 20px; font-weight: 700; }
     QPushButton#navActive { background: #086cff; color: white; border: none;
       border-radius: 10px; text-align: left; padding-left: 22px; font-size: 15px; }
     QPushButton#navButton { background: transparent; color: #254477; border: none;
