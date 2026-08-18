@@ -1,10 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
 namespace solidar::sketch {
+
+using GeometryId = std::uint64_t;
+inline constexpr GeometryId kInvalidGeometryId = 0;
 
 struct Point {
   double xMm{};
@@ -58,6 +62,14 @@ class Sketch final {
   void setElementDashed(std::size_t elementId, bool dashed);
   void setCircleDashed(std::size_t index, bool dashed);
   void translateCircle(std::size_t index, double dxMm, double dyMm);
+
+  [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
+  [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> lineIndex(
+      GeometryId id) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> circleIndex(
+      GeometryId id) const noexcept;
+
   bool setLineLength(std::size_t index, double lengthMm);
   bool setPointDistance(PointReference first, PointReference second,
                         double distanceMm);
@@ -84,7 +96,10 @@ class Sketch final {
   double heightMm_{40.0};
   std::vector<Line> lines_;
   std::vector<Circle> circles_;
+  std::vector<GeometryId> lineIds_;
+  std::vector<GeometryId> circleIds_;
   std::size_t nextElementId_{1};
+  GeometryId nextGeometryId_{1};
 };
 
 }  // namespace solidar::sketch

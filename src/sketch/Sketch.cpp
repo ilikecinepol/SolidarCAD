@@ -28,6 +28,8 @@ Sketch::Sketch() { clear(); }
 void Sketch::clear() {
   lines_.clear();
   circles_.clear();
+  lineIds_.clear();
+  circleIds_.clear();
   storedDimensions(this).clear();
   widthMm_ = 0.0;
   heightMm_ = 0.0;
@@ -49,12 +51,17 @@ void Sketch::setRectangle(double widthMm, double heightMm) {
             {bottomRight, topRight, elementId},
             {topRight, topLeft, elementId},
             {topLeft, bottomLeft, elementId}};
+  lineIds_.clear();
+  lineIds_.reserve(lines_.size());
+  for (std::size_t index = 0; index < lines_.size(); ++index)
+    lineIds_.push_back(nextGeometryId_++);
   updateBounds();
 }
 
 void Sketch::addLine(Point start, Point end) {
   if (start.xMm == end.xMm && start.yMm == end.yMm) return;
   lines_.push_back({start, end, nextElementId_++});
+  lineIds_.push_back(nextGeometryId_++);
   updateBounds();
 }
 
@@ -66,43 +73,61 @@ void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
   const Point fourth{firstCorner.xMm, oppositeCorner.yMm};
   const auto elementId = nextElementId_++;
   lines_.push_back({firstCorner, second, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   lines_.push_back({second, oppositeCorner, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   lines_.push_back({oppositeCorner, fourth, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   lines_.push_back({fourth, firstCorner, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   updateBounds();
 }
 
 void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) {
   const auto elementId = nextElementId_++;
   lines_.push_back({first, second, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   lines_.push_back({second, third, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   lines_.push_back({third, fourth, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   lines_.push_back({fourth, first, elementId});
+  lineIds_.push_back(nextGeometryId_++);
   updateBounds();
 }
 
 void Sketch::addCircle(Point center, double radiusMm) {
   if (radiusMm <= 0.0) return;
   circles_.push_back({center, radiusMm});
+  circleIds_.push_back(nextGeometryId_++);
   updateBounds();
 }
 
 void Sketch::removeLine(std::size_t index) {
-  if (index < lines_.size()) lines_.erase(lines_.begin() + index);
+  if (index < lines_.size()) {
+    lines_.erase(lines_.begin() + index);
+    lineIds_.erase(lineIds_.begin() + index);
+  }
   storedDimensions(this).clear();
   updateBounds();
 }
 
 void Sketch::removeCircle(std::size_t index) {
-  if (index < circles_.size()) circles_.erase(circles_.begin() + index);
+  if (index < circles_.size()) {
+    circles_.erase(circles_.begin() + index);
+    circleIds_.erase(circleIds_.begin() + index);
+  }
   storedDimensions(this).clear();
   updateBounds();
 }
 
 void Sketch::removeElement(std::size_t elementId) {
-  std::erase_if(lines_, [elementId](const Line& line) {
-    return line.elementId == elementId;
-  });
+  for (std::size_t index = lines_.size(); index > 0; --index) {
+    const std::size_t current = index - 1;
+    if (lines_[current].elementId != elementId) continue;
+    lines_.erase(lines_.begin() + current);
+    lineIds_.erase(lineIds_.begin() + current);
+  }
   storedDimensions(this).clear();
   updateBounds();
 }
@@ -134,6 +159,28 @@ void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
   circles_[index].center.xMm += dxMm;
   circles_[index].center.yMm += dyMm;
   updateBounds();
+}
+
+GeometryId Sketch::lineId(std::size_t index) const noexcept {
+  return index < lineIds_.size() ? lineIds_[index] : kInvalidGeometryId;
+}
+
+GeometryId Sketch::circleId(std::size_t index) const noexcept {
+  return index < circleIds_.size() ? circleIds_[index] : kInvalidGeometryId;
+}
+
+std::optional<std::size_t> Sketch::lineIndex(GeometryId id) const noexcept {
+  if (id == kInvalidGeometryId) return std::nullopt;
+  const auto found = std::find(lineIds_.begin(), lineIds_.end(), id);
+  if (found == lineIds_.end()) return std::nullopt;
+  return static_cast<std::size_t>(std::distance(lineIds_.begin(), found));
+}
+
+std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
+  if (id == kInvalidGeometryId) return std::nullopt;
+  const auto found = std::find(circleIds_.begin(), circleIds_.end(), id);
+  if (found == circleIds_.end()) return std::nullopt;
+  return static_cast<std::size_t>(std::distance(circleIds_.begin(), found));
 }
 
 std::optional<Point> Sketch::referencedPoint(
