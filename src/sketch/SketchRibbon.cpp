@@ -143,15 +143,9 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
                                QString::fromUtf8("Авторазмер"), this);
   toolGroup->addButton(dimension);
   constraintsLayout->addWidget(dimension);
-
-  auto* orthogonalTool = new QPushButton(QString::fromUtf8("↔↕"), this);
-  orthogonalTool->setObjectName("toolButton");
-  orthogonalTool->setCheckable(true);
-  orthogonalTool->setFixedSize(54, 54);
-  orthogonalTool->setFocusPolicy(Qt::NoFocus);
-  orthogonalTool->setCursor(Qt::PointingHandCursor);
-  orthogonalTool->setToolTip(
-      QString::fromUtf8("Горизонтально/вертикально"));
+  auto* orthogonalTool = toolButton(
+      ":/icons/sketch/orthogonal-constraint.png",
+      QString::fromUtf8("Горизонтально/вертикально"), this);
   toolGroup->addButton(orthogonalTool);
   constraintsLayout->addWidget(orthogonalTool);
   auto* constraintLabels = new QVBoxLayout;

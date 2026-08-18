@@ -16,6 +16,7 @@
     <file alias="sketch/mirror.png">sketch/mirror.png</file>
     <file alias="sketch/dimension.png">sketch/dimension.png</file>
     <file alias="sketch/auto-dimension.png">sketch/dimension/auto-dimension.png</file>
+    <file alias="sketch/orthogonal-constraint.png">sketch/orthogonal-constraint.png</file>
     <file alias="sketch/circle/center-radius.png">sketch/circle/center-radius.png</file>
     <file alias="sketch/circle/two-points.png">sketch/circle/two-points.png</file>
     <file alias="sketch/circle/three-points.png">sketch/circle/three-points.png</file>
