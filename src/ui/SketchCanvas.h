@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QPoint>
+#include <QStringList>
 #include <QWidget>
 
 #include <optional>
@@ -60,6 +61,10 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] bool canUndo() const noexcept;
   [[nodiscard]] Tool tool() const noexcept;
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
+  [[nodiscard]] QStringList selectedConstraintDescriptions() const;
+  [[nodiscard]] std::vector<sketch::ConstraintId>
+  selectedConstraintIds() const;
+  bool removeConstraintById(sketch::ConstraintId id);
 
 signals:
   void geometryChanged(double widthMm, double heightMm);
@@ -114,6 +119,7 @@ signals:
   Tool tool_{Tool::Select};
   SelectionKind selectionKind_{SelectionKind::None};
   sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};
+  sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
   std::optional<sketch::Point> anchor_;
   sketch::Point hoverPoint_{};

@@ -169,6 +169,105 @@ void SketchCanvas::setCircleDiameter(double diameterMm) {
 SketchCanvas::Tool SketchCanvas::tool() const noexcept { return tool_; }
 const sketch::Sketch& SketchCanvas::sketch() const noexcept { return sketch_; }
 
+QStringList SketchCanvas::selectedConstraintDescriptions() const {
+  sketch::GeometryId selectedId = sketch::kInvalidGeometryId;
+  if (selectionKind_ == SelectionKind::Line)
+    selectedId = selectionLineId_;
+  else if (selectionKind_ == SelectionKind::Circle)
+    selectedId = selectionCircleId_;
+
+  if (selectedId == sketch::kInvalidGeometryId) return {};
+
+  const auto typeName = [](sketch::ConstraintType type) -> QString {
+    switch (type) {
+      case sketch::ConstraintType::Horizontal:
+        return QString::fromUtf8("Горизонтально");
+      case sketch::ConstraintType::Vertical:
+        return QString::fromUtf8("Вертикально");
+      case sketch::ConstraintType::Coincident:
+        return QString::fromUtf8("Совпадение");
+      case sketch::ConstraintType::Distance:
+        return QString::fromUtf8("Расстояние");
+      case sketch::ConstraintType::Length:
+        return QString::fromUtf8("Длина");
+      case sketch::ConstraintType::Radius:
+        return QString::fromUtf8("Радиус");
+      case sketch::ConstraintType::Diameter:
+        return QString::fromUtf8("Диаметр");
+      case sketch::ConstraintType::Parallel:
+        return QString::fromUtf8("Параллельно");
+      case sketch::ConstraintType::Perpendicular:
+        return QString::fromUtf8("Перпендикулярно");
+      case sketch::ConstraintType::Equal:
+        return QString::fromUtf8("Равенство");
+      case sketch::ConstraintType::Angle:
+        return QString::fromUtf8("Угол");
+    }
+    return QString::fromUtf8("Ограничение");
+  };
+
+  QStringList result;
+  for (const auto& constraint : sketch_.constraints()) {
+    const bool referencesSelected =
+        constraint.firstGeometry == selectedId ||
+        constraint.secondGeometry == selectedId ||
+        constraint.firstPoint.lineId == selectedId ||
+        constraint.secondPoint.lineId == selectedId;
+    if (!referencesSelected) continue;
+
+    QString text = typeName(constraint.type);
+    if ((constraint.type == sketch::ConstraintType::Distance ||
+         constraint.type == sketch::ConstraintType::Length ||
+         constraint.type == sketch::ConstraintType::Radius ||
+         constraint.type == sketch::ConstraintType::Diameter) &&
+        constraint.value > 0.0)
+      text += QString::fromUtf8(": %1 мм").arg(constraint.value, 0, 'f', 2);
+    else if (constraint.type == sketch::ConstraintType::Angle &&
+             constraint.value != 0.0)
+      text += QString::fromUtf8(": %1°").arg(constraint.value, 0, 'f', 2);
+
+    result.push_back(text);
+  }
+  return result;
+}
+
+std::vector<sketch::ConstraintId> SketchCanvas::selectedConstraintIds() const {
+  sketch::GeometryId selectedId = sketch::kInvalidGeometryId;
+  if (selectionKind_ == SelectionKind::Line)
+    selectedId = selectionLineId_;
+  else if (selectionKind_ == SelectionKind::Circle)
+    selectedId = selectionCircleId_;
+
+  if (selectedId == sketch::kInvalidGeometryId) return {};
+
+  std::vector<sketch::ConstraintId> result;
+  for (const auto& constraint : sketch_.constraints()) {
+    const bool referencesSelected =
+        constraint.firstGeometry == selectedId ||
+        constraint.secondGeometry == selectedId ||
+        constraint.firstPoint.lineId == selectedId ||
+        constraint.secondPoint.lineId == selectedId;
+    if (referencesSelected) result.push_back(constraint.id);
+  }
+  return result;
+}
+
+bool SketchCanvas::removeConstraintById(sketch::ConstraintId id) {
+  if (id == sketch::kInvalidConstraintId) return false;
+
+  const auto found = std::find_if(
+      sketch_.constraints().begin(), sketch_.constraints().end(),
+      [id](const auto& constraint) { return constraint.id == id; });
+  if (found == sketch_.constraints().end()) return false;
+
+  pushUndoState();
+  if (!sketch_.removeConstraint(id)) return false;
+
+  emit selectionChanged(QString::fromUtf8("Ограничение удалено"));
+  notifyGeometryChanged();
+  update();
+  return true;
+}
 void SketchCanvas::setReferenceBody(BoxParameters box, const QString& support,
                                     bool visible) {
   referenceBox_ = box;
@@ -264,6 +363,7 @@ void SketchCanvas::deleteSelection() {
   }
   else return;
   selectionKind_ = SelectionKind::None;
+  selectionLineId_ = sketch::kInvalidGeometryId;
   emit lineStyleSelectionChanged(false, false);
   emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
   notifyGeometryChanged();
@@ -1202,6 +1302,7 @@ void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
 
   selectionKind_ = SelectionKind::Line;
   selectionElementId_ = line.elementId;
+  selectionLineId_ = id;
   emit selectionChanged(
       type == sketch::ConstraintType::Vertical
           ? QString::fromUtf8("Ограничение: вертикально")
@@ -1386,6 +1487,7 @@ void SketchCanvas::wheelEvent(QWheelEvent* event) {
 void SketchCanvas::selectAt(QPointF position) {
   double bestDistance = 9.0;
   selectionKind_ = SelectionKind::None;
+  selectionLineId_ = sketch::kInvalidGeometryId;
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
     const auto& line = sketch_.lines()[index];
     const double distance = pointSegmentDistance(
@@ -1394,6 +1496,7 @@ void SketchCanvas::selectAt(QPointF position) {
       bestDistance = distance;
       selectionKind_ = SelectionKind::Line;
       selectionElementId_ = line.elementId;
+      selectionLineId_ = sketch_.lineId(index);
     }
   }
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
@@ -1405,6 +1508,7 @@ void SketchCanvas::selectAt(QPointF position) {
       bestDistance = distance;
       selectionKind_ = SelectionKind::Circle;
       selectionCircleId_ = sketch_.circleId(index);
+      selectionLineId_ = sketch::kInvalidGeometryId;
     }
   }
   if (selectionKind_ == SelectionKind::Line)

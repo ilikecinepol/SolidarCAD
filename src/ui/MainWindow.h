@@ -17,6 +17,7 @@ class QDockWidget;
 class QDoubleSpinBox;
 class QPushButton;
 class QComboBox;
+class QListWidget;
 
 namespace solidar {
 
@@ -54,6 +55,7 @@ class MainWindow final : public QMainWindow {
   void undoLastAction();
   void pushUndoAction(std::function<void()> action);
   void updateUndoAvailability();
+  void updateSketchConstraintPanel();
 
   Document document_;
   Viewport* viewport_{nullptr};
@@ -77,6 +79,7 @@ class MainWindow final : public QMainWindow {
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QDockWidget* sketchSettingsDock_{nullptr};
   QComboBox* sketchLineTypeCombo_{nullptr};
+  QListWidget* sketchConstraintsList_{nullptr};
   int historyPosition_{0};
   struct SketchHistoryEntry {
     sketch::Sketch geometry;

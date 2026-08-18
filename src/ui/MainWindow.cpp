@@ -11,9 +11,11 @@
 #include <QInputDialog>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QButtonGroup>
 #include <QLabel>
+#include <QListWidget>
 #include <QPushButton>
 #include <QAction>
 #include <QHBoxLayout>
@@ -34,6 +36,7 @@
 #include <QShortcut>
 #include <QSlider>
 #include <QToolButton>
+#include <QVariant>
 
 #include "drawing/EskdRenderer.h"
 #include "io/StlExporter.h"
@@ -51,6 +54,36 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildMenus();
   resize(1200, 760);
   setWindowTitle(QString::fromUtf8("Солидарность CAD — Скетчер ЕСКД"));
+}
+
+void MainWindow::updateSketchConstraintPanel() {
+  if (!sketchConstraintsList_ || !sketchCanvas_) return;
+
+  sketchConstraintsList_->clear();
+  const QStringList descriptions =
+      sketchCanvas_->selectedConstraintDescriptions();
+  const auto ids = sketchCanvas_->selectedConstraintIds();
+
+  if (descriptions.isEmpty() || ids.empty()) {
+    auto* item =
+        new QListWidgetItem(QString::fromUtf8("Нет ограничений"),
+                            sketchConstraintsList_);
+    item->setFlags(Qt::NoItemFlags);
+    item->setForeground(QColor("#8795ac"));
+    return;
+  }
+
+  const auto count =
+      std::min<qsizetype>(descriptions.size(),
+                          static_cast<qsizetype>(ids.size()));
+  for (qsizetype index = 0; index < count; ++index) {
+    auto* item = new QListWidgetItem(
+        QStringLiteral("• ") + descriptions[index], sketchConstraintsList_);
+    item->setData(
+        Qt::UserRole,
+        QVariant::fromValue<qulonglong>(static_cast<qulonglong>(
+            ids[static_cast<std::size_t>(index)])));
+  }
 }
 
 void MainWindow::buildMenus() {
@@ -364,6 +397,43 @@ void MainWindow::buildUi() {
   settingsLayout->addWidget(lineTypeLabel);
   settingsLayout->addWidget(sketchLineTypeCombo_);
 
+  auto* constraintsSection = new QFrame(settingsPanel);
+  constraintsSection->setObjectName(QStringLiteral("constraintsSection"));
+  constraintsSection->setStyleSheet(
+      "QFrame#constraintsSection{border-top:1px solid #d8e1ef;"
+      "margin-top:8px;padding-top:10px;}");
+  auto* constraintsSectionLayout = new QVBoxLayout(constraintsSection);
+  constraintsSectionLayout->setContentsMargins(0, 12, 0, 0);
+  constraintsSectionLayout->setSpacing(7);
+  auto* constraintsTitle =
+      new QLabel(QString::fromUtf8("Ограничения"), constraintsSection);
+  QFont constraintsTitleFont = constraintsTitle->font();
+  constraintsTitleFont.setBold(true);
+  constraintsTitle->setFont(constraintsTitleFont);
+  sketchConstraintsList_ = new QListWidget(constraintsSection);
+  sketchConstraintsList_->setSelectionMode(QAbstractItemView::SingleSelection);
+  sketchConstraintsList_->setFocusPolicy(Qt::StrongFocus);
+  sketchConstraintsList_->setMaximumHeight(130);
+  sketchConstraintsList_->setStyleSheet(
+      "QListWidget{border:1px solid #d8e1ef;border-radius:6px;"
+      "background:#fbfcff;color:#29466f;padding:4px;}"
+      "QListWidget::item{padding:4px 5px;}");
+  auto* removeConstraintButton =
+      new QPushButton(QString::fromUtf8("Удалить ограничение"),
+                      constraintsSection);
+  removeConstraintButton->setEnabled(false);
+  removeConstraintButton->setStyleSheet(
+      "QPushButton{border:1px solid #d8e1ef;border-radius:6px;"
+      "background:white;padding:6px 10px;color:#53657f;}"
+      "QPushButton:hover{background:#fff1f1;border-color:#e9aaaa;"
+      "color:#c92d2d;}"
+      "QPushButton:disabled{color:#aab3c1;background:#f7f8fa;}");
+
+  constraintsSectionLayout->addWidget(constraintsTitle);
+  constraintsSectionLayout->addWidget(sketchConstraintsList_);
+  constraintsSectionLayout->addWidget(removeConstraintButton);
+  settingsLayout->addWidget(constraintsSection);
+
   auto* circlePropertiesSection = new QFrame(settingsPanel);
   circlePropertiesSection->setObjectName(QStringLiteral("circlePropertiesSection"));
   circlePropertiesSection->setStyleSheet(
@@ -498,6 +568,26 @@ void MainWindow::buildUi() {
             const QSignalBlocker blocker(circleDiameterSpin);
             circleDiameterSpin->setValue(value);
           });
+  connect(sketchCanvas_, &SketchCanvas::selectionChanged, this,
+          [this](const QString&) { updateSketchConstraintPanel(); });
+  connect(sketchCanvas_, &SketchCanvas::geometryChanged, this,
+          [this](double, double) { updateSketchConstraintPanel(); });
+  connect(sketchConstraintsList_, &QListWidget::currentItemChanged, this,
+          [removeConstraintButton](QListWidgetItem* current,
+                                   QListWidgetItem*) {
+            removeConstraintButton->setEnabled(
+                current && current->data(Qt::UserRole).isValid());
+          });
+  connect(removeConstraintButton, &QPushButton::clicked, this, [this] {
+    auto* item = sketchConstraintsList_->currentItem();
+    if (!item) return;
+    const QVariant idData = item->data(Qt::UserRole);
+    if (!idData.isValid()) return;
+    const auto id =
+        static_cast<sketch::ConstraintId>(idData.toULongLong());
+    if (sketchCanvas_->removeConstraintById(id))
+      updateSketchConstraintPanel();
+  });
   connect(sketchCanvas_, &SketchCanvas::lineStyleSelectionChanged, this,
           [this](bool elementSelected, bool dashed) {
             const QSignalBlocker blocker(sketchLineTypeCombo_);
