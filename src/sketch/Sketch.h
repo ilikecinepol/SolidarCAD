@@ -102,6 +102,7 @@ class Sketch final {
   std::vector<Circle> circles_;
   std::vector<GeometryId> lineIds_;
   std::vector<GeometryId> circleIds_;
+  std::vector<Dimension> dimensions_;
   std::size_t nextElementId_{1};
   GeometryId nextGeometryId_{1};
 };

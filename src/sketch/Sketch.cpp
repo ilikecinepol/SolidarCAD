@@ -4,24 +4,8 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
-#include <unordered_map>
 
 namespace solidar::sketch {
-namespace {
-
-using DimensionRegistry =
-    std::unordered_map<const Sketch*, std::vector<Dimension>>;
-
-DimensionRegistry& dimensionRegistry() {
-  static DimensionRegistry registry;
-  return registry;
-}
-
-std::vector<Dimension>& storedDimensions(const Sketch* sketch) {
-  return dimensionRegistry()[sketch];
-}
-
-}  // namespace
 
 Sketch::Sketch() { clear(); }
 
@@ -30,7 +14,7 @@ void Sketch::clear() {
   circles_.clear();
   lineIds_.clear();
   circleIds_.clear();
-  storedDimensions(this).clear();
+  dimensions_.clear();
   widthMm_ = 0.0;
   heightMm_ = 0.0;
 }
@@ -110,7 +94,7 @@ void Sketch::removeLine(std::size_t index) {
   lines_.erase(lines_.begin() + index);
   lineIds_.erase(lineIds_.begin() + index);
 
-  auto& dimensions = storedDimensions(this);
+  auto& dimensions = dimensions_;
   std::erase_if(dimensions, [removedId](const Dimension& dimension) {
     if (dimension.kind == DimensionKind::LineLength)
       return dimension.geometryId == removedId;
@@ -130,7 +114,7 @@ void Sketch::removeCircle(std::size_t index) {
   circles_.erase(circles_.begin() + index);
   circleIds_.erase(circleIds_.begin() + index);
 
-  auto& dimensions = storedDimensions(this);
+  auto& dimensions = dimensions_;
   std::erase_if(dimensions, [removedId](const Dimension& dimension) {
     return dimension.kind == DimensionKind::CircleDiameter &&
            dimension.geometryId == removedId;
@@ -155,7 +139,7 @@ void Sketch::removeElement(std::size_t elementId) {
              removedIds.end();
     };
 
-    auto& dimensions = storedDimensions(this);
+    auto& dimensions = dimensions_;
     std::erase_if(dimensions, [&wasRemoved](const Dimension& dimension) {
       if (dimension.kind == DimensionKind::LineLength)
         return wasRemoved(dimension.geometryId);
@@ -303,14 +287,14 @@ void Sketch::addDimension(Dimension dimension) { storeDimension(dimension); }
 
 void Sketch::storeDimension(const Dimension& dimension) {
   if (dimension.valueMm > 0.0)
-    storedDimensions(this).push_back(dimension);
+    dimensions_.push_back(dimension);
 }
 
-void Sketch::clearDimensions() { storedDimensions(this).clear(); }
+void Sketch::clearDimensions() { dimensions_.clear(); }
 
 bool Sketch::setDimensionPlacement(std::size_t index, double offsetMm,
                                    double angleRad) {
-  auto& dimensions = storedDimensions(this);
+  auto& dimensions = dimensions_;
   if (index >= dimensions.size()) return false;
   dimensions[index].offsetMm = offsetMm;
   dimensions[index].angleRad = angleRad;
@@ -318,7 +302,7 @@ bool Sketch::setDimensionPlacement(std::size_t index, double offsetMm,
 }
 
 bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
-  auto& dimensions = storedDimensions(this);
+  auto& dimensions = dimensions_;
   if (index >= dimensions.size() || valueMm <= 0.0) return false;
   dimensions[index].valueMm = valueMm;
   return true;
@@ -329,7 +313,7 @@ double Sketch::heightMm() const noexcept { return heightMm_; }
 const std::vector<Line>& Sketch::lines() const noexcept { return lines_; }
 const std::vector<Circle>& Sketch::circles() const noexcept { return circles_; }
 const std::vector<Dimension>& Sketch::dimensions() const {
-  return storedDimensions(this);
+  return dimensions_;
 }
 
 void Sketch::updateBounds() noexcept {

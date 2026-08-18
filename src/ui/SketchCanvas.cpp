@@ -221,7 +221,6 @@ void SketchCanvas::resetSketch() {
 void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   hideDimensionEditor();
   sketch_ = sketch;
-  sketch_.clearDimensions();
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.clear();
@@ -242,7 +241,6 @@ bool SketchCanvas::canUndo() const noexcept { return !undoStack_.empty(); }
 void SketchCanvas::undo() {
   if (undoStack_.empty()) return;
   sketch_ = undoStack_.back();
-  sketch_.clearDimensions();
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.pop_back();
