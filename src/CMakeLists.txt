@@ -45,14 +45,13 @@ target_link_libraries(solidar_drawing_ui PUBLIC solidar_model Qt6::Widgets)
 solidar_warnings(solidar_drawing_ui)
 
 add_library(solidar_viewport3d
-  assets/icons.qrc
   ui/ModelRibbon.cpp
   ui/ModelRibbon.h
   ui/Viewport.cpp
   ui/Viewport.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::OpenGLWidgets)
+target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)
 solidar_warnings(solidar_viewport3d)
 
 add_library(solidar_editor
@@ -74,8 +73,31 @@ target_include_directories(solidar_home PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_home PUBLIC solidar_project Qt6::Widgets)
 solidar_warnings(solidar_home)
 
-add_executable(solidar app/main.cpp)
+add_executable(solidar
+  app/main.cpp
+  assets/icons.qrc
+)
 target_link_libraries(solidar PRIVATE solidar_home solidar_editor)
 solidar_warnings(solidar)
+
+# Keep Windows development builds runnable outside a specially configured
+# terminal. Qt Creator kits do not always propagate the Qt bin directory to
+# the run environment, which otherwise results in Windows error 0xc0000135.
+if(WIN32)
+  get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
+  get_filename_component(QT_BIN_DIRECTORY "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
+  find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${QT_BIN_DIRECTORY}")
+  if(WINDEPLOYQT_EXECUTABLE)
+    add_custom_command(TARGET solidar POST_BUILD
+      COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+              --no-translations
+              --no-system-d3d-compiler
+              --no-compiler-runtime
+              "$<TARGET_FILE:solidar>"
+      COMMENT "Deploying Qt runtime libraries next to SolidarCAD"
+      VERBATIM
+    )
+  endif()
+endif()
 
 install(TARGETS solidar RUNTIME DESTINATION bin)

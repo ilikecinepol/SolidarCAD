@@ -2,5 +2,22 @@
   <qresource prefix="/icons">
     <file alias="create-sketch.png">create-sketch.png</file>
     <file alias="extrude.png">extrude.png</file>
+    <file alias="sketch/line.png">sketch/line.png</file>
+    <file alias="sketch/rectangle.png">sketch/rectangle.png</file>
+    <file alias="sketch/circle.png">sketch/circle.png</file>
+    <file alias="sketch/arc.png">sketch/arc.png</file>
+    <file alias="sketch/polygon.png">sketch/polygon.png</file>
+    <file alias="sketch/slot.png">sketch/slot.png</file>
+    <file alias="sketch/text.png">sketch/text.png</file>
+    <file alias="sketch/mirror.png">sketch/mirror.png</file>
+    <file alias="sketch/dimension.png">sketch/dimension.png</file>
+    <file alias="sketch/circle/center-radius.png">sketch/circle/center-radius.png</file>
+    <file alias="sketch/circle/two-points.png">sketch/circle/two-points.png</file>
+    <file alias="sketch/circle/three-points.png">sketch/circle/three-points.png</file>
+    <file alias="sketch/circle/three-tangents.png">sketch/circle/three-tangents.png</file>
+    <file alias="sketch/circle/two-tangents-radius.png">sketch/circle/two-tangents-radius.png</file>
+    <file alias="sketch/rectangle/two-points.png">sketch/rectangle/two-points.png</file>
+    <file alias="sketch/rectangle/three-points.png">sketch/rectangle/three-points.png</file>
+    <file alias="sketch/rectangle/from-center.png">sketch/rectangle/from-center.png</file>
   </qresource>
 </RCC>

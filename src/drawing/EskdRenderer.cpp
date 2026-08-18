@@ -147,10 +147,15 @@ void EskdRenderer::renderA4(QPainter& painter, const QRectF& target,
                    center.y() - point.yMm * scale);
   };
 
-  painter.setPen(QPen(Qt::black, 0.7));
-  for (const auto& segment : sketch.lines())
+  for (const auto& segment : sketch.lines()) {
+    painter.setPen(QPen(Qt::black, 0.7,
+                        segment.dashed ? Qt::DashLine : Qt::SolidLine));
     painter.drawLine(map(segment.start), map(segment.end));
+  }
+  painter.setPen(QPen(Qt::black, 0.7));
   for (const auto& circle : sketch.circles()) {
+    painter.setPen(QPen(Qt::black, 0.7,
+                        circle.dashed ? Qt::DashLine : Qt::SolidLine));
     const QPointF circleCenter = map(circle.center);
     const double radius = circle.radiusMm * scale;
     painter.drawEllipse(circleCenter, radius, radius);

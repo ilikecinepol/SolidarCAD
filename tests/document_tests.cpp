@@ -31,11 +31,17 @@ int main() {
   assert(sketch.lines().front().start.xMm == -30.0);
   assert(sketch.lines().front().start.yMm == -12.5);
   for (const auto& line : sketch.lines()) assert(line.elementId == rectangleId);
+  sketch.setElementDashed(rectangleId, true);
+  assert(!sketch.isClosed());
+  sketch.setElementDashed(rectangleId, false);
+  assert(sketch.isClosed());
 
   sketch.addCircle({0.0, 0.0}, 5.0);
   sketch.translateCircle(0, 15.0, -10.0);
   assert(sketch.circles().front().center.xMm == 15.0);
   assert(sketch.circles().front().center.yMm == -10.0);
+  sketch.setCircleDashed(0, true);
+  assert(sketch.circles().front().dashed);
   bool sketchRejected = false;
   try {
     sketch.setRectangle(-1.0, 35.0);
@@ -43,5 +49,10 @@ int main() {
     sketchRejected = true;
   }
   assert(sketchRejected);
+
+  solidar::sketch::Sketch multipleRegions;
+  multipleRegions.addRectangle({0.0, 0.0}, {10.0, 10.0});
+  multipleRegions.addRectangle({20.0, 20.0}, {30.0, 30.0});
+  assert(multipleRegions.isClosed());
   return 0;
 }

@@ -1,12 +1,20 @@
 #include "ui/Viewport.h"
 
+#include <QLineF>
+#include <QDoubleSpinBox>
+#include <QKeyEvent>
+#include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QSignalBlocker>
+#include <QTransform>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace solidar {
@@ -59,13 +67,14 @@ Point3 pointOnSupport(sketch::Point point, const QString& support,
 }
 
 Point3 supportNormal(const QString& support) {
+  const float direction = support.contains(QStringLiteral("|NEG")) ? -1.0F : 1.0F;
   if (support.contains("XZ") || support.contains(QString::fromUtf8("Передняя")) ||
       support.contains(QString::fromUtf8("Задняя")))
-    return {0.0F, 1.0F, 0.0F};
+    return {0.0F, direction, 0.0F};
   if (support.contains("YZ") || support.contains(QString::fromUtf8("Правая")) ||
       support.contains(QString::fromUtf8("Левая")))
-    return {1.0F, 0.0F, 0.0F};
-  return {0.0F, 0.0F, 1.0F};
+    return {direction, 0.0F, 0.0F};
+  return {0.0F, 0.0F, direction};
 }
 
 Point3 translated(Point3 point, Point3 direction, float distance) {
@@ -92,10 +101,24 @@ bool isFrontFacing(const QPolygonF& polygon) {
 
 }  // namespace
 
-Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
+Viewport::Viewport(QWidget* parent) : QWidget(parent) {
   setMinimumSize(480, 320);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
+  extrusionLengthEditor_ = new QDoubleSpinBox(this);
+  extrusionLengthEditor_->setRange(-100000.0, 100000.0);
+  extrusionLengthEditor_->setDecimals(2);
+  extrusionLengthEditor_->setSuffix(QStringLiteral(" mm"));
+  extrusionLengthEditor_->setFixedSize(132, 42);
+  extrusionLengthEditor_->setStyleSheet(
+      "QDoubleSpinBox{background:#ffffff;color:#20252c;border:1px solid #c8d1de;"
+      "border-radius:8px;padding:6px 8px;font-size:16px;}"
+      "QDoubleSpinBox:focus{border:2px solid #1477ed;}"
+      "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:28px;"
+      "border:none;background:transparent;}");
+  extrusionLengthEditor_->hide();
+  connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
+          &Viewport::setExtrusionPreviewLength);
 }
 
 void Viewport::setBox(BoxParameters parameters) {
@@ -135,6 +158,36 @@ void Viewport::addSketch(const sketch::Sketch& sketch,
   update();
 }
 
+void Viewport::updateSketch(std::size_t index, const sketch::Sketch& sketch,
+                            const QString& supportName) {
+  if (index >= displaySketches_.size()) return;
+  displaySketches_[index].geometry = sketch;
+  displaySketches_[index].supportName = supportName;
+  sketch_ = sketch;
+  update();
+}
+
+void Viewport::removeSketch(std::size_t index) {
+  if (index >= displaySketches_.size()) return;
+  displaySketches_.erase(displaySketches_.begin() +
+                         static_cast<std::ptrdiff_t>(index));
+  sketch_ = displaySketches_.empty() ? sketch::Sketch{}
+                                     : displaySketches_.back().geometry;
+  selectedExtrusionSketch_.clear();
+  hoveredExtrusionSketch_.clear();
+  selectedExtrusionPolygon_.clear();
+  selectedExtrusionPolygons_.clear();
+  selectedExtrusionPaths_.clear();
+  selectedExtrusionRegionSketches_.clear();
+  extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
+  selectedExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  selectedExtrusionBodyFace_ = false;
+  selectedExtrusionOnBodyCap_ = false;
+  update();
+}
+
 void Viewport::setSketchVisible(std::size_t index, bool visible) {
   if (index >= displaySketches_.size()) return;
   displaySketches_[index].visible = visible;
@@ -157,22 +210,38 @@ void Viewport::resetScene() {
   solidSketch_.clear();
   displaySketches_.clear();
   extrusionHoverPolygon_.clear();
+  selectedExtrusionPolygon_.clear();
+  selectedExtrusionPolygons_.clear();
+  selectedExtrusionPaths_.clear();
+  selectedExtrusionRegionSketches_.clear();
   selectedExtrusionSketch_.clear();
   selectedExtrusionSupport_.clear();
   selectedExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
   solidVisible_ = false;
   sketchVisible_ = true;
   selectedFace_ = -1;
+  selectedBasePlane_ = -1;
+  selectedVertex_ = -1;
+  selectedOrigin_ = false;
   pickMode_ = PickMode::None;
   offsetX_ = 0.0F;
   offsetY_ = 0.0F;
+  cameraPan_ = {};
+  hideExtrusionManipulator();
   for (bool& visible : basePlanesVisible_) visible = false;
   update();
 }
 
 void Viewport::beginSketchPlaneSelection() {
   pickMode_ = PickMode::SketchPlane;
+  extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
+  hoveredExtrusionSurface_.clear();
+  hoveredExtrusionSupport_.clear();
   selectedFace_ = -1;
+  selectedBasePlane_ = -1;
+  selectedVertex_ = -1;
+  selectedOrigin_ = false;
   for (bool& visible : basePlanesVisible_) visible = true;
   setCursor(Qt::CrossCursor);
   update();
@@ -180,9 +249,65 @@ void Viewport::beginSketchPlaneSelection() {
 
 void Viewport::beginExtrusionSurfaceSelection() {
   pickMode_ = PickMode::ExtrusionSurface;
+  selectedExtrusionPolygons_.clear();
+  selectedExtrusionPaths_.clear();
+  selectedExtrusionRegionSketches_.clear();
+  selectedExtrusionPolygon_.clear();
+  selectedExtrusionSketch_.clear();
+  selectedExtrusionSupport_.clear();
+  selectedExtrusionBodyFace_ = false;
+  selectedExtrusionOnBodyCap_ = false;
   selectedFace_ = -1;
+  selectedBasePlane_ = -1;
+  selectedVertex_ = -1;
+  selectedOrigin_ = false;
   setCursor(Qt::CrossCursor);
   update();
+}
+
+void Viewport::showExtrusionManipulator(double lengthMm) {
+  extrusionManipulatorVisible_ = true;
+  setExtrusionPreviewLength(lengthMm);
+  extrusionLengthEditor_->show();
+  extrusionLengthEditor_->raise();
+  update();
+}
+
+void Viewport::hideExtrusionManipulator() {
+  extrusionManipulatorVisible_ = false;
+  draggingExtrusionHandle_ = false;
+  extrusionLengthEditor_->hide();
+  update();
+}
+
+void Viewport::setExtrusionPreviewLength(double lengthMm) {
+  extrusionPreviewLengthMm_ = std::clamp(lengthMm, -100000.0, 100000.0);
+  if (extrusionLengthEditor_ &&
+      !qFuzzyCompare(extrusionLengthEditor_->value(), extrusionPreviewLengthMm_)) {
+    const QSignalBlocker blocker(extrusionLengthEditor_);
+    extrusionLengthEditor_->setValue(extrusionPreviewLengthMm_);
+  }
+  if (extrusionManipulatorVisible_) {
+    const QPointF handle = extrusionManipulatorAnchor_ + extrusionScreenOffset() + cameraPan_;
+    extrusionLengthEditor_->move(
+        std::clamp(static_cast<int>(handle.x() + 16), 4,
+                   std::max(4, width() - extrusionLengthEditor_->width() - 4)),
+        std::clamp(static_cast<int>(handle.y() - 15), 4,
+                   std::max(4, height() - extrusionLengthEditor_->height() - 4)));
+  }
+  emit extrusionPreviewLengthChanged(extrusionPreviewLengthMm_);
+  update();
+}
+
+QPointF Viewport::extrusionScreenOffset() const {
+  const QString support = selectedExtrusionSupport_.isEmpty()
+                              ? solidSupportName_
+                              : selectedExtrusionSupport_;
+  const Point3 normal = supportNormal(support);
+  const QPointF origin = project({0.0F, 0.0F, 0.0F}, size(), yaw_, pitch_, zoom_);
+  const Point3 end3 = translated({0.0F, 0.0F, 0.0F}, normal,
+                                 static_cast<float>(extrusionPreviewLengthMm_));
+  return project(end3, size(), yaw_, pitch_, zoom_) - origin;
 }
 
 bool Viewport::hasSelectedFace() const noexcept { return selectedFace_ >= 0; }
@@ -212,17 +337,172 @@ const sketch::Sketch& Viewport::solidSketch() const noexcept {
 
 QString Viewport::solidSupport() const { return solidSupportName_; }
 
-void Viewport::initializeGL() {
-  initializeOpenGLFunctions();
-  glClearColor(0.965F, 0.975F, 0.99F, 1.0F);
+QPointF Viewport::bodyPosition() const noexcept { return {offsetX_, offsetY_}; }
+
+void Viewport::setBodyPosition(QPointF position) {
+  offsetX_ = static_cast<float>(position.x());
+  offsetY_ = static_cast<float>(position.y());
+  update();
 }
 
-void Viewport::resizeGL(int width, int height) { glViewport(0, 0, width, height); }
+void Viewport::refreshSelectedExtrusionPolygon() {
+  // Screen coordinates become stale whenever a dock is opened, the viewport
+  // is resized, or the camera changes.  Reproject the selected sketch from
+  // model coordinates instead of moving the previously cached screen polygon.
+  if (selectedExtrusionBodyFace_ &&
+      (!solidSketch_.lines().empty() || !solidSketch_.circles().empty())) {
+    QPolygonF polygon;
+    const Point3 normal = supportNormal(solidSupportName_);
+    const bool initialFace = selectedExtrusionSupport_.contains(
+        QStringLiteral("|NEG"));
+    const float distance = initialFace ? 0.0F
+                                       : static_cast<float>(box_.heightMm);
+    if (!solidSketch_.circles().empty()) {
+      const auto& circle = solidSketch_.circles().front();
+      for (int step = 0; step < 64; ++step) {
+        const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+        const sketch::Point point{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(point, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        polygon << project(translated(base, normal, distance), size(), yaw_,
+                           pitch_, zoom_);
+      }
+    } else {
+      for (const auto& line : solidSketch_.lines()) {
+        const Point3 base = pointOnSupport(line.start, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        polygon << project(translated(base, normal, distance), size(), yaw_,
+                           pitch_, zoom_);
+      }
+    }
+    if (initialFace) std::reverse(polygon.begin(), polygon.end());
+    if (polygon.size() >= 3) {
+      selectedExtrusionPolygon_ = polygon;
+      if (selectedExtrusionPolygons_.size() == 1)
+        selectedExtrusionPolygons_.front() = polygon;
+      extrusionManipulatorAnchor_ = polygon.boundingRect().center();
+    }
+    return;
+  }
 
-void Viewport::paintGL() {
-  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  // Selected regions are model data, not screen artefacts. Reproject every
+  // region after zoom, orbit, pan or a viewport resize so all Ctrl-selected
+  // contours remain coincident with their sketches.
+  if (!selectedExtrusionRegionSketches_.empty()) {
+    selectedExtrusionPaths_.clear();
+    selectedExtrusionPolygons_.clear();
+    const auto projectSelectedPoint = [&](sketch::Point point) {
+      Point3 base = pointOnSupport(
+          point, selectedExtrusionOnBodyCap_ ? solidSupportName_
+                                             : selectedExtrusionSupport_,
+          box_, offsetX_, offsetY_);
+      if (selectedExtrusionOnBodyCap_)
+        base = translated(base, supportNormal(solidSupportName_),
+                          static_cast<float>(box_.heightMm));
+      return project(base, size(), yaw_, pitch_, zoom_);
+    };
+    for (const auto& regionSketch : selectedExtrusionRegionSketches_) {
+      QPainterPath regionPath;
+      regionPath.setFillRule(Qt::OddEvenFill);
+      QPolygonF firstBoundary;
+      QPolygonF boundary;
+      for (const auto& line : regionSketch.lines()) {
+        if (boundary.isEmpty()) boundary << projectSelectedPoint(line.start);
+        boundary << projectSelectedPoint(line.end);
+        if (boundary.size() >= 4 &&
+            QLineF(boundary.front(), boundary.back()).length() < 0.5) {
+          regionPath.addPolygon(boundary);
+          regionPath.closeSubpath();
+          if (firstBoundary.isEmpty()) firstBoundary = boundary;
+          boundary.clear();
+        }
+      }
+      if (!boundary.isEmpty()) {
+        regionPath.addPolygon(boundary);
+        regionPath.closeSubpath();
+        if (firstBoundary.isEmpty()) firstBoundary = boundary;
+      }
+      for (const auto& circle : regionSketch.circles()) {
+        QPolygonF circleBoundary;
+        for (int step = 0; step < 96; ++step) {
+          const float angle = 2.0F * std::numbers::pi_v<float> * step / 96.0F;
+          circleBoundary << projectSelectedPoint(
+              {circle.center.xMm + circle.radiusMm * std::cos(angle),
+               circle.center.yMm + circle.radiusMm * std::sin(angle)});
+        }
+        regionPath.addPolygon(circleBoundary);
+        regionPath.closeSubpath();
+        if (firstBoundary.isEmpty()) firstBoundary = circleBoundary;
+      }
+      if (!regionPath.isEmpty()) {
+        selectedExtrusionPaths_.push_back(regionPath);
+        selectedExtrusionPolygons_.push_back(firstBoundary);
+      }
+    }
+    if (!selectedExtrusionPaths_.empty()) {
+      QRectF bounds;
+      for (const auto& path : selectedExtrusionPaths_)
+        bounds = bounds.united(path.boundingRect());
+      selectedExtrusionPolygon_ = selectedExtrusionPolygons_.front();
+      extrusionManipulatorAnchor_ = bounds.center();
+      return;
+    }
+  }
+
+  if (selectedExtrusionSketch_.lines().empty() &&
+      selectedExtrusionSketch_.circles().empty())
+    return;
+
+  QPolygonF polygon;
+  const auto projectSelectedPoint = [&](sketch::Point point) {
+    Point3 base = pointOnSupport(point,
+                                 selectedExtrusionOnBodyCap_ ? solidSupportName_
+                                                             : selectedExtrusionSupport_,
+                                 box_, offsetX_, offsetY_);
+    if (selectedExtrusionOnBodyCap_)
+      base = translated(base, supportNormal(solidSupportName_),
+                        static_cast<float>(box_.heightMm));
+    return project(base, size(), yaw_, pitch_, zoom_);
+  };
+  if (!selectedExtrusionSketch_.circles().empty()) {
+    const auto& circle = selectedExtrusionSketch_.circles().front();
+    for (int step = 0; step < 64; ++step) {
+      const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+      const sketch::Point point{
+          circle.center.xMm + circle.radiusMm * std::cos(angle),
+          circle.center.yMm + circle.radiusMm * std::sin(angle)};
+      polygon << projectSelectedPoint(point);
+    }
+  } else {
+    for (const auto& line : selectedExtrusionSketch_.lines())
+      polygon << projectSelectedPoint(line.start);
+  }
+
+  if (polygon.size() >= 3) {
+    const QPointF previousCenter = selectedExtrusionPolygon_.boundingRect().center();
+    const QPointF newCenter = polygon.boundingRect().center();
+    if (selectedExtrusionOnBodyCap_ && !selectedExtrusionPaths_.empty() &&
+        !selectedExtrusionPolygon_.isEmpty()) {
+      QTransform translation;
+      translation.translate(newCenter.x() - previousCenter.x(),
+                            newCenter.y() - previousCenter.y());
+      for (auto& path : selectedExtrusionPaths_) path = translation.map(path);
+      for (auto& selectedPolygon : selectedExtrusionPolygons_)
+        selectedPolygon.translate(newCenter - previousCenter);
+    }
+    selectedExtrusionPolygon_ = polygon;
+    if (selectedExtrusionPolygons_.size() == 1)
+      selectedExtrusionPolygons_.front() = polygon;
+    extrusionManipulatorAnchor_ = polygon.boundingRect().center();
+  }
+}
+
+void Viewport::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
+  painter.fillRect(rect(), QColor(246, 249, 252));
 
   painter.setPen(QPen(QColor(224, 231, 241), 1));
   constexpr int gridStep = 28;
@@ -230,6 +510,11 @@ void Viewport::paintGL() {
     painter.drawLine(x, 0, x, height());
   for (int y = height() / 2 % gridStep; y < height(); y += gridStep)
     painter.drawLine(0, y, width(), y);
+
+  painter.save();
+  painter.translate(cameraPan_);
+
+  refreshSelectedExtrusionPolygon();
 
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
@@ -261,10 +546,13 @@ void Viewport::paintGL() {
     QPolygonF polygon;
     for (const auto& point : basePlanes[plane])
       polygon << project(point, size(), yaw_, pitch_, zoom_);
-    painter.setBrush(planeColors[plane]);
-    painter.setPen(QPen(planeColors[plane].darker(125),
-                        pickMode_ == PickMode::SketchPlane ? 2.0 : 1.0,
-                        Qt::DashLine));
+    painter.setBrush(selectedBasePlane_ == plane
+                         ? QColor(30, 115, 245, 60) : planeColors[plane]);
+    painter.setPen(QPen(selectedBasePlane_ == plane
+                            ? QColor("#075eff") : planeColors[plane].darker(125),
+                        selectedBasePlane_ == plane
+                            ? 3.0 : pickMode_ == PickMode::SketchPlane ? 2.0 : 1.0,
+                        selectedBasePlane_ == plane ? Qt::SolidLine : Qt::DashLine));
     painter.drawPolygon(polygon);
     painter.drawText(polygon.boundingRect().center(),
                      plane == 0 ? "XY" : plane == 1 ? "XZ" : "YZ");
@@ -357,21 +645,70 @@ void Viewport::paintGL() {
   }
 
   if (solidVisible_ && selectedFace_ >= 0) {
-    QPolygonF selectedPolygon;
-    for (int vertex : faces[static_cast<std::size_t>(selectedFace_)])
-      selectedPolygon << project(vertices[static_cast<std::size_t>(vertex)],
-                                 size(), yaw_, pitch_, zoom_);
-    if (isFrontFacing(selectedPolygon)) {
-      painter.setBrush(Qt::NoBrush);
+    if (!solidSketch_.circles().empty()) {
+      const auto& circle = solidSketch_.circles().front();
+      const Point3 normal = supportNormal(solidSupportName_);
+      QPolygonF bottomCap;
+      QPolygonF topCap;
+      for (int step = 0; step < 64; ++step) {
+        const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+        const sketch::Point profilePoint{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(profilePoint, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        bottomCap.prepend(project(base, size(), yaw_, pitch_, zoom_));
+        topCap << project(translated(base, normal, z), size(), yaw_, pitch_, zoom_);
+      }
+      painter.setBrush(QColor(7, 94, 255, 45));
       painter.setPen(QPen(QColor("#075eff"), 3.0));
-      painter.drawPolygon(selectedPolygon);
+      if (selectedFace_ == 0 && isFrontFacing(bottomCap))
+        painter.drawPolygon(bottomCap);
+      else if (selectedFace_ == 1 && isFrontFacing(topCap))
+        painter.drawPolygon(topCap);
+      else if (selectedFace_ == 2) {
+        for (int step = 0; step < 64; ++step) {
+          const float a = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+          const float b = 2.0F * std::numbers::pi_v<float> * (step + 1) / 64.0F;
+          const auto surfacePoint = [&](float angle, float height) {
+            const sketch::Point profilePoint{
+                circle.center.xMm + circle.radiusMm * std::cos(angle),
+                circle.center.yMm + circle.radiusMm * std::sin(angle)};
+            const Point3 base = pointOnSupport(profilePoint, solidSupportName_,
+                                               box_, offsetX_, offsetY_);
+            return project(translated(base, normal, height), size(), yaw_, pitch_, zoom_);
+          };
+          QPolygonF side{surfacePoint(a, 0.0F), surfacePoint(b, 0.0F),
+                         surfacePoint(b, z), surfacePoint(a, z)};
+          if (isFrontFacing(side)) painter.drawPolygon(side);
+        }
+      }
+    } else {
+      QPolygonF selectedPolygon;
+      for (int vertex : faces[static_cast<std::size_t>(selectedFace_)])
+        selectedPolygon << project(vertices[static_cast<std::size_t>(vertex)],
+                                   size(), yaw_, pitch_, zoom_);
+      if (isFrontFacing(selectedPolygon)) {
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor("#075eff"), 3.0));
+        painter.drawPolygon(selectedPolygon);
+      }
     }
+  }
+
+  if (solidVisible_ && selectedVertex_ >= 0 && selectedVertex_ < 8) {
+    const QPointF vertex = project(vertices[static_cast<std::size_t>(selectedVertex_)],
+                                   size(), yaw_, pitch_, zoom_);
+    painter.setBrush(QColor("#ffffff"));
+    painter.setPen(QPen(QColor("#075eff"), 2.5));
+    painter.drawEllipse(vertex, 6.0, 6.0);
   }
 
   if (sketchVisible_ && displaySketches_.empty()) {
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(22, 105, 215), 2.2));
     for (const auto& line : sketch_.lines()) {
+      painter.setPen(QPen(QColor(22, 105, 215), 2.2,
+                          line.dashed ? Qt::DashLine : Qt::SolidLine));
       painter.drawLine(project({static_cast<float>(line.start.xMm) + offsetX_,
                                 static_cast<float>(line.start.yMm) + offsetY_, 0.0F},
                                size(), yaw_, pitch_, zoom_),
@@ -380,6 +717,8 @@ void Viewport::paintGL() {
                                size(), yaw_, pitch_, zoom_));
     }
     for (const auto& circle : sketch_.circles()) {
+      painter.setPen(QPen(QColor(22, 105, 215), 2.2,
+                          circle.dashed ? Qt::DashLine : Qt::SolidLine));
       QPolygonF curve;
       for (int step = 0; step <= 64; ++step) {
         const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
@@ -396,8 +735,9 @@ void Viewport::paintGL() {
     painter.setBrush(Qt::NoBrush);
     for (const auto& displayed : displaySketches_) {
       if (!displayed.visible) continue;
-      painter.setPen(QPen(QColor("#1469d7"), 2.2));
-      for (const auto& line : displayed.geometry.lines())
+      for (const auto& line : displayed.geometry.lines()) {
+        painter.setPen(QPen(QColor("#1469d7"), 2.2,
+                            line.dashed ? Qt::DashLine : Qt::SolidLine));
         painter.drawLine(
             project(pointOnSupport(line.start, displayed.supportName, box_,
                                    offsetX_, offsetY_),
@@ -405,7 +745,11 @@ void Viewport::paintGL() {
             project(pointOnSupport(line.end, displayed.supportName, box_,
                                    offsetX_, offsetY_),
                     size(), yaw_, pitch_, zoom_));
+      }
+      painter.setPen(QPen(QColor("#1469d7"), 2.2));
       for (const auto& circle : displayed.geometry.circles()) {
+        painter.setPen(QPen(QColor("#1469d7"), 2.2,
+                            circle.dashed ? Qt::DashLine : Qt::SolidLine));
         QPolygonF curve;
         for (int step = 0; step <= 64; ++step) {
           const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
@@ -421,11 +765,142 @@ void Viewport::paintGL() {
     }
   }
 
-  if (pickMode_ == PickMode::ExtrusionSurface &&
+  if ((pickMode_ == PickMode::ExtrusionSurface ||
+       pickMode_ == PickMode::SketchPlane) &&
       !extrusionHoverPolygon_.isEmpty()) {
     painter.setBrush(QColor(10, 105, 245, 55));
     painter.setPen(QPen(QColor("#0969e8"), 2.2));
-    painter.drawPolygon(extrusionHoverPolygon_);
+    if (!extrusionHoverPath_.isEmpty())
+      painter.drawPath(extrusionHoverPath_);
+    else
+      painter.drawPolygon(extrusionHoverPolygon_);
+  }
+
+  if (extrusionManipulatorVisible_) {
+    const QPointF offset = extrusionScreenOffset();
+    const QPointF tip = extrusionManipulatorAnchor_ + offset;
+    const QColor previewColor = extrusionPreviewLengthMm_ >= 0.0
+                                    ? QColor(25, 125, 245, 122)
+                                    : QColor(224, 66, 76, 112);
+    const QColor previewEdge = extrusionPreviewLengthMm_ >= 0.0
+                                   ? QColor("#0874f9")
+                                   : QColor("#d93645");
+    const auto previewPolygons = selectedExtrusionPolygons_.empty()
+                                     ? std::vector<QPolygonF>{selectedExtrusionPolygon_}
+                                     : selectedExtrusionPolygons_;
+    // The selected regions are cached in screen coordinates while the
+    // manipulator anchor is reprojected from model coordinates on every
+    // paint.  Opening the properties dock or changing the camera used to
+    // update only the anchor, leaving the preview displaced.  Apply one
+    // common correction to all regions so their collective centre remains
+    // attached to the manipulator base without collapsing multi-selection.
+    QRectF cachedRegionsBounds;
+    for (const auto& path : selectedExtrusionPaths_)
+      cachedRegionsBounds = cachedRegionsBounds.united(path.boundingRect());
+    const QPointF previewAlignment = cachedRegionsBounds.isEmpty()
+                                         ? QPointF{}
+                                         : extrusionManipulatorAnchor_ -
+                                               cachedRegionsBounds.center();
+    if (!qFuzzyIsNull(extrusionPreviewLengthMm_)) {
+      for (std::size_t regionIndex = 0; regionIndex < previewPolygons.size();
+           ++regionIndex) {
+        const auto& polygon = previewPolygons[regionIndex];
+        if (polygon.size() < 3) continue;
+        QPainterPath basePath;
+        if (regionIndex < selectedExtrusionPaths_.size())
+          basePath = selectedExtrusionPaths_[regionIndex];
+        else {
+          basePath.addPolygon(polygon);
+          basePath.closeSubpath();
+        }
+        if (!previewAlignment.isNull()) {
+          QTransform alignment;
+          alignment.translate(previewAlignment.x(), previewAlignment.y());
+          basePath = alignment.map(basePath);
+        }
+        QTransform translation;
+        translation.translate(offset.x(), offset.y());
+        const QPainterPath capPath = translation.map(basePath);
+        std::vector<QPolygonF> sideFaces;
+        for (const auto& boundary : basePath.toSubpathPolygons()) {
+          const QPolygonF cap = boundary.translated(offset);
+          for (qsizetype index = 0; index < boundary.size(); ++index) {
+            const qsizetype next = (index + 1) % boundary.size();
+            QPolygonF side;
+            side << boundary[index] << boundary[next] << cap[next] << cap[index];
+            sideFaces.push_back(side);
+          }
+        }
+        QLinearGradient bodyGradient(basePath.boundingRect().center(),
+                                     capPath.boundingRect().center());
+        const QColor bodyStart = extrusionPreviewLengthMm_ >= 0.0
+                                     ? QColor(80, 158, 248, 150)
+                                     : QColor(235, 102, 111, 140);
+        const QColor bodyEnd = extrusionPreviewLengthMm_ >= 0.0
+                                   ? QColor(22, 108, 230, 105)
+                                   : QColor(200, 44, 59, 100);
+        bodyGradient.setColorAt(0.0, bodyStart);
+        bodyGradient.setColorAt(0.55, previewColor);
+        bodyGradient.setColorAt(1.0, bodyEnd);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(bodyGradient);
+        // Draw faces independently without a pen. A single winding path can
+        // cancel adjacent quads with opposite winding, which made the body
+        // disappear and left only two caps connected by thin lines.
+        for (const auto& side : sideFaces) painter.drawPolygon(side);
+
+        painter.setPen(QPen(QColor(previewEdge.red(), previewEdge.green(),
+                                  previewEdge.blue(), 115), 1.2));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(basePath);
+        painter.setPen(QPen(previewEdge, 2.4));
+        painter.setBrush(extrusionPreviewLengthMm_ >= 0.0
+                             ? QColor(157, 202, 255, 150)
+                             : QColor(248, 164, 170, 145));
+        painter.drawPath(capPath);
+
+        // Only silhouette generators are outlined. Avoid drawing every
+        // tessellation edge of a circular contour as vertical hatching.
+        if (offset.manhattanLength() > 1.0) {
+          const QPointF perpendicular(-offset.y(), offset.x());
+          for (const auto& boundary : basePath.toSubpathPolygons()) {
+            if (boundary.isEmpty()) continue;
+            auto minPoint = boundary.front();
+            auto maxPoint = boundary.front();
+            double minProjection = QPointF::dotProduct(minPoint, perpendicular);
+            double maxProjection = minProjection;
+            for (const QPointF& point : boundary) {
+              const double projection = QPointF::dotProduct(point, perpendicular);
+              if (projection < minProjection) {
+                minProjection = projection;
+                minPoint = point;
+              }
+              if (projection > maxProjection) {
+                maxProjection = projection;
+                maxPoint = point;
+              }
+            }
+            painter.drawLine(minPoint, minPoint + offset);
+            painter.drawLine(maxPoint, maxPoint + offset);
+          }
+        }
+      }
+    }
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(previewEdge, 4.0, Qt::SolidLine, Qt::RoundCap));
+    painter.drawLine(extrusionManipulatorAnchor_, tip);
+    QLineF direction(extrusionManipulatorAnchor_, tip);
+    if (direction.length() < 1.0) direction.setP2(direction.p1() + QPointF(0.0, -1.0));
+    const QPointF unit = (direction.p2() - direction.p1()) / direction.length();
+    const QPointF perpendicular(-unit.y(), unit.x());
+    QPolygonF arrowHead;
+    arrowHead << tip << tip - unit * 15.0 + perpendicular * 8.0
+              << tip - unit * 15.0 - perpendicular * 8.0;
+    painter.setBrush(previewEdge);
+    painter.drawPolygon(arrowHead);
+    painter.setBrush(QColor("#ffffff"));
+    painter.setPen(QPen(previewEdge, 3.0));
+    painter.drawEllipse(tip, 7.0, 7.0);
   }
 
   if (originVisible_) {
@@ -442,55 +917,150 @@ void Viewport::paintGL() {
     painter.setPen(QPen(QColor("#1769d2"), 2.0));
     painter.drawLine(origin, zEnd);
     painter.drawText(zEnd + QPointF(5, 3), "Z");
-    painter.setBrush(Qt::white);
+    painter.setBrush(selectedOrigin_ ? QColor("#d9eaff") : Qt::white);
+    painter.setPen(QPen(selectedOrigin_ ? QColor("#075eff") : QColor("#1769d2"),
+                        selectedOrigin_ ? 3.0 : 1.5));
     painter.drawEllipse(origin, 4.0, 4.0);
   }
 
-  // Orientation cube: it uses the same yaw and pitch as the scene camera.
-  const QPointF cubeCenter(width() - 68.0, 62.0);
-  const QSize cubeProjectionSize(84, 84);
+  painter.restore();
+
+  // Orientation cube: only visible faces are drawn, with their names placed
+  // directly on the corresponding face.
+  const QPointF cubeCenter(width() - 70.0, 66.0);
+  const QSize cubeProjectionSize(92, 92);
   const float c = 28.0F;
   const std::array<Point3, 8> cubeVertices{{{-c, -c, -c}, {c, -c, -c},
                                             {c, c, -c}, {-c, c, -c},
                                             {-c, -c, c}, {c, -c, c},
                                             {c, c, c}, {-c, c, c}}};
-  const std::array<std::array<int, 4>, 6> cubeFaces{{{{0, 1, 2, 3}}, {{4, 7, 6, 5}},
-                                                       {{0, 4, 5, 1}}, {{1, 5, 6, 2}},
-                                                       {{2, 6, 7, 3}}, {{3, 7, 4, 0}}}};
+  const std::array<std::array<int, 4>, 6> cubeFaces{{
+      {{0, 1, 2, 3}}, {{4, 7, 6, 5}}, {{0, 4, 5, 1}},
+      {{1, 5, 6, 2}}, {{2, 6, 7, 3}}, {{3, 7, 4, 0}}}};
+  const std::array<QString, 6> cubeLabels{
+      QStringLiteral(u"СНИЗУ"), QStringLiteral(u"СВЕРХУ"),
+      QStringLiteral(u"СПЕРЕДИ"), QStringLiteral(u"СПРАВА"),
+      QStringLiteral(u"СЗАДИ"), QStringLiteral(u"СЛЕВА")};
+  QFont cubeFont = painter.font();
+  cubeFont.setBold(true);
+  cubeFont.setPixelSize(8);
+  painter.setFont(cubeFont);
   for (std::size_t face = 0; face < cubeFaces.size(); ++face) {
     QPolygonF polygon;
     for (int vertex : cubeFaces[face]) {
       QPointF point = project(cubeVertices[vertex], cubeProjectionSize,
-                              yaw_, pitch_, 1.0F);
+                              -yaw_, -pitch_, 1.0F);
       point += cubeCenter - QPointF(cubeProjectionSize.width() * 0.5,
                                     cubeProjectionSize.height() * 0.52);
       polygon << point;
     }
-    painter.setBrush(face == 1 ? QColor("#e8f2ff") : QColor("#f8fbff"));
-    painter.setPen(QPen(QColor("#7891b5"), 1.0));
+    if (!isFrontFacing(polygon)) continue;
+    painter.setBrush(face == 1 ? QColor("#e5f0ff") : QColor("#f8fbff"));
+    painter.setPen(QPen(QColor("#5275a8"), 1.2));
     painter.drawPolygon(polygon);
+    painter.setPen(QColor("#123d84"));
+    painter.drawText(polygon.boundingRect(), Qt::AlignCenter, cubeLabels[face]);
   }
-  painter.setPen(QColor("#36577f"));
-  painter.drawText(QRectF(width() - 112.0, 103.0, 88.0, 20.0),
-                   Qt::AlignCenter, QString::fromUtf8("Ориентация"));
 
   painter.setPen(QColor(171, 184, 201));
   painter.drawText(16, height() - 18, "Drag to orbit  •  Wheel to zoom");
 }
 
 void Viewport::mousePressEvent(QMouseEvent* event) {
+  setFocus(Qt::MouseFocusReason);
   lastMousePosition_ = event->position().toPoint();
   draggingBody_ = false;
+  bodyDragStart_ = {offsetX_, offsetY_};
+  if (event->button() == Qt::MiddleButton) {
+    panningView_ = true;
+    setCursor(Qt::ClosedHandCursor);
+    return;
+  }
   if (event->button() != Qt::LeftButton) return;
+  const QPointF scenePosition = event->position() - cameraPan_;
+  if (extrusionManipulatorVisible_) {
+    const QPointF handle = extrusionManipulatorAnchor_ + extrusionScreenOffset();
+    if (QLineF(scenePosition, handle).length() <= 18.0) {
+      draggingExtrusionHandle_ = true;
+      setCursor(Qt::SizeVerCursor);
+      return;
+    }
+  }
   if (pickMode_ == PickMode::ExtrusionSurface &&
       !extrusionHoverPolygon_.isEmpty()) {
-    selectedExtrusionSketch_ = hoveredExtrusionSketch_;
+    const bool append = event->modifiers().testFlag(Qt::ControlModifier);
+    if (!append) {
+      selectedExtrusionPolygons_.clear();
+      selectedExtrusionPaths_.clear();
+      selectedExtrusionRegionSketches_.clear();
+    }
+
+    QPainterPath hoveredPath = extrusionHoverPath_;
+    if (hoveredPath.isEmpty()) {
+      hoveredPath.addPolygon(extrusionHoverPolygon_);
+      hoveredPath.closeSubpath();
+    }
+    const QRectF hoveredBounds = hoveredPath.boundingRect();
+    const auto sameRegion = [&hoveredBounds](const QPainterPath& path) {
+      const QRectF bounds = path.boundingRect();
+      return QLineF(bounds.center(), hoveredBounds.center()).length() < 1.0 &&
+             std::abs(bounds.width() - hoveredBounds.width()) < 1.0 &&
+             std::abs(bounds.height() - hoveredBounds.height()) < 1.0;
+    };
+    const auto existing = std::find_if(selectedExtrusionPaths_.begin(),
+                                       selectedExtrusionPaths_.end(), sameRegion);
+    if (append && existing != selectedExtrusionPaths_.end()) {
+      const auto index = static_cast<std::size_t>(
+          std::distance(selectedExtrusionPaths_.begin(), existing));
+      selectedExtrusionPaths_.erase(existing);
+      if (index < selectedExtrusionPolygons_.size())
+        selectedExtrusionPolygons_.erase(selectedExtrusionPolygons_.begin() +
+                                         static_cast<std::ptrdiff_t>(index));
+      if (index < selectedExtrusionRegionSketches_.size())
+        selectedExtrusionRegionSketches_.erase(
+            selectedExtrusionRegionSketches_.begin() +
+            static_cast<std::ptrdiff_t>(index));
+    } else {
+      selectedExtrusionPaths_.push_back(hoveredPath);
+      selectedExtrusionPolygons_.push_back(extrusionHoverPolygon_);
+      selectedExtrusionRegionSketches_.push_back(hoveredExtrusionSketch_);
+    }
     selectedExtrusionSupport_ = hoveredExtrusionSupport_;
     selectedExtrusionSketchIndex_ = hoveredExtrusionSketchIndex_;
-    pickMode_ = PickMode::None;
-    unsetCursor();
+    selectedExtrusionOnBodyCap_ = hoveredExtrusionOnBodyCap_;
+    selectedExtrusionBodyFace_ = hoveredExtrusionSurface_.startsWith(
+        QString::fromUtf8("Грань тела"));
+    rebuildSelectedExtrusionSketch();
+    if (selectedExtrusionPaths_.empty()) {
+      selectedExtrusionPolygon_.clear();
+      hideExtrusionManipulator();
+      update();
+      return;
+    }
+    QRectF selectedBounds;
+    for (const auto& path : selectedExtrusionPaths_)
+      selectedBounds = selectedBounds.united(path.boundingRect());
+    selectedExtrusionPolygon_ = selectedExtrusionPolygons_.front();
+    extrusionManipulatorAnchor_ = selectedBounds.center();
+    if (!append) {
+      pickMode_ = PickMode::None;
+      unsetCursor();
+    }
     emit extrusionSurfacePicked(hoveredExtrusionSurface_);
     extrusionHoverPolygon_.clear();
+    update();
+    return;
+  }
+  if (pickMode_ == PickMode::SketchPlane &&
+      !extrusionHoverPolygon_.isEmpty()) {
+    const QString pickedPlane = hoveredExtrusionSurface_;
+    pickMode_ = PickMode::None;
+    unsetCursor();
+    extrusionHoverPolygon_.clear();
+    extrusionHoverPath_ = {};
+    hoveredExtrusionSurface_.clear();
+    hoveredExtrusionSupport_.clear();
+    emit sketchPlanePicked(pickedPlane);
     update();
     return;
   }
@@ -507,18 +1077,59 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
                                                   {{2, 6, 7, 3}}, {{3, 7, 4, 0}}}};
 
   if (pickMode_ == PickMode::SketchPlane && solidVisible_) {
-    for (int faceIndex = 5; faceIndex >= 0; --faceIndex) {
-      QPolygonF polygon;
-      for (int vertex : faces[faceIndex])
-        polygon << project(vertices[vertex], size(), yaw_, pitch_, zoom_);
-      if (!isFrontFacing(polygon)) continue;
-      if (!polygon.containsPoint(event->position(), Qt::OddEvenFill)) continue;
-      selectedFace_ = faceIndex;
-      pickMode_ = PickMode::None;
-      unsetCursor();
-      emit sketchPlanePicked(QString::fromUtf8("Грань тела: ") + selectedFaceName());
-      update();
-      return;
+    if (!solidSketch_.circles().empty()) {
+      const auto& circle = solidSketch_.circles().front();
+      const Point3 normal = supportNormal(solidSupportName_);
+      QPolygonF bottomCap;
+      QPolygonF topCap;
+      for (int step = 0; step < 64; ++step) {
+        const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+        const sketch::Point profilePoint{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(profilePoint, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        bottomCap.prepend(project(base, size(), yaw_, pitch_, zoom_));
+        topCap << project(translated(base, normal, z), size(), yaw_, pitch_, zoom_);
+      }
+      const std::array<QPolygonF, 2> caps{bottomCap, topCap};
+      std::array<QString, 2> names;
+      if (solidSupportName_.contains("XZ") ||
+          solidSupportName_.contains(QString::fromUtf8("Передняя")) ||
+          solidSupportName_.contains(QString::fromUtf8("Задняя"))) {
+        names = {QString::fromUtf8("Передняя"), QString::fromUtf8("Задняя")};
+      } else if (solidSupportName_.contains("YZ") ||
+                 solidSupportName_.contains(QString::fromUtf8("Правая")) ||
+                 solidSupportName_.contains(QString::fromUtf8("Левая"))) {
+        names = {QString::fromUtf8("Левая"), QString::fromUtf8("Правая")};
+      } else {
+        names = {QString::fromUtf8("Нижняя"), QString::fromUtf8("Верхняя")};
+      }
+      for (int cap = 1; cap >= 0; --cap) {
+        if (!isFrontFacing(caps[cap]) ||
+            !caps[cap].containsPoint(scenePosition, Qt::OddEvenFill))
+          continue;
+        selectedFace_ = cap;
+        pickMode_ = PickMode::None;
+        unsetCursor();
+        emit sketchPlanePicked(QString::fromUtf8("Грань тела: ") + names[cap]);
+        update();
+        return;
+      }
+    } else {
+      for (int faceIndex = 5; faceIndex >= 0; --faceIndex) {
+        QPolygonF polygon;
+        for (int vertex : faces[faceIndex])
+          polygon << project(vertices[vertex], size(), yaw_, pitch_, zoom_);
+        if (!isFrontFacing(polygon)) continue;
+        if (!polygon.containsPoint(scenePosition, Qt::OddEvenFill)) continue;
+        selectedFace_ = faceIndex;
+        pickMode_ = PickMode::None;
+        unsetCursor();
+        emit sketchPlanePicked(QString::fromUtf8("Грань тела: ") + selectedFaceName());
+        update();
+        return;
+      }
     }
   }
 
@@ -536,7 +1147,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       QPolygonF polygon;
       for (const auto& point : planes[plane])
         polygon << project(point, size(), yaw_, pitch_, zoom_);
-      if (polygon.containsPoint(event->position(), Qt::OddEvenFill)) {
+      if (polygon.containsPoint(scenePosition, Qt::OddEvenFill)) {
         const QString name = plane == 0 ? "XY" : plane == 1 ? "XZ" : "YZ";
         pickMode_ = PickMode::None;
         unsetCursor();
@@ -550,11 +1161,12 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   if (pickMode_ == PickMode::ExtrusionSurface && !sketch_.lines().empty()) {
     QPolygonF contour;
     for (const auto& line : sketch_.lines())
+      if (!line.dashed)
       contour << project({static_cast<float>(line.start.xMm) + offsetX_,
                           static_cast<float>(line.start.yMm) + offsetY_, 0},
                          size(), yaw_, pitch_, zoom_);
     if (contour.size() >= 3 &&
-        contour.containsPoint(event->position(), Qt::OddEvenFill)) {
+        contour.containsPoint(scenePosition, Qt::OddEvenFill)) {
       pickMode_ = PickMode::None;
       unsetCursor();
       emit extrusionSurfacePicked(QString::fromUtf8("Замкнутый контур эскиза"));
@@ -564,6 +1176,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   }
   if (pickMode_ == PickMode::ExtrusionSurface) {
     for (const auto& circle : sketch_.circles()) {
+      if (circle.dashed) continue;
       QPolygonF contour;
       for (int step = 0; step < 48; ++step) {
         const float angle = 2.0F * std::numbers::pi_v<float> * step / 48.0F;
@@ -572,7 +1185,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
              static_cast<float>(circle.center.yMm + circle.radiusMm * std::sin(angle)) + offsetY_, 0},
             size(), yaw_, pitch_, zoom_);
       }
-      if (!contour.containsPoint(event->position(), Qt::OddEvenFill)) continue;
+      if (!contour.containsPoint(scenePosition, Qt::OddEvenFill)) continue;
       pickMode_ = PickMode::None;
       unsetCursor();
       emit extrusionSurfacePicked(QString::fromUtf8("Замкнутый контур эскиза"));
@@ -581,40 +1194,476 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     }
   }
 
-  if (!solidVisible_) return;
+  if (pickMode_ != PickMode::None) return;
+
   selectedFace_ = -1;
-  for (int faceIndex = 5; faceIndex >= 0; --faceIndex) {
-    QPolygonF polygon;
-    for (int vertex : faces[faceIndex])
-      polygon << project(vertices[vertex], size(), yaw_, pitch_, zoom_);
-    if (!isFrontFacing(polygon)) continue;
-    if (polygon.containsPoint(event->position(), Qt::OddEvenFill)) {
-      selectedFace_ = faceIndex;
-      draggingBody_ = pickMode_ == PickMode::None;
-      break;
+  selectedBasePlane_ = -1;
+  selectedVertex_ = -1;
+  selectedOrigin_ = false;
+
+  // Points have the highest picking priority because they occupy the
+  // smallest area on screen.
+  const QPointF originPoint = project({0, 0, 0}, size(), yaw_, pitch_, zoom_);
+  if (originVisible_ &&
+      QLineF(originPoint, scenePosition).length() <= 9.0) {
+    selectedOrigin_ = true;
+    emit selectionChanged(QString::fromUtf8("Точка: начало координат"));
+    update();
+    return;
+  }
+
+  if (solidVisible_ && solidSketch_.circles().empty()) {
+    for (int vertex = 0; vertex < static_cast<int>(vertices.size()); ++vertex) {
+      const QPointF projected = project(vertices[static_cast<std::size_t>(vertex)],
+                                        size(), yaw_, pitch_, zoom_);
+      if (QLineF(projected, scenePosition).length() > 9.0) continue;
+      selectedVertex_ = vertex;
+      emit selectionChanged(QString::fromUtf8("Тело 1 • Точка ") +
+                            QString::number(vertex + 1));
+      update();
+      return;
     }
   }
-  emit selectionChanged(selectedFace_ >= 0
-                            ? QString::fromUtf8("Тело 1 • Грань: ") + selectedFaceName()
-                            : QString{});
-  if (selectedFace_ >= 0 && pickMode_ == PickMode::SketchPlane) {
-    pickMode_ = PickMode::None;
-    unsetCursor();
-    emit sketchPlanePicked(QString::fromUtf8("Грань тела: ") + selectedFaceName());
-  } else if (selectedFace_ >= 0 && pickMode_ == PickMode::ExtrusionSurface) {
-    pickMode_ = PickMode::None;
-    unsetCursor();
-    emit extrusionSurfacePicked(QString::fromUtf8("Грань тела: ") + selectedFaceName());
+
+  // Faces are checked before construction planes so that a visible solid
+  // remains easy to select where both objects overlap.
+  selectedFace_ = -1;
+  if (solidVisible_ && !solidSketch_.circles().empty()) {
+    const auto& circle = solidSketch_.circles().front();
+    const Point3 normal = supportNormal(solidSupportName_);
+    QPolygonF bottomCap;
+    QPolygonF topCap;
+    for (int step = 0; step < 64; ++step) {
+      const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+      const sketch::Point profilePoint{
+          circle.center.xMm + circle.radiusMm * std::cos(angle),
+          circle.center.yMm + circle.radiusMm * std::sin(angle)};
+      const Point3 base = pointOnSupport(profilePoint, solidSupportName_, box_,
+                                         offsetX_, offsetY_);
+      bottomCap.prepend(project(base, size(), yaw_, pitch_, zoom_));
+      topCap << project(translated(base, normal, z), size(), yaw_, pitch_, zoom_);
+    }
+    const std::array<QPolygonF, 2> caps{bottomCap, topCap};
+    for (int cap = 1; cap >= 0; --cap) {
+      if (!isFrontFacing(caps[cap]) ||
+          !caps[cap].containsPoint(scenePosition, Qt::OddEvenFill))
+        continue;
+      selectedFace_ = cap;
+      draggingBody_ = true;
+      emit selectionChanged(QString::fromUtf8("Тело 1 • Круглый торец"));
+      update();
+      return;
+    }
+    for (int step = 63; step >= 0; --step) {
+      const float a = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+      const float b = 2.0F * std::numbers::pi_v<float> * (step + 1) / 64.0F;
+      const auto surfacePoint = [&](float angle, float height) {
+        const sketch::Point profilePoint{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(profilePoint, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        return project(translated(base, normal, height), size(), yaw_, pitch_, zoom_);
+      };
+      QPolygonF side{surfacePoint(a, 0.0F), surfacePoint(b, 0.0F),
+                     surfacePoint(b, z), surfacePoint(a, z)};
+      if (!isFrontFacing(side) ||
+          !side.containsPoint(scenePosition, Qt::OddEvenFill))
+        continue;
+      selectedFace_ = 2;
+      draggingBody_ = true;
+      emit selectionChanged(QString::fromUtf8("Тело 1 • Боковая грань"));
+      update();
+      return;
+    }
+  } else if (solidVisible_) {
+    for (int faceIndex = 5; faceIndex >= 0; --faceIndex) {
+      QPolygonF polygon;
+      for (int vertex : faces[faceIndex])
+        polygon << project(vertices[vertex], size(), yaw_, pitch_, zoom_);
+      if (!isFrontFacing(polygon)) continue;
+      if (polygon.containsPoint(scenePosition, Qt::OddEvenFill)) {
+        selectedFace_ = faceIndex;
+        draggingBody_ = true;
+        emit selectionChanged(QString::fromUtf8("Тело 1 • Грань: ") +
+                              selectedFaceName());
+        update();
+        return;
+      }
+    }
   }
+
+  const float planeSize = std::max(35.0F, std::max(x, y) * 1.35F);
+  const std::array<std::array<Point3, 4>, 3> planes{{
+      {{{-planeSize, -planeSize, 0}, {planeSize, -planeSize, 0},
+         {planeSize, planeSize, 0}, {-planeSize, planeSize, 0}}},
+      {{{-planeSize, 0, -planeSize}, {planeSize, 0, -planeSize},
+         {planeSize, 0, planeSize}, {-planeSize, 0, planeSize}}},
+      {{{0, -planeSize, -planeSize}, {0, planeSize, -planeSize},
+         {0, planeSize, planeSize}, {0, -planeSize, planeSize}}}}};
+  for (int plane = 2; plane >= 0; --plane) {
+    if (!basePlanesVisible_[plane]) continue;
+    QPolygonF polygon;
+    for (const auto& point : planes[plane])
+      polygon << project(point, size(), yaw_, pitch_, zoom_);
+    if (!polygon.containsPoint(scenePosition, Qt::OddEvenFill)) continue;
+    selectedBasePlane_ = plane;
+    const QString name = plane == 0 ? "XY" : plane == 1 ? "XZ" : "YZ";
+    emit selectionChanged(QString::fromUtf8("Базовая плоскость ") + name);
+    update();
+    return;
+  }
+
+  emit selectionChanged(QString{});
   update();
+}
+
+void Viewport::rebuildSelectedExtrusionSketch() {
+  selectedExtrusionSketch_.clear();
+  if (!selectedExtrusionRegionSketches_.empty()) {
+    for (const auto& region : selectedExtrusionRegionSketches_) {
+      for (const auto& line : region.lines())
+        selectedExtrusionSketch_.addLine(line.start, line.end);
+      for (const auto& circle : region.circles())
+        selectedExtrusionSketch_.addCircle(circle.center, circle.radiusMm);
+    }
+    return;
+  }
+  QString support = selectedExtrusionOnBodyCap_ ? solidSupportName_
+                                                : selectedExtrusionSupport_;
+  Point3 p0 = pointOnSupport({0, 0}, support, box_, offsetX_, offsetY_);
+  Point3 pU = pointOnSupport({1, 0}, support, box_, offsetX_, offsetY_);
+  Point3 pV = pointOnSupport({0, 1}, support, box_, offsetX_, offsetY_);
+  if (selectedExtrusionOnBodyCap_) {
+    const Point3 normal = supportNormal(solidSupportName_);
+    const float distance = static_cast<float>(box_.heightMm);
+    p0 = translated(p0, normal, distance);
+    pU = translated(pU, normal, distance);
+    pV = translated(pV, normal, distance);
+  }
+  const QPointF origin = project(p0, size(), yaw_, pitch_, zoom_);
+  const QPointF u = project(pU, size(), yaw_, pitch_, zoom_) - origin;
+  const QPointF v = project(pV, size(), yaw_, pitch_, zoom_) - origin;
+  const double determinant = u.x() * v.y() - u.y() * v.x();
+  if (std::abs(determinant) < 1e-9) return;
+
+  for (const auto& path : selectedExtrusionPaths_) {
+    for (const auto& boundary : path.toSubpathPolygons()) {
+      std::vector<sketch::Point> points;
+      points.reserve(static_cast<std::size_t>(boundary.size()));
+      for (const QPointF& screenPoint : boundary) {
+        const QPointF delta = screenPoint - origin;
+        points.push_back({
+            (delta.x() * v.y() - delta.y() * v.x()) / determinant,
+            (u.x() * delta.y() - u.y() * delta.x()) / determinant});
+      }
+      if (points.size() > 1 &&
+          QLineF(boundary.front(), boundary.back()).length() < 0.01)
+        points.pop_back();
+      for (std::size_t index = 0; index < points.size(); ++index)
+        selectedExtrusionSketch_.addLine(
+            points[index], points[(index + 1) % points.size()]);
+    }
+  }
+}
+
+void Viewport::updateSketchPlaneHover(QPointF position) {
+  extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
+  hoveredExtrusionSurface_.clear();
+  hoveredExtrusionSupport_.clear();
+
+  const float x = static_cast<float>(box_.widthMm) * 0.5F;
+  const float y = static_cast<float>(box_.depthMm) * 0.5F;
+  const float z = static_cast<float>(box_.heightMm);
+
+  // Planar faces of the current solid have priority over construction planes.
+  if (solidVisible_) {
+    if (!solidSketch_.circles().empty()) {
+      const auto& circle = solidSketch_.circles().front();
+      const Point3 normal = supportNormal(solidSupportName_);
+      std::array<QPolygonF, 2> caps;
+      for (int step = 0; step < 96; ++step) {
+        const float angle = 2.0F * std::numbers::pi_v<float> * step / 96.0F;
+        const sketch::Point profilePoint{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(profilePoint, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        caps[0].prepend(project(base, size(), yaw_, pitch_, zoom_));
+        caps[1] << project(translated(base, normal, z), size(), yaw_, pitch_, zoom_);
+      }
+      std::array<QString, 2> names;
+      if (solidSupportName_.contains("XZ") ||
+          solidSupportName_.contains(QString::fromUtf8("Передняя")) ||
+          solidSupportName_.contains(QString::fromUtf8("Задняя")))
+        names = {QString::fromUtf8("Передняя"), QString::fromUtf8("Задняя")};
+      else if (solidSupportName_.contains("YZ") ||
+               solidSupportName_.contains(QString::fromUtf8("Правая")) ||
+               solidSupportName_.contains(QString::fromUtf8("Левая")))
+        names = {QString::fromUtf8("Левая"), QString::fromUtf8("Правая")};
+      else
+        names = {QString::fromUtf8("Нижняя"), QString::fromUtf8("Верхняя")};
+      for (int cap = 1; cap >= 0; --cap) {
+        if (!isFrontFacing(caps[cap]) ||
+            !caps[cap].containsPoint(position, Qt::OddEvenFill))
+          continue;
+        extrusionHoverPolygon_ = caps[cap];
+        hoveredExtrusionSurface_ = QString::fromUtf8("Грань тела: ") + names[cap];
+        hoveredExtrusionSupport_ = names[cap];
+        return;
+      }
+    } else {
+      const std::array<Point3, 8> vertices{{
+          {-x + offsetX_, -y + offsetY_, 0}, {x + offsetX_, -y + offsetY_, 0},
+          {x + offsetX_, y + offsetY_, 0}, {-x + offsetX_, y + offsetY_, 0},
+          {-x + offsetX_, -y + offsetY_, z}, {x + offsetX_, -y + offsetY_, z},
+          {x + offsetX_, y + offsetY_, z}, {-x + offsetX_, y + offsetY_, z}}};
+      const std::array<std::array<int, 4>, 6> faces{{
+          {{0, 1, 2, 3}}, {{4, 7, 6, 5}}, {{0, 4, 5, 1}},
+          {{1, 5, 6, 2}}, {{2, 6, 7, 3}}, {{3, 7, 4, 0}}}};
+      static const std::array<const char*, 6> names{
+          "Нижняя", "Верхняя", "Передняя", "Правая", "Задняя", "Левая"};
+      for (int face = 5; face >= 0; --face) {
+        QPolygonF polygon;
+        for (int vertex : faces[face])
+          polygon << project(vertices[vertex], size(), yaw_, pitch_, zoom_);
+        if (!isFrontFacing(polygon) ||
+            !polygon.containsPoint(position, Qt::OddEvenFill))
+          continue;
+        extrusionHoverPolygon_ = polygon;
+        const QString name = QString::fromUtf8(names[face]);
+        hoveredExtrusionSurface_ = QString::fromUtf8("Грань тела: ") + name;
+        hoveredExtrusionSupport_ = name;
+        return;
+      }
+    }
+  }
+
+  // Construction-plane candidates are deliberately handled as a collection;
+  // auxiliary user planes can be appended here without changing picking UI.
+  const float planeSize = std::max(35.0F, std::max(x, y) * 1.35F);
+  const std::array<std::array<Point3, 4>, 3> planes{{
+      {{{-planeSize, -planeSize, 0}, {planeSize, -planeSize, 0},
+         {planeSize, planeSize, 0}, {-planeSize, planeSize, 0}}},
+      {{{-planeSize, 0, -planeSize}, {planeSize, 0, -planeSize},
+         {planeSize, 0, planeSize}, {-planeSize, 0, planeSize}}},
+      {{{0, -planeSize, -planeSize}, {0, planeSize, -planeSize},
+         {0, planeSize, planeSize}, {0, -planeSize, planeSize}}}}};
+  for (int plane = 2; plane >= 0; --plane) {
+    if (!basePlanesVisible_[plane]) continue;
+    QPolygonF polygon;
+    for (const auto& point : planes[plane])
+      polygon << project(point, size(), yaw_, pitch_, zoom_);
+    if (!polygon.containsPoint(position, Qt::OddEvenFill)) continue;
+    const QString name = plane == 0 ? QStringLiteral("XY")
+                                    : plane == 1 ? QStringLiteral("XZ")
+                                                 : QStringLiteral("YZ");
+    extrusionHoverPolygon_ = polygon;
+    hoveredExtrusionSurface_ = QString::fromUtf8("Базовая плоскость ") + name;
+    hoveredExtrusionSupport_ = name;
+    return;
+  }
 }
 
 void Viewport::updateExtrusionHover(QPointF position) {
   extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
   hoveredExtrusionSketch_.clear();
   hoveredExtrusionSupport_.clear();
   hoveredExtrusionSurface_.clear();
+  hoveredExtrusionOnBodyCap_ = false;
   hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+
+  // Build atomic selectable regions from every closed contour visible on the
+  // working face.  For example, a rectangle crossing a circular cap produces
+  // the rectangle intersection and the individual circular segments instead
+  // of treating the whole cap as a single surface.
+  std::vector<QPolygonF> contours;
+  QString regionSupport;
+  bool regionOnBodyCap = false;
+  std::size_t regionSketchIndex = static_cast<std::size_t>(-1);
+  for (std::size_t displayedIndex = 0; displayedIndex < displaySketches_.size();
+       ++displayedIndex) {
+    const auto& displayed = displaySketches_[displayedIndex];
+    if (!displayed.visible) continue;
+    const bool attachedToBodyFace = solidVisible_ &&
+        displayed.supportName.startsWith(QString::fromUtf8("Грань тела:"));
+    const auto projectContourPoint = [&](sketch::Point point) {
+      if (!attachedToBodyFace)
+        return project(pointOnSupport(point, displayed.supportName, box_,
+                                      offsetX_, offsetY_),
+                       size(), yaw_, pitch_, zoom_);
+      // A sketch attached to a cap follows that cap when the preceding body
+      // changes length.  Its stored 2D coordinates must therefore be placed
+      // on the body's current end face, not on the old global XY plane.
+      const Point3 base = pointOnSupport(point, solidSupportName_, box_,
+                                         offsetX_, offsetY_);
+      return project(translated(base, supportNormal(solidSupportName_),
+                                static_cast<float>(box_.heightMm)),
+                     size(), yaw_, pitch_, zoom_);
+    };
+    std::vector<std::size_t> ids;
+    for (const auto& line : displayed.geometry.lines())
+      if (!line.dashed &&
+          std::find(ids.begin(), ids.end(), line.elementId) == ids.end())
+        ids.push_back(line.elementId);
+    for (const auto id : ids) {
+      QPolygonF polygon;
+      for (const auto& line : displayed.geometry.lines())
+        if (!line.dashed && line.elementId == id)
+          polygon << projectContourPoint(line.start);
+      if (polygon.size() >= 3) {
+        contours.push_back(polygon);
+        if (polygon.containsPoint(position, Qt::OddEvenFill)) {
+          regionSupport = attachedToBodyFace ? solidSupportName_
+                                             : displayed.supportName;
+          regionSketchIndex = displayedIndex;
+        }
+      }
+    }
+    for (const auto& circle : displayed.geometry.circles()) {
+      if (circle.dashed) continue;
+      QPolygonF polygon;
+      for (int step = 0; step < 96; ++step) {
+        const float angle = 2.0F * std::numbers::pi_v<float> * step / 96.0F;
+        const sketch::Point point{circle.center.xMm + circle.radiusMm * std::cos(angle),
+                                  circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        polygon << projectContourPoint(point);
+      }
+      contours.push_back(polygon);
+      if (polygon.containsPoint(position, Qt::OddEvenFill)) {
+          regionSupport = attachedToBodyFace ? solidSupportName_
+                                             : displayed.supportName;
+        regionSketchIndex = displayedIndex;
+      }
+    }
+  }
+
+  // The planar cap of an existing body is another contour on which sketches
+  // can split extrusion regions.
+  if (solidVisible_ && !solidSketch_.circles().empty()) {
+    QPolygonF cap;
+    const auto& circle = solidSketch_.circles().front();
+    const Point3 normal = supportNormal(solidSupportName_);
+    for (int step = 0; step < 96; ++step) {
+      const float angle = 2.0F * std::numbers::pi_v<float> * step / 96.0F;
+      const sketch::Point point{circle.center.xMm + circle.radiusMm * std::cos(angle),
+                                circle.center.yMm + circle.radiusMm * std::sin(angle)};
+      const Point3 base = pointOnSupport(point, solidSupportName_, box_,
+                                         offsetX_, offsetY_);
+      cap << project(translated(base, normal, static_cast<float>(box_.heightMm)),
+                     size(), yaw_, pitch_, zoom_);
+    }
+    contours.push_back(cap);
+    if (regionSupport.isEmpty() && cap.containsPoint(position, Qt::OddEvenFill))
+      regionSupport = solidSupportName_;
+    if (cap.containsPoint(position, Qt::OddEvenFill)) regionOnBodyCap = true;
+  }
+
+  if (contours.size() >= 2) {
+    QPainterPath region;
+    bool initialized = false;
+    for (const auto& contour : contours) {
+      QPainterPath path;
+      path.addPolygon(contour);
+      path.closeSubpath();
+      const bool inside = path.contains(position);
+      if (inside) {
+        region = initialized ? region.intersected(path) : path;
+        initialized = true;
+      }
+    }
+    if (initialized) {
+      for (const auto& contour : contours) {
+        QPainterPath path;
+        path.addPolygon(contour);
+        path.closeSubpath();
+        if (!path.contains(position)) region = region.subtracted(path);
+      }
+      const auto pieces = region.toSubpathPolygons();
+      int selectedPiece = -1;
+      double selectedArea = std::numeric_limits<double>::max();
+      for (int index = 0; index < pieces.size(); ++index) {
+        const auto& piece = pieces[index];
+        if (piece.size() < 3 ||
+            !piece.containsPoint(position, Qt::OddEvenFill))
+          continue;
+        const double area = std::abs(signedArea(piece));
+        if (area < selectedArea) {
+          selectedArea = area;
+          selectedPiece = index;
+        }
+      }
+      if (selectedPiece >= 0) {
+        const QPolygonF& piece = pieces[selectedPiece];
+        QPainterPath selectedRegion;
+        selectedRegion.setFillRule(Qt::OddEvenFill);
+        selectedRegion.addPolygon(piece);
+        selectedRegion.closeSubpath();
+        // Preserve nested boundaries as holes. Thus clicking the outer circle
+        // selects an annulus, while clicking inside the inner circle selects
+        // only the disk. Ctrl can then combine both explicitly.
+        for (int index = 0; index < pieces.size(); ++index) {
+          if (index == selectedPiece || pieces[index].size() < 3) continue;
+          if (!piece.containsPoint(pieces[index].boundingRect().center(),
+                                   Qt::OddEvenFill))
+            continue;
+          selectedRegion.addPolygon(pieces[index]);
+          selectedRegion.closeSubpath();
+        }
+        extrusionHoverPolygon_ = piece;
+        extrusionHoverPath_ = selectedRegion;
+        hoveredExtrusionOnBodyCap_ = regionOnBodyCap;
+        hoveredExtrusionSupport_ = regionSupport.isEmpty() ? solidSupportName_
+                                                           : regionSupport;
+        hoveredExtrusionSurface_ = QString::fromUtf8("Замкнутая область");
+        hoveredExtrusionSketchIndex_ = regionSketchIndex;
+
+        // Convert the selected screen-space boundary back to sketch-plane
+        // coordinates so the extrusion preview follows this exact region.
+        Point3 modelOrigin = pointOnSupport(
+            {0, 0}, hoveredExtrusionSupport_, box_, offsetX_, offsetY_);
+        Point3 modelU = pointOnSupport(
+            {1, 0}, hoveredExtrusionSupport_, box_, offsetX_, offsetY_);
+        Point3 modelV = pointOnSupport(
+            {0, 1}, hoveredExtrusionSupport_, box_, offsetX_, offsetY_);
+        if (hoveredExtrusionOnBodyCap_) {
+          const Point3 capNormal = supportNormal(solidSupportName_);
+          const float capDistance = static_cast<float>(box_.heightMm);
+          modelOrigin = translated(modelOrigin, capNormal, capDistance);
+          modelU = translated(modelU, capNormal, capDistance);
+          modelV = translated(modelV, capNormal, capDistance);
+        }
+        const QPointF origin = project(modelOrigin, size(), yaw_, pitch_, zoom_);
+        const QPointF uPoint = project(modelU, size(), yaw_, pitch_, zoom_);
+        const QPointF vPoint = project(modelV, size(), yaw_, pitch_, zoom_);
+        const QPointF u = uPoint - origin;
+        const QPointF v = vPoint - origin;
+        const double determinant = u.x() * v.y() - u.y() * v.x();
+        if (std::abs(determinant) > 1e-9) {
+          for (const auto& boundary : selectedRegion.toSubpathPolygons()) {
+            std::vector<sketch::Point> modelPoints;
+            modelPoints.reserve(static_cast<std::size_t>(boundary.size()));
+            for (const QPointF& screenPoint : boundary) {
+              const QPointF delta = screenPoint - origin;
+              modelPoints.push_back({
+                  (delta.x() * v.y() - delta.y() * v.x()) / determinant,
+                  (u.x() * delta.y() - u.y() * delta.x()) / determinant});
+            }
+            if (modelPoints.size() > 1 &&
+                QLineF(boundary.front(), boundary.back()).length() < 0.01)
+              modelPoints.pop_back();
+            for (std::size_t index = 0; index < modelPoints.size(); ++index)
+              hoveredExtrusionSketch_.addLine(
+                  modelPoints[index],
+                  modelPoints[(index + 1) % modelPoints.size()]);
+          }
+        }
+        return;
+      }
+    }
+  }
 
   std::size_t reverseIndex = displaySketches_.size();
   for (auto displayed = displaySketches_.rbegin();
@@ -624,13 +1673,14 @@ void Viewport::updateExtrusionHover(QPointF position) {
     if (!displayed->visible) continue;
     std::vector<std::size_t> ids;
     for (const auto& line : displayed->geometry.lines())
-      if (std::find(ids.begin(), ids.end(), line.elementId) == ids.end())
+      if (!line.dashed &&
+          std::find(ids.begin(), ids.end(), line.elementId) == ids.end())
         ids.push_back(line.elementId);
     for (const std::size_t id : ids) {
       QPolygonF polygon;
       sketch::Sketch candidate;
       for (const auto& line : displayed->geometry.lines()) {
-        if (line.elementId != id) continue;
+        if (line.dashed || line.elementId != id) continue;
         polygon << project(pointOnSupport(line.start, displayed->supportName,
                                           box_, offsetX_, offsetY_),
                            size(), yaw_, pitch_, zoom_);
@@ -647,6 +1697,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
       break;
     }
     for (const auto& circle : displayed->geometry.circles()) {
+      if (circle.dashed) continue;
       QPolygonF polygon;
       for (int step = 0; step < 64; ++step) {
         const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
@@ -670,6 +1721,52 @@ void Viewport::updateExtrusionHover(QPointF position) {
   }
 
   if (!extrusionHoverPolygon_.isEmpty() || !solidVisible_) return;
+  // A finished body's planar end caps are valid extrusion sources too.  Keep
+  // the picked polygon in screen space so the manipulator starts exactly on
+  // the visible face; the body's existing profile is reused on commit.
+  if (!solidSketch_.lines().empty() || !solidSketch_.circles().empty()) {
+    QPolygonF bottomCap;
+    QPolygonF topCap;
+    const Point3 normal = supportNormal(solidSupportName_);
+    const float bodyLength = static_cast<float>(box_.heightMm);
+    if (!solidSketch_.circles().empty()) {
+      const auto& circle = solidSketch_.circles().front();
+      for (int step = 0; step < 64; ++step) {
+        const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
+        const sketch::Point point{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(point, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        bottomCap.prepend(project(base, size(), yaw_, pitch_, zoom_));
+        topCap << project(translated(base, normal, bodyLength), size(), yaw_,
+                          pitch_, zoom_);
+      }
+    } else {
+      for (const auto& line : solidSketch_.lines()) {
+        const Point3 base = pointOnSupport(line.start, solidSupportName_, box_,
+                                           offsetX_, offsetY_);
+        bottomCap.prepend(project(base, size(), yaw_, pitch_, zoom_));
+        topCap << project(translated(base, normal, bodyLength), size(), yaw_,
+                          pitch_, zoom_);
+      }
+    }
+    const std::array<QPolygonF, 2> caps{bottomCap, topCap};
+    for (int cap = 1; cap >= 0; --cap) {
+      if (caps[cap].size() < 3 || !isFrontFacing(caps[cap]) ||
+          !caps[cap].containsPoint(position, Qt::OddEvenFill))
+        continue;
+      extrusionHoverPolygon_ = caps[cap];
+      hoveredExtrusionSurface_ = QString::fromUtf8("Грань тела: ") +
+                                 (cap == 1 ? QString::fromUtf8("Торцевая")
+                                           : QString::fromUtf8("Начальная"));
+      hoveredExtrusionSupport_ = solidSupportName_;
+      if (cap == 0) hoveredExtrusionSupport_ += QStringLiteral("|NEG");
+      hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+      return;
+    }
+  }
+
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
   const float z = static_cast<float>(box_.heightMm);
@@ -693,13 +1790,45 @@ void Viewport::updateExtrusionHover(QPointF position) {
     extrusionHoverPolygon_ = polygon;
     hoveredExtrusionSurface_ = QString::fromUtf8("Грань тела: ") +
                                QString::fromUtf8(names[face]);
+    hoveredExtrusionSupport_ = QString::fromUtf8(names[face]);
     break;
   }
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
+  if (panningView_ && event->buttons().testFlag(Qt::MiddleButton)) {
+    const QPoint delta = event->position().toPoint() - lastMousePosition_;
+    cameraPan_ += QPointF(delta);
+    lastMousePosition_ = event->position().toPoint();
+    if (extrusionManipulatorVisible_)
+      setExtrusionPreviewLength(extrusionPreviewLengthMm_);
+    update();
+    return;
+  }
+  if (draggingExtrusionHandle_ && event->buttons().testFlag(Qt::LeftButton)) {
+    const QString support = selectedExtrusionSupport_.isEmpty()
+                                ? solidSupportName_
+                                : selectedExtrusionSupport_;
+    const Point3 normal = supportNormal(support);
+    const QPointF origin = project({0.0F, 0.0F, 0.0F}, size(), yaw_, pitch_, zoom_);
+    QPointF axis = project(translated({0.0F, 0.0F, 0.0F}, normal, 1.0F),
+                           size(), yaw_, pitch_, zoom_) - origin;
+    const double axisLengthSquared = QPointF::dotProduct(axis, axis);
+    if (axisLengthSquared > 0.0001) {
+      const QPointF mouseOffset = event->position() - cameraPan_ -
+                                  extrusionManipulatorAnchor_;
+      setExtrusionPreviewLength(
+          QPointF::dotProduct(mouseOffset, axis) / axisLengthSquared);
+    }
+    return;
+  }
   if (pickMode_ == PickMode::ExtrusionSurface) {
-    updateExtrusionHover(event->position());
+    updateExtrusionHover(event->position() - cameraPan_);
+    update();
+    return;
+  }
+  if (pickMode_ == PickMode::SketchPlane) {
+    updateSketchPlaneHover(event->position() - cameraPan_);
     update();
     return;
   }
@@ -720,10 +1849,63 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
   }
 }
 
+void Viewport::mouseReleaseEvent(QMouseEvent* event) {
+  if (event->button() == Qt::MiddleButton && panningView_) {
+    panningView_ = false;
+    unsetCursor();
+    event->accept();
+    return;
+  }
+  if (event->button() == Qt::LeftButton && draggingExtrusionHandle_) {
+    draggingExtrusionHandle_ = false;
+    unsetCursor();
+    event->accept();
+    return;
+  }
+  if (event->button() == Qt::LeftButton && draggingBody_) {
+    draggingBody_ = false;
+    const QPointF current(offsetX_, offsetY_);
+    if (QLineF(bodyDragStart_, current).length() > 0.0001)
+      emit bodyMoveCommitted(bodyDragStart_, current);
+    event->accept();
+    return;
+  }
+  QWidget::mouseReleaseEvent(event);
+}
+
 void Viewport::wheelEvent(QWheelEvent* event) {
   zoom_ = std::clamp(zoom_ * (event->angleDelta().y() > 0 ? 1.1F : 0.9F),
                      0.25F, 5.0F);
   update();
+}
+
+void Viewport::keyPressEvent(QKeyEvent* event) {
+  if (event->key() == Qt::Key_Control && extrusionManipulatorVisible_) {
+    hideExtrusionManipulator();
+    pickMode_ = PickMode::ExtrusionSurface;
+    extrusionHoverPolygon_.clear();
+    extrusionHoverPath_ = {};
+    setCursor(Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+  if (event->key() == Qt::Key_Escape) {
+    pickMode_ = PickMode::None;
+    hideExtrusionManipulator();
+    extrusionHoverPolygon_.clear();
+    extrusionHoverPath_ = {};
+    selectedExtrusionPolygons_.clear();
+    selectedExtrusionPaths_.clear();
+    selectedExtrusionRegionSketches_.clear();
+    selectedExtrusionSketch_.clear();
+    unsetCursor();
+    emit selectionChanged(QStringLiteral("__cancel_tools__"));
+    update();
+    event->accept();
+    return;
+  }
+  QWidget::keyPressEvent(event);
 }
 
 }  // namespace solidar
