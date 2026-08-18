@@ -51,15 +51,45 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
       circles.append(QJsonObject{{"x", circle.center.xMm}, {"y", circle.center.yMm},
                                  {"radius", circle.radiusMm}, {"dashed", circle.dashed}});
     QJsonArray dimensions;
-    for (const auto& dimension : saved.geometry.dimensions())
+    for (const auto& dimension : saved.geometry.dimensions()) {
+      // Project format v1 stores geometry positions as vector indices.
+      // Internally the sketch now uses stable GeometryId values, so resolve
+      // them only at the serialization boundary to keep old project files
+      // readable without changing the file-format version.
+      qint64 geometryIndex = -1;
+      if (dimension.kind == sketch::DimensionKind::LineLength) {
+        const auto index = saved.geometry.lineIndex(dimension.geometryId);
+        if (!index) continue;
+        geometryIndex = static_cast<qint64>(*index);
+      } else if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
+        const auto index = saved.geometry.circleIndex(dimension.geometryId);
+        if (!index) continue;
+        geometryIndex = static_cast<qint64>(*index);
+      }
+
+      qint64 firstLine = -1;
+      qint64 secondLine = -1;
+      if (dimension.kind == sketch::DimensionKind::PointDistance) {
+        const auto firstIndex =
+            saved.geometry.lineIndex(dimension.firstPoint.lineId);
+        const auto secondIndex =
+            saved.geometry.lineIndex(dimension.secondPoint.lineId);
+        if (!firstIndex || !secondIndex) continue;
+        firstLine = static_cast<qint64>(*firstIndex);
+        secondLine = static_cast<qint64>(*secondIndex);
+      }
+
       dimensions.append(QJsonObject{
           {"kind", static_cast<int>(dimension.kind)},
-          {"geometryIndex", static_cast<qint64>(dimension.geometryIndex)},
-          {"firstLine", static_cast<qint64>(dimension.firstPoint.lineIndex)},
+          {"geometryIndex", geometryIndex},
+          {"firstLine", firstLine},
           {"firstStart", dimension.firstPoint.start},
-          {"secondLine", static_cast<qint64>(dimension.secondPoint.lineIndex)},
-          {"secondStart", dimension.secondPoint.start}, {"value", dimension.valueMm},
-          {"offset", dimension.offsetMm}, {"angle", dimension.angleRad}});
+          {"secondLine", secondLine},
+          {"secondStart", dimension.secondPoint.start},
+          {"value", dimension.valueMm},
+          {"offset", dimension.offsetMm},
+          {"angle", dimension.angleRad}});
+    }
     sketches.append(QJsonObject{{"support", saved.support}, {"lines", lines},
                                 {"circles", circles}, {"dimensions", dimensions}});
   }
@@ -132,16 +162,43 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
         saved.geometry.setCircleDashed(saved.geometry.circles().size() - 1, true);
     }
     for (const auto dimensionValue : savedObject.value("dimensions").toArray()) {
-      const auto dimension = dimensionValue.toObject();
-      saved.geometry.storeDimension({
-          static_cast<sketch::DimensionKind>(dimension.value("kind").toInt()),
-          static_cast<std::size_t>(dimension.value("geometryIndex").toInteger()),
-          {static_cast<std::size_t>(dimension.value("firstLine").toInteger()),
-           dimension.value("firstStart").toBool(true)},
-          {static_cast<std::size_t>(dimension.value("secondLine").toInteger()),
-           dimension.value("secondStart").toBool(true)},
-          dimension.value("value").toDouble(), dimension.value("offset").toDouble(4.0),
-          dimension.value("angle").toDouble()});
+      const auto object = dimensionValue.toObject();
+      const auto kind =
+          static_cast<sketch::DimensionKind>(object.value("kind").toInt());
+
+      sketch::Dimension dimension;
+      dimension.kind = kind;
+      dimension.valueMm = object.value("value").toDouble();
+      dimension.offsetMm = object.value("offset").toDouble(4.0);
+      dimension.angleRad = object.value("angle").toDouble();
+
+      if (kind == sketch::DimensionKind::LineLength) {
+        const auto index =
+            static_cast<std::size_t>(object.value("geometryIndex").toInteger());
+        dimension.geometryId = saved.geometry.lineId(index);
+        if (dimension.geometryId == sketch::kInvalidGeometryId) continue;
+      } else if (kind == sketch::DimensionKind::CircleDiameter) {
+        const auto index =
+            static_cast<std::size_t>(object.value("geometryIndex").toInteger());
+        dimension.geometryId = saved.geometry.circleId(index);
+        if (dimension.geometryId == sketch::kInvalidGeometryId) continue;
+      } else if (kind == sketch::DimensionKind::PointDistance) {
+        const auto firstIndex =
+            static_cast<std::size_t>(object.value("firstLine").toInteger());
+        const auto secondIndex =
+            static_cast<std::size_t>(object.value("secondLine").toInteger());
+        const auto firstId = saved.geometry.lineId(firstIndex);
+        const auto secondId = saved.geometry.lineId(secondIndex);
+        if (firstId == sketch::kInvalidGeometryId ||
+            secondId == sketch::kInvalidGeometryId)
+          continue;
+        dimension.firstPoint = {
+            firstId, object.value("firstStart").toBool(true)};
+        dimension.secondPoint = {
+            secondId, object.value("secondStart").toBool(true)};
+      }
+
+      saved.geometry.storeDimension(dimension);
     }
     loaded.sketches.push_back(std::move(saved));
   }

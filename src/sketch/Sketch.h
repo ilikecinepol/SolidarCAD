@@ -29,7 +29,7 @@ struct Circle {
 };
 
 struct PointReference {
-  std::size_t lineIndex{};
+  GeometryId lineId{kInvalidGeometryId};
   bool start{true};
 };
 
@@ -37,7 +37,7 @@ enum class DimensionKind { LineLength, PointDistance, CircleDiameter };
 
 struct Dimension {
   DimensionKind kind{DimensionKind::LineLength};
-  std::size_t geometryIndex{};
+  GeometryId geometryId{kInvalidGeometryId};
   PointReference firstPoint{};
   PointReference secondPoint{};
   double valueMm{};
@@ -62,6 +62,10 @@ class Sketch final {
   void setElementDashed(std::size_t elementId, bool dashed);
   void setCircleDashed(std::size_t index, bool dashed);
   void translateCircle(std::size_t index, double dxMm, double dyMm);
+  void setCircleDashedById(GeometryId id, bool dashed);
+  void translateCircleById(GeometryId id, double dxMm, double dyMm);
+  bool setLineLengthById(GeometryId id, double lengthMm);
+  bool setCircleDiameterById(GeometryId id, double diameterMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;

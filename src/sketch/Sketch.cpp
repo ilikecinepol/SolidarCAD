@@ -104,31 +104,68 @@ void Sketch::addCircle(Point center, double radiusMm) {
 }
 
 void Sketch::removeLine(std::size_t index) {
-  if (index < lines_.size()) {
-    lines_.erase(lines_.begin() + index);
-    lineIds_.erase(lineIds_.begin() + index);
-  }
-  storedDimensions(this).clear();
+  if (index >= lines_.size()) return;
+
+  const GeometryId removedId = lineIds_[index];
+  lines_.erase(lines_.begin() + index);
+  lineIds_.erase(lineIds_.begin() + index);
+
+  auto& dimensions = storedDimensions(this);
+  std::erase_if(dimensions, [removedId](const Dimension& dimension) {
+    if (dimension.kind == DimensionKind::LineLength)
+      return dimension.geometryId == removedId;
+    if (dimension.kind == DimensionKind::PointDistance)
+      return dimension.firstPoint.lineId == removedId ||
+             dimension.secondPoint.lineId == removedId;
+    return false;
+  });
+
   updateBounds();
 }
 
 void Sketch::removeCircle(std::size_t index) {
-  if (index < circles_.size()) {
-    circles_.erase(circles_.begin() + index);
-    circleIds_.erase(circleIds_.begin() + index);
-  }
-  storedDimensions(this).clear();
+  if (index >= circles_.size()) return;
+
+  const GeometryId removedId = circleIds_[index];
+  circles_.erase(circles_.begin() + index);
+  circleIds_.erase(circleIds_.begin() + index);
+
+  auto& dimensions = storedDimensions(this);
+  std::erase_if(dimensions, [removedId](const Dimension& dimension) {
+    return dimension.kind == DimensionKind::CircleDiameter &&
+           dimension.geometryId == removedId;
+  });
+
   updateBounds();
 }
 
 void Sketch::removeElement(std::size_t elementId) {
+  std::vector<GeometryId> removedIds;
   for (std::size_t index = lines_.size(); index > 0; --index) {
     const std::size_t current = index - 1;
     if (lines_[current].elementId != elementId) continue;
+    removedIds.push_back(lineIds_[current]);
     lines_.erase(lines_.begin() + current);
     lineIds_.erase(lineIds_.begin() + current);
   }
-  storedDimensions(this).clear();
+
+  if (!removedIds.empty()) {
+    const auto wasRemoved = [&removedIds](GeometryId id) {
+      return std::find(removedIds.begin(), removedIds.end(), id) !=
+             removedIds.end();
+    };
+
+    auto& dimensions = storedDimensions(this);
+    std::erase_if(dimensions, [&wasRemoved](const Dimension& dimension) {
+      if (dimension.kind == DimensionKind::LineLength)
+        return wasRemoved(dimension.geometryId);
+      if (dimension.kind == DimensionKind::PointDistance)
+        return wasRemoved(dimension.firstPoint.lineId) ||
+               wasRemoved(dimension.secondPoint.lineId);
+      return false;
+    });
+  }
+
   updateBounds();
 }
 
@@ -161,6 +198,26 @@ void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
   updateBounds();
 }
 
+void Sketch::setCircleDashedById(GeometryId id, bool dashed) {
+  const auto index = circleIndex(id);
+  if (index) setCircleDashed(*index, dashed);
+}
+
+void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
+  const auto index = circleIndex(id);
+  if (index) translateCircle(*index, dxMm, dyMm);
+}
+
+bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
+  const auto index = lineIndex(id);
+  return index ? setLineLength(*index, lengthMm) : false;
+}
+
+bool Sketch::setCircleDiameterById(GeometryId id, double diameterMm) {
+  const auto index = circleIndex(id);
+  return index ? setCircleDiameter(*index, diameterMm) : false;
+}
+
 GeometryId Sketch::lineId(std::size_t index) const noexcept {
   return index < lineIds_.size() ? lineIds_[index] : kInvalidGeometryId;
 }
@@ -185,8 +242,9 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
 
 std::optional<Point> Sketch::referencedPoint(
     PointReference reference) const noexcept {
-  if (reference.lineIndex >= lines_.size()) return std::nullopt;
-  const auto& line = lines_[reference.lineIndex];
+  const auto index = lineIndex(reference.lineId);
+  if (!index) return std::nullopt;
+  const auto& line = lines_[*index];
   return reference.start ? line.start : line.end;
 }
 

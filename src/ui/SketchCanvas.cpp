@@ -260,8 +260,10 @@ void SketchCanvas::deleteSelection() {
   pushUndoState();
   if (selectionKind_ == SelectionKind::Line)
     sketch_.removeElement(selectionElementId_);
-  else if (selectionKind_ == SelectionKind::Circle)
-    sketch_.removeCircle(selectionIndex_);
+  else if (selectionKind_ == SelectionKind::Circle) {
+    const auto index = sketch_.circleIndex(selectionCircleId_);
+    if (index) sketch_.removeCircle(*index);
+  }
   else return;
   selectionKind_ = SelectionKind::None;
   emit lineStyleSelectionChanged(false, false);
@@ -411,7 +413,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
     const bool selected = selectionKind_ == SelectionKind::Circle &&
-                          selectionIndex_ == index;
+                          selectionCircleId_ == sketch_.circleId(index);
     painter.setPen(QPen(selected ? QColor("#ff8a24") : QColor("#1469d7"),
                         selected ? 3.0 : 2.0,
                         circle.dashed ? Qt::DashLine : Qt::SolidLine));
@@ -442,8 +444,9 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     const bool diameterDimension =
         dimension.kind == sketch::DimensionKind::CircleDiameter;
     if (diameterDimension) {
-      if (dimension.geometryIndex >= sketch_.circles().size()) continue;
-      const auto& circle = sketch_.circles()[dimension.geometryIndex];
+      const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
+      if (!circleIndex) continue;
+      const auto& circle = sketch_.circles()[*circleIndex];
       const double dx = std::cos(dimension.angleRad) * circle.radiusMm;
       const double dy = std::sin(dimension.angleRad) * circle.radiusMm;
       first = mapPoint({circle.center.xMm - dx, circle.center.yMm - dy});
@@ -451,8 +454,9 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       label = QString::fromUtf8("Ø %1 мм").arg(circle.radiusMm * 2.0, 0, 'f', 2);
     } else {
       if (dimension.kind == sketch::DimensionKind::LineLength) {
-        if (dimension.geometryIndex >= sketch_.lines().size()) continue;
-        const auto& line = sketch_.lines()[dimension.geometryIndex];
+        const auto lineIndex = sketch_.lineIndex(dimension.geometryId);
+        if (!lineIndex) continue;
+        const auto& line = sketch_.lines()[*lineIndex];
         first = mapPoint(line.start);
         second = mapPoint(line.end);
       } else {
@@ -512,17 +516,19 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     std::optional<QPointF> first;
     std::optional<QPointF> second;
     if (target == "line") {
-      const auto index = static_cast<std::size_t>(
+      const auto id = static_cast<sketch::GeometryId>(
           property("autoDimensionIndex").toULongLong());
-      if (index < sketch_.lines().size()) {
-        first = mapPoint(sketch_.lines()[index].start);
-        second = mapPoint(sketch_.lines()[index].end);
+      const auto index = sketch_.lineIndex(id);
+      if (index) {
+        first = mapPoint(sketch_.lines()[*index].start);
+        second = mapPoint(sketch_.lines()[*index].end);
       }
     } else if (target == "circle") {
-      const auto index = static_cast<std::size_t>(
+      const auto id = static_cast<sketch::GeometryId>(
           property("autoDimensionIndex").toULongLong());
-      if (index < sketch_.circles().size()) {
-        const auto& circle = sketch_.circles()[index];
+      const auto index = sketch_.circleIndex(id);
+      if (index) {
+        const auto& circle = sketch_.circles()[*index];
         const double angle = property("autoDimensionAngleRad").toDouble();
         const double dx = std::cos(angle) * circle.radiusMm;
         const double dy = std::sin(angle) * circle.radiusMm;
@@ -531,10 +537,10 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       }
     } else if (target == "points") {
       const sketch::PointReference firstReference{
-          static_cast<std::size_t>(property("autoDimensionFirstLine").toULongLong()),
+          static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
           property("autoDimensionFirstStart").toBool()};
       const sketch::PointReference secondReference{
-          static_cast<std::size_t>(property("autoDimensionSecondLine").toULongLong()),
+          static_cast<sketch::GeometryId>(property("autoDimensionSecondLine").toULongLong()),
           property("autoDimensionSecondStart").toBool()};
       const auto firstPoint = sketch_.referencedPoint(firstReference);
       const auto secondPoint = sketch_.referencedPoint(secondReference);
@@ -569,7 +575,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       property("autoDimensionFirstLine").isValid() &&
       property("autoDimensionTarget").toString().isEmpty()) {
     const sketch::PointReference first{
-        static_cast<std::size_t>(property("autoDimensionFirstLine").toULongLong()),
+        static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
         property("autoDimensionFirstStart").toBool()};
     if (const auto point = sketch_.referencedPoint(first)) {
       painter.setPen(QPen(QColor("#0872f9"), 2.0));
@@ -731,20 +737,20 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
   if (dimension.kind == sketch::DimensionKind::LineLength) {
     setProperty("autoDimensionTarget", "line");
     setProperty("autoDimensionIndex",
-                static_cast<qulonglong>(dimension.geometryIndex));
+                static_cast<qulonglong>(dimension.geometryId));
     primaryDimension_->setPrefix(QString());
   } else if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
     setProperty("autoDimensionTarget", "circle");
     setProperty("autoDimensionIndex",
-                static_cast<qulonglong>(dimension.geometryIndex));
+                static_cast<qulonglong>(dimension.geometryId));
     primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));
   } else {
     setProperty("autoDimensionTarget", "points");
     setProperty("autoDimensionFirstLine",
-                static_cast<qulonglong>(dimension.firstPoint.lineIndex));
+                static_cast<qulonglong>(dimension.firstPoint.lineId));
     setProperty("autoDimensionFirstStart", dimension.firstPoint.start);
     setProperty("autoDimensionSecondLine",
-                static_cast<qulonglong>(dimension.secondPoint.lineIndex));
+                static_cast<qulonglong>(dimension.secondPoint.lineId));
     setProperty("autoDimensionSecondStart", dimension.secondPoint.start);
     primaryDimension_->setPrefix(QString());
   }
@@ -814,9 +820,10 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     if (index < sketch_.dimensions().size()) {
       const auto& dimension = sketch_.dimensions()[index];
       if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
-        if (dimension.geometryIndex < sketch_.circles().size()) {
+        const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
+        if (circleIndex) {
           const QPointF center =
-              mapPoint(sketch_.circles()[dimension.geometryIndex].center);
+              mapPoint(sketch_.circles()[*circleIndex].center);
           const QPointF delta = event->position() - center;
           if (std::hypot(delta.x(), delta.y()) > 2.0)
             sketch_.setDimensionPlacement(
@@ -850,10 +857,11 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
       property("autoDimensionTarget").isValid()) {
     const QString target = property("autoDimensionTarget").toString();
     if (target == "circle") {
-      const auto index = static_cast<std::size_t>(
+      const auto id = static_cast<sketch::GeometryId>(
           property("autoDimensionIndex").toULongLong());
-      if (index < sketch_.circles().size()) {
-        const auto center = mapPoint(sketch_.circles()[index].center);
+      const auto index = sketch_.circleIndex(id);
+      if (index) {
+        const auto center = mapPoint(sketch_.circles()[*index].center);
         const QPointF delta = event->position() - center;
         if (std::hypot(delta.x(), delta.y()) > 2.0)
           setProperty("autoDimensionAngleRad",
@@ -863,18 +871,19 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
       std::optional<QPointF> first;
       std::optional<QPointF> second;
       if (target == "line") {
-        const auto index = static_cast<std::size_t>(
+        const auto id = static_cast<sketch::GeometryId>(
             property("autoDimensionIndex").toULongLong());
-        if (index < sketch_.lines().size()) {
-          first = mapPoint(sketch_.lines()[index].start);
-          second = mapPoint(sketch_.lines()[index].end);
+        const auto index = sketch_.lineIndex(id);
+        if (index) {
+          first = mapPoint(sketch_.lines()[*index].start);
+          second = mapPoint(sketch_.lines()[*index].end);
         }
       } else if (target == "points") {
         const sketch::PointReference firstReference{
-            static_cast<std::size_t>(property("autoDimensionFirstLine").toULongLong()),
+            static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
             property("autoDimensionFirstStart").toBool()};
         const sketch::PointReference secondReference{
-            static_cast<std::size_t>(property("autoDimensionSecondLine").toULongLong()),
+            static_cast<sketch::GeometryId>(property("autoDimensionSecondLine").toULongLong()),
             property("autoDimensionSecondStart").toBool()};
         const auto firstPoint = sketch_.referencedPoint(firstReference);
         const auto secondPoint = sketch_.referencedPoint(secondReference);
@@ -904,7 +913,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     if (selectionKind_ == SelectionKind::Line)
       sketch_.translateElement(selectionElementId_, dx, dy);
     else if (selectionKind_ == SelectionKind::Circle)
-      sketch_.translateCircle(selectionIndex_, dx, dy);
+      sketch_.translateCircleById(selectionCircleId_, dx, dy);
     dragPoint_ = current;
     update();
   } else if (anchor_) {
@@ -1004,8 +1013,9 @@ bool SketchCanvas::dimensionSegment(std::size_t index, QPointF& first,
   const bool diameter =
       dimension.kind == sketch::DimensionKind::CircleDiameter;
   if (diameter) {
-    if (dimension.geometryIndex >= sketch_.circles().size()) return false;
-    const auto& circle = sketch_.circles()[dimension.geometryIndex];
+    const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
+    if (!circleIndex) return false;
+    const auto& circle = sketch_.circles()[*circleIndex];
     const double dx = std::cos(dimension.angleRad) * circle.radiusMm;
     const double dy = std::sin(dimension.angleRad) * circle.radiusMm;
     first = mapPoint({circle.center.xMm - dx, circle.center.yMm - dy});
@@ -1015,9 +1025,10 @@ bool SketchCanvas::dimensionSegment(std::size_t index, QPointF& first,
   sketch::Point firstPoint;
   sketch::Point secondPoint;
   if (dimension.kind == sketch::DimensionKind::LineLength) {
-    if (dimension.geometryIndex >= sketch_.lines().size()) return false;
-    firstPoint = sketch_.lines()[dimension.geometryIndex].start;
-    secondPoint = sketch_.lines()[dimension.geometryIndex].end;
+    const auto lineIndex = sketch_.lineIndex(dimension.geometryId);
+    if (!lineIndex) return false;
+    firstPoint = sketch_.lines()[*lineIndex].start;
+    secondPoint = sketch_.lines()[*lineIndex].end;
   } else {
     const auto referencedFirst = sketch_.referencedPoint(dimension.firstPoint);
     const auto referencedSecond = sketch_.referencedPoint(dimension.secondPoint);
@@ -1143,20 +1154,20 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
       const double distance = QLineF(position, mapPoint(point)).length();
       if (distance < pointDistance) {
         pointDistance = distance;
-        clickedPoint = sketch::PointReference{index, start};
+        clickedPoint = sketch::PointReference{sketch_.lineId(index), start};
       }
     }
   }
   if (clickedPoint) {
     if (!property("autoDimensionFirstLine").isValid()) {
       setProperty("autoDimensionFirstLine",
-                  static_cast<qulonglong>(clickedPoint->lineIndex));
+                  static_cast<qulonglong>(clickedPoint->lineId));
       setProperty("autoDimensionFirstStart", clickedPoint->start);
       update();
       return;
     }
     const sketch::PointReference first{
-        static_cast<std::size_t>(property("autoDimensionFirstLine").toULongLong()),
+        static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
         property("autoDimensionFirstStart").toBool()};
     const auto firstPoint = sketch_.referencedPoint(first);
     const auto secondPoint = sketch_.referencedPoint(*clickedPoint);
@@ -1167,7 +1178,7 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
     setProperty("autoDimensionTarget", "points");
     setProperty("autoDimensionOffsetMm", 4.0);
     setProperty("autoDimensionSecondLine",
-                static_cast<qulonglong>(clickedPoint->lineIndex));
+                static_cast<qulonglong>(clickedPoint->lineId));
     setProperty("autoDimensionSecondStart", clickedPoint->start);
     primaryDimension_->setPrefix(QString());
     primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
@@ -1213,13 +1224,15 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
     const auto& line = sketch_.lines()[*lineIndex];
     setProperty("autoDimensionTarget", "line");
     setProperty("autoDimensionOffsetMm", 4.0);
-    setProperty("autoDimensionIndex", static_cast<qulonglong>(*lineIndex));
+    setProperty("autoDimensionIndex",
+                static_cast<qulonglong>(sketch_.lineId(*lineIndex)));
     primaryDimension_->setPrefix(QString());
     primaryDimension_->setValue(std::hypot(line.end.xMm - line.start.xMm,
                                             line.end.yMm - line.start.yMm));
   } else {
     setProperty("autoDimensionTarget", "circle");
-    setProperty("autoDimensionIndex", static_cast<qulonglong>(*circleIndex));
+    setProperty("autoDimensionIndex",
+                static_cast<qulonglong>(sketch_.circleId(*circleIndex)));
     primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));
     const QPointF center = mapPoint(sketch_.circles()[*circleIndex].center);
     const QPointF delta = position - center;
@@ -1250,23 +1263,23 @@ void SketchCanvas::commitAutoDimension() {
   dimension.angleRad = property("autoDimensionAngleRad").toDouble();
   bool changed = false;
   if (target == "line") {
-    const auto index = static_cast<std::size_t>(
+    const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
-    changed = sketch_.setLineLength(index, value);
+    changed = sketch_.setLineLengthById(id, value);
     dimension.kind = sketch::DimensionKind::LineLength;
-    dimension.geometryIndex = index;
+    dimension.geometryId = id;
   } else if (target == "circle") {
-    const auto index = static_cast<std::size_t>(
+    const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
-    changed = sketch_.setCircleDiameter(index, value);
+    changed = sketch_.setCircleDiameterById(id, value);
     dimension.kind = sketch::DimensionKind::CircleDiameter;
-    dimension.geometryIndex = index;
+    dimension.geometryId = id;
   } else if (target == "points") {
     const sketch::PointReference first{
-        static_cast<std::size_t>(property("autoDimensionFirstLine").toULongLong()),
+        static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
         property("autoDimensionFirstStart").toBool()};
     const sketch::PointReference second{
-        static_cast<std::size_t>(property("autoDimensionSecondLine").toULongLong()),
+        static_cast<sketch::GeometryId>(property("autoDimensionSecondLine").toULongLong()),
         property("autoDimensionSecondStart").toBool()};
     changed = sketch_.setPointDistance(first, second, value);
     dimension.kind = sketch::DimensionKind::PointDistance;
@@ -1313,7 +1326,6 @@ void SketchCanvas::selectAt(QPointF position) {
     if (distance < bestDistance) {
       bestDistance = distance;
       selectionKind_ = SelectionKind::Line;
-      selectionIndex_ = index;
       selectionElementId_ = line.elementId;
     }
   }
@@ -1325,7 +1337,7 @@ void SketchCanvas::selectAt(QPointF position) {
     if (distance < bestDistance) {
       bestDistance = distance;
       selectionKind_ = SelectionKind::Circle;
-      selectionIndex_ = index;
+      selectionCircleId_ = sketch_.circleId(index);
     }
   }
   if (selectionKind_ == SelectionKind::Line)
@@ -1341,9 +1353,9 @@ void SketchCanvas::selectAt(QPointF position) {
           return line.elementId == selectionElementId_;
         });
     dashed = found != sketch_.lines().end() && found->dashed;
-  } else if (selectionKind_ == SelectionKind::Circle &&
-             selectionIndex_ < sketch_.circles().size()) {
-    dashed = sketch_.circles()[selectionIndex_].dashed;
+  } else if (selectionKind_ == SelectionKind::Circle) {
+    const auto index = sketch_.circleIndex(selectionCircleId_);
+    dashed = index && sketch_.circles()[*index].dashed;
   }
   emit lineStyleSelectionChanged(selectionKind_ != SelectionKind::None, dashed);
   update();
@@ -1645,7 +1657,7 @@ void SketchCanvas::setSelectedDashed(bool dashed) {
   if (selectionKind_ == SelectionKind::Line)
     sketch_.setElementDashed(selectionElementId_, dashed);
   else
-    sketch_.setCircleDashed(selectionIndex_, dashed);
+    sketch_.setCircleDashedById(selectionCircleId_, dashed);
   emit lineStyleSelectionChanged(true, dashed);
   notifyGeometryChanged();
 }

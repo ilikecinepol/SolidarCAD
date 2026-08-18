@@ -105,7 +105,7 @@ signals:
   std::vector<sketch::Sketch> undoStack_;
   Tool tool_{Tool::Select};
   SelectionKind selectionKind_{SelectionKind::None};
-  std::size_t selectionIndex_{};
+  sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
   std::optional<sketch::Point> anchor_;
   sketch::Point hoverPoint_{};
