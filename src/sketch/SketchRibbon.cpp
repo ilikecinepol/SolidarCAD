@@ -159,19 +159,50 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   toolGroup->addButton(coincidentTool);
   constraintsLayout->addWidget(coincidentTool);
 
-  auto* constraintLabels = new QVBoxLayout;
-  auto* snap = new QLabel(QString::fromUtf8("●  Привязка к сетке"), this);
-  snap->setObjectName("constraintReady");
-  auto* orthogonal = new QLabel(
-      QString::fromUtf8("●  Горизонт./вертик. — готово"), this);
-  orthogonal->setObjectName("constraintReady");
-  auto* coincident = new QLabel(
-      QString::fromUtf8("●  Совпадение — готово"), this);
-  coincident->setObjectName("constraintReady");
-  constraintLabels->addWidget(snap);
-  constraintLabels->addWidget(orthogonal);
-  constraintLabels->addWidget(coincident);
-  constraintsLayout->addLayout(constraintLabels);
+  auto* perpendicularTool =
+      new QPushButton(QString::fromUtf8("⊥"), this);
+  perpendicularTool->setObjectName("toolButton");
+  perpendicularTool->setCheckable(true);
+  perpendicularTool->setFixedSize(54, 54);
+  perpendicularTool->setFocusPolicy(Qt::NoFocus);
+  perpendicularTool->setCursor(Qt::PointingHandCursor);
+  perpendicularTool->setToolTip(
+      QString::fromUtf8("Перпендикулярность"));
+  QFont perpendicularFont = perpendicularTool->font();
+  perpendicularFont.setPointSize(22);
+  perpendicularTool->setFont(perpendicularFont);
+  toolGroup->addButton(perpendicularTool);
+  constraintsLayout->addWidget(perpendicularTool);
+
+  auto* parallelTool =
+      new QPushButton(QString::fromUtf8("∥"), this);
+  parallelTool->setObjectName("toolButton");
+  parallelTool->setCheckable(true);
+  parallelTool->setFixedSize(54, 54);
+  parallelTool->setFocusPolicy(Qt::NoFocus);
+  parallelTool->setCursor(Qt::PointingHandCursor);
+  parallelTool->setToolTip(QString::fromUtf8("Параллельность"));
+  QFont parallelFont = parallelTool->font();
+  parallelFont.setPointSize(20);
+  parallelTool->setFont(parallelFont);
+  toolGroup->addButton(parallelTool);
+  constraintsLayout->addWidget(parallelTool);
+
+  auto* equalTool =
+      new QPushButton(QString::fromUtf8("="), this);
+  equalTool->setObjectName("toolButton");
+  equalTool->setCheckable(true);
+  equalTool->setFixedSize(54, 54);
+  equalTool->setFocusPolicy(Qt::NoFocus);
+  equalTool->setCursor(Qt::PointingHandCursor);
+  equalTool->setToolTip(QString::fromUtf8("Эквивалентность"));
+  QFont equalFont = equalTool->font();
+  equalFont.setPointSize(20);
+  equalFont.setBold(true);
+  equalTool->setFont(equalFont);
+  toolGroup->addButton(equalTool);
+  constraintsLayout->addWidget(equalTool);
+
   root->addWidget(groupWidget(QString::fromUtf8("ОГРАНИЧЕНИЯ"),
                               constraintsLayout, this));
   root->addStretch();
@@ -198,6 +229,18 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   connect(coincidentTool, &QPushButton::clicked, canvas,
           [canvas] {
             canvas->setTool(SketchCanvas::Tool::CoincidentConstraint);
+          });
+  connect(perpendicularTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::PerpendicularConstraint);
+          });
+  connect(parallelTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::ParallelConstraint);
+          });
+  connect(equalTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::EqualConstraint);
           });
   connect(canvas, &SketchCanvas::toolChanged, this,
           [toolGroup](SketchCanvas::Tool tool) {

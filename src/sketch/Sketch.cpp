@@ -72,36 +72,165 @@ void Sketch::addLine(Point start, Point end, std::size_t elementId) {
 }
 
 void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
-  if (firstCorner.xMm == oppositeCorner.xMm ||
-      firstCorner.yMm == oppositeCorner.yMm)
+  if (std::abs(firstCorner.xMm - oppositeCorner.xMm) < 1e-9 ||
+      std::abs(firstCorner.yMm - oppositeCorner.yMm) < 1e-9)
     return;
+
   const Point second{oppositeCorner.xMm, firstCorner.yMm};
   const Point fourth{firstCorner.xMm, oppositeCorner.yMm};
   const auto elementId = nextElementId_++;
+
+  const GeometryId firstLineId = nextGeometryId_++;
+  const GeometryId secondLineId = nextGeometryId_++;
+  const GeometryId thirdLineId = nextGeometryId_++;
+  const GeometryId fourthLineId = nextGeometryId_++;
+
   lines_.push_back({firstCorner, second, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(firstLineId);
   lines_.push_back({second, oppositeCorner, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(secondLineId);
   lines_.push_back({oppositeCorner, fourth, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(thirdLineId);
   lines_.push_back({fourth, firstCorner, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(fourthLineId);
+
+  const auto addCornerCoincident =
+      [this](GeometryId firstId, bool firstStart,
+             GeometryId secondId, bool secondStart) {
+        Constraint constraint;
+        constraint.type = ConstraintType::Coincident;
+        constraint.firstPoint = PointReference{firstId, firstStart};
+        constraint.secondPoint = PointReference{secondId, secondStart};
+        addConstraint(constraint);
+      };
+
+  // Four persistent CAD corners.
+  addCornerCoincident(firstLineId, false, secondLineId, true);
+  addCornerCoincident(secondLineId, false, thirdLineId, true);
+  addCornerCoincident(thirdLineId, false, fourthLineId, true);
+  addCornerCoincident(fourthLineId, false, firstLineId, true);
+
+  // Minimal non-redundant rectangle orientation system.
+  // Opposite sides have equal lengths. Together with the four connected
+  // corners and one right angle, this defines a rectangle without explicit
+  // Parallel constraints.
+  Constraint firstEqual;
+  firstEqual.type = ConstraintType::Equal;
+  firstEqual.firstGeometry = firstLineId;
+  firstEqual.secondGeometry = thirdLineId;
+  addConstraint(firstEqual);
+
+  Constraint secondEqual;
+  secondEqual.type = ConstraintType::Equal;
+  secondEqual.firstGeometry = secondLineId;
+  secondEqual.secondGeometry = fourthLineId;
+  addConstraint(secondEqual);
+
+  // Keep explicit parallel relationships as well. They are mathematically
+  // redundant with the rectangle system, but make the current sequential
+  // solver much more stable during interactive dragging.
+  Constraint firstParallel;
+  firstParallel.type = ConstraintType::Parallel;
+  firstParallel.firstGeometry = firstLineId;
+  firstParallel.secondGeometry = thirdLineId;
+  addConstraint(firstParallel);
+
+  Constraint secondParallel;
+  secondParallel.type = ConstraintType::Parallel;
+  secondParallel.firstGeometry = secondLineId;
+  secondParallel.secondGeometry = fourthLineId;
+  addConstraint(secondParallel);
+
+  Constraint perpendicular;
+  perpendicular.type = ConstraintType::Perpendicular;
+  perpendicular.firstGeometry = firstLineId;
+  perpendicular.secondGeometry = secondLineId;
+  addConstraint(perpendicular);
+
+  // A standard two-point rectangle is axis-aligned. Keep that absolute
+  // orientation while allowing width and height to change independently.
+  Constraint horizontal;
+  horizontal.type = ConstraintType::Horizontal;
+  horizontal.firstGeometry = firstLineId;
+  addConstraint(horizontal);
+
+  Constraint vertical;
+  vertical.type = ConstraintType::Vertical;
+  vertical.firstGeometry = secondLineId;
+  addConstraint(vertical);
+
   updateBounds();
 }
-
 void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) {
   const auto elementId = nextElementId_++;
+
+  const GeometryId firstLineId = nextGeometryId_++;
+  const GeometryId secondLineId = nextGeometryId_++;
+  const GeometryId thirdLineId = nextGeometryId_++;
+  const GeometryId fourthLineId = nextGeometryId_++;
+
   lines_.push_back({first, second, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(firstLineId);
   lines_.push_back({second, third, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(secondLineId);
   lines_.push_back({third, fourth, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(thirdLineId);
   lines_.push_back({fourth, first, elementId});
-  lineIds_.push_back(nextGeometryId_++);
+  lineIds_.push_back(fourthLineId);
+
+  const auto addCornerCoincident =
+      [this](GeometryId firstId, bool firstStart,
+             GeometryId secondId, bool secondStart) {
+        Constraint constraint;
+        constraint.type = ConstraintType::Coincident;
+        constraint.firstPoint = PointReference{firstId, firstStart};
+        constraint.secondPoint = PointReference{secondId, secondStart};
+        addConstraint(constraint);
+      };
+
+  addCornerCoincident(firstLineId, false, secondLineId, true);
+  addCornerCoincident(secondLineId, false, thirdLineId, true);
+  addCornerCoincident(thirdLineId, false, fourthLineId, true);
+  addCornerCoincident(fourthLineId, false, firstLineId, true);
+
+  // Opposite sides have equal lengths. Together with the four connected
+  // corners and one right angle, this defines a rectangle without explicit
+  // Parallel constraints.
+  Constraint firstEqual;
+  firstEqual.type = ConstraintType::Equal;
+  firstEqual.firstGeometry = firstLineId;
+  firstEqual.secondGeometry = thirdLineId;
+  addConstraint(firstEqual);
+
+  Constraint secondEqual;
+  secondEqual.type = ConstraintType::Equal;
+  secondEqual.firstGeometry = secondLineId;
+  secondEqual.secondGeometry = fourthLineId;
+  addConstraint(secondEqual);
+
+  // Keep explicit parallel relationships as well. They are mathematically
+  // redundant with the rectangle system, but make the current sequential
+  // solver much more stable during interactive dragging.
+  Constraint firstParallel;
+  firstParallel.type = ConstraintType::Parallel;
+  firstParallel.firstGeometry = firstLineId;
+  firstParallel.secondGeometry = thirdLineId;
+  addConstraint(firstParallel);
+
+  Constraint secondParallel;
+  secondParallel.type = ConstraintType::Parallel;
+  secondParallel.firstGeometry = secondLineId;
+  secondParallel.secondGeometry = fourthLineId;
+  addConstraint(secondParallel);
+
+  Constraint perpendicular;
+  perpendicular.type = ConstraintType::Perpendicular;
+  perpendicular.firstGeometry = firstLineId;
+  perpendicular.secondGeometry = secondLineId;
+  addConstraint(perpendicular);
+
   updateBounds();
 }
-
 void Sketch::addCircle(Point center, double radiusMm) {
   if (radiusMm <= 0.0) return;
   circles_.push_back({center, radiusMm});
@@ -482,7 +611,115 @@ void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
 
 bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
   const auto index = lineIndex(id);
-  return index ? setLineLength(*index, lengthMm) : false;
+  if (!index || lengthMm <= 0.0) return false;
+
+  const std::size_t elementId = lines_[*index].elementId;
+
+  std::vector<std::size_t> elementLines;
+  for (std::size_t lineIndexValue = 0;
+       lineIndexValue < lines_.size(); ++lineIndexValue) {
+    if (lines_[lineIndexValue].elementId == elementId)
+      elementLines.push_back(lineIndexValue);
+  }
+
+  // A four-line composite element is a rectangle in the current Sketch
+  // model. Resize the whole rectangle instead of stretching one primitive.
+  if (elementLines.size() == 4) {
+    const auto found =
+        std::find(elementLines.begin(), elementLines.end(), *index);
+    if (found == elementLines.end()) return false;
+
+    const std::size_t side =
+        static_cast<std::size_t>(
+            std::distance(elementLines.begin(), found));
+
+    const std::size_t i0 = elementLines[side];
+    const std::size_t i1 = elementLines[(side + 1) % 4];
+    const std::size_t i2 = elementLines[(side + 2) % 4];
+    const std::size_t i3 = elementLines[(side + 3) % 4];
+
+    const Line& selected = lines_[i0];
+    const Line& adjacent = lines_[i1];
+
+    double ux = selected.end.xMm - selected.start.xMm;
+    double uy = selected.end.yMm - selected.start.yMm;
+    const double selectedLength = std::hypot(ux, uy);
+    if (selectedLength <= 1e-9) return false;
+
+    ux /= selectedLength;
+    uy /= selectedLength;
+
+    double vx = adjacent.end.xMm - adjacent.start.xMm;
+    double vy = adjacent.end.yMm - adjacent.start.yMm;
+
+    // Orthogonalize the second rectangle axis. This also repairs a slightly
+    // distorted rectangle instead of preserving its accumulated skew.
+    const double projection = vx * ux + vy * uy;
+    vx -= projection * ux;
+    vy -= projection * uy;
+
+    double adjacentLength = std::hypot(vx, vy);
+    if (adjacentLength <= 1e-9) {
+      // Preserve the handedness using the raw adjacent direction.
+      const double rawX = adjacent.end.xMm - adjacent.start.xMm;
+      const double rawY = adjacent.end.yMm - adjacent.start.yMm;
+      const double cross = ux * rawY - uy * rawX;
+      vx = cross < 0.0 ? uy : -uy;
+      vy = cross < 0.0 ? -ux : ux;
+      adjacentLength = std::hypot(
+          adjacent.end.xMm - adjacent.start.xMm,
+          adjacent.end.yMm - adjacent.start.yMm);
+    } else {
+      vx /= adjacentLength;
+      vy /= adjacentLength;
+
+      // Use the actual adjacent side length, not the orthogonal projection
+      // length, as the preserved second rectangle dimension.
+      adjacentLength = std::hypot(
+          adjacent.end.xMm - adjacent.start.xMm,
+          adjacent.end.yMm - adjacent.start.yMm);
+    }
+
+    if (adjacentLength <= 1e-9) return false;
+
+    // Compute the element centre from all eight stored endpoints. Averaging
+    // makes the operation stable even if Coincident is off by a tiny epsilon.
+    Point center{};
+    for (const auto lineIndexValue : elementLines) {
+      center.xMm += lines_[lineIndexValue].start.xMm;
+      center.yMm += lines_[lineIndexValue].start.yMm;
+      center.xMm += lines_[lineIndexValue].end.xMm;
+      center.yMm += lines_[lineIndexValue].end.yMm;
+    }
+    center.xMm /= 8.0;
+    center.yMm /= 8.0;
+
+    const double halfU = lengthMm * 0.5;
+    const double halfV = adjacentLength * 0.5;
+
+    const Point p0{center.xMm - ux * halfU - vx * halfV,
+                   center.yMm - uy * halfU - vy * halfV};
+    const Point p1{center.xMm + ux * halfU - vx * halfV,
+                   center.yMm + uy * halfU - vy * halfV};
+    const Point p2{center.xMm + ux * halfU + vx * halfV,
+                   center.yMm + uy * halfU + vy * halfV};
+    const Point p3{center.xMm - ux * halfU + vx * halfV,
+                   center.yMm - uy * halfU + vy * halfV};
+
+    lines_[i0].start = p0;
+    lines_[i0].end = p1;
+    lines_[i1].start = p1;
+    lines_[i1].end = p2;
+    lines_[i2].start = p2;
+    lines_[i2].end = p3;
+    lines_[i3].start = p3;
+    lines_[i3].end = p0;
+
+    updateBounds();
+    return true;
+  }
+
+  return setLineLength(*index, lengthMm);
 }
 
 bool Sketch::setCircleDiameterById(GeometryId id, double diameterMm) {
@@ -528,6 +765,88 @@ bool Sketch::setLineVerticalById(GeometryId id) {
   return true;
 }
 
+bool Sketch::setLinesParallelByIds(GeometryId firstId,
+                                   GeometryId secondId) {
+  const auto firstIndex = lineIndex(firstId);
+  const auto secondIndex = lineIndex(secondId);
+
+  if (!firstIndex || !secondIndex || firstId == secondId)
+    return false;
+
+  const auto& first = lines_[*firstIndex];
+  auto& second = lines_[*secondIndex];
+
+  const double firstDx = first.end.xMm - first.start.xMm;
+  const double firstDy = first.end.yMm - first.start.yMm;
+  const double firstLength = std::hypot(firstDx, firstDy);
+
+  const double secondDx = second.end.xMm - second.start.xMm;
+  const double secondDy = second.end.yMm - second.start.yMm;
+  const double secondLength = std::hypot(secondDx, secondDy);
+
+  if (firstLength <= 1e-9 || secondLength <= 1e-9)
+    return false;
+
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm,
+                      a.yMm - b.yMm) <= 1e-7;
+  };
+
+  // Preserve a shared CAD vertex when the two lines are connected.
+  bool pivotAtStart = true;
+  Point pivot = second.start;
+
+  if (same(second.start, first.start) ||
+      same(second.start, first.end)) {
+    pivotAtStart = true;
+    pivot = second.start;
+  } else if (same(second.end, first.start) ||
+             same(second.end, first.end)) {
+    pivotAtStart = false;
+    pivot = second.end;
+  }
+
+  double ux = firstDx / firstLength;
+  double uy = firstDy / firstLength;
+
+  // Choose the parallel direction closest to the current orientation of the
+  // moving line, avoiding an unnecessary 180-degree flip.
+  const double dot = secondDx * ux + secondDy * uy;
+  if (dot < 0.0) {
+    ux = -ux;
+    uy = -uy;
+  }
+
+  const Point oldMovingPoint =
+      pivotAtStart ? second.end : second.start;
+
+  const Point newMovingPoint =
+      pivotAtStart
+          ? Point{pivot.xMm + ux * secondLength,
+                  pivot.yMm + uy * secondLength}
+          : Point{pivot.xMm - ux * secondLength,
+                  pivot.yMm - uy * secondLength};
+
+  if (pivotAtStart)
+    second.end = newMovingPoint;
+  else
+    second.start = newMovingPoint;
+
+  // Preserve legacy behaviour for endpoint clusters that currently share the
+  // same coordinate, including geometry without an explicit Coincident yet.
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (index == *secondIndex) continue;
+
+    auto& line = lines_[index];
+    if (same(line.start, oldMovingPoint))
+      line.start = newMovingPoint;
+    if (same(line.end, oldMovingPoint))
+      line.end = newMovingPoint;
+  }
+
+  updateBounds();
+  return true;
+}
 bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                                double angleDegrees) {
   const auto firstIndex = lineIndex(firstId);
@@ -752,6 +1071,132 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
     point.yMm += dyMm;
   }
 
+  // A drag is the user's active degree of freedom. Before the generic solver
+  // runs, propagate the new length of every moved line through its Equal
+  // component. This prevents an older rectangle in A=B=C from becoming the
+  // accidental source and snapping the actively edited rectangle backwards.
+  std::vector<GeometryId> movedLineIds;
+  for (const auto pointReference : connectedPoints) {
+    if (pointReference.circleId != kInvalidGeometryId ||
+        pointReference.lineId == kInvalidGeometryId)
+      continue;
+
+    if (std::find(movedLineIds.begin(), movedLineIds.end(),
+                  pointReference.lineId) == movedLineIds.end())
+      movedLineIds.push_back(pointReference.lineId);
+  }
+
+  const auto hasDrivingSize =
+      [this](GeometryId lineIdValue) {
+        const auto lineIndexValue = lineIndex(lineIdValue);
+        if (!lineIndexValue) return false;
+
+        for (const auto& item : constraints_) {
+          if (item.value <= 0.0) continue;
+
+          if (item.type == ConstraintType::Length &&
+              item.firstGeometry == lineIdValue)
+            return true;
+
+          if (item.firstPoint.circleId != kInvalidGeometryId ||
+              item.secondPoint.circleId != kInvalidGeometryId)
+            continue;
+
+          if (item.firstPoint.lineId != lineIdValue ||
+              item.secondPoint.lineId != lineIdValue ||
+              item.firstPoint.start == item.secondPoint.start)
+            continue;
+
+          if (item.type == ConstraintType::Distance ||
+              item.type == ConstraintType::DistanceX ||
+              item.type == ConstraintType::DistanceY)
+            return true;
+        }
+
+        return false;
+      };
+
+  for (const auto sourceId : movedLineIds) {
+    const auto sourceIndex = lineIndex(sourceId);
+    if (!sourceIndex) continue;
+
+    // A driving dimension is stronger than an interactive drag.
+    if (hasDrivingSize(sourceId)) continue;
+
+    std::vector<GeometryId> equalGroup{sourceId};
+    bool expandedEqual = true;
+
+    while (expandedEqual) {
+      expandedEqual = false;
+
+      for (const auto& item : constraints_) {
+        if (item.type != ConstraintType::Equal) continue;
+        if (!lineIndex(item.firstGeometry) ||
+            !lineIndex(item.secondGeometry))
+          continue;
+
+        const bool hasFirst =
+            std::find(equalGroup.begin(), equalGroup.end(),
+                      item.firstGeometry) != equalGroup.end();
+        const bool hasSecond =
+            std::find(equalGroup.begin(), equalGroup.end(),
+                      item.secondGeometry) != equalGroup.end();
+
+        if (hasFirst && !hasSecond) {
+          equalGroup.push_back(item.secondGeometry);
+          expandedEqual = true;
+        } else if (!hasFirst && hasSecond) {
+          equalGroup.push_back(item.firstGeometry);
+          expandedEqual = true;
+        }
+      }
+    }
+
+    if (equalGroup.size() <= 1) continue;
+
+    bool groupHasDriving = false;
+    for (const auto groupId : equalGroup) {
+      if (hasDrivingSize(groupId)) {
+        groupHasDriving = true;
+        break;
+      }
+    }
+    if (groupHasDriving) continue;
+
+    const auto& sourceLine = lines_[*sourceIndex];
+    const double targetLength =
+        std::hypot(sourceLine.end.xMm - sourceLine.start.xMm,
+                   sourceLine.end.yMm - sourceLine.start.yMm);
+    if (targetLength <= 1e-9) continue;
+
+    const std::size_t sourceElementId =
+        sourceLine.elementId;
+
+    for (const auto targetId : equalGroup) {
+      if (targetId == sourceId) continue;
+
+      const auto targetIndex = lineIndex(targetId);
+      if (!targetIndex) continue;
+
+      // Internal Equal between opposite sides of the actively edited
+      // rectangle is handled by its own rectangle constraints. Do not resize
+      // the driver element around its centre while the user is dragging it.
+      if (lines_[*targetIndex].elementId == sourceElementId)
+        continue;
+
+      const double currentLength =
+          std::hypot(lines_[*targetIndex].end.xMm -
+                         lines_[*targetIndex].start.xMm,
+                     lines_[*targetIndex].end.yMm -
+                         lines_[*targetIndex].start.yMm);
+
+      if (std::abs(currentLength - targetLength) <= 1e-7)
+        continue;
+
+      (void)setLineLengthById(targetId, targetLength);
+    }
+  }
+
   (void)BasicSketchSolver::solve(*this);
   updateBounds();
   return true;
@@ -783,19 +1228,59 @@ bool Sketch::setPointDistance(PointReference firstReference,
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
   if (!first || !second || distanceMm <= 0.0) return false;
+
   const double dx = second->xMm - first->xMm;
   const double dy = second->yMm - first->yMm;
   const double oldDistance = std::hypot(dx, dy);
   if (oldDistance <= 1e-9) return false;
+
   const Point moved{first->xMm + dx / oldDistance * distanceMm,
                     first->yMm + dy / oldDistance * distanceMm};
+
+  const double moveX = moved.xMm - second->xMm;
+  const double moveY = moved.yMm - second->yMm;
+
+  // A point-distance attached to a rectangle must move the complete
+  // composite element. Moving only one corner destroys the rectangle and
+  // makes the dimension appear to drift during subsequent solver passes.
+  if (secondReference.circleId == kInvalidGeometryId) {
+    const auto secondLineIndex = lineIndex(secondReference.lineId);
+
+    if (secondLineIndex) {
+      const std::size_t elementId =
+          lines_[*secondLineIndex].elementId;
+
+      std::size_t elementLineCount = 0;
+      for (const auto& line : lines_) {
+        if (line.elementId == elementId)
+          ++elementLineCount;
+      }
+
+      if (elementLineCount == 4) {
+        for (auto& line : lines_) {
+          if (line.elementId != elementId) continue;
+
+          line.start.xMm += moveX;
+          line.start.yMm += moveY;
+          line.end.xMm += moveX;
+          line.end.yMm += moveY;
+        }
+
+        updateBounds();
+        return true;
+      }
+    }
+  }
+
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
+
   for (auto& line : lines_) {
     if (same(line.start, *second)) line.start = moved;
     if (same(line.end, *second)) line.end = moved;
   }
+
   updateBounds();
   return true;
 }
@@ -809,11 +1294,42 @@ bool Sketch::setPointDistanceX(PointReference firstReference,
 
   const double dx = second->xMm - first->xMm;
   const double direction = dx < 0.0 ? -1.0 : 1.0;
-  const Point moved{first->xMm + direction * distanceMm, second->yMm};
+  const Point moved{first->xMm + direction * distanceMm,
+                    second->yMm};
+
+  const double moveX = moved.xMm - second->xMm;
+
+  if (secondReference.circleId == kInvalidGeometryId) {
+    const auto secondLineIndex = lineIndex(secondReference.lineId);
+
+    if (secondLineIndex) {
+      const std::size_t elementId =
+          lines_[*secondLineIndex].elementId;
+
+      std::size_t elementLineCount = 0;
+      for (const auto& line : lines_) {
+        if (line.elementId == elementId)
+          ++elementLineCount;
+      }
+
+      if (elementLineCount == 4) {
+        for (auto& line : lines_) {
+          if (line.elementId != elementId) continue;
+
+          line.start.xMm += moveX;
+          line.end.xMm += moveX;
+        }
+
+        updateBounds();
+        return true;
+      }
+    }
+  }
 
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
+
   for (auto& line : lines_) {
     if (same(line.start, *second)) line.start = moved;
     if (same(line.end, *second)) line.end = moved;
@@ -832,11 +1348,42 @@ bool Sketch::setPointDistanceY(PointReference firstReference,
 
   const double dy = second->yMm - first->yMm;
   const double direction = dy < 0.0 ? -1.0 : 1.0;
-  const Point moved{second->xMm, first->yMm + direction * distanceMm};
+  const Point moved{second->xMm,
+                    first->yMm + direction * distanceMm};
+
+  const double moveY = moved.yMm - second->yMm;
+
+  if (secondReference.circleId == kInvalidGeometryId) {
+    const auto secondLineIndex = lineIndex(secondReference.lineId);
+
+    if (secondLineIndex) {
+      const std::size_t elementId =
+          lines_[*secondLineIndex].elementId;
+
+      std::size_t elementLineCount = 0;
+      for (const auto& line : lines_) {
+        if (line.elementId == elementId)
+          ++elementLineCount;
+      }
+
+      if (elementLineCount == 4) {
+        for (auto& line : lines_) {
+          if (line.elementId != elementId) continue;
+
+          line.start.yMm += moveY;
+          line.end.yMm += moveY;
+        }
+
+        updateBounds();
+        return true;
+      }
+    }
+  }
 
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
+
   for (auto& line : lines_) {
     if (same(line.start, *second)) line.start = moved;
     if (same(line.end, *second)) line.end = moved;
@@ -882,11 +1429,11 @@ ConstraintId Sketch::addConstraint(Constraint constraint) {
     constraint.id = nextConstraintId_++;
   else
     nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
+
   constraints_.push_back(constraint);
   (void)BasicSketchSolver::solve(*this);
   return constraint.id;
 }
-
 bool Sketch::removeConstraint(ConstraintId id) {
   const auto oldSize = constraints_.size();
   std::erase_if(constraints_, [id](const Constraint& constraint) {

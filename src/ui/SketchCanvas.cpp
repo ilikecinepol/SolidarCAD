@@ -1,4 +1,5 @@
 #include "ui/SketchCanvas.h"
+#include "sketch/SketchSolver.h"
 
 #include <QKeyEvent>
 #include <QDoubleSpinBox>
@@ -209,6 +210,10 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("autoDimensionDirectLineId", QVariant());
   setProperty("autoDimensionAngleFirstLine", QVariant());
   setProperty("autoDimensionAngleSecondLine", QVariant());
+  setProperty("perpendicularFirstLine", QVariant());
+  setProperty("parallelFirstLine", QVariant());
+  setProperty("equalFirstGeometry", QVariant());
+  setProperty("equalFirstKind", QVariant());
   setProperty("editingDimensionIndex", QVariant());
   hideDimensionEditor();
   setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
@@ -1587,6 +1592,12 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     handleOrthogonalConstraintClick(event->position());
   } else if (tool_ == Tool::CoincidentConstraint) {
     handleCoincidentConstraintClick(event->position());
+  } else if (tool_ == Tool::PerpendicularConstraint) {
+    handlePerpendicularConstraintClick(event->position());
+  } else if (tool_ == Tool::ParallelConstraint) {
+    handleParallelConstraintClick(event->position());
+  } else if (tool_ == Tool::EqualConstraint) {
+    handleEqualConstraintClick(event->position());
   } else if (tool_ == Tool::Select) {
     const bool additive =
         event->modifiers().testFlag(Qt::ControlModifier);
@@ -2922,6 +2933,773 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   coincidentFirstPoint_.reset();
   emit selectionChanged(QString::fromUtf8(
       "Ограничение: Совпадение"));
+  notifyGeometryChanged();
+  update();
+}
+void SketchCanvas::handleEqualConstraintClick(QPointF position) {
+  constexpr double hitTolerance = 9.0;
+
+  enum class HitKind { None, Line, Rectangle, Circle };
+
+  HitKind hitKind = HitKind::None;
+  sketch::GeometryId hitId = sketch::kInvalidGeometryId;
+  std::size_t hitElementId = 0;
+  double bestDistance = hitTolerance;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const double distance = pointSegmentDistance(
+        position, mapPoint(line.start), mapPoint(line.end));
+
+    if (distance >= bestDistance) continue;
+
+    const auto id = sketch_.lineId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    std::size_t elementLineCount = 0;
+    for (const auto& candidate : sketch_.lines()) {
+      if (candidate.elementId == line.elementId)
+        ++elementLineCount;
+    }
+
+    bestDistance = distance;
+    hitKind = elementLineCount == 4
+                  ? HitKind::Rectangle
+                  : HitKind::Line;
+    hitId = id;
+    hitElementId = line.elementId;
+  }
+
+  for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+    const auto& circle = sketch_.circles()[index];
+    const double distance = std::abs(
+        QLineF(position, mapPoint(circle.center)).length() -
+        circle.radiusMm * pixelsPerMm_);
+
+    if (distance >= bestDistance) continue;
+
+    const auto id = sketch_.circleId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    bestDistance = distance;
+    hitKind = HitKind::Circle;
+    hitId = id;
+    hitElementId = 0;
+  }
+
+  if (hitKind == HitKind::None ||
+      hitId == sketch::kInvalidGeometryId)
+    return;
+
+  const auto kindName = [](HitKind kind) {
+    switch (kind) {
+      case HitKind::Line:
+        return QStringLiteral("line");
+      case HitKind::Rectangle:
+        return QStringLiteral("rectangle");
+      case HitKind::Circle:
+        return QStringLiteral("circle");
+      default:
+        return QString();
+    }
+  };
+
+  const QVariant firstGeometryProperty =
+      property("equalFirstGeometry");
+  const QVariant firstKindProperty =
+      property("equalFirstKind");
+
+  if (!firstGeometryProperty.isValid() ||
+      !firstKindProperty.isValid()) {
+    setProperty("equalFirstGeometry",
+                static_cast<qulonglong>(hitId));
+    setProperty("equalFirstKind", kindName(hitKind));
+    setProperty("equalFirstElement",
+                static_cast<qulonglong>(hitElementId));
+
+    clearGeometrySelection();
+
+    if (hitKind == HitKind::Line ||
+        hitKind == HitKind::Rectangle) {
+      const auto index = sketch_.lineIndex(hitId);
+      if (index) {
+        selectedElementIds_.push_back(
+            sketch_.lines()[*index].elementId);
+        selectionKind_ = SelectionKind::Line;
+        selectionElementId_ =
+            sketch_.lines()[*index].elementId;
+        selectionLineId_ = hitId;
+        selectionCircleId_ = sketch::kInvalidGeometryId;
+
+        emit lineStyleSelectionChanged(
+            true, sketch_.lines()[*index].dashed);
+      }
+    } else {
+      selectedCircleIds_.push_back(hitId);
+      selectionKind_ = SelectionKind::Circle;
+      selectionCircleId_ = hitId;
+      selectionLineId_ = sketch::kInvalidGeometryId;
+      emit lineStyleSelectionChanged(false, false);
+    }
+
+    emit selectionChanged(
+        QString::fromUtf8("Эквивалентность: выберите второй объект"));
+    update();
+    return;
+  }
+
+  const auto resetEqualState = [this]() {
+    setProperty("equalFirstGeometry", QVariant());
+    setProperty("equalFirstKind", QVariant());
+    setProperty("equalFirstElement", QVariant());
+  };
+
+  const auto firstId = static_cast<sketch::GeometryId>(
+      firstGeometryProperty.toULongLong());
+  const QString firstKind = firstKindProperty.toString();
+  const QString secondKind = kindName(hitKind);
+
+  if (firstKind != secondKind) {
+    resetEqualState();
+    emit selectionChanged(QString::fromUtf8(
+        "Эквивалентность: выберите два объекта одного типа"));
+    update();
+    return;
+  }
+
+  if (firstKind == QStringLiteral("circle")) {
+    if (firstId == hitId ||
+        !sketch_.circleIndex(firstId)) {
+      resetEqualState();
+      emit selectionChanged(QString::fromUtf8(
+          "Эквивалентность: выберите две разные окружности"));
+      update();
+      return;
+    }
+
+    for (const auto& constraint : sketch_.constraints()) {
+      if (constraint.type != sketch::ConstraintType::Equal)
+        continue;
+
+      const bool sameOrder =
+          constraint.firstGeometry == firstId &&
+          constraint.secondGeometry == hitId;
+      const bool reverseOrder =
+          constraint.firstGeometry == hitId &&
+          constraint.secondGeometry == firstId;
+
+      if (sameOrder || reverseOrder) {
+        resetEqualState();
+        emit selectionChanged(
+            QString::fromUtf8("Эти окружности уже эквивалентны"));
+        update();
+        return;
+      }
+    }
+
+    pushUndoState();
+
+    sketch::Constraint constraint;
+    constraint.type = sketch::ConstraintType::Equal;
+    constraint.firstGeometry = firstId;
+    constraint.secondGeometry = hitId;
+    sketch_.addConstraint(constraint);
+
+    (void)sketch::BasicSketchSolver::solve(sketch_);
+    resetEqualState();
+
+    clearGeometrySelection();
+    selectedCircleIds_.push_back(hitId);
+    selectionKind_ = SelectionKind::Circle;
+    selectionCircleId_ = hitId;
+    selectionLineId_ = sketch::kInvalidGeometryId;
+    emit lineStyleSelectionChanged(false, false);
+
+    emit selectionChanged(
+        QString::fromUtf8("Ограничение: Эквивалентность"));
+    notifyGeometryChanged();
+    update();
+    return;
+  }
+
+  if (firstKind == QStringLiteral("line")) {
+    if (firstId == hitId ||
+        !sketch_.lineIndex(firstId) ||
+        !sketch_.lineIndex(hitId)) {
+      resetEqualState();
+      emit selectionChanged(QString::fromUtf8(
+          "Эквивалентность: выберите две разные линии"));
+      update();
+      return;
+    }
+
+    for (const auto& constraint : sketch_.constraints()) {
+      if (constraint.type != sketch::ConstraintType::Equal)
+        continue;
+
+      const bool sameOrder =
+          constraint.firstGeometry == firstId &&
+          constraint.secondGeometry == hitId;
+      const bool reverseOrder =
+          constraint.firstGeometry == hitId &&
+          constraint.secondGeometry == firstId;
+
+      if (sameOrder || reverseOrder) {
+        resetEqualState();
+        emit selectionChanged(
+            QString::fromUtf8("Эти линии уже эквивалентны"));
+        update();
+        return;
+      }
+    }
+
+    pushUndoState();
+
+    sketch::Constraint constraint;
+    constraint.type = sketch::ConstraintType::Equal;
+    constraint.firstGeometry = firstId;
+    constraint.secondGeometry = hitId;
+    sketch_.addConstraint(constraint);
+
+    (void)sketch::BasicSketchSolver::solve(sketch_);
+    resetEqualState();
+
+    const auto hitIndex = sketch_.lineIndex(hitId);
+    clearGeometrySelection();
+
+    if (hitIndex) {
+      selectedElementIds_.push_back(
+          sketch_.lines()[*hitIndex].elementId);
+      selectionKind_ = SelectionKind::Line;
+      selectionElementId_ =
+          sketch_.lines()[*hitIndex].elementId;
+      selectionLineId_ = hitId;
+      selectionCircleId_ = sketch::kInvalidGeometryId;
+
+      emit lineStyleSelectionChanged(
+          true, sketch_.lines()[*hitIndex].dashed);
+    }
+
+    emit selectionChanged(
+        QString::fromUtf8("Ограничение: Эквивалентность"));
+    notifyGeometryChanged();
+    update();
+    return;
+  }
+
+  // Rectangle + Rectangle.
+  const auto firstElementId = static_cast<std::size_t>(
+      property("equalFirstElement").toULongLong());
+  const auto secondElementId = hitElementId;
+
+  if (firstElementId == 0 ||
+      secondElementId == 0 ||
+      firstElementId == secondElementId) {
+    resetEqualState();
+    emit selectionChanged(QString::fromUtf8(
+        "Эквивалентность: выберите два разных прямоугольника"));
+    update();
+    return;
+  }
+
+  std::vector<sketch::GeometryId> firstRectangleIds;
+  std::vector<sketch::GeometryId> secondRectangleIds;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+
+    if (line.elementId == firstElementId)
+      firstRectangleIds.push_back(sketch_.lineId(index));
+
+    if (line.elementId == secondElementId)
+      secondRectangleIds.push_back(sketch_.lineId(index));
+  }
+
+  if (firstRectangleIds.size() != 4 ||
+      secondRectangleIds.size() != 4) {
+    resetEqualState();
+    emit selectionChanged(QString::fromUtf8(
+        "Эквивалентность: составной объект не распознан как прямоугольник"));
+    update();
+    return;
+  }
+
+  const auto findIndex =
+      [](const std::vector<sketch::GeometryId>& ids,
+         sketch::GeometryId id) -> std::optional<std::size_t> {
+        const auto found = std::find(ids.begin(), ids.end(), id);
+        if (found == ids.end()) return std::nullopt;
+
+        return static_cast<std::size_t>(
+            std::distance(ids.begin(), found));
+      };
+
+  const auto firstSideIndex =
+      findIndex(firstRectangleIds, firstId);
+
+  if (!firstSideIndex) {
+    resetEqualState();
+    return;
+  }
+
+  const auto firstLineIndex = sketch_.lineIndex(firstId);
+  if (!firstLineIndex) {
+    resetEqualState();
+    return;
+  }
+
+  const auto& firstSelectedLine =
+      sketch_.lines()[*firstLineIndex];
+
+  const double firstDx =
+      firstSelectedLine.end.xMm - firstSelectedLine.start.xMm;
+  const double firstDy =
+      firstSelectedLine.end.yMm - firstSelectedLine.start.yMm;
+  const double firstLength =
+      std::hypot(firstDx, firstDy);
+
+  if (firstLength <= 1e-9) {
+    resetEqualState();
+    return;
+  }
+
+  const double firstUx = firstDx / firstLength;
+  const double firstUy = firstDy / firstLength;
+
+  // The second click selects the rectangle, not the dimension mapping.
+  // Match its side automatically by orientation so width cannot be
+  // accidentally linked to height.
+  std::optional<std::size_t> secondSideIndex;
+  double bestParallelScore = -1.0;
+
+  for (std::size_t sideIndex = 0;
+       sideIndex < secondRectangleIds.size();
+       ++sideIndex) {
+    const auto candidateIndex =
+        sketch_.lineIndex(secondRectangleIds[sideIndex]);
+    if (!candidateIndex) continue;
+
+    const auto& candidate =
+        sketch_.lines()[*candidateIndex];
+
+    const double dx =
+        candidate.end.xMm - candidate.start.xMm;
+    const double dy =
+        candidate.end.yMm - candidate.start.yMm;
+    const double length = std::hypot(dx, dy);
+    if (length <= 1e-9) continue;
+
+    const double ux = dx / length;
+    const double uy = dy / length;
+
+    // abs(dot) treats parallel and anti-parallel directions as equivalent.
+    const double score =
+        std::abs(firstUx * ux + firstUy * uy);
+
+    if (score > bestParallelScore) {
+      bestParallelScore = score;
+      secondSideIndex = sideIndex;
+    }
+  }
+
+  if (!secondSideIndex) {
+    resetEqualState();
+    return;
+  }
+
+  const auto matchedSecondId =
+      secondRectangleIds[*secondSideIndex];
+
+  const auto firstAdjacentId =
+      firstRectangleIds[(*firstSideIndex + 1) % 4];
+  const auto secondAdjacentId =
+      secondRectangleIds[(*secondSideIndex + 1) % 4];
+
+  const auto equalExists =
+      [this](sketch::GeometryId first,
+             sketch::GeometryId second) {
+        return std::any_of(
+            sketch_.constraints().begin(),
+            sketch_.constraints().end(),
+            [first, second](const sketch::Constraint& constraint) {
+              if (constraint.type !=
+                  sketch::ConstraintType::Equal)
+                return false;
+
+              return (constraint.firstGeometry == first &&
+                      constraint.secondGeometry == second) ||
+                     (constraint.firstGeometry == second &&
+                      constraint.secondGeometry == first);
+            });
+      };
+
+  const bool firstPairExists =
+      equalExists(firstId, matchedSecondId);
+  const bool secondPairExists =
+      equalExists(firstAdjacentId, secondAdjacentId);
+
+  if (firstPairExists && secondPairExists) {
+    resetEqualState();
+    emit selectionChanged(QString::fromUtf8(
+        "Эти прямоугольники уже эквивалентны"));
+    update();
+    return;
+  }
+
+  pushUndoState();
+
+  if (!firstPairExists) {
+    sketch::Constraint firstEqual;
+    firstEqual.type = sketch::ConstraintType::Equal;
+    firstEqual.firstGeometry = firstId;
+    firstEqual.secondGeometry = matchedSecondId;
+    sketch_.addConstraint(firstEqual);
+  }
+
+  if (!secondPairExists) {
+    sketch::Constraint secondEqual;
+    secondEqual.type = sketch::ConstraintType::Equal;
+    secondEqual.firstGeometry = firstAdjacentId;
+    secondEqual.secondGeometry = secondAdjacentId;
+    sketch_.addConstraint(secondEqual);
+  }
+
+  (void)sketch::BasicSketchSolver::solve(sketch_);
+  resetEqualState();
+
+  clearGeometrySelection();
+  selectedElementIds_.push_back(secondElementId);
+  selectionKind_ = SelectionKind::Line;
+  selectionElementId_ = secondElementId;
+  selectionLineId_ = hitId;
+  selectionCircleId_ = sketch::kInvalidGeometryId;
+
+  const auto hitIndex = sketch_.lineIndex(hitId);
+  emit lineStyleSelectionChanged(
+      true, hitIndex && sketch_.lines()[*hitIndex].dashed);
+
+  emit selectionChanged(QString::fromUtf8(
+      "Ограничение: Эквивалентность прямоугольников"));
+  notifyGeometryChanged();
+  update();
+}
+void SketchCanvas::handleParallelConstraintClick(QPointF position) {
+  constexpr double hitTolerance = 9.0;
+  double bestDistance = hitTolerance;
+  std::optional<std::size_t> bestIndex;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const double distance = pointSegmentDistance(
+        position, mapPoint(line.start), mapPoint(line.end));
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+
+  if (!bestIndex) return;
+
+  const auto clickedId = sketch_.lineId(*bestIndex);
+  if (clickedId == sketch::kInvalidGeometryId) return;
+
+  const QVariant firstProperty = property("parallelFirstLine");
+
+  if (!firstProperty.isValid()) {
+    setProperty("parallelFirstLine",
+                static_cast<qulonglong>(clickedId));
+
+    clearGeometrySelection();
+    selectedElementIds_.push_back(
+        sketch_.lines()[*bestIndex].elementId);
+    selectionKind_ = SelectionKind::Line;
+    selectionElementId_ = sketch_.lines()[*bestIndex].elementId;
+    selectionLineId_ = clickedId;
+    selectionCircleId_ = sketch::kInvalidGeometryId;
+
+    emit selectionChanged(
+        QString::fromUtf8("Параллельность: выберите вторую линию"));
+    emit lineStyleSelectionChanged(
+        true, sketch_.lines()[*bestIndex].dashed);
+    update();
+    return;
+  }
+
+  const auto firstId = static_cast<sketch::GeometryId>(
+      firstProperty.toULongLong());
+
+  if (firstId == sketch::kInvalidGeometryId ||
+      !sketch_.lineIndex(firstId)) {
+    setProperty("parallelFirstLine", QVariant());
+    return;
+  }
+
+  if (firstId == clickedId) {
+    setProperty("parallelFirstLine", QVariant());
+    emit selectionChanged(
+        QString::fromUtf8("Параллельность: выберите две разные линии"));
+    update();
+    return;
+  }
+
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.type != sketch::ConstraintType::Parallel) continue;
+
+    const bool sameOrder =
+        constraint.firstGeometry == firstId &&
+        constraint.secondGeometry == clickedId;
+    const bool reverseOrder =
+        constraint.firstGeometry == clickedId &&
+        constraint.secondGeometry == firstId;
+
+    if (sameOrder || reverseOrder) {
+      setProperty("parallelFirstLine", QVariant());
+      emit selectionChanged(
+          QString::fromUtf8("Эти линии уже параллельны"));
+      update();
+      return;
+    }
+  }
+
+  const auto orthogonalType =
+      [this](sketch::GeometryId id)
+          -> std::optional<sketch::ConstraintType> {
+        for (const auto& constraint : sketch_.constraints()) {
+          if (constraint.firstGeometry != id) continue;
+
+          if (constraint.type == sketch::ConstraintType::Horizontal ||
+              constraint.type == sketch::ConstraintType::Vertical)
+            return constraint.type;
+        }
+
+        return std::nullopt;
+      };
+
+  const auto firstOrthogonal = orthogonalType(firstId);
+  const auto secondOrthogonal = orthogonalType(clickedId);
+
+  if (firstOrthogonal && secondOrthogonal &&
+      *firstOrthogonal != *secondOrthogonal) {
+    setProperty("parallelFirstLine", QVariant());
+    emit selectionChanged(QString::fromUtf8(
+        "Конфликт: одна линия горизонтальна, другая вертикальна"));
+    update();
+    return;
+  }
+
+  pushUndoState();
+
+  // Parallel conflicts with an explicit angle/perpendicular relationship on
+  // the same pair in the current sequential solver. Remove only that pair.
+  std::vector<sketch::ConstraintId> conflicting;
+
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.type != sketch::ConstraintType::Angle &&
+        constraint.type != sketch::ConstraintType::Perpendicular)
+      continue;
+
+    const bool sameOrder =
+        constraint.firstGeometry == firstId &&
+        constraint.secondGeometry == clickedId;
+    const bool reverseOrder =
+        constraint.firstGeometry == clickedId &&
+        constraint.secondGeometry == firstId;
+
+    if (sameOrder || reverseOrder)
+      conflicting.push_back(constraint.id);
+  }
+
+  for (const auto id : conflicting)
+    sketch_.removeConstraint(id);
+
+  sketch::Constraint constraint;
+  constraint.type = sketch::ConstraintType::Parallel;
+  constraint.firstGeometry = firstId;
+  constraint.secondGeometry = clickedId;
+  sketch_.addConstraint(constraint);
+
+  (void)sketch::BasicSketchSolver::solve(sketch_);
+
+  setProperty("parallelFirstLine", QVariant());
+
+  const auto clickedIndex = sketch_.lineIndex(clickedId);
+  clearGeometrySelection();
+
+  if (clickedIndex) {
+    selectedElementIds_.push_back(
+        sketch_.lines()[*clickedIndex].elementId);
+    selectionKind_ = SelectionKind::Line;
+    selectionElementId_ = sketch_.lines()[*clickedIndex].elementId;
+    selectionLineId_ = clickedId;
+    selectionCircleId_ = sketch::kInvalidGeometryId;
+
+    emit lineStyleSelectionChanged(
+        true, sketch_.lines()[*clickedIndex].dashed);
+  }
+
+  emit selectionChanged(
+      QString::fromUtf8("Ограничение: Параллельность"));
+  notifyGeometryChanged();
+  update();
+}
+void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
+  constexpr double hitTolerance = 9.0;
+  double bestDistance = hitTolerance;
+  std::optional<std::size_t> bestIndex;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const double distance = pointSegmentDistance(
+        position, mapPoint(line.start), mapPoint(line.end));
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+
+  if (!bestIndex) return;
+
+  const auto clickedId = sketch_.lineId(*bestIndex);
+  if (clickedId == sketch::kInvalidGeometryId) return;
+
+  const QVariant firstProperty = property("perpendicularFirstLine");
+
+  if (!firstProperty.isValid()) {
+    setProperty("perpendicularFirstLine",
+                static_cast<qulonglong>(clickedId));
+
+    clearGeometrySelection();
+    selectedElementIds_.push_back(sketch_.lines()[*bestIndex].elementId);
+    selectionKind_ = SelectionKind::Line;
+    selectionElementId_ = sketch_.lines()[*bestIndex].elementId;
+    selectionLineId_ = clickedId;
+    selectionCircleId_ = sketch::kInvalidGeometryId;
+
+    emit selectionChanged(
+        QString::fromUtf8("Перпендикулярность: выберите вторую линию"));
+    emit lineStyleSelectionChanged(
+        true, sketch_.lines()[*bestIndex].dashed);
+    update();
+    return;
+  }
+
+  const auto firstId = static_cast<sketch::GeometryId>(
+      firstProperty.toULongLong());
+
+  if (firstId == sketch::kInvalidGeometryId ||
+      !sketch_.lineIndex(firstId)) {
+    setProperty("perpendicularFirstLine", QVariant());
+    return;
+  }
+
+  if (firstId == clickedId) {
+    setProperty("perpendicularFirstLine", QVariant());
+    emit selectionChanged(
+        QString::fromUtf8("Перпендикулярность: выберите две разные линии"));
+    update();
+    return;
+  }
+
+  // Do not create a duplicate in either order.
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.type != sketch::ConstraintType::Perpendicular) continue;
+
+    const bool sameOrder =
+        constraint.firstGeometry == firstId &&
+        constraint.secondGeometry == clickedId;
+    const bool reverseOrder =
+        constraint.firstGeometry == clickedId &&
+        constraint.secondGeometry == firstId;
+
+    if (sameOrder || reverseOrder) {
+      setProperty("perpendicularFirstLine", QVariant());
+      emit selectionChanged(
+          QString::fromUtf8("Эти линии уже перпендикулярны"));
+      update();
+      return;
+    }
+  }
+
+  const auto orthogonalType =
+      [this](sketch::GeometryId id)
+          -> std::optional<sketch::ConstraintType> {
+        for (const auto& constraint : sketch_.constraints()) {
+          if (constraint.firstGeometry != id) continue;
+          if (constraint.type == sketch::ConstraintType::Horizontal ||
+              constraint.type == sketch::ConstraintType::Vertical)
+            return constraint.type;
+        }
+        return std::nullopt;
+      };
+
+  const auto firstOrthogonal = orthogonalType(firstId);
+  const auto secondOrthogonal = orthogonalType(clickedId);
+
+  // Two H/V-fixed lines can only accept Perpendicular when their fixed
+  // orientations are already opposite.
+  if (firstOrthogonal && secondOrthogonal &&
+      *firstOrthogonal == *secondOrthogonal) {
+    setProperty("perpendicularFirstLine", QVariant());
+    emit selectionChanged(QString::fromUtf8(
+        "Конфликт: обе линии уже имеют одинаковую H/V-ориентацию"));
+    update();
+    return;
+  }
+
+  pushUndoState();
+
+  // Perpendicular is an angular relationship. Remove an old explicit Angle
+  // constraint for this exact pair so the simple solver is not overconstrained.
+  std::vector<sketch::ConstraintId> oldAngles;
+
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.type != sketch::ConstraintType::Angle) continue;
+
+    const bool sameOrder =
+        constraint.firstGeometry == firstId &&
+        constraint.secondGeometry == clickedId;
+    const bool reverseOrder =
+        constraint.firstGeometry == clickedId &&
+        constraint.secondGeometry == firstId;
+
+    if (sameOrder || reverseOrder)
+      oldAngles.push_back(constraint.id);
+  }
+
+  for (const auto id : oldAngles)
+    sketch_.removeConstraint(id);
+
+  sketch::Constraint constraint;
+  constraint.type = sketch::ConstraintType::Perpendicular;
+  constraint.firstGeometry = firstId;
+  constraint.secondGeometry = clickedId;
+  sketch_.addConstraint(constraint);
+
+  // Apply immediately. The solver uses the same rule afterwards during
+  // interactive edits.
+  (void)sketch::BasicSketchSolver::solve(sketch_);
+
+  setProperty("perpendicularFirstLine", QVariant());
+
+  const auto clickedIndex = sketch_.lineIndex(clickedId);
+  clearGeometrySelection();
+
+  if (clickedIndex) {
+    selectedElementIds_.push_back(
+        sketch_.lines()[*clickedIndex].elementId);
+    selectionKind_ = SelectionKind::Line;
+    selectionElementId_ = sketch_.lines()[*clickedIndex].elementId;
+    selectionLineId_ = clickedId;
+    selectionCircleId_ = sketch::kInvalidGeometryId;
+
+    emit lineStyleSelectionChanged(
+        true, sketch_.lines()[*clickedIndex].dashed);
+  }
+
+  emit selectionChanged(
+      QString::fromUtf8("Ограничение: Перпендикулярность"));
   notifyGeometryChanged();
   update();
 }

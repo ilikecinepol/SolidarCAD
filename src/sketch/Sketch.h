@@ -113,6 +113,7 @@ class Sketch final {
   bool setCircleDiameterById(GeometryId id, double diameterMm);
   bool setLineHorizontalById(GeometryId id);
   bool setLineVerticalById(GeometryId id);
+  bool setLinesParallelByIds(GeometryId firstId, GeometryId secondId);
   bool setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                          double angleDegrees);
   bool setPointsCoincident(PointReference first, PointReference second);
