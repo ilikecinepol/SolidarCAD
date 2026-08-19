@@ -4344,6 +4344,163 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
 
   update();
 }
+namespace {
+
+// Add persistent Coincident constraints from newly created reference points
+// to CAD points that existed before the creation operation.
+//
+// Current PointReference supports line endpoints and circle centers, so this
+// automatically covers line endpoints, rectangle vertices and circle centers.
+void autoCoincidentNewGeometry(
+    sketch::Sketch& sketch,
+    std::size_t oldLineCount,
+    std::size_t oldCircleCount,
+    double toleranceMm) {
+  struct ReferenceCandidate {
+    sketch::PointReference reference;
+    sketch::Point initialPoint;
+  };
+
+  std::vector<sketch::PointReference> oldReferences;
+
+  for (std::size_t index = 0;
+       index < std::min(oldLineCount, sketch.lines().size());
+       ++index) {
+    const auto id = sketch.lineId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    oldReferences.push_back(sketch::PointReference{id, true});
+    oldReferences.push_back(sketch::PointReference{id, false});
+  }
+
+  for (std::size_t index = 0;
+       index < std::min(oldCircleCount, sketch.circles().size());
+       ++index) {
+    const auto id = sketch.circleId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    sketch::PointReference center;
+    center.circleId = id;
+    oldReferences.push_back(center);
+  }
+
+  if (oldReferences.empty()) return;
+
+  std::vector<ReferenceCandidate> newReferences;
+
+  const auto addNewReference =
+      [&sketch, &newReferences](sketch::PointReference reference) {
+        const auto point = sketch.referencedPoint(reference);
+        if (!point) return;
+
+        // Rectangle corners are represented by two coincident line endpoints.
+        // One external Coincident per geometric point is enough.
+        const bool duplicatePoint =
+            std::any_of(
+                newReferences.begin(), newReferences.end(),
+                [&point](const ReferenceCandidate& item) {
+                  return std::hypot(
+                             item.initialPoint.xMm - point->xMm,
+                             item.initialPoint.yMm - point->yMm) <= 1e-7;
+                });
+
+        if (!duplicatePoint)
+          newReferences.push_back({reference, *point});
+      };
+
+  for (std::size_t index = oldLineCount;
+       index < sketch.lines().size();
+       ++index) {
+    const auto id = sketch.lineId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    addNewReference(sketch::PointReference{id, true});
+    addNewReference(sketch::PointReference{id, false});
+  }
+
+  for (std::size_t index = oldCircleCount;
+       index < sketch.circles().size();
+       ++index) {
+    const auto id = sketch.circleId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    sketch::PointReference center;
+    center.circleId = id;
+    addNewReference(center);
+  }
+
+  const auto sameReference =
+      [](sketch::PointReference first,
+         sketch::PointReference second) {
+        if (first.circleId != sketch::kInvalidGeometryId ||
+            second.circleId != sketch::kInvalidGeometryId) {
+          return first.circleId != sketch::kInvalidGeometryId &&
+                 first.circleId == second.circleId;
+        }
+
+        return first.lineId == second.lineId &&
+               first.start == second.start;
+      };
+
+  const auto constraintExists =
+      [&sketch, &sameReference](
+          sketch::PointReference first,
+          sketch::PointReference second) {
+        return std::any_of(
+            sketch.constraints().begin(),
+            sketch.constraints().end(),
+            [first, second, &sameReference](
+                const sketch::Constraint& constraint) {
+              if (constraint.type !=
+                  sketch::ConstraintType::Coincident)
+                return false;
+
+              return
+                  (sameReference(constraint.firstPoint, first) &&
+                   sameReference(constraint.secondPoint, second)) ||
+                  (sameReference(constraint.firstPoint, second) &&
+                   sameReference(constraint.secondPoint, first));
+            });
+      };
+
+  for (const auto& candidate : newReferences) {
+    const auto currentPoint =
+        sketch.referencedPoint(candidate.reference);
+    if (!currentPoint) continue;
+
+    std::optional<sketch::PointReference> nearest;
+    double bestDistance = toleranceMm;
+
+    for (const auto oldReference : oldReferences) {
+      const auto oldPoint = sketch.referencedPoint(oldReference);
+      if (!oldPoint) continue;
+
+      const double distance =
+          std::hypot(currentPoint->xMm - oldPoint->xMm,
+                     currentPoint->yMm - oldPoint->yMm);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        nearest = oldReference;
+      }
+    }
+
+    if (!nearest ||
+        sameReference(*nearest, candidate.reference) ||
+        constraintExists(*nearest, candidate.reference))
+      continue;
+
+    sketch::Constraint constraint;
+    constraint.type = sketch::ConstraintType::Coincident;
+
+    // Existing geometry is the reference, newly created geometry moves to it.
+    constraint.firstPoint = *nearest;
+    constraint.secondPoint = candidate.reference;
+    sketch.addConstraint(constraint);
+  }
+}
+
+}  // namespace
 void SketchCanvas::commitPoint(sketch::Point point) {
   if (tool_ == Tool::Rectangle && rectangleMode_ == RectangleMode::ThreePoints) {
     commitRectanglePoint(point);
@@ -4360,6 +4517,9 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     update();
     return;
   }
+  const std::size_t oldLineCount = sketch_.lines().size();
+  const std::size_t oldCircleCount = sketch_.circles().size();
+
   if (tool_ == Tool::Line)
     pushUndoState();
   else if (tool_ == Tool::Rectangle)
@@ -4437,6 +4597,12 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     circleDiameterMm_ = 2.0 * radius;
     emit primaryDimensionChanged(circleDiameterMm_);
   }
+  autoCoincidentNewGeometry(
+      sketch_,
+      oldLineCount,
+      oldCircleCount,
+      8.0 / std::max(0.001, pixelsPerMm_));
+
   anchor_.reset();
   hideDimensionEditor();
   notifyGeometryChanged();
@@ -4459,7 +4625,18 @@ void SketchCanvas::commitRectanglePoint(sketch::Point point) {
       const sketch::Point third{second.xMm+nx*height, second.yMm+ny*height};
       const sketch::Point fourth{first.xMm+nx*height, first.yMm+ny*height};
       pushUndoState();
+
+      const std::size_t oldLineCount = sketch_.lines().size();
+      const std::size_t oldCircleCount = sketch_.circles().size();
+
       sketch_.addRectangle(first, second, third, fourth);
+
+      autoCoincidentNewGeometry(
+          sketch_,
+          oldLineCount,
+          oldCircleCount,
+          8.0 / std::max(0.001, pixelsPerMm_));
+
       rectanglePoints_.clear();
       notifyGeometryChanged();
       return;
@@ -4473,7 +4650,18 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
   auto finishCircle = [this](sketch::Point center, double radius) {
     if (!std::isfinite(radius) || radius < 1e-6) return false;
     pushUndoState();
+
+    const std::size_t oldLineCount = sketch_.lines().size();
+    const std::size_t oldCircleCount = sketch_.circles().size();
+
     sketch_.addCircle(center, radius);
+
+    autoCoincidentNewGeometry(
+        sketch_,
+        oldLineCount,
+        oldCircleCount,
+        8.0 / std::max(0.001, pixelsPerMm_));
+
     circleDiameterMm_ = 2.0 * radius;
     emit primaryDimensionChanged(circleDiameterMm_);
     circlePoints_.clear();
@@ -4723,6 +4911,10 @@ void SketchCanvas::setSnapEnabled(bool enabled) {
 void SketchCanvas::commitDimensionEditor() {
   if (!anchor_) return;
   pushUndoState();
+
+  const std::size_t oldLineCount = sketch_.lines().size();
+  const std::size_t oldCircleCount = sketch_.circles().size();
+
   const auto start = *anchor_;
   if (tool_ == Tool::Line) {
     const double angle = secondaryDimension_->value() * 3.141592653589793 / 180.0;
@@ -4745,6 +4937,12 @@ void SketchCanvas::commitDimensionEditor() {
     circleDiameterMm_ = primaryDimension_->value();
     emit primaryDimensionChanged(circleDiameterMm_);
   }
+  autoCoincidentNewGeometry(
+      sketch_,
+      oldLineCount,
+      oldCircleCount,
+      8.0 / std::max(0.001, pixelsPerMm_));
+
   anchor_.reset();
   hideDimensionEditor();
   setFocus();
