@@ -34,13 +34,44 @@ double niceRulerStep(double pixelsPerMm) {
 
 double lineAngleDegrees(const sketch::Line& first,
                         const sketch::Line& second) {
-  const double ax = first.end.xMm - first.start.xMm;
-  const double ay = first.end.yMm - first.start.yMm;
-  const double bx = second.end.xMm - second.start.xMm;
-  const double by = second.end.yMm - second.start.yMm;
+  const auto samePoint = [](sketch::Point a, sketch::Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+
+  double ax = first.end.xMm - first.start.xMm;
+  double ay = first.end.yMm - first.start.yMm;
+  double bx = second.end.xMm - second.start.xMm;
+  double by = second.end.yMm - second.start.yMm;
+
+  // For connected segments, an angular dimension must describe the two
+  // visible rays leaving their common CAD vertex, regardless of each line's
+  // internal start/end order.
+  if (samePoint(first.start, second.start)) {
+    ax = first.end.xMm - first.start.xMm;
+    ay = first.end.yMm - first.start.yMm;
+    bx = second.end.xMm - second.start.xMm;
+    by = second.end.yMm - second.start.yMm;
+  } else if (samePoint(first.start, second.end)) {
+    ax = first.end.xMm - first.start.xMm;
+    ay = first.end.yMm - first.start.yMm;
+    bx = second.start.xMm - second.end.xMm;
+    by = second.start.yMm - second.end.yMm;
+  } else if (samePoint(first.end, second.start)) {
+    ax = first.start.xMm - first.end.xMm;
+    ay = first.start.yMm - first.end.yMm;
+    bx = second.end.xMm - second.start.xMm;
+    by = second.end.yMm - second.start.yMm;
+  } else if (samePoint(first.end, second.end)) {
+    ax = first.start.xMm - first.end.xMm;
+    ay = first.start.yMm - first.end.yMm;
+    bx = second.start.xMm - second.end.xMm;
+    by = second.start.yMm - second.end.yMm;
+  }
+
   const double al = std::hypot(ax, ay);
   const double bl = std::hypot(bx, by);
   if (al <= 1e-9 || bl <= 1e-9) return 0.0;
+
   const double cosine =
       std::clamp((ax * bx + ay * by) / (al * bl), -1.0, 1.0);
   return std::acos(cosine) * 180.0 / 3.14159265358979323846;
@@ -910,6 +941,33 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           mapPoint(firstLine.end) - mapPoint(firstLine.start);
       QPointF secondDirection =
           mapPoint(secondLine.end) - mapPoint(secondLine.start);
+
+      const auto sameScreenVertex = [this](sketch::Point a,
+                                           sketch::Point b) {
+        return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
+      };
+
+      if (sameScreenVertex(firstLine.start, secondLine.start)) {
+        firstDirection =
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
+        secondDirection =
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
+        firstDirection =
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
+        secondDirection =
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
+        firstDirection =
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
+        secondDirection =
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
+        firstDirection =
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
+        secondDirection =
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      }
       const double firstLength =
           std::hypot(firstDirection.x(), firstDirection.y());
       const double secondLength =
@@ -1110,6 +1168,36 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
               mapPoint(firstLine.end) - mapPoint(firstLine.start);
           QPointF secondDirection =
               mapPoint(secondLine.end) - mapPoint(secondLine.start);
+
+          const auto sameScreenVertex = [this](sketch::Point a,
+                                               sketch::Point b) {
+            return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
+          };
+
+          // Preview must use the exact same sector semantics as the stored
+          // angular dimension: both rays leave the common CAD vertex.
+          if (sameScreenVertex(firstLine.start, secondLine.start)) {
+            firstDirection =
+                mapPoint(firstLine.end) - mapPoint(firstLine.start);
+            secondDirection =
+                mapPoint(secondLine.end) - mapPoint(secondLine.start);
+          } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
+            firstDirection =
+                mapPoint(firstLine.end) - mapPoint(firstLine.start);
+            secondDirection =
+                mapPoint(secondLine.start) - mapPoint(secondLine.end);
+          } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
+            firstDirection =
+                mapPoint(firstLine.start) - mapPoint(firstLine.end);
+            secondDirection =
+                mapPoint(secondLine.end) - mapPoint(secondLine.start);
+          } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
+            firstDirection =
+                mapPoint(firstLine.start) - mapPoint(firstLine.end);
+            secondDirection =
+                mapPoint(secondLine.start) - mapPoint(secondLine.end);
+          }
+
           const double firstLength =
               std::hypot(firstDirection.x(), firstDirection.y());
           const double secondLength =
@@ -2285,6 +2373,33 @@ bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
           mapPoint(firstLine.end) - mapPoint(firstLine.start);
       QPointF secondDirection =
           mapPoint(secondLine.end) - mapPoint(secondLine.start);
+
+      const auto sameScreenVertex = [this](sketch::Point a,
+                                           sketch::Point b) {
+        return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
+      };
+
+      if (sameScreenVertex(firstLine.start, secondLine.start)) {
+        firstDirection =
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
+        secondDirection =
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
+        firstDirection =
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
+        secondDirection =
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
+        firstDirection =
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
+        secondDirection =
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
+        firstDirection =
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
+        secondDirection =
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      }
       const double firstLength =
           std::hypot(firstDirection.x(), firstDirection.y());
       const double secondLength =
@@ -2430,6 +2545,33 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
           mapPoint(firstLine.end) - mapPoint(firstLine.start);
       QPointF secondDirection =
           mapPoint(secondLine.end) - mapPoint(secondLine.start);
+
+      const auto sameScreenVertex = [this](sketch::Point a,
+                                           sketch::Point b) {
+        return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
+      };
+
+      if (sameScreenVertex(firstLine.start, secondLine.start)) {
+        firstDirection =
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
+        secondDirection =
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
+        firstDirection =
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
+        secondDirection =
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
+        firstDirection =
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
+        secondDirection =
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
+        firstDirection =
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
+        secondDirection =
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      }
 
       const double firstLength =
           std::hypot(firstDirection.x(), firstDirection.y());
@@ -3116,8 +3258,60 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     pushUndoState();
   else if (tool_ == Tool::Circle)
     pushUndoState();
-  if (tool_ == Tool::Line)
-    sketch_.addLine(*anchor_, point);
+  if (tool_ == Tool::Line) {
+    // Automatic CAD coincidence:
+    // if the new line starts on an existing line endpoint, remember that
+    // endpoint before creating the new primitive and store a real persistent
+    // Coincident constraint to the new line start.
+    std::optional<sketch::PointReference> connectedEndpoint;
+    double bestEndpointDistanceMm =
+        8.0 / std::max(0.001, pixelsPerMm_);
+
+    for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+      const auto id = sketch_.lineId(index);
+      if (id == sketch::kInvalidGeometryId) continue;
+
+      const auto& existingLine = sketch_.lines()[index];
+
+      for (const bool start : {true, false}) {
+        const auto existingPoint =
+            start ? existingLine.start : existingLine.end;
+        const double distanceMm =
+            std::hypot(anchor_->xMm - existingPoint.xMm,
+                       anchor_->yMm - existingPoint.yMm);
+
+        if (distanceMm < bestEndpointDistanceMm) {
+          bestEndpointDistanceMm = distanceMm;
+          connectedEndpoint = sketch::PointReference{id, start};
+        }
+      }
+    }
+
+    // Snap the new line start exactly onto the detected CAD endpoint.
+    sketch::Point lineStart = *anchor_;
+    if (connectedEndpoint) {
+      if (const auto endpointPoint =
+              sketch_.referencedPoint(*connectedEndpoint))
+        lineStart = *endpointPoint;
+    }
+
+    const std::size_t newLineIndex = sketch_.lines().size();
+    sketch_.addLine(lineStart, point);
+
+    if (connectedEndpoint &&
+        newLineIndex < sketch_.lines().size()) {
+      const auto newLineId = sketch_.lineId(newLineIndex);
+
+      if (newLineId != sketch::kInvalidGeometryId) {
+        sketch::Constraint constraint;
+        constraint.type = sketch::ConstraintType::Coincident;
+        constraint.firstPoint = *connectedEndpoint;
+        constraint.secondPoint =
+            sketch::PointReference{newLineId, true};
+        sketch_.addConstraint(constraint);
+      }
+    }
+  }
   else if (tool_ == Tool::Rectangle) {
     if (rectangleMode_ == RectangleMode::FromCenter) {
       const double dx = point.xMm - anchor_->xMm;

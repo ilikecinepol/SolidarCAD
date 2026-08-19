@@ -395,21 +395,6 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
   const auto& first = lines_[*firstIndex];
   auto& second = lines_[*secondIndex];
 
-  const double firstDx = first.end.xMm - first.start.xMm;
-  const double firstDy = first.end.yMm - first.start.yMm;
-  const double secondDx = second.end.xMm - second.start.xMm;
-  const double secondDy = second.end.yMm - second.start.yMm;
-
-  const double firstLength = std::hypot(firstDx, firstDy);
-  const double secondLength = std::hypot(secondDx, secondDy);
-  if (firstLength <= 1e-9 || secondLength <= 1e-9) return false;
-
-  const double cross = firstDx * secondDy - firstDy * secondDx;
-  const double sign = cross < 0.0 ? -1.0 : 1.0;
-  const double target =
-      std::atan2(firstDy, firstDx) +
-      sign * angleDegrees * 3.14159265358979323846 / 180.0;
-
   const Point oldStart = second.start;
   const Point oldEnd = second.end;
 
@@ -427,6 +412,27 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
     pivotAtStart = false;
     pivot = oldEnd;
   }
+
+  Point firstRayEnd = first.end;
+  if (same(pivot, first.end))
+    firstRayEnd = first.start;
+
+  const Point secondRayEnd = pivotAtStart ? oldEnd : oldStart;
+
+  const double firstDx = firstRayEnd.xMm - pivot.xMm;
+  const double firstDy = firstRayEnd.yMm - pivot.yMm;
+  const double secondDx = secondRayEnd.xMm - pivot.xMm;
+  const double secondDy = secondRayEnd.yMm - pivot.yMm;
+
+  const double firstLength = std::hypot(firstDx, firstDy);
+  const double secondLength = std::hypot(secondDx, secondDy);
+  if (firstLength <= 1e-9 || secondLength <= 1e-9) return false;
+
+  const double cross = firstDx * secondDy - firstDy * secondDx;
+  const double sign = cross < 0.0 ? -1.0 : 1.0;
+  const double target =
+      std::atan2(firstDy, firstDx) +
+      sign * angleDegrees * 3.14159265358979323846 / 180.0;
 
   const Point oldMoving = pivotAtStart ? oldEnd : oldStart;
   Point newMoving;
