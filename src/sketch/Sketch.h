@@ -36,7 +36,13 @@ struct PointReference {
   bool start{true};
 };
 
-enum class DimensionKind { LineLength, PointDistance, CircleDiameter };
+enum class DimensionKind {
+  LineLength,
+  PointDistance,
+  CircleDiameter,
+  PointDistanceX,
+  PointDistanceY
+};
 
 struct Dimension {
   DimensionKind kind{DimensionKind::LineLength};
@@ -59,7 +65,9 @@ enum class ConstraintType {
   Parallel,
   Perpendicular,
   Equal,
-  Angle
+  Angle,
+  DistanceX,
+  DistanceY
 };
 
 struct Constraint {
@@ -109,6 +117,10 @@ class Sketch final {
   bool setLineLength(std::size_t index, double lengthMm);
   bool setPointDistance(PointReference first, PointReference second,
                         double distanceMm);
+  bool setPointDistanceX(PointReference first, PointReference second,
+                         double distanceMm);
+  bool setPointDistanceY(PointReference first, PointReference second,
+                         double distanceMm);
   bool setCircleDiameter(std::size_t index, double diameterMm);
   // Kept for binary compatibility with partially rebuilt Qt Creator targets.
   void addDimension(Dimension dimension);

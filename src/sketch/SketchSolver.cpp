@@ -67,6 +67,35 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
           ++result.invalidReferences;
         break;
 
+      case ConstraintType::Distance:
+      case ConstraintType::DistanceX:
+      case ConstraintType::DistanceY:
+        if (constraint.firstPoint.lineId == kInvalidGeometryId ||
+            constraint.secondPoint.lineId == kInvalidGeometryId ||
+            !sketch.lineIndex(constraint.firstPoint.lineId) ||
+            !sketch.lineIndex(constraint.secondPoint.lineId) ||
+            constraint.value <= 0.0) {
+          ++result.invalidReferences;
+          break;
+        }
+
+        if ((constraint.type == ConstraintType::Distance &&
+             sketch.setPointDistance(constraint.firstPoint,
+                                     constraint.secondPoint,
+                                     constraint.value)) ||
+            (constraint.type == ConstraintType::DistanceX &&
+             sketch.setPointDistanceX(constraint.firstPoint,
+                                      constraint.secondPoint,
+                                      constraint.value)) ||
+            (constraint.type == ConstraintType::DistanceY &&
+             sketch.setPointDistanceY(constraint.firstPoint,
+                                      constraint.secondPoint,
+                                      constraint.value)))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
       case ConstraintType::Coincident:
         // Already handled in the first pass.
         break;

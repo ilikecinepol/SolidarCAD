@@ -120,7 +120,9 @@ void Sketch::removeLine(std::size_t index) {
   std::erase_if(dimensions, [removedId](const Dimension& dimension) {
     if (dimension.kind == DimensionKind::LineLength)
       return dimension.geometryId == removedId;
-    if (dimension.kind == DimensionKind::PointDistance)
+    if (dimension.kind == DimensionKind::PointDistance ||
+        dimension.kind == DimensionKind::PointDistanceX ||
+        dimension.kind == DimensionKind::PointDistanceY)
       return dimension.firstPoint.lineId == removedId ||
              dimension.secondPoint.lineId == removedId;
     return false;
@@ -177,7 +179,9 @@ void Sketch::removeElement(std::size_t elementId) {
     std::erase_if(dimensions, [&wasRemoved](const Dimension& dimension) {
       if (dimension.kind == DimensionKind::LineLength)
         return wasRemoved(dimension.geometryId);
-      if (dimension.kind == DimensionKind::PointDistance)
+      if (dimension.kind == DimensionKind::PointDistance ||
+          dimension.kind == DimensionKind::PointDistanceX ||
+          dimension.kind == DimensionKind::PointDistanceY)
         return wasRemoved(dimension.firstPoint.lineId) ||
                wasRemoved(dimension.secondPoint.lineId);
       return false;
@@ -519,6 +523,51 @@ bool Sketch::setPointDistance(PointReference firstReference,
   return true;
 }
 
+bool Sketch::setPointDistanceX(PointReference firstReference,
+                               PointReference secondReference,
+                               double distanceMm) {
+  const auto first = referencedPoint(firstReference);
+  const auto second = referencedPoint(secondReference);
+  if (!first || !second || distanceMm <= 0.0) return false;
+
+  const double dx = second->xMm - first->xMm;
+  const double direction = dx < 0.0 ? -1.0 : 1.0;
+  const Point moved{first->xMm + direction * distanceMm, second->yMm};
+
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+  for (auto& line : lines_) {
+    if (same(line.start, *second)) line.start = moved;
+    if (same(line.end, *second)) line.end = moved;
+  }
+
+  updateBounds();
+  return true;
+}
+
+bool Sketch::setPointDistanceY(PointReference firstReference,
+                               PointReference secondReference,
+                               double distanceMm) {
+  const auto first = referencedPoint(firstReference);
+  const auto second = referencedPoint(secondReference);
+  if (!first || !second || distanceMm <= 0.0) return false;
+
+  const double dy = second->yMm - first->yMm;
+  const double direction = dy < 0.0 ? -1.0 : 1.0;
+  const Point moved{second->xMm, first->yMm + direction * distanceMm};
+
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+  for (auto& line : lines_) {
+    if (same(line.start, *second)) line.start = moved;
+    if (same(line.end, *second)) line.end = moved;
+  }
+
+  updateBounds();
+  return true;
+}
 bool Sketch::setCircleDiameter(std::size_t index, double diameterMm) {
   if (index >= circles_.size() || diameterMm <= 0.0) return false;
   circles_[index].radiusMm = diameterMm * 0.5;
