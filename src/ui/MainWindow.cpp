@@ -36,7 +36,9 @@
 #include <QShortcut>
 #include <QSlider>
 #include <QToolButton>
+#include <QTimer>
 #include <QVariant>
+#include <limits>
 
 #include "drawing/EskdRenderer.h"
 #include "io/StlExporter.h"
@@ -62,11 +64,9 @@ void MainWindow::updateSketchConstraintPanel() {
   const QSignalBlocker blocker(sketchConstraintsList_);
   sketchConstraintsList_->clear();
 
-  const QStringList descriptions =
-      sketchCanvas_->selectedConstraintDescriptions();
-  const auto ids = sketchCanvas_->selectedConstraintIds();
+  const auto entries = sketchCanvas_->selectedConstraintPanelEntries();
 
-  if (descriptions.isEmpty() || ids.empty()) {
+  if (entries.empty()) {
     auto* item = new QTreeWidgetItem(sketchConstraintsList_);
     item->setText(0, QString::fromUtf8("Нет ограничений"));
     item->setForeground(0, QColor("#8795ac"));
@@ -74,21 +74,26 @@ void MainWindow::updateSketchConstraintPanel() {
     return;
   }
 
-  const auto count =
-      std::min<qsizetype>(descriptions.size(),
-                          static_cast<qsizetype>(ids.size()));
-  for (qsizetype index = 0; index < count; ++index) {
+  for (const auto& entry : entries) {
     auto* item = new QTreeWidgetItem(sketchConstraintsList_);
-    item->setText(0, descriptions[index]);
-    item->setText(1, QString::fromUtf8("Выкл"));
-    item->setCheckState(1, Qt::Unchecked);
+    item->setText(0, entry.description);
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable |
+                   Qt::ItemIsEnabled);
+    item->setCheckState(1, entry.checked ? Qt::Checked : Qt::Unchecked);
+
     item->setData(
         0, Qt::UserRole,
-        QVariant::fromValue<qulonglong>(static_cast<qulonglong>(
-            ids[static_cast<std::size_t>(index)])));
+        QVariant::fromValue<qulonglong>(
+            static_cast<qulonglong>(entry.constraintId)));
+
+    item->setData(
+        0, Qt::UserRole + 1,
+        QVariant::fromValue<qulonglong>(
+            entry.isDimension()
+                ? static_cast<qulonglong>(entry.dimensionIndex)
+                : std::numeric_limits<qulonglong>::max()));
   }
 }
-
 void MainWindow::buildMenus() {
   auto* menuHost = new QWidget(this);
   auto* layout = new QVBoxLayout(menuHost);
@@ -415,14 +420,14 @@ void MainWindow::buildUi() {
   constraintsTitle->setFont(constraintsTitleFont);
   sketchConstraintsList_ = new QTreeWidget(constraintsSection);
   sketchConstraintsList_->setColumnCount(2);
-  sketchConstraintsList_->setHeaderLabels(
-      {QString::fromUtf8("Ограничение"), QString::fromUtf8("Выкл")});
+  sketchConstraintsList_->setHeaderHidden(true);
   sketchConstraintsList_->setRootIsDecorated(false);
   sketchConstraintsList_->setItemsExpandable(false);
   sketchConstraintsList_->setSelectionMode(QAbstractItemView::NoSelection);
   sketchConstraintsList_->setFocusPolicy(Qt::StrongFocus);
   sketchConstraintsList_->setMaximumHeight(150);
-  sketchConstraintsList_->setColumnWidth(0, 160);
+  sketchConstraintsList_->setColumnWidth(0, 185);
+  sketchConstraintsList_->setColumnWidth(1, 28);
   sketchConstraintsList_->setStyleSheet(
       "QTreeWidget{border:1px solid #d8e1ef;border-radius:6px;"
       "background:#fbfcff;color:#29466f;padding:2px;}"
@@ -575,17 +580,38 @@ void MainWindow::buildUi() {
   connect(sketchConstraintsList_, &QTreeWidget::itemChanged, this,
           [this](QTreeWidgetItem* item, int column) {
             if (!item || column != 1) return;
-            if (item->checkState(1) != Qt::Checked) return;
+
+            const auto dimensionIndexValue =
+                item->data(0, Qt::UserRole + 1).toULongLong();
+            const bool isDimension =
+                dimensionIndexValue != std::numeric_limits<qulonglong>::max();
+
+            if (isDimension) {
+              const bool driving = item->checkState(1) == Qt::Checked;
+              const auto dimensionIndex =
+                  static_cast<std::size_t>(dimensionIndexValue);
+
+              QTimer::singleShot(0, this,
+                                 [this, dimensionIndex, driving] {
+                if (sketchCanvas_)
+                  sketchCanvas_->setDimensionDriving(dimensionIndex, driving);
+              });
+              return;
+            }
+
+            if (item->checkState(1) != Qt::Unchecked) return;
 
             const QVariant idData = item->data(0, Qt::UserRole);
             if (!idData.isValid()) return;
 
             const auto id =
                 static_cast<sketch::ConstraintId>(idData.toULongLong());
-            if (sketchCanvas_->removeConstraintById(id))
-              updateSketchConstraintPanel();
-          });
-  connect(sketchCanvas_, &SketchCanvas::lineStyleSelectionChanged, this,
+
+            QTimer::singleShot(0, this, [this, id] {
+              if (sketchCanvas_)
+                sketchCanvas_->removeConstraintById(id);
+            });
+          });  connect(sketchCanvas_, &SketchCanvas::lineStyleSelectionChanged, this,
           [this](bool elementSelected, bool dashed) {
             const QSignalBlocker blocker(sketchLineTypeCombo_);
             sketchLineTypeCombo_->setEnabled(elementSelected);

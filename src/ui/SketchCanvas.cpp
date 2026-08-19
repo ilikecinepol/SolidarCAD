@@ -176,7 +176,8 @@ void SketchCanvas::setCircleDiameter(double diameterMm) {
 SketchCanvas::Tool SketchCanvas::tool() const noexcept { return tool_; }
 const sketch::Sketch& SketchCanvas::sketch() const noexcept { return sketch_; }
 
-QStringList SketchCanvas::selectedConstraintDescriptions() const {
+std::vector<SketchCanvas::ConstraintPanelEntry>
+SketchCanvas::selectedConstraintPanelEntries() const {
   sketch::GeometryId selectedId = sketch::kInvalidGeometryId;
   if (selectionKind_ == SelectionKind::Line)
     selectedId = selectionLineId_;
@@ -217,8 +218,148 @@ QStringList SketchCanvas::selectedConstraintDescriptions() const {
     return QString::fromUtf8("Ограничение");
   };
 
-  QStringList result;
+  const auto samePoint = [](sketch::PointReference first,
+                            sketch::PointReference second) {
+    if (first.circleId != sketch::kInvalidGeometryId ||
+        second.circleId != sketch::kInvalidGeometryId)
+      return first.circleId != sketch::kInvalidGeometryId &&
+             first.circleId == second.circleId;
+
+    return first.lineId == second.lineId && first.start == second.start;
+  };
+
+  const auto samePointPair = [&samePoint](
+                                 const sketch::Constraint& constraint,
+                                 const sketch::Dimension& dimension) {
+    const bool sameOrder =
+        samePoint(constraint.firstPoint, dimension.firstPoint) &&
+        samePoint(constraint.secondPoint, dimension.secondPoint);
+    const bool reverseOrder =
+        samePoint(constraint.firstPoint, dimension.secondPoint) &&
+        samePoint(constraint.secondPoint, dimension.firstPoint);
+    return sameOrder || reverseOrder;
+  };
+
+  const auto constraintMatchesDimension =
+      [&samePointPair](const sketch::Constraint& constraint,
+                       const sketch::Dimension& dimension) {
+        switch (dimension.kind) {
+          case sketch::DimensionKind::LineLength:
+            return constraint.type == sketch::ConstraintType::Length &&
+                   constraint.firstGeometry == dimension.geometryId;
+          case sketch::DimensionKind::CircleDiameter:
+            return constraint.type == sketch::ConstraintType::Diameter &&
+                   constraint.firstGeometry == dimension.geometryId;
+          case sketch::DimensionKind::PointDistance:
+            return constraint.type == sketch::ConstraintType::Distance &&
+                   samePointPair(constraint, dimension);
+          case sketch::DimensionKind::PointDistanceX:
+            return constraint.type == sketch::ConstraintType::DistanceX &&
+                   samePointPair(constraint, dimension);
+          case sketch::DimensionKind::PointDistanceY:
+            return constraint.type == sketch::ConstraintType::DistanceY &&
+                   samePointPair(constraint, dimension);
+        }
+        return false;
+      };
+
+  const auto dimensionReferencesSelected =
+      [selectedId](const sketch::Dimension& dimension) {
+        if (dimension.kind == sketch::DimensionKind::LineLength ||
+            dimension.kind == sketch::DimensionKind::CircleDiameter)
+          return dimension.geometryId == selectedId;
+
+        return dimension.firstPoint.lineId == selectedId ||
+               dimension.secondPoint.lineId == selectedId ||
+               dimension.firstPoint.circleId == selectedId ||
+               dimension.secondPoint.circleId == selectedId;
+      };
+
+  const auto currentDimensionValue =
+      [this](const sketch::Dimension& dimension) -> std::optional<double> {
+        if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
+          const auto index = sketch_.circleIndex(dimension.geometryId);
+          if (!index) return std::nullopt;
+          return sketch_.circles()[*index].radiusMm * 2.0;
+        }
+
+        sketch::Point first;
+        sketch::Point second;
+
+        if (dimension.kind == sketch::DimensionKind::LineLength) {
+          const auto index = sketch_.lineIndex(dimension.geometryId);
+          if (!index) return std::nullopt;
+          first = sketch_.lines()[*index].start;
+          second = sketch_.lines()[*index].end;
+        } else {
+          const auto firstPoint = sketch_.referencedPoint(dimension.firstPoint);
+          const auto secondPoint =
+              sketch_.referencedPoint(dimension.secondPoint);
+          if (!firstPoint || !secondPoint) return std::nullopt;
+          first = *firstPoint;
+          second = *secondPoint;
+        }
+
+        if (dimension.kind == sketch::DimensionKind::PointDistanceX)
+          return std::abs(second.xMm - first.xMm);
+        if (dimension.kind == sketch::DimensionKind::PointDistanceY)
+          return std::abs(second.yMm - first.yMm);
+
+        return std::hypot(second.xMm - first.xMm, second.yMm - first.yMm);
+      };
+
+  std::vector<ConstraintPanelEntry> result;
+  std::vector<sketch::ConstraintId> dimensionConstraintIds;
+
+  for (std::size_t dimensionIndex = 0;
+       dimensionIndex < sketch_.dimensions().size(); ++dimensionIndex) {
+    const auto& dimension = sketch_.dimensions()[dimensionIndex];
+    if (!dimensionReferencesSelected(dimension)) continue;
+
+    sketch::ConstraintId activeConstraint = sketch::kInvalidConstraintId;
+    for (const auto& constraint : sketch_.constraints()) {
+      if (constraintMatchesDimension(constraint, dimension)) {
+        activeConstraint = constraint.id;
+        dimensionConstraintIds.push_back(constraint.id);
+        break;
+      }
+    }
+
+    QString name;
+    switch (dimension.kind) {
+      case sketch::DimensionKind::LineLength:
+        name = typeName(sketch::ConstraintType::Length);
+        break;
+      case sketch::DimensionKind::CircleDiameter:
+        name = typeName(sketch::ConstraintType::Diameter);
+        break;
+      case sketch::DimensionKind::PointDistance:
+        name = typeName(sketch::ConstraintType::Distance);
+        break;
+      case sketch::DimensionKind::PointDistanceX:
+        name = typeName(sketch::ConstraintType::DistanceX);
+        break;
+      case sketch::DimensionKind::PointDistanceY:
+        name = typeName(sketch::ConstraintType::DistanceY);
+        break;
+    }
+
+    if (const auto value = currentDimensionValue(dimension))
+      name += QString::fromUtf8(": %1 мм").arg(*value, 0, 'f', 2);
+
+    ConstraintPanelEntry entry;
+    entry.description = name;
+    entry.constraintId = activeConstraint;
+    entry.dimensionIndex = dimensionIndex;
+    entry.checked = activeConstraint != sketch::kInvalidConstraintId;
+    result.push_back(std::move(entry));
+  }
+
   for (const auto& constraint : sketch_.constraints()) {
+    if (std::find(dimensionConstraintIds.begin(), dimensionConstraintIds.end(),
+                  constraint.id) != dimensionConstraintIds.end())
+      continue;
+
     const bool referencesSelected =
         constraint.firstGeometry == selectedId ||
         constraint.secondGeometry == selectedId ||
@@ -241,34 +382,144 @@ QStringList SketchCanvas::selectedConstraintDescriptions() const {
              constraint.value != 0.0)
       text += QString::fromUtf8(": %1°").arg(constraint.value, 0, 'f', 2);
 
-    result.push_back(text);
+    ConstraintPanelEntry entry;
+    entry.description = text;
+    entry.constraintId = constraint.id;
+    entry.checked = true;
+    result.push_back(std::move(entry));
   }
+
   return result;
 }
 
-std::vector<sketch::ConstraintId> SketchCanvas::selectedConstraintIds() const {
-  sketch::GeometryId selectedId = sketch::kInvalidGeometryId;
-  if (selectionKind_ == SelectionKind::Line)
-    selectedId = selectionLineId_;
-  else if (selectionKind_ == SelectionKind::Circle)
-    selectedId = selectionCircleId_;
+bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
+                                       bool driving) {
+  if (dimensionIndex >= sketch_.dimensions().size()) return false;
 
-  if (selectedId == sketch::kInvalidGeometryId) return {};
+  const auto dimension = sketch_.dimensions()[dimensionIndex];
 
-  std::vector<sketch::ConstraintId> result;
+  const auto samePoint = [](sketch::PointReference first,
+                            sketch::PointReference second) {
+    if (first.circleId != sketch::kInvalidGeometryId ||
+        second.circleId != sketch::kInvalidGeometryId)
+      return first.circleId != sketch::kInvalidGeometryId &&
+             first.circleId == second.circleId;
+
+    return first.lineId == second.lineId && first.start == second.start;
+  };
+
+  const auto samePointPair =
+      [&samePoint, &dimension](const sketch::Constraint& constraint) {
+        const bool sameOrder =
+            samePoint(constraint.firstPoint, dimension.firstPoint) &&
+            samePoint(constraint.secondPoint, dimension.secondPoint);
+        const bool reverseOrder =
+            samePoint(constraint.firstPoint, dimension.secondPoint) &&
+            samePoint(constraint.secondPoint, dimension.firstPoint);
+        return sameOrder || reverseOrder;
+      };
+
+  const auto matches = [&dimension, &samePointPair](
+                           const sketch::Constraint& constraint) {
+    switch (dimension.kind) {
+      case sketch::DimensionKind::LineLength:
+        return constraint.type == sketch::ConstraintType::Length &&
+               constraint.firstGeometry == dimension.geometryId;
+      case sketch::DimensionKind::CircleDiameter:
+        return constraint.type == sketch::ConstraintType::Diameter &&
+               constraint.firstGeometry == dimension.geometryId;
+      case sketch::DimensionKind::PointDistance:
+        return constraint.type == sketch::ConstraintType::Distance &&
+               samePointPair(constraint);
+      case sketch::DimensionKind::PointDistanceX:
+        return constraint.type == sketch::ConstraintType::DistanceX &&
+               samePointPair(constraint);
+      case sketch::DimensionKind::PointDistanceY:
+        return constraint.type == sketch::ConstraintType::DistanceY &&
+               samePointPair(constraint);
+    }
+    return false;
+  };
+
+  std::vector<sketch::ConstraintId> existing;
   for (const auto& constraint : sketch_.constraints()) {
-    const bool referencesSelected =
-        constraint.firstGeometry == selectedId ||
-        constraint.secondGeometry == selectedId ||
-        constraint.firstPoint.lineId == selectedId ||
-        constraint.secondPoint.lineId == selectedId ||
-        constraint.firstPoint.circleId == selectedId ||
-        constraint.secondPoint.circleId == selectedId;
-    if (referencesSelected) result.push_back(constraint.id);
+    if (matches(constraint)) existing.push_back(constraint.id);
   }
-  return result;
-}
 
+  if (!driving) {
+    if (existing.empty()) return true;
+
+    pushUndoState();
+    for (const auto id : existing)
+      sketch_.removeConstraint(id);
+
+    notifyGeometryChanged();
+    update();
+    return true;
+  }
+
+  if (!existing.empty()) return true;
+
+  double value = 0.0;
+  sketch::Constraint constraint;
+
+  switch (dimension.kind) {
+    case sketch::DimensionKind::LineLength: {
+      const auto index = sketch_.lineIndex(dimension.geometryId);
+      if (!index) return false;
+      const auto& line = sketch_.lines()[*index];
+      value = std::hypot(line.end.xMm - line.start.xMm,
+                         line.end.yMm - line.start.yMm);
+      constraint.type = sketch::ConstraintType::Length;
+      constraint.firstGeometry = dimension.geometryId;
+      break;
+    }
+
+    case sketch::DimensionKind::CircleDiameter: {
+      const auto index = sketch_.circleIndex(dimension.geometryId);
+      if (!index) return false;
+      value = sketch_.circles()[*index].radiusMm * 2.0;
+      constraint.type = sketch::ConstraintType::Diameter;
+      constraint.firstGeometry = dimension.geometryId;
+      break;
+    }
+
+    case sketch::DimensionKind::PointDistance:
+    case sketch::DimensionKind::PointDistanceX:
+    case sketch::DimensionKind::PointDistanceY: {
+      const auto first = sketch_.referencedPoint(dimension.firstPoint);
+      const auto second = sketch_.referencedPoint(dimension.secondPoint);
+      if (!first || !second) return false;
+
+      if (dimension.kind == sketch::DimensionKind::PointDistanceX) {
+        value = std::abs(second->xMm - first->xMm);
+        constraint.type = sketch::ConstraintType::DistanceX;
+      } else if (dimension.kind == sketch::DimensionKind::PointDistanceY) {
+        value = std::abs(second->yMm - first->yMm);
+        constraint.type = sketch::ConstraintType::DistanceY;
+      } else {
+        value = std::hypot(second->xMm - first->xMm,
+                           second->yMm - first->yMm);
+        constraint.type = sketch::ConstraintType::Distance;
+      }
+
+      constraint.firstPoint = dimension.firstPoint;
+      constraint.secondPoint = dimension.secondPoint;
+      break;
+    }
+  }
+
+  if (value <= 1e-9) return false;
+
+  pushUndoState();
+  constraint.value = value;
+  sketch_.addConstraint(constraint);
+  sketch_.setDimensionValue(dimensionIndex, value);
+
+  notifyGeometryChanged();
+  update();
+  return true;
+}
 bool SketchCanvas::removeConstraintById(sketch::ConstraintId id) {
   if (id == sketch::kInvalidConstraintId) return false;
 

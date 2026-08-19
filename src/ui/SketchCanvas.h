@@ -62,10 +62,21 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] bool canUndo() const noexcept;
   [[nodiscard]] Tool tool() const noexcept;
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
-  [[nodiscard]] QStringList selectedConstraintDescriptions() const;
-  [[nodiscard]] std::vector<sketch::ConstraintId>
-  selectedConstraintIds() const;
+  struct ConstraintPanelEntry {
+    QString description;
+    sketch::ConstraintId constraintId{sketch::kInvalidConstraintId};
+    std::size_t dimensionIndex{static_cast<std::size_t>(-1)};
+    bool checked{true};
+
+    [[nodiscard]] bool isDimension() const noexcept {
+      return dimensionIndex != static_cast<std::size_t>(-1);
+    }
+  };
+
+  [[nodiscard]] std::vector<ConstraintPanelEntry>
+  selectedConstraintPanelEntries() const;
   bool removeConstraintById(sketch::ConstraintId id);
+  bool setDimensionDriving(std::size_t dimensionIndex, bool driving);
 
 signals:
   void geometryChanged(double widthMm, double heightMm);
