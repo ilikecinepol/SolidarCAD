@@ -7,6 +7,26 @@ namespace solidar::sketch {
 SolveResult BasicSketchSolver::solve(Sketch& sketch) {
   SolveResult result;
 
+  // Resolve point coincidence first. H/V constraints are applied afterwards,
+  // so an orthogonal line can move the whole coincident endpoint cluster.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Coincident) continue;
+
+    if (constraint.firstPoint.lineId == kInvalidGeometryId ||
+        constraint.secondPoint.lineId == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstPoint.lineId) ||
+        !sketch.lineIndex(constraint.secondPoint.lineId)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setPointsCoincident(constraint.firstPoint,
+                                   constraint.secondPoint))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+
   for (const auto& constraint : sketch.constraints()) {
     switch (constraint.type) {
       case ConstraintType::Horizontal:
@@ -31,6 +51,10 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
           ++result.applied;
         else
           ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Coincident:
+        // Already handled in the first pass.
         break;
 
       default:

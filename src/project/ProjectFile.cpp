@@ -209,8 +209,20 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
     saved.support = savedObject.value("support").toString(QStringLiteral("XY"));
     for (const auto lineValue : savedObject.value("lines").toArray()) {
       const auto line = lineValue.toObject();
-      saved.geometry.addLine({line.value("x1").toDouble(), line.value("y1").toDouble()},
-                             {line.value("x2").toDouble(), line.value("y2").toDouble()});
+      const sketch::Point start{line.value("x1").toDouble(),
+                                line.value("y1").toDouble()};
+      const sketch::Point end{line.value("x2").toDouble(),
+                              line.value("y2").toDouble()};
+
+      if (line.contains("elementId")) {
+        const auto elementId =
+            static_cast<std::size_t>(line.value("elementId").toInteger());
+        saved.geometry.addLine(start, end, elementId);
+      } else {
+        // Backward compatibility for early project-v1 files.
+        saved.geometry.addLine(start, end);
+      }
+
       if (line.value("dashed").toBool() && !saved.geometry.lines().empty())
         saved.geometry.setElementDashed(saved.geometry.lines().back().elementId, true);
     }

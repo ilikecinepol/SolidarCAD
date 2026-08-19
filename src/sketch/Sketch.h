@@ -79,6 +79,7 @@ class Sketch final {
   void clear();
   void setRectangle(double widthMm, double heightMm);
   void addLine(Point start, Point end);
+  void addLine(Point start, Point end, std::size_t elementId);
   void addRectangle(Point firstCorner, Point oppositeCorner);
   void addRectangle(Point first, Point second, Point third, Point fourth);
   void addCircle(Point center, double radiusMm);
@@ -95,6 +96,7 @@ class Sketch final {
   bool setCircleDiameterById(GeometryId id, double diameterMm);
   bool setLineHorizontalById(GeometryId id);
   bool setLineVerticalById(GeometryId id);
+  bool setPointsCoincident(PointReference first, PointReference second);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;

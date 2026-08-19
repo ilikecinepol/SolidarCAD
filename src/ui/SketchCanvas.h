@@ -29,7 +29,8 @@ class SketchCanvas final : public QWidget {
     Rectangle,
     Circle,
     AutoDimension,
-    OrthogonalConstraint
+    OrthogonalConstraint,
+    CoincidentConstraint
   };
   enum class CircleMode {
     CenterRadius,
@@ -103,6 +104,7 @@ signals:
   void commitRectanglePoint(sketch::Point point);
   void handleAutoDimensionClick(QPointF position);
   void handleOrthogonalConstraintClick(QPointF position);
+  void handleCoincidentConstraintClick(QPointF position);
   void commitAutoDimension();
   [[nodiscard]] bool dimensionSegment(std::size_t index, QPointF& first,
                                       QPointF& second) const;
@@ -122,6 +124,7 @@ signals:
   sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
   std::optional<sketch::Point> anchor_;
+  std::optional<sketch::PointReference> coincidentFirstPoint_;
   sketch::Point hoverPoint_{};
   sketch::Point dragPoint_{};
   bool dragging_{false};

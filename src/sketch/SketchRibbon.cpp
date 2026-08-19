@@ -148,14 +148,29 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
       QString::fromUtf8("Горизонтально/вертикально"), this);
   toolGroup->addButton(orthogonalTool);
   constraintsLayout->addWidget(orthogonalTool);
+
+  auto* coincidentTool = new QPushButton(QString::fromUtf8("●●"), this);
+  coincidentTool->setObjectName("toolButton");
+  coincidentTool->setCheckable(true);
+  coincidentTool->setFixedSize(54, 54);
+  coincidentTool->setFocusPolicy(Qt::NoFocus);
+  coincidentTool->setCursor(Qt::PointingHandCursor);
+  coincidentTool->setToolTip(QString::fromUtf8("Совпадение"));
+  toolGroup->addButton(coincidentTool);
+  constraintsLayout->addWidget(coincidentTool);
+
   auto* constraintLabels = new QVBoxLayout;
   auto* snap = new QLabel(QString::fromUtf8("●  Привязка к сетке"), this);
   snap->setObjectName("constraintReady");
   auto* orthogonal = new QLabel(
       QString::fromUtf8("●  Горизонт./вертик. — готово"), this);
   orthogonal->setObjectName("constraintReady");
+  auto* coincident = new QLabel(
+      QString::fromUtf8("●  Совпадение — готово"), this);
+  coincident->setObjectName("constraintReady");
   constraintLabels->addWidget(snap);
   constraintLabels->addWidget(orthogonal);
+  constraintLabels->addWidget(coincident);
   constraintsLayout->addLayout(constraintLabels);
   root->addWidget(groupWidget(QString::fromUtf8("ОГРАНИЧЕНИЯ"),
                               constraintsLayout, this));
@@ -179,6 +194,10 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   connect(orthogonalTool, &QPushButton::clicked, canvas,
           [canvas] {
             canvas->setTool(SketchCanvas::Tool::OrthogonalConstraint);
+          });
+  connect(coincidentTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::CoincidentConstraint);
           });
   connect(canvas, &SketchCanvas::toolChanged, this,
           [toolGroup](SketchCanvas::Tool tool) {

@@ -52,6 +52,25 @@ void Sketch::addLine(Point start, Point end) {
   updateBounds();
 }
 
+void Sketch::addLine(Point start, Point end, std::size_t elementId) {
+  if (start.xMm == end.xMm && start.yMm == end.yMm) return;
+
+  // elementId is a group/composite identifier, not a GeometryId.
+  // Serialized rectangles intentionally reuse the same elementId on
+  // multiple line primitives.
+  if (elementId == 0) {
+    addLine(start, end);
+    return;
+  }
+
+  lines_.push_back({start, end, elementId});
+  lineIds_.push_back(nextGeometryId_++);
+
+  // Prevent subsequently created elements from reusing a restored ID.
+  nextElementId_ = std::max(nextElementId_, elementId + 1);
+  updateBounds();
+}
+
 void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
   if (firstCorner.xMm == oppositeCorner.xMm ||
       firstCorner.yMm == oppositeCorner.yMm)
@@ -177,6 +196,57 @@ void Sketch::removeElement(std::size_t elementId) {
 
 void Sketch::translateElement(std::size_t elementId, double dxMm,
                               double dyMm) {
+  if (dxMm == 0.0 && dyMm == 0.0) return;
+
+  std::vector<GeometryId> movedIds;
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (lines_[index].elementId == elementId)
+      movedIds.push_back(lineIds_[index]);
+  }
+
+  const auto isMoved = [&movedIds](GeometryId id) {
+    return std::find(movedIds.begin(), movedIds.end(), id) != movedIds.end();
+  };
+
+  // If the selected element has Coincident constraints, remember the
+  // connected endpoint(s) outside the selected element. They should follow
+  // the drag instead of being left behind.
+  std::vector<PointReference> connectedExternalPoints;
+  for (const auto& constraint : constraints_) {
+    if (constraint.type != ConstraintType::Coincident) continue;
+
+    const bool firstMoved = isMoved(constraint.firstPoint.lineId);
+    const bool secondMoved = isMoved(constraint.secondPoint.lineId);
+    if (firstMoved == secondMoved) continue;
+
+    const PointReference external =
+        firstMoved ? constraint.secondPoint : constraint.firstPoint;
+
+    const auto duplicate = std::find_if(
+        connectedExternalPoints.begin(), connectedExternalPoints.end(),
+        [external](const PointReference& item) {
+          return item.lineId == external.lineId &&
+                 item.start == external.start;
+        });
+    if (duplicate == connectedExternalPoints.end())
+      connectedExternalPoints.push_back(external);
+  }
+
+  // Capture the old coordinates of those external endpoint clusters before
+  // the selected element is moved.
+  struct ConnectedPointMove {
+    Point oldPoint;
+    Point newPoint;
+  };
+  std::vector<ConnectedPointMove> connectedMoves;
+  connectedMoves.reserve(connectedExternalPoints.size());
+  for (const auto reference : connectedExternalPoints) {
+    const auto point = referencedPoint(reference);
+    if (!point) continue;
+    connectedMoves.push_back(
+        {*point, {point->xMm + dxMm, point->yMm + dyMm}});
+  }
+
   for (auto& line : lines_) {
     if (line.elementId != elementId) continue;
     line.start.xMm += dxMm;
@@ -184,6 +254,26 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
     line.end.xMm += dxMm;
     line.end.yMm += dyMm;
   }
+
+  const auto same = [](Point first, Point second) {
+    return std::hypot(first.xMm - second.xMm,
+                      first.yMm - second.yMm) <= 1e-7;
+  };
+
+  // Move only the connected endpoint cluster of the neighbouring geometry.
+  // The rest of that neighbouring line stays where it was, so it stretches /
+  // rotates naturally while remaining connected.
+  for (const auto& move : connectedMoves) {
+    for (std::size_t index = 0; index < lines_.size(); ++index) {
+      if (isMoved(lineIds_[index])) continue;
+      auto& line = lines_[index];
+      if (same(line.start, move.oldPoint)) line.start = move.newPoint;
+      if (same(line.end, move.oldPoint)) line.end = move.newPoint;
+    }
+  }
+
+  // Re-apply all active constraints after interactive geometry movement.
+  (void)BasicSketchSolver::solve(*this);
   updateBounds();
 }
 
@@ -292,6 +382,36 @@ std::optional<Point> Sketch::referencedPoint(
   return reference.start ? line.start : line.end;
 }
 
+bool Sketch::setPointsCoincident(PointReference firstReference,
+                                 PointReference secondReference) {
+  if (firstReference.lineId == kInvalidGeometryId ||
+      secondReference.lineId == kInvalidGeometryId)
+    return false;
+
+  // Coinciding the two ends of the same primitive would collapse the line.
+  if (firstReference.lineId == secondReference.lineId)
+    return false;
+
+  const auto first = referencedPoint(firstReference);
+  const auto second = referencedPoint(secondReference);
+  if (!first || !second) return false;
+
+  const Point target = *first;
+  const Point oldSecond = *second;
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+
+  // Move the complete already-connected endpoint cluster with the second
+  // reference. This preserves simple topology represented by equal points.
+  for (auto& line : lines_) {
+    if (same(line.start, oldSecond)) line.start = target;
+    if (same(line.end, oldSecond)) line.end = target;
+  }
+
+  updateBounds();
+  return true;
+}
 bool Sketch::setLineLength(std::size_t index, double lengthMm) {
   if (index >= lines_.size() || lengthMm <= 0.0) return false;
   const Point start = lines_[index].start;
@@ -374,7 +494,7 @@ ConstraintId Sketch::addConstraint(Constraint constraint) {
   else
     nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
   constraints_.push_back(constraint);
-  BasicSketchSolver::solve(*this);
+  (void)BasicSketchSolver::solve(*this);
   return constraint.id;
 }
 

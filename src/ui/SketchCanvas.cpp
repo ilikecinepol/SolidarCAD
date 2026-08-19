@@ -127,6 +127,7 @@ void SketchCanvas::setRectangle(double widthMm, double heightMm) {
 void SketchCanvas::setTool(Tool tool) {
   tool_ = tool;
   anchor_.reset();
+  coincidentFirstPoint_.reset();
   circlePoints_.clear();
   circleGuideLines_.clear();
   rectanglePoints_.clear();
@@ -153,6 +154,7 @@ void SketchCanvas::setRectangleMode(RectangleMode mode) {
 void SketchCanvas::setCircleMode(CircleMode mode) {
   circleMode_ = mode;
   anchor_.reset();
+  coincidentFirstPoint_.reset();
   circlePoints_.clear();
   circleGuideLines_.clear();
   hideDimensionEditor();
@@ -808,6 +810,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     handleAutoDimensionClick(event->position());
   } else if (tool_ == Tool::OrthogonalConstraint) {
     handleOrthogonalConstraintClick(event->position());
+  } else if (tool_ == Tool::CoincidentConstraint) {
+    handleCoincidentConstraintClick(event->position());
   } else if (tool_ == Tool::Select) {
     selectAt(event->position());
     if (selectionKind_ != SelectionKind::None) {
@@ -1243,6 +1247,88 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
   return std::nullopt;
 }
 
+void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
+  constexpr double hitTolerance = 10.0;
+  double bestDistance = hitTolerance;
+  std::optional<sketch::PointReference> clickedPoint;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const auto id = sketch_.lineId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    for (const bool start : {true, false}) {
+      const auto point = start ? line.start : line.end;
+      const double distance = QLineF(position, mapPoint(point)).length();
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        clickedPoint = sketch::PointReference{id, start};
+      }
+    }
+  }
+
+  if (!clickedPoint) {
+    emit selectionChanged(QString::fromUtf8(
+        "Совпадение: выберите конечную точку линии"));
+    return;
+  }
+
+  if (!coincidentFirstPoint_) {
+    coincidentFirstPoint_ = *clickedPoint;
+    emit selectionChanged(
+        QString::fromUtf8("Совпадение: выберите вторую точку"));
+    update();
+    return;
+  }
+
+  const auto first = *coincidentFirstPoint_;
+  const auto second = *clickedPoint;
+
+  if (first.lineId == second.lineId) {
+    coincidentFirstPoint_.reset();
+    emit selectionChanged(QString::fromUtf8(
+        "Совпадение: выберите точки разных линий"));
+    update();
+    return;
+  }
+
+  // Avoid duplicate constraints in either point order.
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.type != sketch::ConstraintType::Coincident) continue;
+
+    const bool sameOrder =
+        constraint.firstPoint.lineId == first.lineId &&
+        constraint.firstPoint.start == first.start &&
+        constraint.secondPoint.lineId == second.lineId &&
+        constraint.secondPoint.start == second.start;
+    const bool reverseOrder =
+        constraint.firstPoint.lineId == second.lineId &&
+        constraint.firstPoint.start == second.start &&
+        constraint.secondPoint.lineId == first.lineId &&
+        constraint.secondPoint.start == first.start;
+
+    if (sameOrder || reverseOrder) {
+      coincidentFirstPoint_.reset();
+      emit selectionChanged(
+          QString::fromUtf8("Эти точки уже имеют ограничение «Совпадение»"));
+      update();
+      return;
+    }
+  }
+
+  pushUndoState();
+
+  sketch::Constraint constraint;
+  constraint.type = sketch::ConstraintType::Coincident;
+  constraint.firstPoint = first;
+  constraint.secondPoint = second;
+  sketch_.addConstraint(constraint);
+
+  coincidentFirstPoint_.reset();
+  emit selectionChanged(QString::fromUtf8("Ограничение: Совпадение"));
+  notifyGeometryChanged();
+  update();
+}
 void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
   double bestDistance = hitTolerance;
