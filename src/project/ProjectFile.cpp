@@ -57,6 +57,7 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
       // them only at the serialization boundary to keep old project files
       // readable without changing the file-format version.
       qint64 geometryIndex = -1;
+      qint64 secondGeometryIndex = -1;
       if (dimension.kind == sketch::DimensionKind::LineLength) {
         const auto index = saved.geometry.lineIndex(dimension.geometryId);
         if (!index) continue;
@@ -65,6 +66,13 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
         const auto index = saved.geometry.circleIndex(dimension.geometryId);
         if (!index) continue;
         geometryIndex = static_cast<qint64>(*index);
+      } else if (dimension.kind == sketch::DimensionKind::LineAngle) {
+        const auto firstIndex = saved.geometry.lineIndex(dimension.geometryId);
+        const auto secondIndex =
+            saved.geometry.lineIndex(dimension.secondPoint.lineId);
+        if (!firstIndex || !secondIndex) continue;
+        geometryIndex = static_cast<qint64>(*firstIndex);
+        secondGeometryIndex = static_cast<qint64>(*secondIndex);
       }
 
       qint64 firstLine = -1;
@@ -84,6 +92,7 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
       dimensions.append(QJsonObject{
           {"kind", static_cast<int>(dimension.kind)},
           {"geometryIndex", geometryIndex},
+          {"secondGeometryIndex", secondGeometryIndex},
           {"firstLine", firstLine},
           {"firstStart", dimension.firstPoint.start},
           {"secondLine", secondLine},
@@ -264,6 +273,16 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
             static_cast<std::size_t>(object.value("geometryIndex").toInteger());
         dimension.geometryId = saved.geometry.circleId(index);
         if (dimension.geometryId == sketch::kInvalidGeometryId) continue;
+      } else if (kind == sketch::DimensionKind::LineAngle) {
+        const auto firstIndex =
+            static_cast<std::size_t>(object.value("geometryIndex").toInteger());
+        const auto secondIndex = static_cast<std::size_t>(
+            object.value("secondGeometryIndex").toInteger());
+        dimension.geometryId = saved.geometry.lineId(firstIndex);
+        dimension.secondPoint.lineId = saved.geometry.lineId(secondIndex);
+        if (dimension.geometryId == sketch::kInvalidGeometryId ||
+            dimension.secondPoint.lineId == sketch::kInvalidGeometryId)
+          continue;
       } else if (kind == sketch::DimensionKind::PointDistance ||
                  kind == sketch::DimensionKind::PointDistanceX ||
                  kind == sketch::DimensionKind::PointDistanceY) {

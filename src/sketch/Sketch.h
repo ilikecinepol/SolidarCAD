@@ -46,7 +46,8 @@ enum class DimensionKind {
   PointDistance,
   CircleDiameter,
   PointDistanceX,
-  PointDistanceY
+  PointDistanceY,
+  LineAngle
 };
 
 struct Dimension {
@@ -109,6 +110,8 @@ class Sketch final {
   bool setCircleDiameterById(GeometryId id, double diameterMm);
   bool setLineHorizontalById(GeometryId id);
   bool setLineVerticalById(GeometryId id);
+  bool setLineAngleByIds(GeometryId firstId, GeometryId secondId,
+                         double angleDegrees);
   bool setPointsCoincident(PointReference first, PointReference second);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);
 

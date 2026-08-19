@@ -125,6 +125,9 @@ void Sketch::removeLine(std::size_t index) {
         dimension.kind == DimensionKind::PointDistanceY)
       return dimension.firstPoint.lineId == removedId ||
              dimension.secondPoint.lineId == removedId;
+    if (dimension.kind == DimensionKind::LineAngle)
+      return dimension.geometryId == removedId ||
+             dimension.secondPoint.lineId == removedId;
     return false;
   });
 
@@ -185,6 +188,9 @@ void Sketch::removeElement(std::size_t elementId) {
           dimension.kind == DimensionKind::PointDistanceX ||
           dimension.kind == DimensionKind::PointDistanceY)
         return wasRemoved(dimension.firstPoint.lineId) ||
+               wasRemoved(dimension.secondPoint.lineId);
+      if (dimension.kind == DimensionKind::LineAngle)
+        return wasRemoved(dimension.geometryId) ||
                wasRemoved(dimension.secondPoint.lineId);
       return false;
     });
@@ -378,6 +384,73 @@ bool Sketch::setLineVerticalById(GeometryId id) {
   return true;
 }
 
+bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
+                               double angleDegrees) {
+  const auto firstIndex = lineIndex(firstId);
+  const auto secondIndex = lineIndex(secondId);
+  if (!firstIndex || !secondIndex || firstId == secondId ||
+      angleDegrees <= 0.0 || angleDegrees >= 180.0)
+    return false;
+
+  const auto& first = lines_[*firstIndex];
+  auto& second = lines_[*secondIndex];
+
+  const double firstDx = first.end.xMm - first.start.xMm;
+  const double firstDy = first.end.yMm - first.start.yMm;
+  const double secondDx = second.end.xMm - second.start.xMm;
+  const double secondDy = second.end.yMm - second.start.yMm;
+
+  const double firstLength = std::hypot(firstDx, firstDy);
+  const double secondLength = std::hypot(secondDx, secondDy);
+  if (firstLength <= 1e-9 || secondLength <= 1e-9) return false;
+
+  const double cross = firstDx * secondDy - firstDy * secondDx;
+  const double sign = cross < 0.0 ? -1.0 : 1.0;
+  const double target =
+      std::atan2(firstDy, firstDx) +
+      sign * angleDegrees * 3.14159265358979323846 / 180.0;
+
+  const Point oldStart = second.start;
+  const Point oldEnd = second.end;
+
+  const auto same = [](Point a, Point b) {
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+  };
+
+  bool pivotAtStart = true;
+  Point pivot = oldStart;
+
+  if (same(oldStart, first.start) || same(oldStart, first.end)) {
+    pivotAtStart = true;
+    pivot = oldStart;
+  } else if (same(oldEnd, first.start) || same(oldEnd, first.end)) {
+    pivotAtStart = false;
+    pivot = oldEnd;
+  }
+
+  const Point oldMoving = pivotAtStart ? oldEnd : oldStart;
+  Point newMoving;
+
+  if (pivotAtStart) {
+    newMoving = {pivot.xMm + std::cos(target) * secondLength,
+                 pivot.yMm + std::sin(target) * secondLength};
+  } else {
+    newMoving = {pivot.xMm - std::cos(target) * secondLength,
+                 pivot.yMm - std::sin(target) * secondLength};
+  }
+
+  for (auto& line : lines_) {
+    if (same(line.start, oldMoving)) line.start = newMoving;
+    if (same(line.end, oldMoving)) line.end = newMoving;
+  }
+
+  for (auto& circle : circles_) {
+    if (same(circle.center, oldMoving)) circle.center = newMoving;
+  }
+
+  updateBounds();
+  return true;
+}
 GeometryId Sketch::lineId(std::size_t index) const noexcept {
   return index < lineIds_.size() ? lineIds_[index] : kInvalidGeometryId;
 }

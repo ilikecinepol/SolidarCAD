@@ -32,6 +32,39 @@ double niceRulerStep(double pixelsPerMm) {
   return factor * magnitude;
 }
 
+double lineAngleDegrees(const sketch::Line& first,
+                        const sketch::Line& second) {
+  const double ax = first.end.xMm - first.start.xMm;
+  const double ay = first.end.yMm - first.start.yMm;
+  const double bx = second.end.xMm - second.start.xMm;
+  const double by = second.end.yMm - second.start.yMm;
+  const double al = std::hypot(ax, ay);
+  const double bl = std::hypot(bx, by);
+  if (al <= 1e-9 || bl <= 1e-9) return 0.0;
+  const double cosine =
+      std::clamp((ax * bx + ay * by) / (al * bl), -1.0, 1.0);
+  return std::acos(cosine) * 180.0 / 3.14159265358979323846;
+}
+
+template <typename MapPointFn>
+std::optional<QPointF> lineIntersectionScreen(const sketch::Line& first,
+                                              const sketch::Line& second,
+                                              MapPointFn&& mapPointFn) {
+  const double ax = first.end.xMm - first.start.xMm;
+  const double ay = first.end.yMm - first.start.yMm;
+  const double bx = second.end.xMm - second.start.xMm;
+  const double by = second.end.yMm - second.start.yMm;
+  const double determinant = ax * by - ay * bx;
+  if (std::abs(determinant) <= 1e-9) return std::nullopt;
+
+  const double dx = second.start.xMm - first.start.xMm;
+  const double dy = second.start.yMm - first.start.yMm;
+  const double t = (dx * by - dy * bx) / determinant;
+
+  return mapPointFn(sketch::Point{
+      first.start.xMm + t * ax,
+      first.start.yMm + t * ay});
+}
 double pointSegmentDistance(QPointF point, QPointF start, QPointF end) {
   const QPointF segment = end - start;
   const double lengthSquared = QPointF::dotProduct(segment, segment);
@@ -141,6 +174,9 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("autoDimensionOffsetMm", QVariant());
   setProperty("autoDimensionAngleRad", QVariant());
   setProperty("autoDimensionPointMode", QVariant());
+  setProperty("autoDimensionDirectLineId", QVariant());
+  setProperty("autoDimensionAngleFirstLine", QVariant());
+  setProperty("autoDimensionAngleSecondLine", QVariant());
   setProperty("editingDimensionIndex", QVariant());
   hideDimensionEditor();
   setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
@@ -259,6 +295,16 @@ SketchCanvas::selectedConstraintPanelEntries() const {
           case sketch::DimensionKind::PointDistanceY:
             return constraint.type == sketch::ConstraintType::DistanceY &&
                    samePointPair(constraint, dimension);
+          case sketch::DimensionKind::LineAngle: {
+            if (constraint.type != sketch::ConstraintType::Angle) return false;
+            const bool sameOrder =
+                constraint.firstGeometry == dimension.geometryId &&
+                constraint.secondGeometry == dimension.secondPoint.lineId;
+            const bool reverseOrder =
+                constraint.firstGeometry == dimension.secondPoint.lineId &&
+                constraint.secondGeometry == dimension.geometryId;
+            return sameOrder || reverseOrder;
+          }
         }
         return false;
       };
@@ -268,6 +314,9 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         if (dimension.kind == sketch::DimensionKind::LineLength ||
             dimension.kind == sketch::DimensionKind::CircleDiameter)
           return dimension.geometryId == selectedId;
+        if (dimension.kind == sketch::DimensionKind::LineAngle)
+          return dimension.geometryId == selectedId ||
+                 dimension.secondPoint.lineId == selectedId;
 
         return dimension.firstPoint.lineId == selectedId ||
                dimension.secondPoint.lineId == selectedId ||
@@ -281,6 +330,15 @@ SketchCanvas::selectedConstraintPanelEntries() const {
           const auto index = sketch_.circleIndex(dimension.geometryId);
           if (!index) return std::nullopt;
           return sketch_.circles()[*index].radiusMm * 2.0;
+        }
+
+        if (dimension.kind == sketch::DimensionKind::LineAngle) {
+          const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+          const auto secondIndex =
+              sketch_.lineIndex(dimension.secondPoint.lineId);
+          if (!firstIndex || !secondIndex) return std::nullopt;
+          return lineAngleDegrees(sketch_.lines()[*firstIndex],
+                                  sketch_.lines()[*secondIndex]);
         }
 
         sketch::Point first;
@@ -342,11 +400,17 @@ SketchCanvas::selectedConstraintPanelEntries() const {
       case sketch::DimensionKind::PointDistanceY:
         name = typeName(sketch::ConstraintType::DistanceY);
         break;
+      case sketch::DimensionKind::LineAngle:
+        name = typeName(sketch::ConstraintType::Angle);
+        break;
     }
 
-    if (const auto value = currentDimensionValue(dimension))
+    if (const auto value = currentDimensionValue(dimension)) {
+      if (dimension.kind == sketch::DimensionKind::LineAngle)
+        name += QStringLiteral(": %1").arg(*value, 0, 'f', 2) + QChar(0x00B0);
+      else
       name += QString::fromUtf8(": %1 мм").arg(*value, 0, 'f', 2);
-
+    }
     ConstraintPanelEntry entry;
     entry.description = name;
     entry.constraintId = activeConstraint;
@@ -437,6 +501,16 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
       case sketch::DimensionKind::PointDistanceY:
         return constraint.type == sketch::ConstraintType::DistanceY &&
                samePointPair(constraint);
+      case sketch::DimensionKind::LineAngle: {
+        if (constraint.type != sketch::ConstraintType::Angle) return false;
+        const bool sameOrder =
+            constraint.firstGeometry == dimension.geometryId &&
+            constraint.secondGeometry == dimension.secondPoint.lineId;
+        const bool reverseOrder =
+            constraint.firstGeometry == dimension.secondPoint.lineId &&
+            constraint.secondGeometry == dimension.geometryId;
+        return sameOrder || reverseOrder;
+      }
     }
     return false;
   };
@@ -505,6 +579,20 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
 
       constraint.firstPoint = dimension.firstPoint;
       constraint.secondPoint = dimension.secondPoint;
+      break;
+    }
+
+    case sketch::DimensionKind::LineAngle: {
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+      if (!firstIndex || !secondIndex) return false;
+
+      value = lineAngleDegrees(sketch_.lines()[*firstIndex],
+                               sketch_.lines()[*secondIndex]);
+      constraint.type = sketch::ConstraintType::Angle;
+      constraint.firstGeometry = dimension.geometryId;
+      constraint.secondGeometry = dimension.secondPoint.lineId;
       break;
     }
   }
@@ -804,6 +892,107 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   for (const auto& dimension : sketch_.dimensions()) {
     const std::size_t dimensionIndex =
         static_cast<std::size_t>(&dimension - sketch_.dimensions().data());
+
+    if (dimension.kind == sketch::DimensionKind::LineAngle) {
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+      if (!firstIndex || !secondIndex) continue;
+
+      const auto& firstLine = sketch_.lines()[*firstIndex];
+      const auto& secondLine = sketch_.lines()[*secondIndex];
+      const auto center = lineIntersectionScreen(
+          firstLine, secondLine,
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!center) continue;
+
+      QPointF firstDirection =
+          mapPoint(firstLine.end) - mapPoint(firstLine.start);
+      QPointF secondDirection =
+          mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      const double firstLength =
+          std::hypot(firstDirection.x(), firstDirection.y());
+      const double secondLength =
+          std::hypot(secondDirection.x(), secondDirection.y());
+      if (firstLength <= 1.0 || secondLength <= 1.0) continue;
+      firstDirection /= firstLength;
+      secondDirection /= secondLength;
+
+      const double radius =
+          std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
+      const QPointF arcFirst = *center + firstDirection * radius;
+      const QPointF arcSecond = *center + secondDirection * radius;
+
+      double startDeg =
+          -std::atan2(firstDirection.y(), firstDirection.x()) *
+          180.0 / 3.14159265358979323846;
+      double endDeg =
+          -std::atan2(secondDirection.y(), secondDirection.x()) *
+          180.0 / 3.14159265358979323846;
+      double spanDeg = endDeg - startDeg;
+      while (spanDeg <= -180.0) spanDeg += 360.0;
+      while (spanDeg > 180.0) spanDeg -= 360.0;
+
+      const bool selectedDimension =
+          property("selectedDimension").isValid() &&
+          property("selectedDimension").toULongLong() == dimensionIndex;
+      const QColor dimensionColor =
+          selectedDimension ? QColor("#ff8a24") : QColor("#315e9d");
+
+      painter.setPen(
+          QPen(dimensionColor, selectedDimension ? 2.2 : 1.2));
+      painter.setBrush(Qt::NoBrush);
+      painter.drawLine(*center, arcFirst);
+      painter.drawLine(*center, arcSecond);
+
+      QRectF arcRect(center->x() - radius, center->y() - radius,
+                     radius * 2.0, radius * 2.0);
+      painter.drawArc(arcRect,
+                      qRound(startDeg * 16.0),
+                      qRound(spanDeg * 16.0));
+
+      const double midRad =
+          (startDeg + spanDeg * 0.5) *
+          3.14159265358979323846 / 180.0;
+      QPointF textCenter =
+          *center + QPointF(std::cos(midRad), -std::sin(midRad)) *
+                        (radius + 18.0);
+
+      // Angular dimension labels use the same auxiliary arrays as linear
+      // dimensions, but store free screen-X / screen-Y offsets in millimetres.
+      const QVariantList angleLabelX =
+          property("dimensionLabelAlongMm").toList();
+      const QVariantList angleLabelY =
+          property("dimensionLabelOffsetMm").toList();
+
+      const double labelOffsetX =
+          dimensionIndex < static_cast<std::size_t>(angleLabelX.size())
+              ? angleLabelX[static_cast<int>(dimensionIndex)].toDouble()
+              : 0.0;
+      const double labelOffsetY =
+          dimensionIndex < static_cast<std::size_t>(angleLabelY.size())
+              ? angleLabelY[static_cast<int>(dimensionIndex)].toDouble()
+              : 0.0;
+
+      textCenter += QPointF(labelOffsetX * pixelsPerMm_,
+                            labelOffsetY * pixelsPerMm_);
+
+      const QString label =
+          QString::fromUtf8("%1°")
+              .arg(lineAngleDegrees(firstLine, secondLine), 0, 'f', 2);
+
+      const QRectF textRect(-42.0, -10.0, 84.0, 20.0);
+      painter.save();
+      painter.translate(textCenter);
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(QColor(251, 252, 255, 235));
+      painter.drawRoundedRect(textRect, 4.0, 4.0);
+      painter.setPen(selectedDimension ? QColor("#d76400")
+                                       : QColor("#244a82"));
+      painter.drawText(textRect, Qt::AlignCenter, label);
+      painter.restore();
+      continue;
+    }
     QPointF first;
     QPointF second;
     QPointF geometryFirst;
@@ -900,12 +1089,75 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   }
   if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible()) {
     const QString target = property("autoDimensionTarget").toString();
+
+    if (target == "angle") {
+      const auto firstId = static_cast<sketch::GeometryId>(
+          property("autoDimensionAngleFirstLine").toULongLong());
+      const auto secondId = static_cast<sketch::GeometryId>(
+          property("autoDimensionAngleSecondLine").toULongLong());
+      const auto firstIndex = sketch_.lineIndex(firstId);
+      const auto secondIndex = sketch_.lineIndex(secondId);
+
+      if (firstIndex && secondIndex) {
+        const auto& firstLine = sketch_.lines()[*firstIndex];
+        const auto& secondLine = sketch_.lines()[*secondIndex];
+        const auto center = lineIntersectionScreen(
+            firstLine, secondLine,
+            [this](sketch::Point point) { return mapPoint(point); });
+
+        if (center) {
+          QPointF firstDirection =
+              mapPoint(firstLine.end) - mapPoint(firstLine.start);
+          QPointF secondDirection =
+              mapPoint(secondLine.end) - mapPoint(secondLine.start);
+          const double firstLength =
+              std::hypot(firstDirection.x(), firstDirection.y());
+          const double secondLength =
+              std::hypot(secondDirection.x(), secondDirection.y());
+
+          if (firstLength > 1.0 && secondLength > 1.0) {
+            firstDirection /= firstLength;
+            secondDirection /= secondLength;
+
+            const double radius =
+                std::max(16.0,
+                         std::abs(property("autoDimensionOffsetMm").toDouble()) *
+                             pixelsPerMm_);
+            const QPointF arcFirst = *center + firstDirection * radius;
+            const QPointF arcSecond = *center + secondDirection * radius;
+
+            double startDeg =
+                -std::atan2(firstDirection.y(), firstDirection.x()) *
+                180.0 / 3.14159265358979323846;
+            double endDeg =
+                -std::atan2(secondDirection.y(), secondDirection.x()) *
+                180.0 / 3.14159265358979323846;
+            double spanDeg = endDeg - startDeg;
+            while (spanDeg <= -180.0) spanDeg += 360.0;
+            while (spanDeg > 180.0) spanDeg -= 360.0;
+
+            painter.setPen(QPen(QColor("#0872f9"), 1.4, Qt::DashLine));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawLine(*center, arcFirst);
+            painter.drawLine(*center, arcSecond);
+            QRectF arcRect(center->x() - radius, center->y() - radius,
+                           radius * 2.0, radius * 2.0);
+            painter.drawArc(arcRect,
+                            qRound(startDeg * 16.0),
+                            qRound(spanDeg * 16.0));
+          }
+        }
+      }
+    }
+
     const bool diameterDimension = target == "circle";
 
     std::optional<QPointF> first;
     std::optional<QPointF> second;
 
-    if (target == "line") {
+    if (target == "angle") {
+      // Angular preview is painted above.
+    } else if (target == "line") {
       const auto id = static_cast<sketch::GeometryId>(
           property("autoDimensionIndex").toULongLong());
       const auto index = sketch_.lineIndex(id);
@@ -1129,6 +1381,62 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   if (event->button() != Qt::LeftButton) return;
   if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible() &&
       !property("autoDimensionTarget").toString().isEmpty()) {
+    const auto directLineId = static_cast<sketch::GeometryId>(
+        property("autoDimensionDirectLineId").toULongLong());
+
+    if (directLineId != sketch::kInvalidGeometryId &&
+        property("autoDimensionTarget").toString() != QStringLiteral("angle")) {
+      double bestDistance = 9.0;
+      std::optional<std::size_t> secondLineIndex;
+
+      for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+        const auto candidateId = sketch_.lineId(index);
+        if (candidateId == directLineId) continue;
+
+        const auto& line = sketch_.lines()[index];
+        const double distance = pointSegmentDistance(
+            event->position(), mapPoint(line.start), mapPoint(line.end));
+
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          secondLineIndex = index;
+        }
+      }
+
+      if (secondLineIndex) {
+        const auto firstIndex = sketch_.lineIndex(directLineId);
+        if (firstIndex) {
+          const auto secondId = sketch_.lineId(*secondLineIndex);
+          const double angle = lineAngleDegrees(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondLineIndex]);
+
+          if (angle > 1e-6 && angle < 180.0 - 1e-6) {
+            setProperty("autoDimensionTarget", "angle");
+            setProperty("autoDimensionAngleFirstLine",
+                        static_cast<qulonglong>(directLineId));
+            setProperty("autoDimensionAngleSecondLine",
+                        static_cast<qulonglong>(secondId));
+            setProperty("autoDimensionOffsetMm", 12.0);
+
+            primaryDimension_->setPrefix(QString());
+            primaryDimension_->setSuffix(QString::fromUtf8("°"));
+            primaryDimension_->setRange(0.01, 179.99);
+            primaryDimension_->setValue(angle);
+            primaryDimension_->move(
+                (event->position() + QPointF(16, 16)).toPoint());
+            primaryDimension_->show();
+            primaryDimension_->setFocus();
+            primaryDimension_->selectAll();
+
+            update();
+            event->accept();
+            return;
+          }
+        }
+      }
+    }
+
     commitAutoDimension();
     event->accept();
     return;
@@ -1238,7 +1546,13 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
     setProperty("autoDimensionTarget", "circle");
     setProperty("autoDimensionIndex",
                 static_cast<qulonglong>(dimension.geometryId));
-    primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));
+    primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));  } else if (dimension.kind == sketch::DimensionKind::LineAngle) {
+    setProperty("autoDimensionTarget", "angle");
+    setProperty("autoDimensionAngleFirstLine",
+                static_cast<qulonglong>(dimension.geometryId));
+    setProperty("autoDimensionAngleSecondLine",
+                static_cast<qulonglong>(dimension.secondPoint.lineId));
+    primaryDimension_->setPrefix(QString());
   } else {
     setProperty("autoDimensionTarget", "points");
     if (dimension.kind == sketch::DimensionKind::PointDistanceX)
@@ -1255,9 +1569,24 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
     setProperty("autoDimensionSecondStart", dimension.secondPoint.start);
     primaryDimension_->setPrefix(QString());
   }
-  primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
-  primaryDimension_->setRange(0.01, 100000.0);
-  primaryDimension_->setValue(dimension.valueMm);
+  if (dimension.kind == sketch::DimensionKind::LineAngle) {
+    primaryDimension_->setSuffix(QString(QChar(0x00B0)));
+    primaryDimension_->setRange(0.01, 179.99);
+
+    const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+    const auto secondIndex =
+        sketch_.lineIndex(dimension.secondPoint.lineId);
+    if (firstIndex && secondIndex)
+      primaryDimension_->setValue(
+          lineAngleDegrees(sketch_.lines()[*firstIndex],
+                           sketch_.lines()[*secondIndex]));
+    else
+      primaryDimension_->setValue(dimension.valueMm);
+  } else {
+    primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
+    primaryDimension_->setRange(0.01, 100000.0);
+    primaryDimension_->setValue(dimension.valueMm);
+  }
   secondaryDimension_->hide();
   primaryDimension_->move((event->position() + QPointF(16, 16)).toPoint());
   primaryDimension_->show();
@@ -1287,6 +1616,88 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
       (event->buttons() & Qt::LeftButton)) {
     const auto index = static_cast<std::size_t>(
         property("draggingDimensionLabel").toULongLong());
+
+    if (index < sketch_.dimensions().size() &&
+        sketch_.dimensions()[index].kind ==
+            sketch::DimensionKind::LineAngle) {
+      const auto& dimension = sketch_.dimensions()[index];
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+
+      if (firstIndex && secondIndex) {
+        const auto& firstLine = sketch_.lines()[*firstIndex];
+        const auto& secondLine = sketch_.lines()[*secondIndex];
+        const auto center = lineIntersectionScreen(
+            firstLine, secondLine,
+            [this](sketch::Point point) { return mapPoint(point); });
+
+        if (center) {
+          QPointF firstDirection =
+              mapPoint(firstLine.end) - mapPoint(firstLine.start);
+          QPointF secondDirection =
+              mapPoint(secondLine.end) - mapPoint(secondLine.start);
+
+          const double firstLength =
+              std::hypot(firstDirection.x(), firstDirection.y());
+          const double secondLength =
+              std::hypot(secondDirection.x(), secondDirection.y());
+
+          if (firstLength > 1.0 && secondLength > 1.0) {
+            firstDirection /= firstLength;
+            secondDirection /= secondLength;
+
+            double startDeg =
+                -std::atan2(firstDirection.y(), firstDirection.x()) *
+                180.0 / 3.14159265358979323846;
+            double endDeg =
+                -std::atan2(secondDirection.y(), secondDirection.x()) *
+                180.0 / 3.14159265358979323846;
+            double spanDeg = endDeg - startDeg;
+            while (spanDeg <= -180.0) spanDeg += 360.0;
+            while (spanDeg > 180.0) spanDeg -= 360.0;
+
+            const double radius =
+                std::max(16.0,
+                         std::abs(dimension.offsetMm) * pixelsPerMm_);
+            const double midDeg = startDeg + spanDeg * 0.5;
+            const double midRad =
+                -midDeg * 3.14159265358979323846 / 180.0;
+
+            const QPointF defaultLabelCenter =
+                *center +
+                QPointF(std::cos(midRad), -std::sin(midRad)) *
+                    (radius + 18.0);
+
+            const QPointF delta =
+                event->position() - defaultLabelCenter;
+
+            QVariantList alongValues =
+                property("dimensionLabelAlongMm").toList();
+            QVariantList offsetValues =
+                property("dimensionLabelOffsetMm").toList();
+
+            while (alongValues.size() <= static_cast<int>(index))
+              alongValues.push_back(0.0);
+            while (offsetValues.size() <= static_cast<int>(index))
+              offsetValues.push_back(0.0);
+
+            alongValues[static_cast<int>(index)] =
+                delta.x() / pixelsPerMm_;
+            offsetValues[static_cast<int>(index)] =
+                delta.y() / pixelsPerMm_;
+
+            setProperty("dimensionLabelAlongMm", alongValues);
+            setProperty("dimensionLabelOffsetMm", offsetValues);
+            update();
+          }
+        }
+      }
+
+      event->accept();
+      return;
+    }
+
     QPointF first;
     QPointF second;
     if (dimensionSegment(index, first, second)) {
@@ -1320,7 +1731,27 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         property("draggingDimensionLine").toULongLong());
     if (index < sketch_.dimensions().size()) {
       const auto& dimension = sketch_.dimensions()[index];
-      if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
+      if (dimension.kind == sketch::DimensionKind::LineAngle) {
+        const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+        const auto secondIndex =
+            sketch_.lineIndex(dimension.secondPoint.lineId);
+
+        if (firstIndex && secondIndex) {
+          const auto center = lineIntersectionScreen(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondIndex],
+              [this](sketch::Point point) { return mapPoint(point); });
+
+          if (center) {
+            const double radiusPixels =
+                QLineF(*center, event->position()).length();
+            sketch_.setDimensionPlacement(
+                index,
+                std::max(3.0, radiusPixels / pixelsPerMm_),
+                dimension.angleRad);
+          }
+        }
+      } else if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
         const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
         if (circleIndex) {
           const QPointF center =
@@ -1359,7 +1790,28 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     const QString target =
         property("autoDimensionTarget").toString();
 
-    if (target == "circle") {
+    if (target == "angle") {
+      const auto firstId = static_cast<sketch::GeometryId>(
+          property("autoDimensionAngleFirstLine").toULongLong());
+      const auto secondId = static_cast<sketch::GeometryId>(
+          property("autoDimensionAngleSecondLine").toULongLong());
+      const auto firstIndex = sketch_.lineIndex(firstId);
+      const auto secondIndex = sketch_.lineIndex(secondId);
+
+      if (firstIndex && secondIndex) {
+        const auto center = lineIntersectionScreen(
+            sketch_.lines()[*firstIndex], sketch_.lines()[*secondIndex],
+            [this](sketch::Point point) { return mapPoint(point); });
+        if (center) {
+          const double radiusPixels =
+              QLineF(*center, event->position()).length();
+          setProperty("autoDimensionOffsetMm",
+                      std::max(3.0, radiusPixels / pixelsPerMm_));
+          primaryDimension_->move(
+              (event->position() + QPointF(16, 16)).toPoint());
+        }
+      }
+    } else if (target == "circle") {
       const auto id = static_cast<sketch::GeometryId>(
           property("autoDimensionIndex").toULongLong());
       const auto index = sketch_.circleIndex(id);
@@ -1616,6 +2068,19 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
                   constraint.type == sketch::ConstraintType::DistanceY &&
                   samePointPair(constraint, dimension);
               break;
+
+            case sketch::DimensionKind::LineAngle: {
+              const bool sameOrder =
+                  constraint.firstGeometry == dimension.geometryId &&
+                  constraint.secondGeometry == dimension.secondPoint.lineId;
+              const bool reverseOrder =
+                  constraint.firstGeometry == dimension.secondPoint.lineId &&
+                  constraint.secondGeometry == dimension.geometryId;
+              matches =
+                  constraint.type == sketch::ConstraintType::Angle &&
+                  (sameOrder || reverseOrder);
+              break;
+            }
           }
 
           if (matches)
@@ -1800,6 +2265,85 @@ bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
   for (std::size_t reverse = sketch_.dimensions().size(); reverse > 0;
        --reverse) {
     const std::size_t index = reverse - 1;
+
+    if (sketch_.dimensions()[index].kind ==
+        sketch::DimensionKind::LineAngle) {
+      const auto& dimension = sketch_.dimensions()[index];
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+      if (!firstIndex || !secondIndex) continue;
+
+      const auto& firstLine = sketch_.lines()[*firstIndex];
+      const auto& secondLine = sketch_.lines()[*secondIndex];
+      const auto center = lineIntersectionScreen(
+          firstLine, secondLine,
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!center) continue;
+
+      QPointF firstDirection =
+          mapPoint(firstLine.end) - mapPoint(firstLine.start);
+      QPointF secondDirection =
+          mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      const double firstLength =
+          std::hypot(firstDirection.x(), firstDirection.y());
+      const double secondLength =
+          std::hypot(secondDirection.x(), secondDirection.y());
+      if (firstLength <= 1.0 || secondLength <= 1.0) continue;
+      firstDirection /= firstLength;
+      secondDirection /= secondLength;
+
+      double startDeg =
+          -std::atan2(firstDirection.y(), firstDirection.x()) *
+          180.0 / 3.14159265358979323846;
+      double endDeg =
+          -std::atan2(secondDirection.y(), secondDirection.x()) *
+          180.0 / 3.14159265358979323846;
+      double spanDeg = endDeg - startDeg;
+      while (spanDeg <= -180.0) spanDeg += 360.0;
+      while (spanDeg > 180.0) spanDeg -= 360.0;
+
+      const double radius =
+          std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
+      const double midDeg = startDeg + spanDeg * 0.5;
+      const double midRad =
+          midDeg * 3.14159265358979323846 / 180.0;
+
+      QPointF labelCenter =
+          *center + QPointF(std::cos(midRad), -std::sin(midRad)) *
+                        (radius + 18.0);
+
+      const QVariantList angleLabelX =
+          property("dimensionLabelAlongMm").toList();
+      const QVariantList angleLabelY =
+          property("dimensionLabelOffsetMm").toList();
+
+      const double labelOffsetX =
+          index < static_cast<std::size_t>(angleLabelX.size())
+              ? angleLabelX[static_cast<int>(index)].toDouble()
+              : 0.0;
+      const double labelOffsetY =
+          index < static_cast<std::size_t>(angleLabelY.size())
+              ? angleLabelY[static_cast<int>(index)].toDouble()
+              : 0.0;
+
+      labelCenter += QPointF(labelOffsetX * pixelsPerMm_,
+                             labelOffsetY * pixelsPerMm_);
+
+      if (std::abs(position.x() - labelCenter.x()) <= 46.0 &&
+          std::abs(position.y() - labelCenter.y()) <= 13.0) {
+        setProperty("selectedDimension",
+                    static_cast<qulonglong>(index));
+        setProperty("draggingDimensionLabel",
+                    static_cast<qulonglong>(index));
+        setCursor(Qt::ClosedHandCursor);
+        update();
+        return true;
+      }
+
+      continue;
+    }
+
     QPointF first;
     QPointF second;
     if (!dimensionSegment(index, first, second)) continue;
@@ -1824,6 +2368,20 @@ bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
 }
 
 bool SketchCanvas::beginDimensionLineDrag(QPointF position) {
+  if (const auto found = dimensionAt(position)) {
+    if (*found < sketch_.dimensions().size() &&
+        sketch_.dimensions()[*found].kind ==
+            sketch::DimensionKind::LineAngle) {
+      setProperty("selectedDimension",
+                  static_cast<qulonglong>(*found));
+      setProperty("draggingDimensionLine",
+                  static_cast<qulonglong>(*found));
+      setCursor(Qt::ClosedHandCursor);
+      update();
+      return true;
+    }
+  }
+
   constexpr double hitTolerance = 8.0;
   double bestDistance = hitTolerance;
   std::optional<std::size_t> bestIndex;
@@ -1847,30 +2405,127 @@ bool SketchCanvas::beginDimensionLineDrag(QPointF position) {
 
 std::optional<std::size_t> SketchCanvas::dimensionAt(
     QPointF position) const {
+  constexpr double hitTolerance = 8.0;
+
   for (std::size_t reverse = sketch_.dimensions().size(); reverse > 0;
        --reverse) {
     const std::size_t index = reverse - 1;
+    const auto& dimension = sketch_.dimensions()[index];
+
+    if (dimension.kind == sketch::DimensionKind::LineAngle) {
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+      if (!firstIndex || !secondIndex) continue;
+
+      const auto& firstLine = sketch_.lines()[*firstIndex];
+      const auto& secondLine = sketch_.lines()[*secondIndex];
+
+      const auto center = lineIntersectionScreen(
+          firstLine, secondLine,
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!center) continue;
+
+      QPointF firstDirection =
+          mapPoint(firstLine.end) - mapPoint(firstLine.start);
+      QPointF secondDirection =
+          mapPoint(secondLine.end) - mapPoint(secondLine.start);
+
+      const double firstLength =
+          std::hypot(firstDirection.x(), firstDirection.y());
+      const double secondLength =
+          std::hypot(secondDirection.x(), secondDirection.y());
+      if (firstLength <= 1.0 || secondLength <= 1.0) continue;
+
+      firstDirection /= firstLength;
+      secondDirection /= secondLength;
+
+      double startDeg =
+          -std::atan2(firstDirection.y(), firstDirection.x()) *
+          180.0 / 3.14159265358979323846;
+      double endDeg =
+          -std::atan2(secondDirection.y(), secondDirection.x()) *
+          180.0 / 3.14159265358979323846;
+      double spanDeg = endDeg - startDeg;
+      while (spanDeg <= -180.0) spanDeg += 360.0;
+      while (spanDeg > 180.0) spanDeg -= 360.0;
+
+      const double radius =
+          std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
+      const QPointF delta = position - *center;
+      const double cursorRadius = std::hypot(delta.x(), delta.y());
+
+      double cursorDeg =
+          -std::atan2(delta.y(), delta.x()) *
+          180.0 / 3.14159265358979323846;
+      double relativeDeg = cursorDeg - startDeg;
+      while (relativeDeg <= -180.0) relativeDeg += 360.0;
+      while (relativeDeg > 180.0) relativeDeg -= 360.0;
+
+      const bool insideSweep =
+          spanDeg >= 0.0
+              ? (relativeDeg >= -5.0 && relativeDeg <= spanDeg + 5.0)
+              : (relativeDeg <= 5.0 && relativeDeg >= spanDeg - 5.0);
+
+      if (insideSweep &&
+          std::abs(cursorRadius - radius) <= hitTolerance)
+        return index;
+
+      const double midDeg = startDeg + spanDeg * 0.5;
+      const double midRad =
+          midDeg * 3.14159265358979323846 / 180.0;
+      QPointF labelCenter =
+          *center + QPointF(std::cos(midRad), -std::sin(midRad)) *
+                        (radius + 18.0);
+
+      const QVariantList angleLabelX =
+          property("dimensionLabelAlongMm").toList();
+      const QVariantList angleLabelY =
+          property("dimensionLabelOffsetMm").toList();
+
+      const double labelOffsetX =
+          index < static_cast<std::size_t>(angleLabelX.size())
+              ? angleLabelX[static_cast<int>(index)].toDouble()
+              : 0.0;
+      const double labelOffsetY =
+          index < static_cast<std::size_t>(angleLabelY.size())
+              ? angleLabelY[static_cast<int>(index)].toDouble()
+              : 0.0;
+
+      labelCenter += QPointF(labelOffsetX * pixelsPerMm_,
+                             labelOffsetY * pixelsPerMm_);
+
+      if (std::abs(position.x() - labelCenter.x()) <= 46.0 &&
+          std::abs(position.y() - labelCenter.y()) <= 13.0)
+        return index;
+
+      continue;
+    }
+
     QPointF first;
     QPointF second;
     if (!dimensionSegment(index, first, second)) continue;
+
     const QPointF center = dimensionLabelCenter(index, first, second);
     const QPointF direction = second - first;
     double angle = std::atan2(direction.y(), direction.x());
     if (angle > 3.141592653589793 * 0.5 ||
         angle < -3.141592653589793 * 0.5)
       angle += 3.141592653589793;
+
     const QPointF delta = position - center;
     const double localX = std::cos(angle) * delta.x() +
                           std::sin(angle) * delta.y();
     const double localY = -std::sin(angle) * delta.x() +
                           std::cos(angle) * delta.y();
+
     if ((std::abs(localX) <= 46.0 && std::abs(localY) <= 13.0) ||
-        pointSegmentDistance(position, first, second) <= 8.0)
+        pointSegmentDistance(position, first, second) <= hitTolerance)
       return index;
   }
+
   return std::nullopt;
 }
-
 void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   constexpr double hitTolerance = 10.0;
   double bestDistance = hitTolerance;
@@ -2100,6 +2755,7 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
     if (distance <= 1e-9) return;
     setProperty("autoDimensionTarget", "points");
     setProperty("autoDimensionPointMode", "aligned");
+    setProperty("autoDimensionDirectLineId", QVariant());
     setProperty("autoDimensionOffsetMm", 4.0);
     setProperty("autoDimensionSecondLine",
                 static_cast<qulonglong>(clickedPoint->lineId));
@@ -2153,6 +2809,8 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
     // aligned length, X projection and Y projection.
     setProperty("autoDimensionTarget", "points");
     setProperty("autoDimensionPointMode", "aligned");
+    setProperty("autoDimensionDirectLineId",
+                static_cast<qulonglong>(lineId));
     setProperty("autoDimensionOffsetMm", 4.0);
 
     setProperty("autoDimensionFirstLine",
@@ -2199,7 +2857,45 @@ void SketchCanvas::commitAutoDimension() {
                            : 4.0;
   dimension.angleRad = property("autoDimensionAngleRad").toDouble();
   bool changed = false;
-  if (target == "line") {
+  if (target == "angle") {
+    const auto firstId = static_cast<sketch::GeometryId>(
+        property("autoDimensionAngleFirstLine").toULongLong());
+    const auto secondId = static_cast<sketch::GeometryId>(
+        property("autoDimensionAngleSecondLine").toULongLong());
+
+    changed = sketch_.setLineAngleByIds(firstId, secondId, value);
+    dimension.kind = sketch::DimensionKind::LineAngle;
+    dimension.geometryId = firstId;
+    // LineAngle uses secondPoint.lineId as the second stable line reference.
+    dimension.secondPoint.lineId = secondId;
+
+    if (changed) {
+      std::vector<sketch::ConstraintId> oldAngleConstraints;
+      for (const auto& constraint : sketch_.constraints()) {
+        if (constraint.type != sketch::ConstraintType::Angle) continue;
+
+        const bool sameOrder =
+            constraint.firstGeometry == firstId &&
+            constraint.secondGeometry == secondId;
+        const bool reverseOrder =
+            constraint.firstGeometry == secondId &&
+            constraint.secondGeometry == firstId;
+
+        if (sameOrder || reverseOrder)
+          oldAngleConstraints.push_back(constraint.id);
+      }
+
+      for (const auto constraintId : oldAngleConstraints)
+        sketch_.removeConstraint(constraintId);
+
+      sketch::Constraint angleConstraint;
+      angleConstraint.type = sketch::ConstraintType::Angle;
+      angleConstraint.firstGeometry = firstId;
+      angleConstraint.secondGeometry = secondId;
+      angleConstraint.value = value;
+      sketch_.addConstraint(angleConstraint);
+    }
+  } else if (target == "line") {
     const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
     changed = sketch_.setLineLengthById(id, value);
@@ -2335,6 +3031,9 @@ void SketchCanvas::commitAutoDimension() {
   setProperty("autoDimensionFirstLine", QVariant());
   setProperty("autoDimensionFirstStart", QVariant());
   setProperty("autoDimensionPointMode", QVariant());
+  setProperty("autoDimensionDirectLineId", QVariant());
+  setProperty("autoDimensionAngleFirstLine", QVariant());
+  setProperty("autoDimensionAngleSecondLine", QVariant());
   setProperty("editingDimensionIndex", QVariant());
   hideDimensionEditor();
   setFocus();
