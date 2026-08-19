@@ -102,7 +102,12 @@ signals:
   [[nodiscard]] QPointF mapPoint(sketch::Point point) const;
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
   [[nodiscard]] sketch::Point snappedPoint(QPointF point) const;
-  void selectAt(QPointF position);
+  void selectAt(QPointF position, bool additive = false,
+                bool preserveExistingIfHit = false);
+  void selectInRect(const QRectF& rect, bool additive);
+  void clearGeometrySelection();
+  [[nodiscard]] bool lineElementSelected(std::size_t elementId) const;
+  [[nodiscard]] bool circleSelected(sketch::GeometryId id) const;
   void commitPoint(sketch::Point point);
   void showDimensionEditor(QPoint position);
   void updateDimensionEditor();
@@ -134,6 +139,12 @@ signals:
   sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
+  std::vector<std::size_t> selectedElementIds_;
+  std::vector<sketch::GeometryId> selectedCircleIds_;
+  bool selectionBoxActive_{false};
+  QPointF selectionBoxStart_{};
+  QPointF selectionBoxCurrent_{};
+  bool selectionBoxAdditive_{false};
   std::optional<sketch::Point> anchor_;
   std::optional<sketch::PointReference> coincidentFirstPoint_;
   sketch::Point hoverPoint_{};

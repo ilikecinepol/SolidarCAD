@@ -303,6 +303,150 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
   updateBounds();
 }
 
+void Sketch::translateSelection(
+    const std::vector<std::size_t>& elementIds,
+    const std::vector<GeometryId>& circleIds,
+    double dxMm, double dyMm) {
+  if (dxMm == 0.0 && dyMm == 0.0) return;
+  if (elementIds.empty() && circleIds.empty()) return;
+
+  const auto elementSelected = [&elementIds](std::size_t elementId) {
+    return std::find(elementIds.begin(), elementIds.end(), elementId) !=
+           elementIds.end();
+  };
+
+  const auto circleSelected = [&circleIds](GeometryId id) {
+    return std::find(circleIds.begin(), circleIds.end(), id) != circleIds.end();
+  };
+
+  const auto sameReference = [](PointReference first, PointReference second) {
+    if (first.circleId != kInvalidGeometryId ||
+        second.circleId != kInvalidGeometryId) {
+      return first.circleId != kInvalidGeometryId &&
+             first.circleId == second.circleId;
+    }
+
+    return first.lineId == second.lineId && first.start == second.start;
+  };
+
+  // Seed the Coincident graph with every endpoint/center that belongs to the
+  // selected objects. The graph is expanded before any geometry is mutated.
+  std::vector<PointReference> movedReferences;
+
+  const auto addReference =
+      [&movedReferences, &sameReference](PointReference reference) {
+        const bool exists = std::any_of(
+            movedReferences.begin(), movedReferences.end(),
+            [reference, &sameReference](PointReference item) {
+              return sameReference(item, reference);
+            });
+
+        if (!exists) movedReferences.push_back(reference);
+      };
+
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (!elementSelected(lines_[index].elementId)) continue;
+
+    const GeometryId id = lineIds_[index];
+    if (id == kInvalidGeometryId) continue;
+
+    addReference(PointReference{id, true});
+    addReference(PointReference{id, false});
+  }
+
+  for (std::size_t index = 0; index < circles_.size(); ++index) {
+    const GeometryId id = circleIds_[index];
+    if (!circleSelected(id)) continue;
+
+    PointReference center;
+    center.circleId = id;
+    addReference(center);
+  }
+
+  bool expanded = true;
+  while (expanded) {
+    expanded = false;
+
+    for (const auto& constraint : constraints_) {
+      if (constraint.type != ConstraintType::Coincident) continue;
+
+      const auto first = constraint.firstPoint;
+      const auto second = constraint.secondPoint;
+
+      const bool hasFirst = std::any_of(
+          movedReferences.begin(), movedReferences.end(),
+          [first, &sameReference](PointReference item) {
+            return sameReference(item, first);
+          });
+
+      const bool hasSecond = std::any_of(
+          movedReferences.begin(), movedReferences.end(),
+          [second, &sameReference](PointReference item) {
+            return sameReference(item, second);
+          });
+
+      if (hasFirst && !hasSecond) {
+        addReference(second);
+        expanded = true;
+      } else if (hasSecond && !hasFirst) {
+        addReference(first);
+        expanded = true;
+      }
+    }
+  }
+
+  const auto referenceMoves =
+      [&movedReferences, &sameReference](PointReference reference) {
+        return std::any_of(
+            movedReferences.begin(), movedReferences.end(),
+            [reference, &sameReference](PointReference item) {
+              return sameReference(item, reference);
+            });
+      };
+
+  // Every primitive coordinate is changed at most once. This is the critical
+  // difference from repeatedly calling translateElement(), where Coincident
+  // propagation and the solver could move the same vertex several times.
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    auto& line = lines_[index];
+    const GeometryId id = lineIds_[index];
+
+    if (elementSelected(line.elementId)) {
+      line.start.xMm += dxMm;
+      line.start.yMm += dyMm;
+      line.end.xMm += dxMm;
+      line.end.yMm += dyMm;
+      continue;
+    }
+
+    if (referenceMoves(PointReference{id, true})) {
+      line.start.xMm += dxMm;
+      line.start.yMm += dyMm;
+    }
+
+    if (referenceMoves(PointReference{id, false})) {
+      line.end.xMm += dxMm;
+      line.end.yMm += dyMm;
+    }
+  }
+
+  for (std::size_t index = 0; index < circles_.size(); ++index) {
+    const GeometryId id = circleIds_[index];
+
+    PointReference center;
+    center.circleId = id;
+
+    if (circleSelected(id) || referenceMoves(center)) {
+      circles_[index].center.xMm += dxMm;
+      circles_[index].center.yMm += dyMm;
+    }
+  }
+
+  // Solve once, on the final group position instead of on partially moved
+  // intermediate states.
+  (void)BasicSketchSolver::solve(*this);
+  updateBounds();
+}
 void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
   for (auto& line : lines_) {
     if (line.elementId == elementId) line.dashed = dashed;

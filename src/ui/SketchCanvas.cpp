@@ -183,7 +183,7 @@ SketchCanvas::SketchCanvas(QWidget* parent) : QWidget(parent) {
 void SketchCanvas::setRectangle(double widthMm, double heightMm) {
   pushUndoState();
   sketch_.setRectangle(widthMm, heightMm);
-  selectionKind_ = SelectionKind::None;
+  clearGeometrySelection();
   anchor_.reset();
   update();
 }
@@ -199,6 +199,7 @@ void SketchCanvas::setTool(Tool tool) {
   circlePoints_.clear();
   circleGuideLines_.clear();
   rectanglePoints_.clear();
+  selectionBoxActive_ = false;
   setProperty("autoDimensionTarget", QVariant());
   setProperty("autoDimensionFirstLine", QVariant());
   setProperty("autoDimensionFirstStart", QVariant());
@@ -676,7 +677,7 @@ void SketchCanvas::clearSketch() {
   sketch_.clear();
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
-  selectionKind_ = SelectionKind::None;
+  clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   anchor_.reset();
   rectanglePoints_.clear();
@@ -690,7 +691,7 @@ void SketchCanvas::resetSketch() {
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.clear();
-  selectionKind_ = SelectionKind::None;
+  clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   anchor_.reset();
   rectanglePoints_.clear();
@@ -710,7 +711,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.clear();
-  selectionKind_ = SelectionKind::None;
+  clearGeometrySelection();
   anchor_.reset();
   dragging_ = false;
   setProperty("sketchPanX", 0.0);
@@ -730,7 +731,7 @@ void SketchCanvas::undo() {
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.pop_back();
-  selectionKind_ = SelectionKind::None;
+  clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   anchor_.reset();
   hideDimensionEditor();
@@ -740,22 +741,38 @@ void SketchCanvas::undo() {
 }
 
 void SketchCanvas::deleteSelection() {
-  if (selectionKind_ == SelectionKind::None) return;
+  const bool hasMultiSelection =
+      !selectedElementIds_.empty() || !selectedCircleIds_.empty();
+
+  if (!hasMultiSelection && selectionKind_ == SelectionKind::None) return;
+
   pushUndoState();
-  if (selectionKind_ == SelectionKind::Line)
+
+  if (hasMultiSelection) {
+    // Element IDs are group IDs: deleting one ID also deletes all primitive
+    // lines belonging to a composite element such as a rectangle.
+    const auto elementIds = selectedElementIds_;
+    const auto circleIds = selectedCircleIds_;
+
+    for (const auto elementId : elementIds)
+      sketch_.removeElement(elementId);
+
+    for (const auto circleId : circleIds) {
+      const auto index = sketch_.circleIndex(circleId);
+      if (index) sketch_.removeCircle(*index);
+    }
+  } else if (selectionKind_ == SelectionKind::Line) {
     sketch_.removeElement(selectionElementId_);
-  else if (selectionKind_ == SelectionKind::Circle) {
+  } else if (selectionKind_ == SelectionKind::Circle) {
     const auto index = sketch_.circleIndex(selectionCircleId_);
     if (index) sketch_.removeCircle(*index);
   }
-  else return;
-  selectionKind_ = SelectionKind::None;
-  selectionLineId_ = sketch::kInvalidGeometryId;
+
+  clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
   notifyGeometryChanged();
 }
-
 QPointF SketchCanvas::mapPoint(sketch::Point point) const {
   const double centerX = kRulerLeft + (width() - kRulerLeft) * 0.5 +
                          property("sketchPanX").toDouble();
@@ -885,8 +902,11 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
     const auto& line = sketch_.lines()[index];
-    const bool selected = selectionKind_ == SelectionKind::Line &&
-                          selectionElementId_ == line.elementId;
+    const bool selected =
+        lineElementSelected(line.elementId) ||
+        (selectedElementIds_.empty() &&
+         selectionKind_ == SelectionKind::Line &&
+         selectionElementId_ == line.elementId);
     painter.setPen(QPen(selected ? QColor("#ff8a24") : QColor("#1469d7"),
                         selected ? 3.0 : 2.0,
                         line.dashed ? Qt::DashLine : Qt::SolidLine));
@@ -897,8 +917,12 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   }
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
-    const bool selected = selectionKind_ == SelectionKind::Circle &&
-                          selectionCircleId_ == sketch_.circleId(index);
+    const auto circleId = sketch_.circleId(index);
+    const bool selected =
+        circleSelected(circleId) ||
+        (selectedCircleIds_.empty() &&
+         selectionKind_ == SelectionKind::Circle &&
+         selectionCircleId_ == circleId);
     painter.setPen(QPen(selected ? QColor("#ff8a24") : QColor("#1469d7"),
                         selected ? 3.0 : 2.0,
                         circle.dashed ? Qt::DashLine : Qt::SolidLine));
@@ -1434,6 +1458,15 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     }
   }
 
+  if (selectionBoxActive_) {
+    const QRectF selectionRect(selectionBoxStart_, selectionBoxCurrent_);
+    const QRectF normalized = selectionRect.normalized();
+
+    painter.setPen(QPen(QColor("#ff8a24"), 1.4, Qt::DashLine));
+    painter.setBrush(QColor(255, 138, 36, 32));
+    painter.drawRect(normalized);
+  }
+
   painter.setPen(QColor("#536985"));
   painter.drawText(QRectF(kRulerLeft + 12, height() - 30, width() - 70, 22),
                    Qt::AlignLeft | Qt::AlignVCenter,
@@ -1456,6 +1489,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     return;
   }
   if (event->button() == Qt::RightButton) {
+    selectionBoxActive_ = false;
     anchor_.reset();
     setProperty("dragPointLineId", QVariant());
     setProperty("dragPointStart", QVariant());
@@ -1463,6 +1497,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     circlePoints_.clear();
     circleGuideLines_.clear();
     hideDimensionEditor();
+    setCursor(tool_ == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
     update();
     return;
   }
@@ -1534,11 +1569,13 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   // transparent to mouse hit-testing so geometry interaction cannot be
   // stolen by an existing annotation.
   if (tool_ == Tool::Select &&
+      !event->modifiers().testFlag(Qt::ControlModifier) &&
       beginDimensionLabelDrag(event->position())) {
     event->accept();
     return;
   }
   if (tool_ == Tool::Select &&
+      !event->modifiers().testFlag(Qt::ControlModifier) &&
       beginDimensionLineDrag(event->position())) {
     event->accept();
     return;
@@ -1551,14 +1588,71 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   } else if (tool_ == Tool::CoincidentConstraint) {
     handleCoincidentConstraintClick(event->position());
   } else if (tool_ == Tool::Select) {
+    const bool additive =
+        event->modifiers().testFlag(Qt::ControlModifier);
+
+    // LMB drag on empty canvas starts the selection rectangle. A click on
+    // existing geometry keeps the normal select/move behaviour.
+    bool geometryHit = false;
+    constexpr double geometryHitTolerance = 9.0;
+
+    for (const auto& line : sketch_.lines()) {
+      if (pointSegmentDistance(event->position(),
+                               mapPoint(line.start),
+                               mapPoint(line.end)) <
+          geometryHitTolerance) {
+        geometryHit = true;
+        break;
+      }
+    }
+
+    if (!geometryHit) {
+      for (const auto& circle : sketch_.circles()) {
+        const double distance = std::abs(
+            QLineF(event->position(), mapPoint(circle.center)).length() -
+            circle.radiusMm * pixelsPerMm_);
+
+        if (distance < geometryHitTolerance) {
+          geometryHit = true;
+          break;
+        }
+      }
+    }
+
+    if (!geometryHit) {
+      selectionBoxActive_ = true;
+      selectionBoxStart_ = event->position();
+      selectionBoxCurrent_ = event->position();
+      selectionBoxAdditive_ = additive;
+
+      if (!additive) {
+        clearGeometrySelection();
+        emit lineStyleSelectionChanged(false, false);
+        emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
+      }
+
+      setCursor(Qt::CrossCursor);
+      event->accept();
+      update();
+      return;
+    }
+
+    if (additive) {
+      // Ctrl+LMB toggles complete CAD objects. Endpoint editing is deliberately
+      // bypassed here so Ctrl always means selection-set modification.
+      setProperty("dragPointLineId", QVariant());
+      setProperty("dragPointStart", QVariant());
+      selectAt(event->position(), true, false);
+      event->accept();
+      return;
+    }
+
     constexpr double endpointTolerance = 9.0;
     double bestEndpointDistance = endpointTolerance;
     std::optional<sketch::PointReference> endpoint;
     std::size_t endpointElementId = 0;
     bool endpointDashed = false;
 
-    // A click near a visible line endpoint means "drag this vertex".
-    // Otherwise selection falls back to the existing whole-element logic.
     for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
       const auto& line = sketch_.lines()[index];
       const auto lineId = sketch_.lineId(index);
@@ -1578,7 +1672,16 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
       }
     }
 
-    if (endpoint) {
+    const bool hasSeveralSelected =
+        selectedElementIds_.size() + selectedCircleIds_.size() > 1;
+
+    // Once several objects are selected, clicking any selected object means
+    // "move the selection". Endpoint editing still works normally for a
+    // single object.
+    if (endpoint &&
+        !(hasSeveralSelected && lineElementSelected(endpointElementId))) {
+      clearGeometrySelection();
+      selectedElementIds_.push_back(endpointElementId);
       selectionKind_ = SelectionKind::Line;
       selectionLineId_ = endpoint->lineId;
       selectionElementId_ = endpointElementId;
@@ -1599,14 +1702,13 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
       setProperty("dragPointLineId", QVariant());
       setProperty("dragPointStart", QVariant());
 
-      selectAt(event->position());
+      selectAt(event->position(), false, true);
       if (selectionKind_ != SelectionKind::None) {
         pushUndoState();
         dragging_ = true;
         dragPoint_ = snappedPoint(event->position());
       }
-    }
-  } else
+    }  } else
     commitPoint(snappedPoint(event->position()));
 }
 
@@ -1685,6 +1787,14 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
+  if (selectionBoxActive_ &&
+      (event->buttons() & Qt::LeftButton)) {
+    selectionBoxCurrent_ = event->position();
+    update();
+    event->accept();
+    return;
+  }
+
   if (property("sketchPanning").toBool() &&
       (event->buttons() & Qt::MiddleButton)) {
     const QPointF current = event->position();
@@ -2025,6 +2135,10 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
               property("dragPointLineId").toULongLong()),
           property("dragPointStart").toBool()};
       sketch_.translatePoint(reference, dx, dy);
+    } else if (!selectedElementIds_.empty() ||
+               !selectedCircleIds_.empty()) {
+      sketch_.translateSelection(selectedElementIds_, selectedCircleIds_,
+                                 dx, dy);
     } else if (selectionKind_ == SelectionKind::Line) {
       sketch_.translateElement(selectionElementId_, dx, dy);
     } else if (selectionKind_ == SelectionKind::Circle) {
@@ -2056,6 +2170,27 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
+  if (event->button() == Qt::LeftButton && selectionBoxActive_) {
+    selectionBoxCurrent_ = event->position();
+    const QRectF selectionRect(selectionBoxStart_, selectionBoxCurrent_);
+
+    selectionBoxActive_ = false;
+    setCursor(tool_ == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+
+    if (selectionRect.normalized().width() >= 3.0 ||
+        selectionRect.normalized().height() >= 3.0) {
+      selectInRect(selectionRect.normalized(), selectionBoxAdditive_);
+    } else if (!selectionBoxAdditive_) {
+      clearGeometrySelection();
+      emit lineStyleSelectionChanged(false, false);
+      emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
+    }
+
+    event->accept();
+    update();
+    return;
+  }
+
   if (event->button() == Qt::MiddleButton &&
       property("sketchPanning").toBool()) {
     setProperty("sketchPanning", false);
@@ -3188,54 +3323,249 @@ void SketchCanvas::wheelEvent(QWheelEvent* event) {
   update();
 }
 
-void SketchCanvas::selectAt(QPointF position) {
-  double bestDistance = 9.0;
+bool SketchCanvas::lineElementSelected(std::size_t elementId) const {
+  return std::find(selectedElementIds_.begin(), selectedElementIds_.end(),
+                   elementId) != selectedElementIds_.end();
+}
+
+bool SketchCanvas::circleSelected(sketch::GeometryId id) const {
+  return std::find(selectedCircleIds_.begin(), selectedCircleIds_.end(),
+                   id) != selectedCircleIds_.end();
+}
+
+void SketchCanvas::clearGeometrySelection() {
+  selectedElementIds_.clear();
+  selectedCircleIds_.clear();
   selectionKind_ = SelectionKind::None;
   selectionLineId_ = sketch::kInvalidGeometryId;
+  selectionCircleId_ = sketch::kInvalidGeometryId;
+  selectionElementId_ = 0;
+}
+
+void SketchCanvas::selectAt(QPointF position, bool additive,
+                            bool preserveExistingIfHit) {
+  double bestDistance = 9.0;
+
+  SelectionKind hitKind = SelectionKind::None;
+  std::size_t hitElementId = 0;
+  sketch::GeometryId hitLineId = sketch::kInvalidGeometryId;
+  sketch::GeometryId hitCircleId = sketch::kInvalidGeometryId;
+  bool hitDashed = false;
+
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
     const auto& line = sketch_.lines()[index];
     const double distance = pointSegmentDistance(
         position, mapPoint(line.start), mapPoint(line.end));
+
     if (distance < bestDistance) {
       bestDistance = distance;
-      selectionKind_ = SelectionKind::Line;
-      selectionElementId_ = line.elementId;
-      selectionLineId_ = sketch_.lineId(index);
+      hitKind = SelectionKind::Line;
+      hitElementId = line.elementId;
+      hitLineId = sketch_.lineId(index);
+      hitCircleId = sketch::kInvalidGeometryId;
+      hitDashed = line.dashed;
     }
   }
+
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
     const double distance = std::abs(
         QLineF(position, mapPoint(circle.center)).length() -
         circle.radiusMm * pixelsPerMm_);
+
     if (distance < bestDistance) {
       bestDistance = distance;
-      selectionKind_ = SelectionKind::Circle;
-      selectionCircleId_ = sketch_.circleId(index);
-      selectionLineId_ = sketch::kInvalidGeometryId;
+      hitKind = SelectionKind::Circle;
+      hitElementId = 0;
+      hitLineId = sketch::kInvalidGeometryId;
+      hitCircleId = sketch_.circleId(index);
+      hitDashed = circle.dashed;
     }
   }
-  if (selectionKind_ == SelectionKind::Line)
-    emit selectionChanged(QString::fromUtf8("Объект: Линия"));
-  else if (selectionKind_ == SelectionKind::Circle)
-    emit selectionChanged(QString::fromUtf8("Объект: Окружность"));
-  else
+
+  if (hitKind == SelectionKind::None) {
+    if (!additive) clearGeometrySelection();
+    emit lineStyleSelectionChanged(false, false);
     emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
-  bool dashed = false;
-  if (selectionKind_ == SelectionKind::Line) {
-    const auto found = std::find_if(
-        sketch_.lines().begin(), sketch_.lines().end(), [this](const auto& line) {
-          return line.elementId == selectionElementId_;
-        });
-    dashed = found != sketch_.lines().end() && found->dashed;
-  } else if (selectionKind_ == SelectionKind::Circle) {
-    const auto index = sketch_.circleIndex(selectionCircleId_);
-    dashed = index && sketch_.circles()[*index].dashed;
+    update();
+    return;
   }
-  emit lineStyleSelectionChanged(selectionKind_ != SelectionKind::None, dashed);
+
+  const bool alreadySelected =
+      hitKind == SelectionKind::Line
+          ? lineElementSelected(hitElementId)
+          : circleSelected(hitCircleId);
+
+  if (additive) {
+    if (hitKind == SelectionKind::Line) {
+      const auto found =
+          std::find(selectedElementIds_.begin(), selectedElementIds_.end(),
+                    hitElementId);
+      if (found != selectedElementIds_.end())
+        selectedElementIds_.erase(found);
+      else
+        selectedElementIds_.push_back(hitElementId);
+    } else {
+      const auto found =
+          std::find(selectedCircleIds_.begin(), selectedCircleIds_.end(),
+                    hitCircleId);
+      if (found != selectedCircleIds_.end())
+        selectedCircleIds_.erase(found);
+      else
+        selectedCircleIds_.push_back(hitCircleId);
+    }
+
+    if (alreadySelected) {
+      if (selectedElementIds_.empty() && selectedCircleIds_.empty()) {
+        clearGeometrySelection();
+        emit lineStyleSelectionChanged(false, false);
+        emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
+        update();
+        return;
+      }
+
+      // Keep one remaining object as the active property-panel object.
+      if (!selectedElementIds_.empty()) {
+        const auto elementId = selectedElementIds_.back();
+        const auto found = std::find_if(
+            sketch_.lines().begin(), sketch_.lines().end(),
+            [elementId](const auto& line) { return line.elementId == elementId; });
+
+        if (found != sketch_.lines().end()) {
+          const auto index =
+              static_cast<std::size_t>(
+                  std::distance(sketch_.lines().begin(), found));
+          selectionKind_ = SelectionKind::Line;
+          selectionElementId_ = elementId;
+          selectionLineId_ = sketch_.lineId(index);
+          selectionCircleId_ = sketch::kInvalidGeometryId;
+          hitDashed = found->dashed;
+        }
+      } else {
+        selectionKind_ = SelectionKind::Circle;
+        selectionCircleId_ = selectedCircleIds_.back();
+        selectionLineId_ = sketch::kInvalidGeometryId;
+        const auto index = sketch_.circleIndex(selectionCircleId_);
+        hitDashed = index && sketch_.circles()[*index].dashed;
+      }
+    } else {
+      selectionKind_ = hitKind;
+      selectionElementId_ = hitElementId;
+      selectionLineId_ = hitLineId;
+      selectionCircleId_ = hitCircleId;
+    }
+  } else {
+    if (!(preserveExistingIfHit && alreadySelected)) {
+      clearGeometrySelection();
+
+      if (hitKind == SelectionKind::Line)
+        selectedElementIds_.push_back(hitElementId);
+      else
+        selectedCircleIds_.push_back(hitCircleId);
+    }
+
+    selectionKind_ = hitKind;
+    selectionElementId_ = hitElementId;
+    selectionLineId_ = hitLineId;
+    selectionCircleId_ = hitCircleId;
+  }
+
+  const std::size_t selectedCount =
+      selectedElementIds_.size() + selectedCircleIds_.size();
+
+  emit selectionChanged(
+      selectedCount > 1
+          ? QString::fromUtf8("Выбрано объектов: %1").arg(selectedCount)
+          : hitKind == SelectionKind::Line
+                ? QString::fromUtf8("Объект: линия")
+                : QString::fromUtf8("Объект: окружность"));
+
+  emit lineStyleSelectionChanged(selectedCount > 0, hitDashed);
   update();
 }
 
+void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
+  if (!additive) clearGeometrySelection();
+
+  const auto addElement = [this](std::size_t elementId) {
+    if (!lineElementSelected(elementId))
+      selectedElementIds_.push_back(elementId);
+  };
+
+  const auto lineTouchesRect = [](QPointF first, QPointF second,
+                                  const QRectF& rect) {
+    if (rect.contains(first) || rect.contains(second)) return true;
+
+    const QLineF segment(first, second);
+    const QLineF top(rect.topLeft(), rect.topRight());
+    const QLineF right(rect.topRight(), rect.bottomRight());
+    const QLineF bottom(rect.bottomRight(), rect.bottomLeft());
+    const QLineF left(rect.bottomLeft(), rect.topLeft());
+
+    QPointF intersection;
+    return segment.intersects(top, &intersection) == QLineF::BoundedIntersection ||
+           segment.intersects(right, &intersection) == QLineF::BoundedIntersection ||
+           segment.intersects(bottom, &intersection) == QLineF::BoundedIntersection ||
+           segment.intersects(left, &intersection) == QLineF::BoundedIntersection;
+  };
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    if (lineTouchesRect(mapPoint(line.start), mapPoint(line.end), rect))
+      addElement(line.elementId);
+  }
+
+  for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+    const auto& circle = sketch_.circles()[index];
+    const auto id = sketch_.circleId(index);
+    const QPointF center = mapPoint(circle.center);
+    const double radius = circle.radiusMm * pixelsPerMm_;
+    const QRectF bounds(center.x() - radius, center.y() - radius,
+                        radius * 2.0, radius * 2.0);
+
+    if (bounds.intersects(rect) || rect.contains(center)) {
+      if (!circleSelected(id))
+        selectedCircleIds_.push_back(id);
+    }
+  }
+
+  const std::size_t selectedCount =
+      selectedElementIds_.size() + selectedCircleIds_.size();
+
+  if (!selectedElementIds_.empty()) {
+    const auto elementId = selectedElementIds_.back();
+    const auto found = std::find_if(
+        sketch_.lines().begin(), sketch_.lines().end(),
+        [elementId](const auto& line) { return line.elementId == elementId; });
+
+    if (found != sketch_.lines().end()) {
+      const auto index = static_cast<std::size_t>(
+          std::distance(sketch_.lines().begin(), found));
+      selectionKind_ = SelectionKind::Line;
+      selectionElementId_ = elementId;
+      selectionLineId_ = sketch_.lineId(index);
+      selectionCircleId_ = sketch::kInvalidGeometryId;
+      emit lineStyleSelectionChanged(true, found->dashed);
+    }
+  } else if (!selectedCircleIds_.empty()) {
+    selectionKind_ = SelectionKind::Circle;
+    selectionCircleId_ = selectedCircleIds_.back();
+    selectionLineId_ = sketch::kInvalidGeometryId;
+    const auto index = sketch_.circleIndex(selectionCircleId_);
+    emit lineStyleSelectionChanged(
+        true, index && sketch_.circles()[*index].dashed);
+  } else {
+    clearGeometrySelection();
+    emit lineStyleSelectionChanged(false, false);
+  }
+
+  emit selectionChanged(
+      selectedCount > 0
+          ? QString::fromUtf8("Выбрано объектов: %1").arg(selectedCount)
+          : QString::fromUtf8("Ничего не выбрано"));
+
+  update();
+}
 void SketchCanvas::commitPoint(sketch::Point point) {
   if (tool_ == Tool::Rectangle && rectangleMode_ == RectangleMode::ThreePoints) {
     commitRectanglePoint(point);
@@ -3579,12 +3909,23 @@ void SketchCanvas::setPrimaryDimension(double value) {
 }
 
 void SketchCanvas::setSelectedDashed(bool dashed) {
-  if (selectionKind_ == SelectionKind::None) return;
+  if (selectedElementIds_.empty() && selectedCircleIds_.empty() &&
+      selectionKind_ == SelectionKind::None)
+    return;
+
   pushUndoState();
-  if (selectionKind_ == SelectionKind::Line)
+
+  if (!selectedElementIds_.empty() || !selectedCircleIds_.empty()) {
+    for (const auto elementId : selectedElementIds_)
+      sketch_.setElementDashed(elementId, dashed);
+    for (const auto circleId : selectedCircleIds_)
+      sketch_.setCircleDashedById(circleId, dashed);
+  } else if (selectionKind_ == SelectionKind::Line) {
     sketch_.setElementDashed(selectionElementId_, dashed);
-  else
+  } else if (selectionKind_ == SelectionKind::Circle) {
     sketch_.setCircleDashedById(selectionCircleId_, dashed);
+  }
+
   emit lineStyleSelectionChanged(true, dashed);
   notifyGeometryChanged();
 }

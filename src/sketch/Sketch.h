@@ -101,6 +101,9 @@ class Sketch final {
   void removeCircle(std::size_t index);
   void removeElement(std::size_t elementId);
   void translateElement(std::size_t elementId, double dxMm, double dyMm);
+  void translateSelection(const std::vector<std::size_t>& elementIds,
+                          const std::vector<GeometryId>& circleIds,
+                          double dxMm, double dyMm);
   void setElementDashed(std::size_t elementId, bool dashed);
   void setCircleDashed(std::size_t index, bool dashed);
   void translateCircle(std::size_t index, double dxMm, double dyMm);
