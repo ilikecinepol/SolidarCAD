@@ -704,10 +704,17 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
               ? property("autoDimensionPointMode").toString()
               : QString();
 
-      if (pointMode == QStringLiteral("x"))
-        baseSecond.setY(baseFirst.y());
-      else if (pointMode == QStringLiteral("y"))
-        baseSecond.setX(baseFirst.x());
+      if (pointMode == QStringLiteral("x")) {
+        QPointF projectedSecond = baseSecond;
+        projectedSecond.setY(baseFirst.y());
+        if (QLineF(baseFirst, projectedSecond).length() > 1.0)
+          baseSecond = projectedSecond;
+      } else if (pointMode == QStringLiteral("y")) {
+        QPointF projectedSecond = baseSecond;
+        projectedSecond.setX(baseFirst.x());
+        if (QLineF(baseFirst, projectedSecond).length() > 1.0)
+          baseSecond = projectedSecond;
+      }
 
       QPointF direction = baseSecond - baseFirst;
       const double length =
@@ -1146,14 +1153,22 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         const QPointF midpoint = (first + second) * 0.5;
         const QPointF fromMid = cursor - midpoint;
 
-        constexpr double axisBias = 1.20;
+        constexpr double axisBias = 2.20;
         QString mode = QStringLiteral("aligned");
 
+        const double deltaX =
+            std::abs(secondPoint->xMm - firstPoint->xMm);
+        const double deltaY =
+            std::abs(secondPoint->yMm - firstPoint->yMm);
+        constexpr double projectionEpsilonMm = 1e-6;
+
         if (std::abs(fromMid.y()) >
-            std::abs(fromMid.x()) * axisBias) {
+                std::abs(fromMid.x()) * axisBias &&
+            deltaX > projectionEpsilonMm) {
           mode = QStringLiteral("x");
         } else if (std::abs(fromMid.x()) >
-                   std::abs(fromMid.y()) * axisBias) {
+                       std::abs(fromMid.y()) * axisBias &&
+                   deltaY > projectionEpsilonMm) {
           mode = QStringLiteral("y");
         }
 
