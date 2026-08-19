@@ -53,6 +53,20 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
           ++result.invalidReferences;
         break;
 
+      case ConstraintType::Length:
+        if (constraint.firstGeometry == kInvalidGeometryId ||
+            !sketch.lineIndex(constraint.firstGeometry) ||
+            constraint.value <= 0.0) {
+          ++result.invalidReferences;
+          break;
+        }
+        if (sketch.setLineLengthById(constraint.firstGeometry,
+                                     constraint.value))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
       case ConstraintType::Coincident:
         // Already handled in the first pass.
         break;

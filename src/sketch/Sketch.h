@@ -97,6 +97,7 @@ class Sketch final {
   bool setLineHorizontalById(GeometryId id);
   bool setLineVerticalById(GeometryId id);
   bool setPointsCoincident(PointReference first, PointReference second);
+  bool translatePoint(PointReference reference, double dxMm, double dyMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;

@@ -127,6 +127,8 @@ void SketchCanvas::setRectangle(double widthMm, double heightMm) {
 void SketchCanvas::setTool(Tool tool) {
   tool_ = tool;
   anchor_.reset();
+  setProperty("dragPointLineId", QVariant());
+  setProperty("dragPointStart", QVariant());
   coincidentFirstPoint_.reset();
   circlePoints_.clear();
   circleGuideLines_.clear();
@@ -783,6 +785,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   }
   if (event->button() == Qt::RightButton) {
     anchor_.reset();
+    setProperty("dragPointLineId", QVariant());
+    setProperty("dragPointStart", QVariant());
     rectanglePoints_.clear();
     circlePoints_.clear();
     circleGuideLines_.clear();
@@ -813,11 +817,60 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   } else if (tool_ == Tool::CoincidentConstraint) {
     handleCoincidentConstraintClick(event->position());
   } else if (tool_ == Tool::Select) {
-    selectAt(event->position());
-    if (selectionKind_ != SelectionKind::None) {
+    constexpr double endpointTolerance = 9.0;
+    double bestEndpointDistance = endpointTolerance;
+    std::optional<sketch::PointReference> endpoint;
+    std::size_t endpointElementId = 0;
+    bool endpointDashed = false;
+
+    // A click near a visible line endpoint means "drag this vertex".
+    // Otherwise selection falls back to the existing whole-element logic.
+    for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+      const auto& line = sketch_.lines()[index];
+      const auto lineId = sketch_.lineId(index);
+      if (lineId == sketch::kInvalidGeometryId) continue;
+
+      for (const bool start : {true, false}) {
+        const auto point = start ? line.start : line.end;
+        const double distance =
+            QLineF(event->position(), mapPoint(point)).length();
+
+        if (distance < bestEndpointDistance) {
+          bestEndpointDistance = distance;
+          endpoint = sketch::PointReference{lineId, start};
+          endpointElementId = line.elementId;
+          endpointDashed = line.dashed;
+        }
+      }
+    }
+
+    if (endpoint) {
+      selectionKind_ = SelectionKind::Line;
+      selectionLineId_ = endpoint->lineId;
+      selectionElementId_ = endpointElementId;
+      selectionCircleId_ = sketch::kInvalidGeometryId;
+
+      setProperty("dragPointLineId",
+                  static_cast<qulonglong>(endpoint->lineId));
+      setProperty("dragPointStart", endpoint->start);
+
       pushUndoState();
       dragging_ = true;
       dragPoint_ = snappedPoint(event->position());
+
+      emit lineStyleSelectionChanged(true, endpointDashed);
+      emit selectionChanged(QString::fromUtf8("Выбрана точка линии"));
+      update();
+    } else {
+      setProperty("dragPointLineId", QVariant());
+      setProperty("dragPointStart", QVariant());
+
+      selectAt(event->position());
+      if (selectionKind_ != SelectionKind::None) {
+        pushUndoState();
+        dragging_ = true;
+        dragPoint_ = snappedPoint(event->position());
+      }
     }
   } else
     commitPoint(snappedPoint(event->position()));
@@ -1014,10 +1067,19 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     const auto current = snappedPoint(event->position());
     const double dx = current.xMm - dragPoint_.xMm;
     const double dy = current.yMm - dragPoint_.yMm;
-    if (selectionKind_ == SelectionKind::Line)
+
+    if (property("dragPointLineId").isValid()) {
+      const sketch::PointReference reference{
+          static_cast<sketch::GeometryId>(
+              property("dragPointLineId").toULongLong()),
+          property("dragPointStart").toBool()};
+      sketch_.translatePoint(reference, dx, dy);
+    } else if (selectionKind_ == SelectionKind::Line) {
       sketch_.translateElement(selectionElementId_, dx, dy);
-    else if (selectionKind_ == SelectionKind::Circle)
+    } else if (selectionKind_ == SelectionKind::Circle) {
       sketch_.translateCircleById(selectionCircleId_, dx, dy);
+    }
+
     dragPoint_ = current;
     update();
   } else if (anchor_) {
@@ -1052,6 +1114,8 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
   }
   if (event->button() == Qt::LeftButton && dragging_) {
     dragging_ = false;
+    setProperty("dragPointLineId", QVariant());
+    setProperty("dragPointStart", QVariant());
     notifyGeometryChanged();
   }
   if (event->button() == Qt::LeftButton &&
@@ -1522,6 +1586,25 @@ void SketchCanvas::commitAutoDimension() {
     changed = sketch_.setLineLengthById(id, value);
     dimension.kind = sketch::DimensionKind::LineLength;
     dimension.geometryId = id;
+
+    if (changed) {
+      // A displayed line length is a driving CAD constraint, not merely
+      // an annotation. Keep at most one Length constraint per line.
+      std::vector<sketch::ConstraintId> oldLengthConstraints;
+      for (const auto& constraint : sketch_.constraints()) {
+        if (constraint.type == sketch::ConstraintType::Length &&
+            constraint.firstGeometry == id)
+          oldLengthConstraints.push_back(constraint.id);
+      }
+      for (const auto constraintId : oldLengthConstraints)
+        sketch_.removeConstraint(constraintId);
+
+      sketch::Constraint lengthConstraint;
+      lengthConstraint.type = sketch::ConstraintType::Length;
+      lengthConstraint.firstGeometry = id;
+      lengthConstraint.value = value;
+      sketch_.addConstraint(lengthConstraint);
+    }
   } else if (target == "circle") {
     const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());

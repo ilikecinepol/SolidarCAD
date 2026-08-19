@@ -412,6 +412,69 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   updateBounds();
   return true;
 }
+bool Sketch::translatePoint(PointReference reference, double dxMm,
+                            double dyMm) {
+  if (reference.lineId == kInvalidGeometryId || !lineIndex(reference.lineId))
+    return false;
+  if (dxMm == 0.0 && dyMm == 0.0) return true;
+
+  const auto sameReference = [](PointReference first,
+                                PointReference second) {
+    return first.lineId == second.lineId && first.start == second.start;
+  };
+
+  // Find the complete endpoint component connected through Coincident
+  // constraints. All of these references represent the same CAD vertex.
+  std::vector<PointReference> connectedPoints{reference};
+  bool changed = true;
+  while (changed) {
+    changed = false;
+
+    for (const auto& constraint : constraints_) {
+      if (constraint.type != ConstraintType::Coincident) continue;
+
+      const auto first = constraint.firstPoint;
+      const auto second = constraint.secondPoint;
+      if (first.lineId == kInvalidGeometryId ||
+          second.lineId == kInvalidGeometryId)
+        continue;
+
+      const bool containsFirst = std::any_of(
+          connectedPoints.begin(), connectedPoints.end(),
+          [first, &sameReference](PointReference item) {
+            return sameReference(item, first);
+          });
+      const bool containsSecond = std::any_of(
+          connectedPoints.begin(), connectedPoints.end(),
+          [second, &sameReference](PointReference item) {
+            return sameReference(item, second);
+          });
+
+      if (containsFirst && !containsSecond) {
+        connectedPoints.push_back(second);
+        changed = true;
+      } else if (containsSecond && !containsFirst) {
+        connectedPoints.push_back(first);
+        changed = true;
+      }
+    }
+  }
+
+  for (const auto pointReference : connectedPoints) {
+    const auto index = lineIndex(pointReference.lineId);
+    if (!index) continue;
+
+    Point& point =
+        pointReference.start ? lines_[*index].start : lines_[*index].end;
+    point.xMm += dxMm;
+    point.yMm += dyMm;
+  }
+
+  // Keep H/V and other currently supported constraints satisfied.
+  (void)BasicSketchSolver::solve(*this);
+  updateBounds();
+  return true;
+}
 bool Sketch::setLineLength(std::size_t index, double lengthMm) {
   if (index >= lines_.size() || lengthMm <= 0.0) return false;
   const Point start = lines_[index].start;
