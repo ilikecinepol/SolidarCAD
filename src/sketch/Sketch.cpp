@@ -153,7 +153,9 @@ void Sketch::removeCircle(std::size_t index) {
 
   std::erase_if(constraints_, [removedId](const Constraint& constraint) {
     return constraint.firstGeometry == removedId ||
-           constraint.secondGeometry == removedId;
+           constraint.secondGeometry == removedId ||
+           constraint.firstPoint.circleId == removedId ||
+           constraint.secondPoint.circleId == removedId;
   });
 
   updateBounds();
@@ -229,6 +231,11 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
     const auto duplicate = std::find_if(
         connectedExternalPoints.begin(), connectedExternalPoints.end(),
         [external](const PointReference& item) {
+          if (external.circleId != kInvalidGeometryId ||
+              item.circleId != kInvalidGeometryId)
+            return external.circleId != kInvalidGeometryId &&
+                   item.circleId == external.circleId;
+
           return item.lineId == external.lineId &&
                  item.start == external.start;
         });
@@ -239,6 +246,7 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
   // Capture the old coordinates of those external endpoint clusters before
   // the selected element is moved.
   struct ConnectedPointMove {
+    PointReference reference;
     Point oldPoint;
     Point newPoint;
   };
@@ -248,7 +256,8 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
     const auto point = referencedPoint(reference);
     if (!point) continue;
     connectedMoves.push_back(
-        {*point, {point->xMm + dxMm, point->yMm + dyMm}});
+        {reference, *point,
+         {point->xMm + dxMm, point->yMm + dyMm}});
   }
 
   for (auto& line : lines_) {
@@ -268,6 +277,13 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
   // The rest of that neighbouring line stays where it was, so it stretches /
   // rotates naturally while remaining connected.
   for (const auto& move : connectedMoves) {
+    if (move.reference.circleId != kInvalidGeometryId) {
+      const auto circle = circleIndex(move.reference.circleId);
+      if (circle && same(circles_[*circle].center, move.oldPoint))
+        circles_[*circle].center = move.newPoint;
+      continue;
+    }
+
     for (std::size_t index = 0; index < lines_.size(); ++index) {
       if (isMoved(lineIds_[index])) continue;
       auto& line = lines_[index];
@@ -304,8 +320,14 @@ void Sketch::setCircleDashedById(GeometryId id, bool dashed) {
 }
 
 void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
-  const auto index = circleIndex(id);
-  if (index) translateCircle(*index, dxMm, dyMm);
+  if (id == kInvalidGeometryId || !circleIndex(id)) return;
+
+  PointReference centerReference;
+  centerReference.circleId = id;
+
+  // Move the circle center together with every Coincident-connected
+  // endpoint/center. This also re-runs the active solver afterwards.
+  (void)translatePoint(centerReference, dxMm, dyMm);
 }
 
 bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
@@ -380,37 +402,57 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
 
 std::optional<Point> Sketch::referencedPoint(
     PointReference reference) const noexcept {
+  if (reference.circleId != kInvalidGeometryId) {
+    const auto index = circleIndex(reference.circleId);
+    if (!index) return std::nullopt;
+    return circles_[*index].center;
+  }
+
   const auto index = lineIndex(reference.lineId);
   if (!index) return std::nullopt;
   const auto& line = lines_[*index];
   return reference.start ? line.start : line.end;
 }
-
 bool Sketch::setPointsCoincident(PointReference firstReference,
                                  PointReference secondReference) {
-  if (firstReference.lineId == kInvalidGeometryId ||
-      secondReference.lineId == kInvalidGeometryId)
-    return false;
-
-  // Coinciding the two ends of the same primitive would collapse the line.
-  if (firstReference.lineId == secondReference.lineId)
-    return false;
-
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
   if (!first || !second) return false;
 
+  const bool firstIsCircle =
+      firstReference.circleId != kInvalidGeometryId;
+  const bool secondIsCircle =
+      secondReference.circleId != kInvalidGeometryId;
+
+  // Same reference is already coincident.
+  if (firstIsCircle && secondIsCircle &&
+      firstReference.circleId == secondReference.circleId)
+    return true;
+
+  // Coinciding both ends of one line would collapse it.
+  if (!firstIsCircle && !secondIsCircle &&
+      firstReference.lineId != kInvalidGeometryId &&
+      firstReference.lineId == secondReference.lineId)
+    return false;
+
   const Point target = *first;
   const Point oldSecond = *second;
-  const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
-  };
 
-  // Move the complete already-connected endpoint cluster with the second
-  // reference. This preserves simple topology represented by equal points.
-  for (auto& line : lines_) {
-    if (same(line.start, oldSecond)) line.start = target;
-    if (same(line.end, oldSecond)) line.end = target;
+  if (secondIsCircle) {
+    const auto index = circleIndex(secondReference.circleId);
+    if (!index) return false;
+    circles_[*index].center = target;
+  } else {
+    const auto same = [](Point a, Point b) {
+      return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+    };
+
+    // Preserve the existing behavior for endpoint clusters that currently
+    // share the same geometric coordinate.
+    for (auto& line : lines_) {
+      if (same(line.start, oldSecond)) line.start = target;
+      if (same(line.end, oldSecond)) line.end = target;
+    }
   }
 
   updateBounds();
@@ -418,19 +460,25 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
 }
 bool Sketch::translatePoint(PointReference reference, double dxMm,
                             double dyMm) {
-  if (reference.lineId == kInvalidGeometryId || !lineIndex(reference.lineId))
-    return false;
+  if (!referencedPoint(reference)) return false;
   if (dxMm == 0.0 && dyMm == 0.0) return true;
 
   const auto sameReference = [](PointReference first,
                                 PointReference second) {
-    return first.lineId == second.lineId && first.start == second.start;
+    if (first.circleId != kInvalidGeometryId ||
+        second.circleId != kInvalidGeometryId) {
+      return first.circleId != kInvalidGeometryId &&
+             first.circleId == second.circleId;
+    }
+
+    return first.lineId == second.lineId &&
+           first.start == second.start;
   };
 
-  // Find the complete endpoint component connected through Coincident
-  // constraints. All of these references represent the same CAD vertex.
+  // Find the complete CAD vertex component connected by Coincident.
   std::vector<PointReference> connectedPoints{reference};
   bool changed = true;
+
   while (changed) {
     changed = false;
 
@@ -439,15 +487,14 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
 
       const auto first = constraint.firstPoint;
       const auto second = constraint.secondPoint;
-      if (first.lineId == kInvalidGeometryId ||
-          second.lineId == kInvalidGeometryId)
-        continue;
+      if (!referencedPoint(first) || !referencedPoint(second)) continue;
 
       const bool containsFirst = std::any_of(
           connectedPoints.begin(), connectedPoints.end(),
           [first, &sameReference](PointReference item) {
             return sameReference(item, first);
           });
+
       const bool containsSecond = std::any_of(
           connectedPoints.begin(), connectedPoints.end(),
           [second, &sameReference](PointReference item) {
@@ -465,6 +512,14 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
   }
 
   for (const auto pointReference : connectedPoints) {
+    if (pointReference.circleId != kInvalidGeometryId) {
+      const auto index = circleIndex(pointReference.circleId);
+      if (!index) continue;
+      circles_[*index].center.xMm += dxMm;
+      circles_[*index].center.yMm += dyMm;
+      continue;
+    }
+
     const auto index = lineIndex(pointReference.lineId);
     if (!index) continue;
 
@@ -474,7 +529,6 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
     point.yMm += dyMm;
   }
 
-  // Keep H/V and other currently supported constraints satisfied.
   (void)BasicSketchSolver::solve(*this);
   updateBounds();
   return true;

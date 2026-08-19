@@ -129,6 +129,8 @@ void SketchCanvas::setTool(Tool tool) {
   anchor_.reset();
   setProperty("dragPointLineId", QVariant());
   setProperty("dragPointStart", QVariant());
+  setProperty("draggingDimensionLine", QVariant());
+  setProperty("draggingDimensionLabel", QVariant());
   coincidentFirstPoint_.reset();
   circlePoints_.clear();
   circleGuideLines_.clear();
@@ -221,7 +223,9 @@ QStringList SketchCanvas::selectedConstraintDescriptions() const {
         constraint.firstGeometry == selectedId ||
         constraint.secondGeometry == selectedId ||
         constraint.firstPoint.lineId == selectedId ||
-        constraint.secondPoint.lineId == selectedId;
+        constraint.secondPoint.lineId == selectedId ||
+        constraint.firstPoint.circleId == selectedId ||
+        constraint.secondPoint.circleId == selectedId;
     if (!referencesSelected) continue;
 
     QString text = typeName(constraint.type);
@@ -257,7 +261,9 @@ std::vector<sketch::ConstraintId> SketchCanvas::selectedConstraintIds() const {
         constraint.firstGeometry == selectedId ||
         constraint.secondGeometry == selectedId ||
         constraint.firstPoint.lineId == selectedId ||
-        constraint.secondPoint.lineId == selectedId;
+        constraint.secondPoint.lineId == selectedId ||
+        constraint.firstPoint.circleId == selectedId ||
+        constraint.secondPoint.circleId == selectedId;
     if (referencesSelected) result.push_back(constraint.id);
   }
   return result;
@@ -876,11 +882,17 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  if (beginDimensionLabelDrag(event->position())) {
+  // Installed dimensions are selectable/draggable only in Select mode.
+  // While AutoDimension or a constraint tool is active, dimensions are
+  // transparent to mouse hit-testing so geometry interaction cannot be
+  // stolen by an existing annotation.
+  if (tool_ == Tool::Select &&
+      beginDimensionLabelDrag(event->position())) {
     event->accept();
     return;
   }
-  if (beginDimensionLineDrag(event->position())) {
+  if (tool_ == Tool::Select &&
+      beginDimensionLineDrag(event->position())) {
     event->accept();
     return;
   }
@@ -1613,6 +1625,7 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   double bestDistance = hitTolerance;
   std::optional<sketch::PointReference> clickedPoint;
 
+  // Line endpoints.
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
     const auto& line = sketch_.lines()[index];
     const auto id = sketch_.lineId(index);
@@ -1620,7 +1633,9 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 
     for (const bool start : {true, false}) {
       const auto point = start ? line.start : line.end;
-      const double distance = QLineF(position, mapPoint(point)).length();
+      const double distance =
+          QLineF(position, mapPoint(point)).length();
+
       if (distance < bestDistance) {
         bestDistance = distance;
         clickedPoint = sketch::PointReference{id, start};
@@ -1628,16 +1643,45 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
     }
   }
 
+  // Circle centers participate in the same point-reference system.
+  for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+    const auto id = sketch_.circleId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    const double distance =
+        QLineF(position, mapPoint(sketch_.circles()[index].center)).length();
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      sketch::PointReference reference;
+      reference.circleId = id;
+      clickedPoint = reference;
+    }
+  }
+
   if (!clickedPoint) {
     emit selectionChanged(QString::fromUtf8(
-        "Совпадение: выберите конечную точку линии"));
+        "Совпадение: выберите конец линии или центр окружности"));
     return;
   }
 
+  const auto sameReference =
+      [](sketch::PointReference first,
+         sketch::PointReference second) {
+    if (first.circleId != sketch::kInvalidGeometryId ||
+        second.circleId != sketch::kInvalidGeometryId) {
+      return first.circleId != sketch::kInvalidGeometryId &&
+             first.circleId == second.circleId;
+    }
+
+    return first.lineId == second.lineId &&
+           first.start == second.start;
+  };
+
   if (!coincidentFirstPoint_) {
     coincidentFirstPoint_ = *clickedPoint;
-    emit selectionChanged(
-        QString::fromUtf8("Совпадение: выберите вторую точку"));
+    emit selectionChanged(QString::fromUtf8(
+        "Совпадение: выберите вторую точку или центр"));
     update();
     return;
   }
@@ -1645,33 +1689,40 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   const auto first = *coincidentFirstPoint_;
   const auto second = *clickedPoint;
 
-  if (first.lineId == second.lineId) {
+  if (sameReference(first, second)) {
     coincidentFirstPoint_.reset();
     emit selectionChanged(QString::fromUtf8(
-        "Совпадение: выберите точки разных линий"));
+        "Выбрана одна и та же точка"));
     update();
     return;
   }
 
-  // Avoid duplicate constraints in either point order.
+  // Do not collapse a single line by coinciding its own two ends.
+  if (first.circleId == sketch::kInvalidGeometryId &&
+      second.circleId == sketch::kInvalidGeometryId &&
+      first.lineId == second.lineId) {
+    coincidentFirstPoint_.reset();
+    emit selectionChanged(QString::fromUtf8(
+        "Совпадение: выберите разные объекты"));
+    update();
+    return;
+  }
+
+  // Avoid duplicate Coincident constraints in either order.
   for (const auto& constraint : sketch_.constraints()) {
     if (constraint.type != sketch::ConstraintType::Coincident) continue;
 
     const bool sameOrder =
-        constraint.firstPoint.lineId == first.lineId &&
-        constraint.firstPoint.start == first.start &&
-        constraint.secondPoint.lineId == second.lineId &&
-        constraint.secondPoint.start == second.start;
+        sameReference(constraint.firstPoint, first) &&
+        sameReference(constraint.secondPoint, second);
     const bool reverseOrder =
-        constraint.firstPoint.lineId == second.lineId &&
-        constraint.firstPoint.start == second.start &&
-        constraint.secondPoint.lineId == first.lineId &&
-        constraint.secondPoint.start == first.start;
+        sameReference(constraint.firstPoint, second) &&
+        sameReference(constraint.secondPoint, first);
 
     if (sameOrder || reverseOrder) {
       coincidentFirstPoint_.reset();
-      emit selectionChanged(
-          QString::fromUtf8("Эти точки уже имеют ограничение «Совпадение»"));
+      emit selectionChanged(QString::fromUtf8(
+          "Эти точки уже имеют ограничение «Совпадение»"));
       update();
       return;
     }
@@ -1686,7 +1737,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   sketch_.addConstraint(constraint);
 
   coincidentFirstPoint_.reset();
-  emit selectionChanged(QString::fromUtf8("Ограничение: Совпадение"));
+  emit selectionChanged(QString::fromUtf8(
+      "Ограничение: Совпадение"));
   notifyGeometryChanged();
   update();
 }
@@ -1759,6 +1811,11 @@ void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
 }
 
 void SketchCanvas::handleAutoDimensionClick(QPointF position) {
+  // AutoDimension owns mouse movement while it is active. Never allow a
+  // stale installed-dimension drag state to intercept its live preview.
+  setProperty("draggingDimensionLine", QVariant());
+  setProperty("draggingDimensionLabel", QVariant());
+
   constexpr double pointTolerance = 8.0;
   std::optional<sketch::PointReference> clickedPoint;
   double pointDistance = pointTolerance;
@@ -1838,13 +1895,26 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
   primaryDimension_->setRange(0.01, 100000.0);
   if (lineIndex) {
     const auto& line = sketch_.lines()[*lineIndex];
-    setProperty("autoDimensionTarget", "line");
+    const auto lineId = sketch_.lineId(*lineIndex);
+
+    // Treat a direct line click exactly like selecting its two endpoints.
+    // This gives the line the same three interactive dimension modes:
+    // aligned length, X projection and Y projection.
+    setProperty("autoDimensionTarget", "points");
+    setProperty("autoDimensionPointMode", "aligned");
     setProperty("autoDimensionOffsetMm", 4.0);
-    setProperty("autoDimensionIndex",
-                static_cast<qulonglong>(sketch_.lineId(*lineIndex)));
+
+    setProperty("autoDimensionFirstLine",
+                static_cast<qulonglong>(lineId));
+    setProperty("autoDimensionFirstStart", true);
+    setProperty("autoDimensionSecondLine",
+                static_cast<qulonglong>(lineId));
+    setProperty("autoDimensionSecondStart", false);
+
     primaryDimension_->setPrefix(QString());
-    primaryDimension_->setValue(std::hypot(line.end.xMm - line.start.xMm,
-                                            line.end.yMm - line.start.yMm));
+    primaryDimension_->setValue(
+        std::hypot(line.end.xMm - line.start.xMm,
+                   line.end.yMm - line.start.yMm));
   } else {
     setProperty("autoDimensionTarget", "circle");
     setProperty("autoDimensionIndex",
@@ -1906,9 +1976,32 @@ void SketchCanvas::commitAutoDimension() {
   } else if (target == "circle") {
     const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
+
     changed = sketch_.setCircleDiameterById(id, value);
     dimension.kind = sketch::DimensionKind::CircleDiameter;
     dimension.geometryId = id;
+
+    if (changed) {
+      // A displayed circle diameter is a driving CAD constraint.
+      // Keep at most one Diameter constraint per circle.
+      std::vector<sketch::ConstraintId> oldDiameterConstraints;
+
+      for (const auto& constraint : sketch_.constraints()) {
+        if (constraint.type == sketch::ConstraintType::Diameter &&
+            constraint.firstGeometry == id) {
+          oldDiameterConstraints.push_back(constraint.id);
+        }
+      }
+
+      for (const auto constraintId : oldDiameterConstraints)
+        sketch_.removeConstraint(constraintId);
+
+      sketch::Constraint diameterConstraint;
+      diameterConstraint.type = sketch::ConstraintType::Diameter;
+      diameterConstraint.firstGeometry = id;
+      diameterConstraint.value = value;
+      sketch_.addConstraint(diameterConstraint);
+    }
   } else if (target == "points") {
     const sketch::PointReference first{
         static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),

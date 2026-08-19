@@ -32,8 +32,13 @@ struct Circle {
 };
 
 struct PointReference {
+  // Line endpoint reference. Existing code and project files use these.
   GeometryId lineId{kInvalidGeometryId};
   bool start{true};
+
+  // Optional circle-center reference. When this is valid, the reference
+  // denotes the center of that circle instead of a line endpoint.
+  GeometryId circleId{kInvalidGeometryId};
 };
 
 enum class DimensionKind {

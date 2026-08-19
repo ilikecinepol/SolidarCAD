@@ -12,10 +12,17 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
   for (const auto& constraint : sketch.constraints()) {
     if (constraint.type != ConstraintType::Coincident) continue;
 
-    if (constraint.firstPoint.lineId == kInvalidGeometryId ||
-        constraint.secondPoint.lineId == kInvalidGeometryId ||
-        !sketch.lineIndex(constraint.firstPoint.lineId) ||
-        !sketch.lineIndex(constraint.secondPoint.lineId)) {
+    const auto validPointReference =
+        [&sketch](PointReference reference) {
+      if (reference.circleId != kInvalidGeometryId)
+        return sketch.circleIndex(reference.circleId).has_value();
+
+      return reference.lineId != kInvalidGeometryId &&
+             sketch.lineIndex(reference.lineId).has_value();
+    };
+
+    if (!validPointReference(constraint.firstPoint) ||
+        !validPointReference(constraint.secondPoint)) {
       ++result.invalidReferences;
       continue;
     }
@@ -91,6 +98,21 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
              sketch.setPointDistanceY(constraint.firstPoint,
                                       constraint.secondPoint,
                                       constraint.value)))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Diameter:
+        if (constraint.firstGeometry == kInvalidGeometryId ||
+            !sketch.circleIndex(constraint.firstGeometry) ||
+            constraint.value <= 0.0) {
+          ++result.invalidReferences;
+          break;
+        }
+
+        if (sketch.setCircleDiameterById(constraint.firstGeometry,
+                                         constraint.value))
           ++result.applied;
         else
           ++result.invalidReferences;

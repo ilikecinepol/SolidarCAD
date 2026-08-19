@@ -98,6 +98,8 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
       qint64 secondGeometry = -1;
       qint64 firstPointLine = -1;
       qint64 secondPointLine = -1;
+      qint64 firstPointCircle = -1;
+      qint64 secondPointCircle = -1;
 
       auto linePosition = [&saved](sketch::GeometryId id) -> qint64 {
         const auto index = saved.geometry.lineIndex(id);
@@ -134,6 +136,10 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
         firstPointLine = linePosition(constraint.firstPoint.lineId);
       if (constraint.secondPoint.lineId != sketch::kInvalidGeometryId)
         secondPointLine = linePosition(constraint.secondPoint.lineId);
+      if (constraint.firstPoint.circleId != sketch::kInvalidGeometryId)
+        firstPointCircle = circlePosition(constraint.firstPoint.circleId);
+      if (constraint.secondPoint.circleId != sketch::kInvalidGeometryId)
+        secondPointCircle = circlePosition(constraint.secondPoint.circleId);
 
       constraints.append(QJsonObject{
           {"id", static_cast<qint64>(constraint.id)},
@@ -144,8 +150,10 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
           {"secondGeometry", secondGeometry},
           {"firstPointLine", firstPointLine},
           {"firstPointStart", constraint.firstPoint.start},
+          {"firstPointCircle", firstPointCircle},
           {"secondPointLine", secondPointLine},
           {"secondPointStart", constraint.secondPoint.start},
+          {"secondPointCircle", secondPointCircle},
           {"value", constraint.value}});
     }
 
@@ -319,6 +327,22 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
             saved.geometry.lineId(static_cast<std::size_t>(secondPointLine));
         constraint.secondPoint.start =
             object.value("secondPointStart").toBool(true);
+      }
+
+      const qint64 firstPointCircle =
+          object.value("firstPointCircle").toInteger(-1);
+      if (firstPointCircle >= 0) {
+        constraint.firstPoint.circleId =
+            saved.geometry.circleId(
+                static_cast<std::size_t>(firstPointCircle));
+      }
+
+      const qint64 secondPointCircle =
+          object.value("secondPointCircle").toInteger(-1);
+      if (secondPointCircle >= 0) {
+        constraint.secondPoint.circleId =
+            saved.geometry.circleId(
+                static_cast<std::size_t>(secondPointCircle));
       }
 
       saved.geometry.addConstraint(constraint);
