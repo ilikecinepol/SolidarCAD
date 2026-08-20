@@ -155,7 +155,7 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   coincidentTool->setFixedSize(54, 54);
   coincidentTool->setFocusPolicy(Qt::NoFocus);
   coincidentTool->setCursor(Qt::PointingHandCursor);
-  coincidentTool->setToolTip(QString::fromUtf8("Совпадение"));
+  coincidentTool->setToolTip(QString::fromUtf8("Совпадение / Принадлежность"));
   toolGroup->addButton(coincidentTool);
   constraintsLayout->addWidget(coincidentTool);
 

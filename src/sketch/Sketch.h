@@ -39,6 +39,10 @@ struct PointReference {
   // Optional circle-center reference. When this is valid, the reference
   // denotes the center of that circle instead of a line endpoint.
   GeometryId circleId{kInvalidGeometryId};
+
+  // Optional center node of a composite element (currently a rectangle
+  // created with RectangleMode::FromCenter).
+  std::size_t elementCenterId{0};
 };
 
 enum class DimensionKind {
@@ -64,6 +68,7 @@ enum class ConstraintType {
   Horizontal,
   Vertical,
   Coincident,
+  PointOnLine,
   Distance,
   Length,
   Radius,
@@ -101,6 +106,17 @@ class Sketch final {
   void removeCircle(std::size_t index);
   void removeElement(std::size_t elementId);
   void translateElement(std::size_t elementId, double dxMm, double dyMm);
+
+  // Optional virtual center node owned by a composite CAD element.
+  // The point is derived from the element geometry, so it automatically
+  // follows translation, rotation and rectangle resizing.
+  void markElementCenterNode(std::size_t elementId);
+  [[nodiscard]] bool hasElementCenterNode(
+      std::size_t elementId) const noexcept;
+  [[nodiscard]] std::optional<Point> elementCenterPoint(
+      std::size_t elementId) const noexcept;
+  [[nodiscard]] const std::vector<std::size_t>&
+  centerNodeElementIds() const noexcept;
   void translateSelection(const std::vector<std::size_t>& elementIds,
                           const std::vector<GeometryId>& circleIds,
                           double dxMm, double dyMm);
@@ -117,6 +133,7 @@ class Sketch final {
   bool setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                          double angleDegrees);
   bool setPointsCoincident(PointReference first, PointReference second);
+  bool setPointOnLine(GeometryId lineId, PointReference pointReference);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
@@ -166,6 +183,10 @@ class Sketch final {
   std::vector<GeometryId> circleIds_;
   std::vector<Dimension> dimensions_;
   std::vector<Constraint> constraints_;
+
+  // Elements created by tools that expose a persistent virtual center node.
+  // Currently used by RectangleMode::FromCenter.
+  std::vector<std::size_t> centerNodeElementIds_;
   std::size_t nextElementId_{1};
   GeometryId nextGeometryId_{1};
   ConstraintId nextConstraintId_{1};

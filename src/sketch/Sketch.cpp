@@ -12,6 +12,7 @@ namespace solidar::sketch {
 Sketch::Sketch() { clear(); }
 
 void Sketch::clear() {
+  centerNodeElementIds_.clear();
   lines_.clear();
   circles_.clear();
   lineIds_.clear();
@@ -332,9 +333,65 @@ void Sketch::removeElement(std::size_t elementId) {
     });
   }
 
+  std::erase(centerNodeElementIds_, elementId);
   updateBounds();
 }
 
+void Sketch::markElementCenterNode(std::size_t elementId) {
+  if (elementId == 0 || hasElementCenterNode(elementId))
+    return;
+
+  std::size_t lineCount = 0;
+  for (const auto& line : lines_) {
+    if (line.elementId == elementId)
+      ++lineCount;
+  }
+
+  // Current rectangle elements are exactly four perimeter lines.
+  if (lineCount == 4)
+    centerNodeElementIds_.push_back(elementId);
+}
+
+bool Sketch::hasElementCenterNode(std::size_t elementId) const noexcept {
+  return std::find(centerNodeElementIds_.begin(),
+                   centerNodeElementIds_.end(),
+                   elementId) != centerNodeElementIds_.end();
+}
+
+std::optional<Point> Sketch::elementCenterPoint(
+    std::size_t elementId) const noexcept {
+  if (!hasElementCenterNode(elementId))
+    return std::nullopt;
+
+  std::vector<const Line*> elementLines;
+  elementLines.reserve(4);
+
+  for (const auto& line : lines_) {
+    if (line.elementId == elementId)
+      elementLines.push_back(&line);
+  }
+
+  if (elementLines.size() != 4)
+    return std::nullopt;
+
+  // Average the four perimeter starts. Rectangle lines are stored in
+  // perimeter order, so these are exactly the four rectangle vertices.
+  Point center{};
+
+  for (const auto* line : elementLines) {
+    center.xMm += line->start.xMm;
+    center.yMm += line->start.yMm;
+  }
+
+  center.xMm *= 0.25;
+  center.yMm *= 0.25;
+  return center;
+}
+
+const std::vector<std::size_t>&
+Sketch::centerNodeElementIds() const noexcept {
+  return centerNodeElementIds_;
+}
 void Sketch::translateElement(std::size_t elementId, double dxMm,
                               double dyMm) {
   if (dxMm == 0.0 && dyMm == 0.0) return;
@@ -395,12 +452,63 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
          {point->xMm + dxMm, point->yMm + dyMm}});
   }
 
+  // Points constrained to a moved carrier line belong to that moving frame.
+  // Move them by the same delta before the final projection pass.
+  std::vector<PointReference> pointOnLineFollowers;
+
+  const auto samePointReference =
+      [](PointReference first, PointReference second) {
+        if (first.circleId != kInvalidGeometryId ||
+            second.circleId != kInvalidGeometryId) {
+          return first.circleId != kInvalidGeometryId &&
+                 first.circleId == second.circleId;
+        }
+
+        return first.lineId == second.lineId &&
+               first.start == second.start;
+      };
+
+  for (const auto& constraint : constraints_) {
+    if (constraint.type != ConstraintType::PointOnLine ||
+        !isMoved(constraint.firstGeometry))
+      continue;
+
+    const auto duplicate = std::any_of(
+        pointOnLineFollowers.begin(),
+        pointOnLineFollowers.end(),
+        [&constraint, &samePointReference](PointReference item) {
+          return samePointReference(item, constraint.secondPoint);
+        });
+
+    if (!duplicate)
+      pointOnLineFollowers.push_back(constraint.secondPoint);
+  }
+
   for (auto& line : lines_) {
     if (line.elementId != elementId) continue;
     line.start.xMm += dxMm;
     line.start.yMm += dyMm;
     line.end.xMm += dxMm;
     line.end.yMm += dyMm;
+  }
+
+  for (const auto follower : pointOnLineFollowers) {
+    if (follower.circleId != kInvalidGeometryId) {
+      const auto circle = circleIndex(follower.circleId);
+      if (!circle) continue;
+      circles_[*circle].center.xMm += dxMm;
+      circles_[*circle].center.yMm += dyMm;
+      continue;
+    }
+
+    const auto followerIndex = lineIndex(follower.lineId);
+    if (!followerIndex || isMoved(follower.lineId)) continue;
+
+    Point& followerPoint =
+        follower.start ? lines_[*followerIndex].start
+                       : lines_[*followerIndex].end;
+    followerPoint.xMm += dxMm;
+    followerPoint.yMm += dyMm;
   }
 
   const auto same = [](Point first, Point second) {
@@ -851,36 +959,66 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                                double angleDegrees) {
   const auto firstIndex = lineIndex(firstId);
   const auto secondIndex = lineIndex(secondId);
+
   if (!firstIndex || !secondIndex || firstId == secondId ||
       angleDegrees <= 0.0 || angleDegrees >= 180.0)
     return false;
 
-  const auto& first = lines_[*firstIndex];
-  auto& second = lines_[*secondIndex];
+  const Line& first = lines_[*firstIndex];
+  Line& second = lines_[*secondIndex];
 
   const Point oldStart = second.start;
   const Point oldEnd = second.end;
 
   const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+    return std::hypot(a.xMm - b.xMm,
+                      a.yMm - b.yMm) <= 1e-7;
   };
 
+  // Determine the real shared CAD vertex when the lines touch.
+  //
+  // The shared vertex is the hinge. It must stay fixed; only the opposite
+  // endpoint of the moving line is allowed to rotate.
   bool pivotAtStart = true;
+  bool hasSharedPivot = false;
   Point pivot = oldStart;
+  Point firstRayEnd = first.end;
 
-  if (same(oldStart, first.start) || same(oldStart, first.end)) {
+  if (same(oldStart, first.start)) {
     pivotAtStart = true;
+    hasSharedPivot = true;
     pivot = oldStart;
-  } else if (same(oldEnd, first.start) || same(oldEnd, first.end)) {
+    firstRayEnd = first.end;
+  } else if (same(oldStart, first.end)) {
+    pivotAtStart = true;
+    hasSharedPivot = true;
+    pivot = oldStart;
+    firstRayEnd = first.start;
+  } else if (same(oldEnd, first.start)) {
     pivotAtStart = false;
+    hasSharedPivot = true;
     pivot = oldEnd;
+    firstRayEnd = first.end;
+  } else if (same(oldEnd, first.end)) {
+    pivotAtStart = false;
+    hasSharedPivot = true;
+    pivot = oldEnd;
+    firstRayEnd = first.start;
   }
 
-  Point firstRayEnd = first.end;
-  if (same(pivot, first.end))
-    firstRayEnd = first.start;
+  // For disconnected lines keep the historical behaviour: rotate the second
+  // line around its start point, using the first line's own direction as the
+  // angular reference.
+  if (!hasSharedPivot) {
+    pivotAtStart = true;
+    pivot = oldStart;
+    firstRayEnd = {
+        pivot.xMm + (first.end.xMm - first.start.xMm),
+        pivot.yMm + (first.end.yMm - first.start.yMm)};
+  }
 
-  const Point secondRayEnd = pivotAtStart ? oldEnd : oldStart;
+  const Point secondRayEnd =
+      pivotAtStart ? oldEnd : oldStart;
 
   const double firstDx = firstRayEnd.xMm - pivot.xMm;
   const double firstDy = firstRayEnd.yMm - pivot.yMm;
@@ -889,32 +1027,77 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
 
   const double firstLength = std::hypot(firstDx, firstDy);
   const double secondLength = std::hypot(secondDx, secondDy);
-  if (firstLength <= 1e-9 || secondLength <= 1e-9) return false;
 
-  const double cross = firstDx * secondDy - firstDy * secondDx;
-  const double sign = cross < 0.0 ? -1.0 : 1.0;
-  const double target =
-      std::atan2(firstDy, firstDx) +
-      sign * angleDegrees * 3.14159265358979323846 / 180.0;
+  if (firstLength <= 1e-9 || secondLength <= 1e-9)
+    return false;
 
-  const Point oldMoving = pivotAtStart ? oldEnd : oldStart;
-  Point newMoving;
+  constexpr double pi = 3.14159265358979323846;
+  const double targetOffset = angleDegrees * pi / 180.0;
 
-  if (pivotAtStart) {
-    newMoving = {pivot.xMm + std::cos(target) * secondLength,
-                 pivot.yMm + std::sin(target) * secondLength};
-  } else {
-    newMoving = {pivot.xMm - std::cos(target) * secondLength,
-                 pivot.yMm - std::sin(target) * secondLength};
-  }
+  const double referenceAngle =
+      std::atan2(firstDy, firstDx);
+  const double currentAngle =
+      std::atan2(secondDy, secondDx);
 
-  for (auto& line : lines_) {
-    if (same(line.start, oldMoving)) line.start = newMoving;
-    if (same(line.end, oldMoving)) line.end = newMoving;
+  // Both +angle and -angle satisfy an unsigned CAD angle. Pick the solution
+  // that is nearest to the line's current orientation. This prevents a small
+  // correction from unexpectedly turning into a ~180-degree flip.
+  const auto wrappedDelta = [pi](double from, double to) {
+    double delta = to - from;
+
+    while (delta > pi)
+      delta -= 2.0 * pi;
+    while (delta < -pi)
+      delta += 2.0 * pi;
+
+    return delta;
+  };
+
+  const double candidatePositive =
+      referenceAngle + targetOffset;
+  const double candidateNegative =
+      referenceAngle - targetOffset;
+
+  const double positiveMove =
+      std::abs(wrappedDelta(currentAngle, candidatePositive));
+  const double negativeMove =
+      std::abs(wrappedDelta(currentAngle, candidateNegative));
+
+  const double targetAngle =
+      positiveMove <= negativeMove
+          ? candidatePositive
+          : candidateNegative;
+
+  const Point oldMoving =
+      pivotAtStart ? oldEnd : oldStart;
+
+  const Point newMoving{
+      pivot.xMm + std::cos(targetAngle) * secondLength,
+      pivot.yMm + std::sin(targetAngle) * secondLength};
+
+  // Move only the free endpoint. The pivot/opposite endpoint is deliberately
+  // untouched. Existing geometry coincident with the moving endpoint follows
+  // that endpoint as one CAD vertex cluster.
+  if (pivotAtStart)
+    second.end = newMoving;
+  else
+    second.start = newMoving;
+
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (index == *secondIndex)
+      continue;
+
+    auto& line = lines_[index];
+
+    if (same(line.start, oldMoving))
+      line.start = newMoving;
+    if (same(line.end, oldMoving))
+      line.end = newMoving;
   }
 
   for (auto& circle : circles_) {
-    if (same(circle.center, oldMoving)) circle.center = newMoving;
+    if (same(circle.center, oldMoving))
+      circle.center = newMoving;
   }
 
   updateBounds();
@@ -944,6 +1127,9 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
 
 std::optional<Point> Sketch::referencedPoint(
     PointReference reference) const noexcept {
+  if (reference.elementCenterId != 0)
+    return elementCenterPoint(reference.elementCenterId);
+
   if (reference.circleId != kInvalidGeometryId) {
     const auto index = circleIndex(reference.circleId);
     if (!index) return std::nullopt;
@@ -961,18 +1147,29 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   const auto second = referencedPoint(secondReference);
   if (!first || !second) return false;
 
-  const bool firstIsCircle =
-      firstReference.circleId != kInvalidGeometryId;
-  const bool secondIsCircle =
-      secondReference.circleId != kInvalidGeometryId;
+  const auto sameReference =
+      [](PointReference a, PointReference b) {
+        if (a.elementCenterId != 0 || b.elementCenterId != 0)
+          return a.elementCenterId != 0 &&
+                 a.elementCenterId == b.elementCenterId;
 
-  // Same reference is already coincident.
-  if (firstIsCircle && secondIsCircle &&
-      firstReference.circleId == secondReference.circleId)
+        if (a.circleId != kInvalidGeometryId ||
+            b.circleId != kInvalidGeometryId)
+          return a.circleId != kInvalidGeometryId &&
+                 a.circleId == b.circleId;
+
+        return a.lineId == b.lineId &&
+               a.start == b.start;
+      };
+
+  if (sameReference(firstReference, secondReference))
     return true;
 
   // Coinciding both ends of one line would collapse it.
-  if (!firstIsCircle && !secondIsCircle &&
+  if (firstReference.elementCenterId == 0 &&
+      secondReference.elementCenterId == 0 &&
+      firstReference.circleId == kInvalidGeometryId &&
+      secondReference.circleId == kInvalidGeometryId &&
       firstReference.lineId != kInvalidGeometryId &&
       firstReference.lineId == secondReference.lineId)
     return false;
@@ -980,13 +1177,34 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   const Point target = *first;
   const Point oldSecond = *second;
 
-  if (secondIsCircle) {
+  // A virtual rectangle center is not an independently movable coordinate.
+  // Moving it means translating the complete owning rectangle.
+  if (secondReference.elementCenterId != 0) {
+    const double dx = target.xMm - oldSecond.xMm;
+    const double dy = target.yMm - oldSecond.yMm;
+
+    for (auto& line : lines_) {
+      if (line.elementId != secondReference.elementCenterId)
+        continue;
+
+      line.start.xMm += dx;
+      line.start.yMm += dy;
+      line.end.xMm += dx;
+      line.end.yMm += dy;
+    }
+
+    updateBounds();
+    return true;
+  }
+
+  if (secondReference.circleId != kInvalidGeometryId) {
     const auto index = circleIndex(secondReference.circleId);
     if (!index) return false;
     circles_[*index].center = target;
   } else {
     const auto same = [](Point a, Point b) {
-      return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+      return std::hypot(a.xMm - b.xMm,
+                        a.yMm - b.yMm) <= 1e-7;
     };
 
     // Preserve the existing behavior for endpoint clusters that currently
@@ -994,6 +1212,79 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
     for (auto& line : lines_) {
       if (same(line.start, oldSecond)) line.start = target;
       if (same(line.end, oldSecond)) line.end = target;
+    }
+  }
+
+  updateBounds();
+  return true;
+}
+bool Sketch::setPointOnLine(GeometryId lineIdValue,
+                            PointReference pointReference) {
+  const auto carrierIndex = lineIndex(lineIdValue);
+  const auto point = referencedPoint(pointReference);
+
+  if (!carrierIndex || !point) return false;
+
+  // A line endpoint cannot be constrained onto its own carrier segment:
+  // that would be tautological and interferes with normal endpoint editing.
+  if (pointReference.circleId == kInvalidGeometryId &&
+      pointReference.lineId == lineIdValue)
+    return false;
+
+  const auto& carrier = lines_[*carrierIndex];
+  const double dx = carrier.end.xMm - carrier.start.xMm;
+  const double dy = carrier.end.yMm - carrier.start.yMm;
+  const double lengthSquared = dx * dx + dy * dy;
+
+  if (lengthSquared <= 1e-12) return false;
+
+  const double rawT =
+      ((point->xMm - carrier.start.xMm) * dx +
+       (point->yMm - carrier.start.yMm) * dy) /
+      lengthSquared;
+
+  // PointOnLine means point on the finite CAD segment, not on an infinite
+  // mathematical line. Clamp to the two endpoints.
+  const double t = std::clamp(rawT, 0.0, 1.0);
+
+  const Point target{
+      carrier.start.xMm + dx * t,
+      carrier.start.yMm + dy * t};
+
+  const Point oldPoint = *point;
+
+  if (pointReference.elementCenterId != 0) {
+    const double moveX = target.xMm - oldPoint.xMm;
+    const double moveY = target.yMm - oldPoint.yMm;
+
+    for (auto& line : lines_) {
+      if (line.elementId != pointReference.elementCenterId)
+        continue;
+
+      line.start.xMm += moveX;
+      line.start.yMm += moveY;
+      line.end.xMm += moveX;
+      line.end.yMm += moveY;
+    }
+  } else if (pointReference.circleId != kInvalidGeometryId) {
+    const auto circle = circleIndex(pointReference.circleId);
+    if (!circle) return false;
+    circles_[*circle].center = target;
+  } else {
+    const auto same = [](Point first, Point second) {
+      return std::hypot(first.xMm - second.xMm,
+                        first.yMm - second.yMm) <= 1e-7;
+    };
+
+    // Keep the complete coincident CAD vertex cluster together.
+    for (auto& line : lines_) {
+      if (same(line.start, oldPoint)) line.start = target;
+      if (same(line.end, oldPoint)) line.end = target;
+    }
+
+    for (auto& circle : circles_) {
+      if (same(circle.center, oldPoint))
+        circle.center = target;
     }
   }
 

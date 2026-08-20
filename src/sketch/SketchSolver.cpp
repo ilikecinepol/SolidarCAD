@@ -17,11 +17,7 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
     const auto validPointReference =
         [&sketch](PointReference reference) {
-      if (reference.circleId != kInvalidGeometryId)
-        return sketch.circleIndex(reference.circleId).has_value();
-
-      return reference.lineId != kInvalidGeometryId &&
-             sketch.lineIndex(reference.lineId).has_value();
+      return sketch.referencedPoint(reference).has_value();
     };
 
     if (!validPointReference(constraint.firstPoint) ||
@@ -130,6 +126,11 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
       case ConstraintType::Coincident:
         // Already handled in the first pass.
+        break;
+
+      case ConstraintType::PointOnLine:
+        // Applied in the final relationship/stabilization passes so line
+        // orientation and rectangle geometry are already settled.
         break;
 
       default:
@@ -827,11 +828,7 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
       const auto validPointReference =
           [&sketch](PointReference reference) {
-            if (reference.circleId != kInvalidGeometryId)
-              return sketch.circleIndex(reference.circleId).has_value();
-
-            return reference.lineId != kInvalidGeometryId &&
-                   sketch.lineIndex(reference.lineId).has_value();
+            return sketch.referencedPoint(reference).has_value();
           };
 
       if (!validPointReference(constraint.firstPoint) ||
@@ -940,6 +937,40 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
                                      movingGeometry,
                                      90.0);
     }
+
+    // 5) Finally project PointOnLine references onto their finite carriers.
+    for (const auto& constraint : sketch.constraints()) {
+      if (constraint.type != ConstraintType::PointOnLine)
+        continue;
+
+      if (constraint.firstGeometry == kInvalidGeometryId ||
+          !sketch.lineIndex(constraint.firstGeometry) ||
+          !sketch.referencedPoint(constraint.secondPoint))
+        continue;
+
+      (void)sketch.setPointOnLine(constraint.firstGeometry,
+                                  constraint.secondPoint);
+    }
+  }
+  // POINT-ON-LINE FINAL PASS
+  // Keep constrained points on finite segments after all other geometry
+  // relations have settled.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::PointOnLine)
+      continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstGeometry) ||
+        !sketch.referencedPoint(constraint.secondPoint)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setPointOnLine(constraint.firstGeometry,
+                              constraint.secondPoint))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
   }
   return result;
 }
