@@ -33,7 +33,8 @@ class SketchCanvas final : public QWidget {
     CoincidentConstraint,
     PerpendicularConstraint,
     ParallelConstraint,
-    EqualConstraint
+    EqualConstraint,
+    TangentConstraint
   };
   enum class CircleMode {
     CenterRadius,
@@ -127,6 +128,7 @@ signals:
   void handlePerpendicularConstraintClick(QPointF position);
   void handleParallelConstraintClick(QPointF position);
   void handleEqualConstraintClick(QPointF position);
+  void handleTangentConstraintClick(QPointF position);
   void commitAutoDimension();
   [[nodiscard]] bool dimensionSegment(std::size_t index, QPointF& first,
                                       QPointF& second) const;

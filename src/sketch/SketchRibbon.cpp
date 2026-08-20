@@ -203,6 +203,25 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   toolGroup->addButton(equalTool);
   constraintsLayout->addWidget(equalTool);
 
+  auto* tangentTool =
+      new QPushButton(QStringLiteral("T"), this);
+  tangentTool->setObjectName("toolButton");
+  tangentTool->setCheckable(true);
+  tangentTool->setFixedSize(54, 54);
+  tangentTool->setFocusPolicy(Qt::NoFocus);
+  tangentTool->setCursor(Qt::PointingHandCursor);
+  tangentTool->setToolTip(
+      QString::fromUtf8(
+          "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F "
+          "\xD0\xBA "
+          "\xD0\xBE\xD0\xBA\xD1\x80\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD0\xB8"));
+  QFont tangentFont = tangentTool->font();
+  tangentFont.setPointSize(18);
+  tangentFont.setBold(true);
+  tangentTool->setFont(tangentFont);
+  toolGroup->addButton(tangentTool);
+  constraintsLayout->addWidget(tangentTool);
+
   root->addWidget(groupWidget(QString::fromUtf8("ОГРАНИЧЕНИЯ"),
                               constraintsLayout, this));
   root->addStretch();
@@ -241,6 +260,10 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   connect(equalTool, &QPushButton::clicked, canvas,
           [canvas] {
             canvas->setTool(SketchCanvas::Tool::EqualConstraint);
+          });
+  connect(tangentTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::TangentConstraint);
           });
   connect(canvas, &SketchCanvas::toolChanged, this,
           [toolGroup](SketchCanvas::Tool tool) {
