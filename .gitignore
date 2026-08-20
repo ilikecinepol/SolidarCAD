@@ -7,3 +7,10 @@
 *.user
 *.autosave
 compile_commands.json
+# Local patch/backup artifacts
+*.bak
+.solidcad_backups/
+.*_backup_*/
+.*backup*/
+*.ps1
+angle_dimension_local_diagnostic.txt
