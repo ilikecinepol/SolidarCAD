@@ -133,6 +133,10 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // orientation and rectangle geometry are already settled.
         break;
 
+      case ConstraintType::PointOnCircle:
+        // Applied after carrier geometry has settled.
+        break;
+
       default:
         ++result.unsupported;
         break;
@@ -968,6 +972,26 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
     if (sketch.setPointOnLine(constraint.firstGeometry,
                               constraint.secondPoint))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+  // POINT-ON-CIRCLE FINAL PASS
+  // PointOnCircle is not tangency: only the selected point is projected
+  // onto the current circumference.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::PointOnCircle)
+      continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        !sketch.circleIndex(constraint.firstGeometry) ||
+        !sketch.referencedPoint(constraint.secondPoint)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setPointOnCircle(constraint.firstGeometry,
+                                constraint.secondPoint))
       ++result.applied;
     else
       ++result.invalidReferences;

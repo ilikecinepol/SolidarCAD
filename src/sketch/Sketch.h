@@ -78,7 +78,8 @@ enum class ConstraintType {
   Equal,
   Angle,
   DistanceX,
-  DistanceY
+  DistanceY,
+  PointOnCircle
 };
 
 struct Constraint {
@@ -134,6 +135,7 @@ class Sketch final {
                          double angleDegrees);
   bool setPointsCoincident(PointReference first, PointReference second);
   bool setPointOnLine(GeometryId lineId, PointReference pointReference);
+  bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;

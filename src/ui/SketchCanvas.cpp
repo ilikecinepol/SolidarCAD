@@ -238,6 +238,7 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("autoDimensionAngleFirstLine", QVariant());
   setProperty("autoDimensionAngleSecondLine", QVariant());
   setProperty("pointOnLineCarrier", QVariant());
+  setProperty("pointOnCircleCarrier", QVariant());
   setProperty("perpendicularFirstLine", QVariant());
   setProperty("parallelFirstLine", QVariant());
   setProperty("equalFirstGeometry", QVariant());
@@ -1584,6 +1585,12 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
             static_cast<sketch::GeometryId>(
                 property("pointOnLineCarrier").toULongLong()));
       }
+      // POINT-ON-CIRCLE CARRIER HIGHLIGHT V3
+      if (property("pointOnCircleCarrier").isValid()) {
+        drawHighlightedCircle(
+            static_cast<sketch::GeometryId>(
+                property("pointOnCircleCarrier").toULongLong()));
+      }
     }
 
     if (tool_ == Tool::PerpendicularConstraint &&
@@ -1654,6 +1661,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     // Cancel unfinished constraint-tool selections as well.
     coincidentFirstPoint_.reset();
     setProperty("pointOnLineCarrier", QVariant());
+    setProperty("pointOnCircleCarrier", QVariant());
     setProperty("perpendicularFirstLine", QVariant());
     setProperty("parallelFirstLine", QVariant());
     setProperty("equalFirstGeometry", QVariant());
@@ -3278,6 +3286,187 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
   return std::nullopt;
 }
 void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
+  // POINT-ON-CIRCLE PRIORITY ROUTER V3
+  //
+  // Keep the requested workflow deliberately narrow and deterministic:
+  //   line endpoint -> circle body
+  //   circle body   -> line endpoint
+  //
+  // If neither side of this pair is involved, fall through untouched to the
+  // existing Coincident / PointOnLine logic below.
+  constexpr double pocEndpointTolerance = 11.0;
+  constexpr double pocCircleBodyTolerance = 11.0;
+  constexpr double pocCircleCenterExclusion = 12.0;
+
+  const auto findLineEndpoint =
+      [this, position]() -> std::optional<sketch::PointReference> {
+        double bestDistance = pocEndpointTolerance;
+        std::optional<sketch::PointReference> result;
+
+        for (std::size_t index = 0;
+             index < sketch_.lines().size(); ++index) {
+          const auto id = sketch_.lineId(index);
+          if (id == sketch::kInvalidGeometryId)
+            continue;
+
+          const auto& line = sketch_.lines()[index];
+
+          for (const bool start : {true, false}) {
+            const sketch::Point point =
+                start ? line.start : line.end;
+
+            const double distance =
+                QLineF(position, mapPoint(point)).length();
+
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              result = sketch::PointReference{id, start};
+            }
+          }
+        }
+
+        return result;
+      };
+
+  const auto findCircleBody =
+      [this, position]() -> sketch::GeometryId {
+        double bestDistance = pocCircleBodyTolerance;
+        sketch::GeometryId result =
+            sketch::kInvalidGeometryId;
+
+        for (std::size_t index = 0;
+             index < sketch_.circles().size(); ++index) {
+          const auto id = sketch_.circleId(index);
+          if (id == sketch::kInvalidGeometryId)
+            continue;
+
+          const auto& circle = sketch_.circles()[index];
+          const QPointF center = mapPoint(circle.center);
+
+          const double centerDistance =
+              QLineF(position, center).length();
+
+          // Clicking near the centre must remain ordinary Coincident.
+          if (centerDistance < pocCircleCenterExclusion)
+            continue;
+
+          const double radiusPx =
+              circle.radiusMm * pixelsPerMm_;
+
+          const double bodyDistance =
+              std::abs(centerDistance - radiusPx);
+
+          if (bodyDistance < bestDistance) {
+            bestDistance = bodyDistance;
+            result = id;
+          }
+        }
+
+        return result;
+      };
+
+  const auto createPointOnCircle =
+      [this](sketch::GeometryId circleId,
+             sketch::PointReference endpoint) {
+        if (circleId == sketch::kInvalidGeometryId ||
+            endpoint.lineId == sketch::kInvalidGeometryId)
+          return false;
+
+        // Do not create the same relation twice.
+        for (const auto& existing : sketch_.constraints()) {
+          if (existing.type !=
+              sketch::ConstraintType::PointOnCircle)
+            continue;
+
+          if (existing.firstGeometry == circleId &&
+              existing.secondPoint.lineId == endpoint.lineId &&
+              existing.secondPoint.start == endpoint.start &&
+              existing.secondPoint.circleId ==
+                  sketch::kInvalidGeometryId &&
+              existing.secondPoint.elementCenterId == 0)
+            return true;
+        }
+
+        pushUndoState();
+
+        sketch::Constraint constraint;
+        constraint.type =
+            sketch::ConstraintType::PointOnCircle;
+        constraint.firstGeometry = circleId;
+        constraint.secondPoint = endpoint;
+        sketch_.addConstraint(constraint);
+
+        notifyGeometryChanged();
+        return true;
+      };
+
+  // Circle was chosen first: now accept only a real line endpoint.
+  if (property("pointOnCircleCarrier").isValid()) {
+    const auto carrier =
+        static_cast<sketch::GeometryId>(
+            property("pointOnCircleCarrier").toULongLong());
+
+    const auto endpoint = findLineEndpoint();
+
+    if (endpoint) {
+      (void)createPointOnCircle(carrier, *endpoint);
+
+      setProperty("pointOnCircleCarrier", QVariant());
+      coincidentFirstPoint_.reset();
+
+      emit selectionChanged(QString::fromUtf8(
+          "Ограничение: конец линии на окружности"));
+      update();
+      return;
+    }
+
+    // Clicking elsewhere cancels only this special pending pair and then lets
+    // the normal Coincident tool handle the same click.
+    setProperty("pointOnCircleCarrier", QVariant());
+  }
+
+  const auto endpointHit = findLineEndpoint();
+  const auto circleHit = findCircleBody();
+
+  // Endpoint was chosen previously by the ordinary Coincident first-point
+  // picker. Give a circle-body second click priority over PointOnLine.
+  if (coincidentFirstPoint_ &&
+      coincidentFirstPoint_->lineId !=
+          sketch::kInvalidGeometryId &&
+      coincidentFirstPoint_->circleId ==
+          sketch::kInvalidGeometryId &&
+      coincidentFirstPoint_->elementCenterId == 0 &&
+      circleHit != sketch::kInvalidGeometryId) {
+    const auto endpoint = *coincidentFirstPoint_;
+
+    (void)createPointOnCircle(circleHit, endpoint);
+
+    coincidentFirstPoint_.reset();
+    setProperty("pointOnCircleCarrier", QVariant());
+
+    emit selectionChanged(QString::fromUtf8(
+        "Ограничение: конец линии на окружности"));
+    update();
+    return;
+  }
+
+  // Circle body first. Store only the carrier and wait for an endpoint.
+  //
+  // Endpoint hit has priority so a point that already lies on/near the
+  // circumference is still treated as a point rather than as circle body.
+  if (!coincidentFirstPoint_ &&
+      !endpointHit &&
+      circleHit != sketch::kInvalidGeometryId) {
+    setProperty(
+        "pointOnCircleCarrier",
+        static_cast<qulonglong>(circleHit));
+
+    emit selectionChanged(QString::fromUtf8(
+        "Окружность выбрана: укажите конец линии"));
+    update();
+    return;
+  }
+
   // MERGED POINT-ON-LINE MODE
   //
   // The existing Coincident tool now handles two related workflows:
@@ -3290,6 +3479,151 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   constexpr double endpointExclusion = 11.0;
   constexpr double pointTolerance = 10.0;
 
+  // POINT-ON-CIRCLE: ACTIVE CARRIER
+  const QVariant circleCarrierProperty =
+      property("pointOnCircleCarrier");
+
+  if (circleCarrierProperty.isValid()) {
+    const auto carrierCircleId =
+        static_cast<sketch::GeometryId>(
+            circleCarrierProperty.toULongLong());
+
+    if (!sketch_.circleIndex(carrierCircleId)) {
+      setProperty("pointOnCircleCarrier", QVariant());
+      return;
+    }
+
+    double bestPointDistance = pointTolerance;
+    std::optional<sketch::PointReference> clickedPoint;
+
+    // Line endpoints.
+    for (std::size_t index = 0;
+         index < sketch_.lines().size(); ++index) {
+      const auto id = sketch_.lineId(index);
+      if (id == sketch::kInvalidGeometryId) continue;
+
+      const auto& line = sketch_.lines()[index];
+
+      for (const bool start : {true, false}) {
+        const sketch::Point candidate =
+            start ? line.start : line.end;
+
+        const double distance =
+            QLineF(position, mapPoint(candidate)).length();
+
+        if (distance < bestPointDistance) {
+          bestPointDistance = distance;
+          clickedPoint =
+              sketch::PointReference{id, start};
+        }
+      }
+    }
+
+    // Circle centres, except the carrier's own centre.
+    for (std::size_t index = 0;
+         index < sketch_.circles().size(); ++index) {
+      const auto id = sketch_.circleId(index);
+
+      if (id == sketch::kInvalidGeometryId ||
+          id == carrierCircleId)
+        continue;
+
+      const double distance =
+          QLineF(position,
+                 mapPoint(sketch_.circles()[index].center))
+              .length();
+
+      if (distance < bestPointDistance) {
+        bestPointDistance = distance;
+
+        sketch::PointReference center;
+        center.circleId = id;
+        clickedPoint = center;
+      }
+    }
+
+    // Virtual rectangle centres.
+    for (const auto elementId :
+         sketch_.centerNodeElementIds()) {
+      const auto centerPoint =
+          sketch_.elementCenterPoint(elementId);
+
+      if (!centerPoint) continue;
+
+      const double distance =
+          QLineF(position, mapPoint(*centerPoint)).length();
+
+      if (distance < bestPointDistance) {
+        bestPointDistance = distance;
+
+        sketch::PointReference center;
+        center.elementCenterId = elementId;
+        clickedPoint = center;
+      }
+    }
+
+    if (!clickedPoint) {
+      emit selectionChanged(QString::fromUtf8(
+          "Принадлежность: выберите конечную точку"));
+      return;
+    }
+
+    const auto sameReference =
+        [](sketch::PointReference first,
+           sketch::PointReference second) {
+          if (first.elementCenterId != 0 ||
+              second.elementCenterId != 0)
+            return first.elementCenterId != 0 &&
+                   first.elementCenterId ==
+                       second.elementCenterId;
+
+          if (first.circleId !=
+                  sketch::kInvalidGeometryId ||
+              second.circleId !=
+                  sketch::kInvalidGeometryId)
+            return first.circleId !=
+                       sketch::kInvalidGeometryId &&
+                   first.circleId == second.circleId;
+
+          return first.lineId == second.lineId &&
+                 first.start == second.start;
+        };
+
+    for (const auto& constraint :
+         sketch_.constraints()) {
+      if (constraint.type !=
+          sketch::ConstraintType::PointOnCircle)
+        continue;
+
+      if (constraint.firstGeometry == carrierCircleId &&
+          sameReference(constraint.secondPoint,
+                        *clickedPoint)) {
+        setProperty("pointOnCircleCarrier", QVariant());
+        emit selectionChanged(QString::fromUtf8(
+            "Эта точка уже принадлежит выбранной окружности"));
+        update();
+        return;
+      }
+    }
+
+    pushUndoState();
+
+    sketch::Constraint constraint;
+    constraint.type =
+        sketch::ConstraintType::PointOnCircle;
+    constraint.firstGeometry = carrierCircleId;
+    constraint.secondPoint = *clickedPoint;
+    sketch_.addConstraint(constraint);
+
+    setProperty("pointOnCircleCarrier", QVariant());
+    coincidentFirstPoint_.reset();
+
+    emit selectionChanged(QString::fromUtf8(
+        "Ограничение: точка на окружности"));
+    notifyGeometryChanged();
+    update();
+    return;
+  }
   const QVariant carrierProperty = property("pointOnLineCarrier");
 
   if (carrierProperty.isValid()) {
@@ -3521,6 +3855,110 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
       }
     }
   }
+  // POINT-ON-CIRCLE: POINT FIRST
+  if (coincidentFirstPoint_) {
+    constexpr double circleBodyTolerance = 9.0;
+    constexpr double circleCenterExclusion = 11.0;
+
+    sketch::GeometryId carrierCircleId =
+        sketch::kInvalidGeometryId;
+    double bestBodyDistance = circleBodyTolerance;
+
+    for (std::size_t index = 0;
+         index < sketch_.circles().size(); ++index) {
+      const auto id = sketch_.circleId(index);
+      if (id == sketch::kInvalidGeometryId) continue;
+
+      const auto& circle = sketch_.circles()[index];
+      const QPointF center = mapPoint(circle.center);
+
+      const double centerDistance =
+          QLineF(position, center).length();
+
+      // Keep clicking the centre as normal Coincident point selection.
+      if (centerDistance < circleCenterExclusion)
+        continue;
+
+      const double radiusPx =
+          circle.radiusMm * pixelsPerMm_;
+
+      const double bodyDistance =
+          std::abs(centerDistance - radiusPx);
+
+      if (bodyDistance < bestBodyDistance) {
+        bestBodyDistance = bodyDistance;
+        carrierCircleId = id;
+      }
+    }
+
+    if (carrierCircleId !=
+        sketch::kInvalidGeometryId) {
+      const auto pointReference =
+          *coincidentFirstPoint_;
+
+      if (pointReference.circleId == carrierCircleId) {
+        emit selectionChanged(QString::fromUtf8(
+            "Центр окружности нельзя связать с её собственной окружностью"));
+        return;
+      }
+
+      bool duplicate = false;
+
+      for (const auto& constraint :
+           sketch_.constraints()) {
+        if (constraint.type !=
+            sketch::ConstraintType::PointOnCircle)
+          continue;
+
+        if (constraint.firstGeometry != carrierCircleId)
+          continue;
+
+        const auto& existing = constraint.secondPoint;
+
+        if (existing.elementCenterId != 0 ||
+            pointReference.elementCenterId != 0) {
+          duplicate =
+              existing.elementCenterId != 0 &&
+              existing.elementCenterId ==
+                  pointReference.elementCenterId;
+        } else if (
+            existing.circleId != sketch::kInvalidGeometryId ||
+            pointReference.circleId !=
+                sketch::kInvalidGeometryId) {
+          duplicate =
+              existing.circleId != sketch::kInvalidGeometryId &&
+              existing.circleId == pointReference.circleId;
+        } else {
+          duplicate =
+              existing.lineId == pointReference.lineId &&
+              existing.start == pointReference.start;
+        }
+
+        if (duplicate) break;
+      }
+
+      if (!duplicate) {
+        pushUndoState();
+
+        sketch::Constraint constraint;
+        constraint.type =
+            sketch::ConstraintType::PointOnCircle;
+        constraint.firstGeometry = carrierCircleId;
+        constraint.secondPoint = pointReference;
+        sketch_.addConstraint(constraint);
+
+        notifyGeometryChanged();
+      }
+
+      coincidentFirstPoint_.reset();
+      setProperty("pointOnCircleCarrier", QVariant());
+
+      emit selectionChanged(QString::fromUtf8(
+          "Ограничение: точка на окружности"));
+      update();
+      return;
+    }
+  }
   // FIRST-CLICK POINT PRIORITY
   //
   // Endpoints and circle centres take precedence over a nearby segment body.
@@ -3604,6 +4042,52 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   }
   // No first point has been selected for ordinary Coincident yet:
   // a click on the interior of a segment starts PointOnLine mode.
+  // POINT-ON-CIRCLE: CIRCLE FIRST
+  if (!coincidentFirstPoint_) {
+    constexpr double circleBodyTolerance = 9.0;
+    constexpr double circleCenterExclusion = 11.0;
+
+    sketch::GeometryId carrierCircleId =
+        sketch::kInvalidGeometryId;
+    double bestBodyDistance = circleBodyTolerance;
+
+    for (std::size_t index = 0;
+         index < sketch_.circles().size(); ++index) {
+      const auto id = sketch_.circleId(index);
+      if (id == sketch::kInvalidGeometryId) continue;
+
+      const auto& circle = sketch_.circles()[index];
+      const QPointF center = mapPoint(circle.center);
+
+      const double centerDistance =
+          QLineF(position, center).length();
+
+      if (centerDistance < circleCenterExclusion)
+        continue;
+
+      const double radiusPx =
+          circle.radiusMm * pixelsPerMm_;
+      const double bodyDistance =
+          std::abs(centerDistance - radiusPx);
+
+      if (bodyDistance < bestBodyDistance) {
+        bestBodyDistance = bodyDistance;
+        carrierCircleId = id;
+      }
+    }
+
+    if (carrierCircleId !=
+        sketch::kInvalidGeometryId) {
+      setProperty(
+          "pointOnCircleCarrier",
+          static_cast<qulonglong>(carrierCircleId));
+
+      emit selectionChanged(QString::fromUtf8(
+          "Принадлежность: выберите конечную точку"));
+      update();
+      return;
+    }
+  }
   if (!coincidentFirstPoint_) {
     double bestDistance = lineTolerance;
     std::optional<std::size_t> bestLineIndex;

@@ -1291,6 +1291,79 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
   updateBounds();
   return true;
 }
+bool Sketch::setPointOnCircle(GeometryId circleIdValue,
+                              PointReference pointReference) {
+  const auto carrierIndex = circleIndex(circleIdValue);
+  const auto point = referencedPoint(pointReference);
+
+  if (!carrierIndex || !point) return false;
+
+  // The centre of a circle cannot belong to its own circumference.
+  if (pointReference.circleId == circleIdValue)
+    return false;
+
+  const Circle& carrier = circles_[*carrierIndex];
+  if (carrier.radiusMm <= 1e-9) return false;
+
+  const Point oldPoint = *point;
+
+  double dx = oldPoint.xMm - carrier.center.xMm;
+  double dy = oldPoint.yMm - carrier.center.yMm;
+  double length = std::hypot(dx, dy);
+
+  // There is no radial direction if the point is exactly at the centre.
+  // Choose +X deterministically for that degenerate initial case.
+  if (length <= 1e-9) {
+    dx = 1.0;
+    dy = 0.0;
+    length = 1.0;
+  }
+
+  const Point target{
+      carrier.center.xMm + dx / length * carrier.radiusMm,
+      carrier.center.yMm + dy / length * carrier.radiusMm};
+
+  const double moveX = target.xMm - oldPoint.xMm;
+  const double moveY = target.yMm - oldPoint.yMm;
+
+  if (pointReference.elementCenterId != 0) {
+    // Rectangle centre is derived geometry: translate the whole rectangle.
+    for (auto& line : lines_) {
+      if (line.elementId != pointReference.elementCenterId)
+        continue;
+
+      line.start.xMm += moveX;
+      line.start.yMm += moveY;
+      line.end.xMm += moveX;
+      line.end.yMm += moveY;
+    }
+  } else if (pointReference.circleId != kInvalidGeometryId) {
+    const auto movingCircle =
+        circleIndex(pointReference.circleId);
+    if (!movingCircle) return false;
+
+    circles_[*movingCircle].center = target;
+  } else {
+    const auto same = [](Point first, Point second) {
+      return std::hypot(first.xMm - second.xMm,
+                        first.yMm - second.yMm) <= 1e-7;
+    };
+
+    // Keep a geometrically shared vertex together.
+    for (auto& line : lines_) {
+      if (same(line.start, oldPoint)) line.start = target;
+      if (same(line.end, oldPoint)) line.end = target;
+    }
+
+    for (auto& circle : circles_) {
+      if (same(circle.center, oldPoint))
+        circle.center = target;
+    }
+  }
+
+  updateBounds();
+  return true;
+}
 bool Sketch::translatePoint(PointReference reference, double dxMm,
                             double dyMm) {
   if (!referencedPoint(reference)) return false;
