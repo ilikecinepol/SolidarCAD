@@ -1,8 +1,6 @@
-﻿#include <array>
 #include "ui/SketchCanvas.h"
 #include "sketch/SketchSolver.h"
 
-#include <QKeySequence>
 #include <QKeyEvent>
 #include <QDoubleSpinBox>
 #include <QEvent>
@@ -21,31 +19,6 @@
 
 namespace solidar {
 namespace {
-struct SketchClipboardElement {
-  enum class Kind { Line, Rectangle, Circle };
-
-  Kind kind{Kind::Line};
-  sketch::Point lineStart{};
-  sketch::Point lineEnd{};
-  std::array<sketch::Point, 4> rectanglePoints{};
-  sketch::Point circleCenter{};
-  double circleRadiusMm{0.0};
-};
-
-struct SketchClipboardData {
-  std::vector<SketchClipboardElement> elements;
-  int pasteGeneration{0};
-
-  [[nodiscard]] bool empty() const noexcept { return elements.empty(); }
-
-  void clear() {
-    elements.clear();
-    pasteGeneration = 0;
-  }
-};
-
-SketchClipboardData gSketchClipboard;
-
 
 constexpr double kRulerTop = 30.0;
 constexpr double kRulerLeft = 44.0;
@@ -123,154 +96,6 @@ std::optional<QPointF> lineIntersectionScreen(const sketch::Line& first,
   return mapPointFn(sketch::Point{
       first.start.xMm + t * ax,
       first.start.yMm + t * ay});
-}
-// ANGLE DIMENSION RAY TOWARD SEGMENT
-QPointF angleRayTowardSegment(QPointF intersection,
-                              QPointF start,
-                              QPointF end) {
-  const QPointF toStart = start - intersection;
-  const QPointF toEnd = end - intersection;
-
-  const double startLength =
-      std::hypot(toStart.x(), toStart.y());
-  const double endLength =
-      std::hypot(toEnd.x(), toEnd.y());
-
-  constexpr double epsilon = 1e-6;
-
-  if (startLength <= epsilon && endLength <= epsilon)
-    return {};
-  if (startLength <= epsilon)
-    return toEnd;
-  if (endLength <= epsilon)
-    return toStart;
-
-  const double dot = QPointF::dotProduct(toStart, toEnd);
-
-  if (dot >= 0.0)
-    return startLength <= endLength ? toStart : toEnd;
-
-  return startLength >= endLength ? toStart : toEnd;
-}
-
-// VISIBLE ANGLE BETWEEN FINITE SEGMENTS
-double visibleLineAngleDegrees(const sketch::Line& first,
-                               const sketch::Line& second) {
-  const auto samePoint = [](sketch::Point a, sketch::Point b) {
-    return std::hypot(a.xMm - b.xMm,
-                      a.yMm - b.yMm) <= 1e-7;
-  };
-
-  const double ax = first.end.xMm - first.start.xMm;
-  const double ay = first.end.yMm - first.start.yMm;
-  const double bx = second.end.xMm - second.start.xMm;
-  const double by = second.end.yMm - second.start.yMm;
-
-  const double determinant = ax * by - ay * bx;
-  if (std::abs(determinant) <= 1e-9)
-    return 0.0;
-
-  const double dx = second.start.xMm - first.start.xMm;
-  const double dy = second.start.yMm - first.start.yMm;
-  const double t = (dx * by - dy * bx) / determinant;
-
-  const sketch::Point intersection{
-      first.start.xMm + t * ax,
-      first.start.yMm + t * ay};
-
-  const auto rayTowardSegment =
-      [intersection](sketch::Point start,
-                     sketch::Point end) {
-        QPointF toStart(start.xMm - intersection.xMm,
-                        start.yMm - intersection.yMm);
-        QPointF toEnd(end.xMm - intersection.xMm,
-                      end.yMm - intersection.yMm);
-
-        const double startLength =
-            std::hypot(toStart.x(), toStart.y());
-        const double endLength =
-            std::hypot(toEnd.x(), toEnd.y());
-
-        constexpr double epsilon = 1e-9;
-
-        if (startLength <= epsilon)
-          return toEnd;
-        if (endLength <= epsilon)
-          return toStart;
-
-        const double dot =
-            QPointF::dotProduct(toStart, toEnd);
-
-        if (dot >= 0.0)
-          return startLength <= endLength ? toStart : toEnd;
-
-        return startLength >= endLength ? toStart : toEnd;
-      };
-
-  QPointF firstDirection =
-      rayTowardSegment(first.start, first.end);
-  QPointF secondDirection =
-      rayTowardSegment(second.start, second.end);
-
-  if (samePoint(first.start, second.start)) {
-    firstDirection =
-        QPointF(first.end.xMm - first.start.xMm,
-                first.end.yMm - first.start.yMm);
-    secondDirection =
-        QPointF(second.end.xMm - second.start.xMm,
-                second.end.yMm - second.start.yMm);
-  } else if (samePoint(first.start, second.end)) {
-    firstDirection =
-        QPointF(first.end.xMm - first.start.xMm,
-                first.end.yMm - first.start.yMm);
-    secondDirection =
-        QPointF(second.start.xMm - second.end.xMm,
-                second.start.yMm - second.end.yMm);
-  } else if (samePoint(first.end, second.start)) {
-    firstDirection =
-        QPointF(first.start.xMm - first.end.xMm,
-                first.start.yMm - first.end.yMm);
-    secondDirection =
-        QPointF(second.end.xMm - second.start.xMm,
-                second.end.yMm - second.start.yMm);
-  } else if (samePoint(first.end, second.end)) {
-    firstDirection =
-        QPointF(first.start.xMm - first.end.xMm,
-                first.start.yMm - first.end.yMm);
-    secondDirection =
-        QPointF(second.start.xMm - second.end.xMm,
-                second.start.yMm - second.end.yMm);
-  }
-
-  const double firstLength =
-      std::hypot(firstDirection.x(), firstDirection.y());
-  const double secondLength =
-      std::hypot(secondDirection.x(), secondDirection.y());
-
-  if (firstLength <= 1e-9 || secondLength <= 1e-9)
-    return 0.0;
-
-  const double cosine =
-      std::clamp(
-          QPointF::dotProduct(firstDirection, secondDirection) /
-              (firstLength * secondLength),
-          -1.0,
-          1.0);
-
-  return std::acos(cosine) *
-         180.0 / 3.14159265358979323846;
-}
-std::optional<QPointF> nearestSegmentEndpointTo(
-    QPointF point, QPointF start, QPointF end) {
-  const double firstDistance = QLineF(point, start).length();
-  const double secondDistance = QLineF(point, end).length();
-
-  if (firstDistance <= 0.5 || secondDistance <= 0.5)
-    return std::nullopt;
-
-  return firstDistance <= secondDistance
-             ? std::optional<QPointF>{start}
-             : std::optional<QPointF>{end};
 }
 double pointSegmentDistance(QPointF point, QPointF start, QPointF end) {
   const QPointF segment = end - start;
@@ -385,8 +210,6 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("autoDimensionDirectLineId", QVariant());
   setProperty("autoDimensionAngleFirstLine", QVariant());
   setProperty("autoDimensionAngleSecondLine", QVariant());
-  setProperty("pointOnLineCarrier", QVariant());
-  setProperty("pointOnCircleCarrier", QVariant());
   setProperty("perpendicularFirstLine", QVariant());
   setProperty("parallelFirstLine", QVariant());
   setProperty("equalFirstGeometry", QVariant());
@@ -444,8 +267,6 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         return QString::fromUtf8("Вертикально");
       case sketch::ConstraintType::Coincident:
         return QString::fromUtf8("Совпадение");
-      case sketch::ConstraintType::PointOnLine:
-        return QString::fromUtf8("Принадлежность");
       case sketch::ConstraintType::Distance:
         return QString::fromUtf8("Расстояние");
       case sketch::ConstraintType::DistanceX:
@@ -983,6 +804,7 @@ sketch::Point SketchCanvas::snappedPoint(QPointF point) const {
   }
   return result;
 }
+
 void SketchCanvas::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
@@ -1145,15 +967,9 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       if (!center) continue;
 
       QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
+          mapPoint(firstLine.end) - mapPoint(firstLine.start);
       QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
+          mapPoint(secondLine.end) - mapPoint(secondLine.start);
 
       const auto sameScreenVertex = [this](sketch::Point a,
                                            sketch::Point b) {
@@ -1210,41 +1026,9 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       const QColor dimensionColor =
           selectedDimension ? QColor("#ff8a24") : QColor("#315e9d");
 
-            // STORED ANGLE CARRIER EXTENSIONS
-      const QPointF firstStartScreen = mapPoint(firstLine.start);
-      const QPointF firstEndScreen = mapPoint(firstLine.end);
-      const QPointF secondStartScreen = mapPoint(secondLine.start);
-      const QPointF secondEndScreen = mapPoint(secondLine.end);
-
+      painter.setPen(
+          QPen(dimensionColor, selectedDimension ? 2.2 : 1.2));
       painter.setBrush(Qt::NoBrush);
-      painter.setPen(
-          QPen(dimensionColor,
-               selectedDimension ? 1.5 : 1.0,
-               Qt::DashLine));
-
-      if (pointSegmentDistance(*center,
-                               firstStartScreen,
-                               firstEndScreen) > 0.75) {
-        if (const auto endpoint =
-                nearestSegmentEndpointTo(*center,
-                                         firstStartScreen,
-                                         firstEndScreen))
-          painter.drawLine(*center, *endpoint);
-      }
-
-      if (pointSegmentDistance(*center,
-                               secondStartScreen,
-                               secondEndScreen) > 0.75) {
-        if (const auto endpoint =
-                nearestSegmentEndpointTo(*center,
-                                         secondStartScreen,
-                                         secondEndScreen))
-          painter.drawLine(*center, *endpoint);
-      }
-
-      painter.setPen(
-          QPen(dimensionColor,
-               selectedDimension ? 2.2 : 1.2));
       painter.drawLine(*center, arcFirst);
       painter.drawLine(*center, arcSecond);
 
@@ -1282,7 +1066,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
       const QString label =
           QString::fromUtf8("%1°")
-              .arg(std::abs(spanDeg), 0, 'f', 2);
+              .arg(lineAngleDegrees(firstLine, secondLine), 0, 'f', 2);
 
       const QRectF textRect(-42.0, -10.0, 84.0, 20.0);
       painter.save();
@@ -1390,29 +1174,6 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     painter.drawText(textRect, Qt::AlignCenter, label);
     painter.restore();
   }
-  // RECTANGLE CENTER NODES
-  //
-  // Virtual CAD nodes owned by rectangles created with FromCenter.
-  // Coordinates are derived from the current rectangle geometry, so the
-  // node always follows move / resize / rotation.
-  painter.save();
-  painter.setPen(QPen(QColor("#1469d7"), 1.8));
-  painter.setBrush(QColor("#fbfcff"));
-
-  for (const auto elementId : sketch_.centerNodeElementIds()) {
-    const auto center = sketch_.elementCenterPoint(elementId);
-    if (!center) continue;
-
-    const QPointF screenCenter = mapPoint(*center);
-
-    painter.drawEllipse(screenCenter, 4.2, 4.2);
-    painter.drawLine(screenCenter + QPointF(-6.0, 0.0),
-                     screenCenter + QPointF(6.0, 0.0));
-    painter.drawLine(screenCenter + QPointF(0.0, -6.0),
-                     screenCenter + QPointF(0.0, 6.0));
-  }
-
-  painter.restore();
   if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible()) {
     const QString target = property("autoDimensionTarget").toString();
 
@@ -1433,15 +1194,9 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
         if (center) {
           QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
-      QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
+              mapPoint(firstLine.end) - mapPoint(firstLine.start);
+          QPointF secondDirection =
+              mapPoint(secondLine.end) - mapPoint(secondLine.start);
 
           const auto sameScreenVertex = [this](sketch::Point a,
                                                sketch::Point b) {
@@ -1498,38 +1253,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
             while (spanDeg <= -180.0) spanDeg += 360.0;
             while (spanDeg > 180.0) spanDeg -= 360.0;
 
-                        // PREVIEW ANGLE CARRIER EXTENSIONS
-            const QPointF firstStartScreen = mapPoint(firstLine.start);
-            const QPointF firstEndScreen = mapPoint(firstLine.end);
-            const QPointF secondStartScreen = mapPoint(secondLine.start);
-            const QPointF secondEndScreen = mapPoint(secondLine.end);
-
+            painter.setPen(QPen(QColor("#0872f9"), 1.4, Qt::DashLine));
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(
-                QPen(QColor("#0872f9"), 1.0, Qt::DashLine));
-
-            if (pointSegmentDistance(*center,
-                                     firstStartScreen,
-                                     firstEndScreen) > 0.75) {
-              if (const auto endpoint =
-                      nearestSegmentEndpointTo(*center,
-                                               firstStartScreen,
-                                               firstEndScreen))
-                painter.drawLine(*center, *endpoint);
-            }
-
-            if (pointSegmentDistance(*center,
-                                     secondStartScreen,
-                                     secondEndScreen) > 0.75) {
-              if (const auto endpoint =
-                      nearestSegmentEndpointTo(*center,
-                                               secondStartScreen,
-                                               secondEndScreen))
-                painter.drawLine(*center, *endpoint);
-            }
-
-            painter.setPen(
-                QPen(QColor("#0872f9"), 1.4, Qt::DashLine));
             painter.drawLine(*center, arcFirst);
             painter.drawLine(*center, arcSecond);
             QRectF arcRect(center->x() - radius, center->y() - radius,
@@ -1738,112 +1463,6 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     }
   }
 
-  // CONSTRAINT TOOL SELECTION HIGHLIGHT
-  //
-  // Constraint tools keep their first picked entity in existing transient
-  // state/properties. Render that entity in yellow so the user can clearly
-  // see what has already been selected before choosing the second object.
-  {
-    const QColor constraintHighlight("#ffc400");
-    const QColor constraintHighlightFill(255, 196, 0, 42);
-
-    const auto drawHighlightedLine =
-        [this, &painter, &constraintHighlight](
-            sketch::GeometryId id) {
-          if (id == sketch::kInvalidGeometryId) return;
-
-          const auto index = sketch_.lineIndex(id);
-          if (!index) return;
-
-          const auto& line = sketch_.lines()[*index];
-          painter.save();
-          painter.setPen(QPen(constraintHighlight, 4.0,
-                              Qt::SolidLine, Qt::RoundCap));
-          painter.setBrush(Qt::NoBrush);
-          painter.drawLine(mapPoint(line.start), mapPoint(line.end));
-          painter.restore();
-        };
-
-    const auto drawHighlightedPoint =
-        [this, &painter, &constraintHighlight,
-         &constraintHighlightFill](
-            sketch::PointReference reference) {
-          const auto point = sketch_.referencedPoint(reference);
-          if (!point) return;
-
-          painter.save();
-          painter.setPen(QPen(constraintHighlight, 2.6));
-          painter.setBrush(constraintHighlightFill);
-          painter.drawEllipse(mapPoint(*point), 7.0, 7.0);
-          painter.restore();
-        };
-
-    const auto drawHighlightedCircle =
-        [this, &painter, &constraintHighlight](
-            sketch::GeometryId id) {
-          if (id == sketch::kInvalidGeometryId) return;
-
-          const auto index = sketch_.circleIndex(id);
-          if (!index) return;
-
-          const auto& circle = sketch_.circles()[*index];
-          painter.save();
-          painter.setPen(QPen(constraintHighlight, 4.0));
-          painter.setBrush(Qt::NoBrush);
-          painter.drawEllipse(mapPoint(circle.center),
-                              circle.radiusMm * pixelsPerMm_,
-                              circle.radiusMm * pixelsPerMm_);
-          painter.restore();
-        };
-
-    if (tool_ == Tool::CoincidentConstraint) {
-      // point -> point
-      if (coincidentFirstPoint_)
-        drawHighlightedPoint(*coincidentFirstPoint_);
-
-      // line body -> point (merged PointOnLine workflow)
-      if (property("pointOnLineCarrier").isValid()) {
-        drawHighlightedLine(
-            static_cast<sketch::GeometryId>(
-                property("pointOnLineCarrier").toULongLong()));
-      }
-      // POINT-ON-CIRCLE CARRIER HIGHLIGHT V3
-      if (property("pointOnCircleCarrier").isValid()) {
-        drawHighlightedCircle(
-            static_cast<sketch::GeometryId>(
-                property("pointOnCircleCarrier").toULongLong()));
-      }
-    }
-
-    if (tool_ == Tool::PerpendicularConstraint &&
-        property("perpendicularFirstLine").isValid()) {
-      drawHighlightedLine(
-          static_cast<sketch::GeometryId>(
-              property("perpendicularFirstLine").toULongLong()));
-    }
-
-    if (tool_ == Tool::ParallelConstraint &&
-        property("parallelFirstLine").isValid()) {
-      drawHighlightedLine(
-          static_cast<sketch::GeometryId>(
-              property("parallelFirstLine").toULongLong()));
-    }
-
-    if (tool_ == Tool::EqualConstraint &&
-        property("equalFirstGeometry").isValid()) {
-      const auto id =
-          static_cast<sketch::GeometryId>(
-              property("equalFirstGeometry").toULongLong());
-
-      const QString kind =
-          property("equalFirstKind").toString();
-
-      if (kind == QStringLiteral("circle"))
-        drawHighlightedCircle(id);
-      else
-        drawHighlightedLine(id);
-    }
-  }
   if (selectionBoxActive_) {
     const QRectF selectionRect(selectionBoxStart_, selectionBoxCurrent_);
     const QRectF normalized = selectionRect.normalized();
@@ -1879,17 +1498,6 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     anchor_.reset();
     setProperty("dragPointLineId", QVariant());
     setProperty("dragPointStart", QVariant());
-
-    // Cancel unfinished constraint-tool selections as well.
-    coincidentFirstPoint_.reset();
-    setProperty("pointOnLineCarrier", QVariant());
-    setProperty("pointOnCircleCarrier", QVariant());
-    setProperty("perpendicularFirstLine", QVariant());
-    setProperty("parallelFirstLine", QVariant());
-    setProperty("equalFirstGeometry", QVariant());
-    setProperty("equalFirstKind", QVariant());
-    setProperty("equalFirstElement", QVariant());
-
     rectanglePoints_.clear();
     circlePoints_.clear();
     circleGuideLines_.clear();
@@ -2111,40 +1719,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         dragging_ = true;
         dragPoint_ = snappedPoint(event->position());
       }
-    }  } else {
-    sketch::Point constructionPoint =
-        snappedPoint(event->position());
-
-    // CENTER NODE SNAP - CONSTRUCTION ONLY
-    //
-    // Do not put virtual rectangle centers into snappedPoint(): that function
-    // is also used by dragging and editing. Center-node snapping is deliberately
-    // limited to geometry creation.
-    if (snapEnabled_ &&
-        (tool_ == Tool::Line ||
-         tool_ == Tool::Rectangle ||
-         tool_ == Tool::Circle)) {
-      constexpr double centerNodeTolerancePx = 10.0;
-      double bestDistance = centerNodeTolerancePx;
-
-      for (const auto elementId : sketch_.centerNodeElementIds()) {
-        const auto center =
-            sketch_.elementCenterPoint(elementId);
-        if (!center) continue;
-
-        const double distance =
-            QLineF(event->position(),
-                   mapPoint(*center)).length();
-
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          constructionPoint = *center;
-        }
-      }
-    }
-
-    commitPoint(constructionPoint);
-  }
+    }  } else
+    commitPoint(snappedPoint(event->position()));
 }
 
 void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
@@ -2152,123 +1728,71 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
     QWidget::mouseDoubleClickEvent(event);
     return;
   }
-
   const auto found = dimensionAt(event->position());
-
-  if (!found ||
-      *found >= sketch_.dimensions().size()) {
+  if (!found || *found >= sketch_.dimensions().size()) {
     QWidget::mouseDoubleClickEvent(event);
     return;
   }
-
-  const auto dimension =
-      sketch_.dimensions()[*found];
-
+  const auto dimension = sketch_.dimensions()[*found];
   setTool(Tool::AutoDimension);
-
-  setProperty("editingDimensionIndex",
-              static_cast<qulonglong>(*found));
-  setProperty("autoDimensionOffsetMm",
-              dimension.offsetMm);
-  setProperty("autoDimensionAngleRad",
-              dimension.angleRad);
-
-  if (dimension.kind ==
-      sketch::DimensionKind::LineLength) {
+  setProperty("editingDimensionIndex", static_cast<qulonglong>(*found));
+  setProperty("autoDimensionOffsetMm", dimension.offsetMm);
+  setProperty("autoDimensionAngleRad", dimension.angleRad);
+  if (dimension.kind == sketch::DimensionKind::LineLength) {
     setProperty("autoDimensionTarget", "line");
     setProperty("autoDimensionIndex",
-                static_cast<qulonglong>(
-                    dimension.geometryId));
+                static_cast<qulonglong>(dimension.geometryId));
     primaryDimension_->setPrefix(QString());
-
-  } else if (dimension.kind ==
-             sketch::DimensionKind::CircleDiameter) {
+  } else if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
     setProperty("autoDimensionTarget", "circle");
     setProperty("autoDimensionIndex",
-                static_cast<qulonglong>(
-                    dimension.geometryId));
-    primaryDimension_->setPrefix(
-        QString::fromUtf8("Г: "));
-
-  } else if (dimension.kind ==
-             sketch::DimensionKind::LineAngle) {
+                static_cast<qulonglong>(dimension.geometryId));
+    primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));  } else if (dimension.kind == sketch::DimensionKind::LineAngle) {
     setProperty("autoDimensionTarget", "angle");
     setProperty("autoDimensionAngleFirstLine",
-                static_cast<qulonglong>(
-                    dimension.geometryId));
+                static_cast<qulonglong>(dimension.geometryId));
     setProperty("autoDimensionAngleSecondLine",
-                static_cast<qulonglong>(
-                    dimension.secondPoint.lineId));
+                static_cast<qulonglong>(dimension.secondPoint.lineId));
     primaryDimension_->setPrefix(QString());
-
   } else {
     setProperty("autoDimensionTarget", "points");
-
-    if (dimension.kind ==
-        sketch::DimensionKind::PointDistanceX)
+    if (dimension.kind == sketch::DimensionKind::PointDistanceX)
       setProperty("autoDimensionPointMode", "x");
-    else if (dimension.kind ==
-             sketch::DimensionKind::PointDistanceY)
+    else if (dimension.kind == sketch::DimensionKind::PointDistanceY)
       setProperty("autoDimensionPointMode", "y");
     else
-      setProperty("autoDimensionPointMode",
-                  "aligned");
-
+      setProperty("autoDimensionPointMode", "aligned");
     setProperty("autoDimensionFirstLine",
-                static_cast<qulonglong>(
-                    dimension.firstPoint.lineId));
-    setProperty("autoDimensionFirstStart",
-                dimension.firstPoint.start);
-
+                static_cast<qulonglong>(dimension.firstPoint.lineId));
+    setProperty("autoDimensionFirstStart", dimension.firstPoint.start);
     setProperty("autoDimensionSecondLine",
-                static_cast<qulonglong>(
-                    dimension.secondPoint.lineId));
-    setProperty("autoDimensionSecondStart",
-                dimension.secondPoint.start);
-
+                static_cast<qulonglong>(dimension.secondPoint.lineId));
+    setProperty("autoDimensionSecondStart", dimension.secondPoint.start);
     primaryDimension_->setPrefix(QString());
   }
-
-  if (dimension.kind ==
-      sketch::DimensionKind::LineAngle) {
-    primaryDimension_->setSuffix(
-        QString(QChar(0x00B0)));
+  if (dimension.kind == sketch::DimensionKind::LineAngle) {
+    primaryDimension_->setSuffix(QString(QChar(0x00B0)));
     primaryDimension_->setRange(0.01, 179.99);
 
-    const auto firstIndex =
-        sketch_.lineIndex(dimension.geometryId);
+    const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
     const auto secondIndex =
-        sketch_.lineIndex(
-            dimension.secondPoint.lineId);
-
-    if (firstIndex && secondIndex) {
+        sketch_.lineIndex(dimension.secondPoint.lineId);
+    if (firstIndex && secondIndex)
       primaryDimension_->setValue(
-          visibleLineAngleDegrees(
-              sketch_.lines()[*firstIndex],
-              sketch_.lines()[*secondIndex]));
-    } else {
-      primaryDimension_->setValue(
-          dimension.valueMm);
-    }
+          lineAngleDegrees(sketch_.lines()[*firstIndex],
+                           sketch_.lines()[*secondIndex]));
+    else
+      primaryDimension_->setValue(dimension.valueMm);
   } else {
-    primaryDimension_->setSuffix(
-        QString::fromUtf8(" РјРј"));
-    primaryDimension_->setRange(
-        0.01, 100000.0);
-    primaryDimension_->setValue(
-        dimension.valueMm);
+    primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
+    primaryDimension_->setRange(0.01, 100000.0);
+    primaryDimension_->setValue(dimension.valueMm);
   }
-
   secondaryDimension_->hide();
-
-  primaryDimension_->move(
-      (event->position() +
-       QPointF(16, 16)).toPoint());
-
+  primaryDimension_->move((event->position() + QPointF(16, 16)).toPoint());
   primaryDimension_->show();
   primaryDimension_->setFocus();
   primaryDimension_->selectAll();
-
   event->accept();
   update();
 }
@@ -2297,32 +1821,6 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   hoverPoint_ = snappedPoint(event->position());
-
-  // Live center-node preview is restricted to creation tools.
-  // Select/drag, AutoDimension and constraint tools retain their original
-  // snapping and cannot be affected by virtual rectangle centers.
-  if (snapEnabled_ &&
-      (tool_ == Tool::Line ||
-       tool_ == Tool::Rectangle ||
-       tool_ == Tool::Circle)) {
-    constexpr double centerNodeTolerancePx = 10.0;
-    double bestDistance = centerNodeTolerancePx;
-
-    for (const auto elementId : sketch_.centerNodeElementIds()) {
-      const auto center =
-          sketch_.elementCenterPoint(elementId);
-      if (!center) continue;
-
-      const double distance =
-          QLineF(event->position(),
-                 mapPoint(*center)).length();
-
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        hoverPoint_ = *center;
-      }
-    }
-  }
   if (property("draggingDimensionLabel").isValid() &&
       (event->buttons() & Qt::LeftButton)) {
     const auto index = static_cast<std::size_t>(
@@ -2345,16 +1843,9 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
 
         if (center) {
           QPointF firstDirection =
-              angleRayTowardSegment(
-                  *center,
-                  mapPoint(firstLine.start),
-                  mapPoint(firstLine.end));
-
+              mapPoint(firstLine.end) - mapPoint(firstLine.start);
           QPointF secondDirection =
-              angleRayTowardSegment(
-                  *center,
-                  mapPoint(secondLine.start),
-                  mapPoint(secondLine.end));
+              mapPoint(secondLine.end) - mapPoint(secondLine.start);
 
           const double firstLength =
               std::hypot(firstDirection.x(), firstDirection.y());
@@ -2380,7 +1871,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
                          std::abs(dimension.offsetMm) * pixelsPerMm_);
             const double midDeg = startDeg + spanDeg * 0.5;
             const double midRad =
-                midDeg * 3.14159265358979323846 / 180.0;
+                -midDeg * 3.14159265358979323846 / 180.0;
 
             const QPointF defaultLabelCenter =
                 *center +
@@ -2739,249 +2230,6 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void SketchCanvas::keyPressEvent(QKeyEvent* event) {
-  const auto copyCurrentSelection = [this]() -> bool {
-    gSketchClipboard.clear();
-
-    std::vector<std::size_t> elementIds = selectedElementIds_;
-    std::vector<sketch::GeometryId> circleIds = selectedCircleIds_;
-
-    if (elementIds.empty() && circleIds.empty()) {
-      if (selectionKind_ == SelectionKind::Line &&
-          selectionElementId_ != 0) {
-        elementIds.push_back(selectionElementId_);
-      } else if (selectionKind_ == SelectionKind::Circle &&
-                 selectionCircleId_ != sketch::kInvalidGeometryId) {
-        circleIds.push_back(selectionCircleId_);
-      }
-    }
-
-    for (const auto elementId : elementIds) {
-      std::vector<std::size_t> indices;
-
-      for (std::size_t index = 0;
-           index < sketch_.lines().size();
-           ++index) {
-        if (sketch_.lines()[index].elementId == elementId)
-          indices.push_back(index);
-      }
-
-      if (indices.empty()) continue;
-
-      if (indices.size() == 4) {
-        SketchClipboardElement item;
-        item.kind = SketchClipboardElement::Kind::Rectangle;
-
-        for (std::size_t side = 0; side < 4; ++side)
-          item.rectanglePoints[side] =
-              sketch_.lines()[indices[side]].start;
-
-        gSketchClipboard.elements.push_back(item);
-        continue;
-      }
-
-      for (const auto index : indices) {
-        const auto& line = sketch_.lines()[index];
-
-        SketchClipboardElement item;
-        item.kind = SketchClipboardElement::Kind::Line;
-        item.lineStart = line.start;
-        item.lineEnd = line.end;
-        gSketchClipboard.elements.push_back(item);
-      }
-    }
-
-    for (const auto circleId : circleIds) {
-      const auto index = sketch_.circleIndex(circleId);
-      if (!index) continue;
-
-      SketchClipboardElement item;
-      item.kind = SketchClipboardElement::Kind::Circle;
-      item.circleCenter = sketch_.circles()[*index].center;
-      item.circleRadiusMm = sketch_.circles()[*index].radiusMm;
-      gSketchClipboard.elements.push_back(item);
-    }
-
-    gSketchClipboard.pasteGeneration = 0;
-    return !gSketchClipboard.empty();
-  };
-
-  const auto pasteClipboard = [this]() -> bool {
-    if (gSketchClipboard.empty()) return false;
-
-    pushUndoState();
-    ++gSketchClipboard.pasteGeneration;
-
-    const double offsetMm =
-        6.0 * static_cast<double>(gSketchClipboard.pasteGeneration);
-
-    const std::size_t oldLineCount = sketch_.lines().size();
-    const std::size_t oldCircleCount = sketch_.circles().size();
-
-    const auto shifted =
-        [offsetMm](sketch::Point point) {
-          point.xMm += offsetMm;
-          point.yMm -= offsetMm;
-          return point;
-        };
-
-    for (const auto& item : gSketchClipboard.elements) {
-      switch (item.kind) {
-        case SketchClipboardElement::Kind::Line:
-          sketch_.addLine(
-              shifted(item.lineStart),
-              shifted(item.lineEnd));
-          break;
-
-        case SketchClipboardElement::Kind::Rectangle:
-          sketch_.addRectangle(
-              shifted(item.rectanglePoints[0]),
-              shifted(item.rectanglePoints[1]),
-              shifted(item.rectanglePoints[2]),
-              shifted(item.rectanglePoints[3]));
-          break;
-
-        case SketchClipboardElement::Kind::Circle:
-          sketch_.addCircle(
-              shifted(item.circleCenter),
-              item.circleRadiusMm);
-          break;
-      }
-    }
-
-    clearGeometrySelection();
-
-    for (std::size_t index = oldLineCount;
-         index < sketch_.lines().size();
-         ++index) {
-      const auto elementId = sketch_.lines()[index].elementId;
-
-      if (std::find(selectedElementIds_.begin(),
-                    selectedElementIds_.end(),
-                    elementId) == selectedElementIds_.end())
-        selectedElementIds_.push_back(elementId);
-    }
-
-    for (std::size_t index = oldCircleCount;
-         index < sketch_.circles().size();
-         ++index) {
-      const auto id = sketch_.circleId(index);
-      if (id != sketch::kInvalidGeometryId)
-        selectedCircleIds_.push_back(id);
-    }
-
-    if (!selectedElementIds_.empty()) {
-      const auto elementId = selectedElementIds_.back();
-
-      for (std::size_t index = sketch_.lines().size();
-           index > 0;
-           --index) {
-        const auto current = index - 1;
-        if (sketch_.lines()[current].elementId != elementId)
-          continue;
-
-        selectionKind_ = SelectionKind::Line;
-        selectionElementId_ = elementId;
-        selectionLineId_ = sketch_.lineId(current);
-        selectionCircleId_ = sketch::kInvalidGeometryId;
-        break;
-      }
-
-      emit lineStyleSelectionChanged(true, false);
-    } else if (!selectedCircleIds_.empty()) {
-      selectionKind_ = SelectionKind::Circle;
-      selectionCircleId_ = selectedCircleIds_.back();
-      selectionLineId_ = sketch::kInvalidGeometryId;
-      selectionElementId_ = 0;
-      emit lineStyleSelectionChanged(false, false);
-    }
-
-    emit selectionChanged(QString::fromUtf8("Вставленные объекты"));
-    notifyGeometryChanged();
-    update();
-    return true;
-  };
-
-  // StandardKey matching is layout-aware. Ctrl+A/C/X/V therefore works
-  // with both English and Russian keyboard layouts.
-  if (event->matches(QKeySequence::SelectAll)) {
-    clearGeometrySelection();
-
-    for (const auto& line : sketch_.lines()) {
-      if (std::find(selectedElementIds_.begin(),
-                    selectedElementIds_.end(),
-                    line.elementId) == selectedElementIds_.end()) {
-        selectedElementIds_.push_back(line.elementId);
-      }
-    }
-
-    for (std::size_t index = 0;
-         index < sketch_.circles().size();
-         ++index) {
-      const auto id = sketch_.circleId(index);
-      if (id != sketch::kInvalidGeometryId)
-        selectedCircleIds_.push_back(id);
-    }
-
-    if (!selectedElementIds_.empty()) {
-      const auto elementId = selectedElementIds_.back();
-
-      for (std::size_t index = sketch_.lines().size();
-           index > 0;
-           --index) {
-        const auto current = index - 1;
-        if (sketch_.lines()[current].elementId != elementId)
-          continue;
-
-        selectionKind_ = SelectionKind::Line;
-        selectionElementId_ = elementId;
-        selectionLineId_ = sketch_.lineId(current);
-        selectionCircleId_ = sketch::kInvalidGeometryId;
-        break;
-      }
-
-      emit lineStyleSelectionChanged(true, false);
-    } else if (!selectedCircleIds_.empty()) {
-      selectionKind_ = SelectionKind::Circle;
-      selectionCircleId_ = selectedCircleIds_.back();
-      selectionLineId_ = sketch::kInvalidGeometryId;
-      selectionElementId_ = 0;
-      emit lineStyleSelectionChanged(false, false);
-    } else {
-      emit lineStyleSelectionChanged(false, false);
-    }
-
-    emit selectionChanged(QString::fromUtf8("Выбраны все объекты"));
-    update();
-
-    event->accept();
-    return;
-  }
-
-  if (event->matches(QKeySequence::Copy)) {
-    if (copyCurrentSelection())
-      emit selectionChanged(QString::fromUtf8("Объекты скопированы"));
-
-    event->accept();
-    return;
-  }
-
-  if (event->matches(QKeySequence::Cut)) {
-    if (copyCurrentSelection()) {
-      deleteSelection();
-      emit selectionChanged(QString::fromUtf8("Объекты вырезаны"));
-    }
-
-    event->accept();
-    return;
-  }
-
-  if (event->matches(QKeySequence::Paste)) {
-    (void)pasteClipboard();
-
-    event->accept();
-    return;
-  }
-
   if (event->key() == Qt::Key_Escape) {
     setTool(Tool::Select);
   } else if (event->key() == Qt::Key_Delete) {
@@ -3248,163 +2496,107 @@ QPointF SketchCanvas::dimensionLabelCenter(std::size_t index, QPointF first,
 }
 
 bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
-  for (std::size_t reverse = sketch_.dimensions().size();
-       reverse > 0; --reverse) {
+  for (std::size_t reverse = sketch_.dimensions().size(); reverse > 0;
+       --reverse) {
     const std::size_t index = reverse - 1;
-    const auto& dimension = sketch_.dimensions()[index];
 
-    if (dimension.kind == sketch::DimensionKind::LineAngle) {
-      const auto firstIndex =
-          sketch_.lineIndex(dimension.geometryId);
+    if (sketch_.dimensions()[index].kind ==
+        sketch::DimensionKind::LineAngle) {
+      const auto& dimension = sketch_.dimensions()[index];
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
       const auto secondIndex =
           sketch_.lineIndex(dimension.secondPoint.lineId);
-
-      if (!firstIndex || !secondIndex)
-        continue;
+      if (!firstIndex || !secondIndex) continue;
 
       const auto& firstLine = sketch_.lines()[*firstIndex];
       const auto& secondLine = sketch_.lines()[*secondIndex];
-
       const auto center = lineIntersectionScreen(
           firstLine, secondLine,
-          [this](sketch::Point point) {
-            return mapPoint(point);
-          });
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!center) continue;
 
-      if (!center)
-        continue;
-
-      // ANGLE LABEL HIT GEOMETRY
-      // Keep this exactly aligned with stored LineAngle rendering.
       QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
-
+          mapPoint(firstLine.end) - mapPoint(firstLine.start);
       QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
+          mapPoint(secondLine.end) - mapPoint(secondLine.start);
 
-      const auto sameScreenVertex =
-          [this](sketch::Point a, sketch::Point b) {
-            return QLineF(mapPoint(a),
-                          mapPoint(b)).length() <= 0.5;
-          };
+      const auto sameScreenVertex = [this](sketch::Point a,
+                                           sketch::Point b) {
+        return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
+      };
 
-      if (sameScreenVertex(firstLine.start,
-                           secondLine.start)) {
+      if (sameScreenVertex(firstLine.start, secondLine.start)) {
         firstDirection =
-            mapPoint(firstLine.end) -
-            mapPoint(firstLine.start);
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
         secondDirection =
-            mapPoint(secondLine.end) -
-            mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.start,
-                                  secondLine.end)) {
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
         firstDirection =
-            mapPoint(firstLine.end) -
-            mapPoint(firstLine.start);
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
         secondDirection =
-            mapPoint(secondLine.start) -
-            mapPoint(secondLine.end);
-      } else if (sameScreenVertex(firstLine.end,
-                                  secondLine.start)) {
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
         firstDirection =
-            mapPoint(firstLine.start) -
-            mapPoint(firstLine.end);
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
         secondDirection =
-            mapPoint(secondLine.end) -
-            mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.end,
-                                  secondLine.end)) {
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
         firstDirection =
-            mapPoint(firstLine.start) -
-            mapPoint(firstLine.end);
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
         secondDirection =
-            mapPoint(secondLine.start) -
-            mapPoint(secondLine.end);
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
       }
-
       const double firstLength =
-          std::hypot(firstDirection.x(),
-                     firstDirection.y());
+          std::hypot(firstDirection.x(), firstDirection.y());
       const double secondLength =
-          std::hypot(secondDirection.x(),
-                     secondDirection.y());
-
-      if (firstLength <= 1.0 ||
-          secondLength <= 1.0)
-        continue;
-
+          std::hypot(secondDirection.x(), secondDirection.y());
+      if (firstLength <= 1.0 || secondLength <= 1.0) continue;
       firstDirection /= firstLength;
       secondDirection /= secondLength;
 
       double startDeg =
-          -std::atan2(firstDirection.y(),
-                      firstDirection.x()) *
+          -std::atan2(firstDirection.y(), firstDirection.x()) *
           180.0 / 3.14159265358979323846;
-
       double endDeg =
-          -std::atan2(secondDirection.y(),
-                      secondDirection.x()) *
+          -std::atan2(secondDirection.y(), secondDirection.x()) *
           180.0 / 3.14159265358979323846;
-
       double spanDeg = endDeg - startDeg;
-
-      while (spanDeg <= -180.0)
-        spanDeg += 360.0;
-      while (spanDeg > 180.0)
-        spanDeg -= 360.0;
+      while (spanDeg <= -180.0) spanDeg += 360.0;
+      while (spanDeg > 180.0) spanDeg -= 360.0;
 
       const double radius =
-          std::max(
-              16.0,
-              std::abs(dimension.offsetMm) *
-                  pixelsPerMm_);
-
+          std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
+      const double midDeg = startDeg + spanDeg * 0.5;
       const double midRad =
-          (startDeg + spanDeg * 0.5) *
-          3.14159265358979323846 /
-          180.0;
+          midDeg * 3.14159265358979323846 / 180.0;
 
       QPointF labelCenter =
-          *center +
-          QPointF(std::cos(midRad),
-                  -std::sin(midRad)) *
-              (radius + 18.0);
+          *center + QPointF(std::cos(midRad), -std::sin(midRad)) *
+                        (radius + 18.0);
 
-      const QVariantList labelX =
+      const QVariantList angleLabelX =
           property("dimensionLabelAlongMm").toList();
-      const QVariantList labelY =
+      const QVariantList angleLabelY =
           property("dimensionLabelOffsetMm").toList();
 
-      if (index <
-          static_cast<std::size_t>(labelX.size()))
-        labelCenter.rx() +=
-            labelX[static_cast<int>(index)].toDouble() *
-            pixelsPerMm_;
+      const double labelOffsetX =
+          index < static_cast<std::size_t>(angleLabelX.size())
+              ? angleLabelX[static_cast<int>(index)].toDouble()
+              : 0.0;
+      const double labelOffsetY =
+          index < static_cast<std::size_t>(angleLabelY.size())
+              ? angleLabelY[static_cast<int>(index)].toDouble()
+              : 0.0;
 
-      if (index <
-          static_cast<std::size_t>(labelY.size()))
-        labelCenter.ry() +=
-            labelY[static_cast<int>(index)].toDouble() *
-            pixelsPerMm_;
+      labelCenter += QPointF(labelOffsetX * pixelsPerMm_,
+                             labelOffsetY * pixelsPerMm_);
 
-      // Painted textRect is 84x20. Use a slightly more forgiving
-      // 96x28 interaction box.
-      if (std::abs(position.x() -
-                   labelCenter.x()) <= 48.0 &&
-          std::abs(position.y() -
-                   labelCenter.y()) <= 14.0) {
-        setProperty(
-            "selectedDimension",
-            static_cast<qulonglong>(index));
-        setProperty(
-            "draggingDimensionLabel",
-            static_cast<qulonglong>(index));
+      if (std::abs(position.x() - labelCenter.x()) <= 46.0 &&
+          std::abs(position.y() - labelCenter.y()) <= 13.0) {
+        setProperty("selectedDimension",
+                    static_cast<qulonglong>(index));
+        setProperty("draggingDimensionLabel",
+                    static_cast<qulonglong>(index));
         setCursor(Qt::ClosedHandCursor);
         update();
         return true;
@@ -3415,49 +2607,24 @@ bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
 
     QPointF first;
     QPointF second;
-
-    if (!dimensionSegment(index, first, second))
-      continue;
-
-    const QPointF center =
-        dimensionLabelCenter(index, first, second);
-
+    if (!dimensionSegment(index, first, second)) continue;
+    const QPointF center = dimensionLabelCenter(index, first, second);
     const QPointF direction = second - first;
-    double angle =
-        std::atan2(direction.y(),
-                   direction.x());
-
-    if (angle >
-            3.141592653589793 * 0.5 ||
-        angle <
-            -3.141592653589793 * 0.5)
+    double angle = std::atan2(direction.y(), direction.x());
+    if (angle > 3.141592653589793 * 0.5 ||
+        angle < -3.141592653589793 * 0.5)
       angle += 3.141592653589793;
-
-    const QPointF delta =
-        position - center;
-
-    const double localX =
-        std::cos(angle) * delta.x() +
-        std::sin(angle) * delta.y();
-
-    const double localY =
-        -std::sin(angle) * delta.x() +
-        std::cos(angle) * delta.y();
-
-    if (std::abs(localX) <= 46.0 &&
-        std::abs(localY) <= 13.0) {
-      setProperty(
-          "draggingDimensionLabel",
-          static_cast<qulonglong>(index));
-      setProperty(
-          "selectedDimension",
-          static_cast<qulonglong>(index));
+    const QPointF delta = position - center;
+    const double localX = std::cos(angle) * delta.x() +
+                          std::sin(angle) * delta.y();
+    const double localY = -std::sin(angle) * delta.x() +
+                          std::cos(angle) * delta.y();
+    if (std::abs(localX) <= 46.0 && std::abs(localY) <= 13.0) {
+      setProperty("draggingDimensionLabel", static_cast<qulonglong>(index));
       setCursor(Qt::ClosedHandCursor);
-      update();
       return true;
     }
   }
-
   return false;
 }
 
@@ -3501,189 +2668,123 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
     QPointF position) const {
   constexpr double hitTolerance = 8.0;
 
-  for (std::size_t reverse = sketch_.dimensions().size();
-       reverse > 0; --reverse) {
+  for (std::size_t reverse = sketch_.dimensions().size(); reverse > 0;
+       --reverse) {
     const std::size_t index = reverse - 1;
     const auto& dimension = sketch_.dimensions()[index];
 
     if (dimension.kind == sketch::DimensionKind::LineAngle) {
-      const auto firstIndex =
-          sketch_.lineIndex(dimension.geometryId);
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
       const auto secondIndex =
           sketch_.lineIndex(dimension.secondPoint.lineId);
-
-      if (!firstIndex || !secondIndex)
-        continue;
+      if (!firstIndex || !secondIndex) continue;
 
       const auto& firstLine = sketch_.lines()[*firstIndex];
       const auto& secondLine = sketch_.lines()[*secondIndex];
 
       const auto center = lineIntersectionScreen(
           firstLine, secondLine,
-          [this](sketch::Point point) {
-            return mapPoint(point);
-          });
-
-      if (!center)
-        continue;
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!center) continue;
 
       QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
-
+          mapPoint(firstLine.end) - mapPoint(firstLine.start);
       QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
+          mapPoint(secondLine.end) - mapPoint(secondLine.start);
 
-      const auto sameScreenVertex =
-          [this](sketch::Point a, sketch::Point b) {
-            return QLineF(mapPoint(a),
-                          mapPoint(b)).length() <= 0.5;
-          };
+      const auto sameScreenVertex = [this](sketch::Point a,
+                                           sketch::Point b) {
+        return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
+      };
 
-      if (sameScreenVertex(firstLine.start,
-                           secondLine.start)) {
+      if (sameScreenVertex(firstLine.start, secondLine.start)) {
         firstDirection =
-            mapPoint(firstLine.end) -
-            mapPoint(firstLine.start);
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
         secondDirection =
-            mapPoint(secondLine.end) -
-            mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.start,
-                                  secondLine.end)) {
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
         firstDirection =
-            mapPoint(firstLine.end) -
-            mapPoint(firstLine.start);
+            mapPoint(firstLine.end) - mapPoint(firstLine.start);
         secondDirection =
-            mapPoint(secondLine.start) -
-            mapPoint(secondLine.end);
-      } else if (sameScreenVertex(firstLine.end,
-                                  secondLine.start)) {
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
+      } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
         firstDirection =
-            mapPoint(firstLine.start) -
-            mapPoint(firstLine.end);
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
         secondDirection =
-            mapPoint(secondLine.end) -
-            mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.end,
-                                  secondLine.end)) {
+            mapPoint(secondLine.end) - mapPoint(secondLine.start);
+      } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
         firstDirection =
-            mapPoint(firstLine.start) -
-            mapPoint(firstLine.end);
+            mapPoint(firstLine.start) - mapPoint(firstLine.end);
         secondDirection =
-            mapPoint(secondLine.start) -
-            mapPoint(secondLine.end);
+            mapPoint(secondLine.start) - mapPoint(secondLine.end);
       }
 
       const double firstLength =
-          std::hypot(firstDirection.x(),
-                     firstDirection.y());
+          std::hypot(firstDirection.x(), firstDirection.y());
       const double secondLength =
-          std::hypot(secondDirection.x(),
-                     secondDirection.y());
-
-      if (firstLength <= 1.0 ||
-          secondLength <= 1.0)
-        continue;
+          std::hypot(secondDirection.x(), secondDirection.y());
+      if (firstLength <= 1.0 || secondLength <= 1.0) continue;
 
       firstDirection /= firstLength;
       secondDirection /= secondLength;
 
       double startDeg =
-          -std::atan2(firstDirection.y(),
-                      firstDirection.x()) *
+          -std::atan2(firstDirection.y(), firstDirection.x()) *
           180.0 / 3.14159265358979323846;
-
       double endDeg =
-          -std::atan2(secondDirection.y(),
-                      secondDirection.x()) *
+          -std::atan2(secondDirection.y(), secondDirection.x()) *
           180.0 / 3.14159265358979323846;
-
       double spanDeg = endDeg - startDeg;
-
-      while (spanDeg <= -180.0)
-        spanDeg += 360.0;
-      while (spanDeg > 180.0)
-        spanDeg -= 360.0;
+      while (spanDeg <= -180.0) spanDeg += 360.0;
+      while (spanDeg > 180.0) spanDeg -= 360.0;
 
       const double radius =
-          std::max(16.0,
-                   std::abs(dimension.offsetMm) *
-                       pixelsPerMm_);
-
-      const QPointF arcFirst =
-          *center + firstDirection * radius;
-      const QPointF arcSecond =
-          *center + secondDirection * radius;
-
-      if (pointSegmentDistance(
-              position, *center, arcFirst) <= hitTolerance ||
-          pointSegmentDistance(
-              position, *center, arcSecond) <= hitTolerance)
-        return index;
-
-      const QPointF cursorDelta = position - *center;
-      const double cursorRadius =
-          std::hypot(cursorDelta.x(),
-                     cursorDelta.y());
+          std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
+      const QPointF delta = position - *center;
+      const double cursorRadius = std::hypot(delta.x(), delta.y());
 
       double cursorDeg =
-          -std::atan2(cursorDelta.y(),
-                      cursorDelta.x()) *
+          -std::atan2(delta.y(), delta.x()) *
           180.0 / 3.14159265358979323846;
-
       double relativeDeg = cursorDeg - startDeg;
-
-      while (relativeDeg <= -180.0)
-        relativeDeg += 360.0;
-      while (relativeDeg > 180.0)
-        relativeDeg -= 360.0;
+      while (relativeDeg <= -180.0) relativeDeg += 360.0;
+      while (relativeDeg > 180.0) relativeDeg -= 360.0;
 
       const bool insideSweep =
           spanDeg >= 0.0
-              ? (relativeDeg >= -5.0 &&
-                 relativeDeg <= spanDeg + 5.0)
-              : (relativeDeg <= 5.0 &&
-                 relativeDeg >= spanDeg - 5.0);
+              ? (relativeDeg >= -5.0 && relativeDeg <= spanDeg + 5.0)
+              : (relativeDeg <= 5.0 && relativeDeg >= spanDeg - 5.0);
 
       if (insideSweep &&
           std::abs(cursorRadius - radius) <= hitTolerance)
         return index;
 
+      const double midDeg = startDeg + spanDeg * 0.5;
       const double midRad =
-          (startDeg + spanDeg * 0.5) *
-          3.14159265358979323846 /
-          180.0;
-
+          midDeg * 3.14159265358979323846 / 180.0;
       QPointF labelCenter =
-          *center +
-          QPointF(std::cos(midRad),
-                  -std::sin(midRad)) *
-              (radius + 18.0);
+          *center + QPointF(std::cos(midRad), -std::sin(midRad)) *
+                        (radius + 18.0);
 
-      const QVariantList labelX =
+      const QVariantList angleLabelX =
           property("dimensionLabelAlongMm").toList();
-      const QVariantList labelY =
+      const QVariantList angleLabelY =
           property("dimensionLabelOffsetMm").toList();
 
-      if (index <
-          static_cast<std::size_t>(labelX.size()))
-        labelCenter.rx() +=
-            labelX[static_cast<int>(index)].toDouble() *
-            pixelsPerMm_;
+      const double labelOffsetX =
+          index < static_cast<std::size_t>(angleLabelX.size())
+              ? angleLabelX[static_cast<int>(index)].toDouble()
+              : 0.0;
+      const double labelOffsetY =
+          index < static_cast<std::size_t>(angleLabelY.size())
+              ? angleLabelY[static_cast<int>(index)].toDouble()
+              : 0.0;
 
-      if (index <
-          static_cast<std::size_t>(labelY.size()))
-        labelCenter.ry() +=
-            labelY[static_cast<int>(index)].toDouble() *
-            pixelsPerMm_;
+      labelCenter += QPointF(labelOffsetX * pixelsPerMm_,
+                             labelOffsetY * pixelsPerMm_);
 
-      if (std::abs(position.x() - labelCenter.x()) <= 48.0 &&
-          std::abs(position.y() - labelCenter.y()) <= 14.0)
+      if (std::abs(position.x() - labelCenter.x()) <= 46.0 &&
+          std::abs(position.y() - labelCenter.y()) <= 13.0)
         return index;
 
       continue;
@@ -3691,882 +2792,29 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
 
     QPointF first;
     QPointF second;
+    if (!dimensionSegment(index, first, second)) continue;
 
-    if (!dimensionSegment(index, first, second))
-      continue;
-
-    const QPointF center =
-        dimensionLabelCenter(index, first, second);
+    const QPointF center = dimensionLabelCenter(index, first, second);
     const QPointF direction = second - first;
-
-    double angle =
-        std::atan2(direction.y(), direction.x());
-
+    double angle = std::atan2(direction.y(), direction.x());
     if (angle > 3.141592653589793 * 0.5 ||
         angle < -3.141592653589793 * 0.5)
       angle += 3.141592653589793;
 
     const QPointF delta = position - center;
+    const double localX = std::cos(angle) * delta.x() +
+                          std::sin(angle) * delta.y();
+    const double localY = -std::sin(angle) * delta.x() +
+                          std::cos(angle) * delta.y();
 
-    const double localX =
-        std::cos(angle) * delta.x() +
-        std::sin(angle) * delta.y();
-
-    const double localY =
-        -std::sin(angle) * delta.x() +
-        std::cos(angle) * delta.y();
-
-    if ((std::abs(localX) <= 46.0 &&
-         std::abs(localY) <= 13.0) ||
-        pointSegmentDistance(
-            position, first, second) <= hitTolerance)
+    if ((std::abs(localX) <= 46.0 && std::abs(localY) <= 13.0) ||
+        pointSegmentDistance(position, first, second) <= hitTolerance)
       return index;
   }
 
   return std::nullopt;
 }
 void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
-  // POINT-ON-CIRCLE PRIORITY ROUTER V3
-  //
-  // Keep the requested workflow deliberately narrow and deterministic:
-  //   line endpoint -> circle body
-  //   circle body   -> line endpoint
-  //
-  // If neither side of this pair is involved, fall through untouched to the
-  // existing Coincident / PointOnLine logic below.
-  constexpr double pocEndpointTolerance = 11.0;
-  constexpr double pocCircleBodyTolerance = 11.0;
-  constexpr double pocCircleCenterExclusion = 12.0;
-
-  const auto findLineEndpoint =
-      [this, position]() -> std::optional<sketch::PointReference> {
-        double bestDistance = pocEndpointTolerance;
-        std::optional<sketch::PointReference> result;
-
-        for (std::size_t index = 0;
-             index < sketch_.lines().size(); ++index) {
-          const auto id = sketch_.lineId(index);
-          if (id == sketch::kInvalidGeometryId)
-            continue;
-
-          const auto& line = sketch_.lines()[index];
-
-          for (const bool start : {true, false}) {
-            const sketch::Point point =
-                start ? line.start : line.end;
-
-            const double distance =
-                QLineF(position, mapPoint(point)).length();
-
-            if (distance < bestDistance) {
-              bestDistance = distance;
-              result = sketch::PointReference{id, start};
-            }
-          }
-        }
-
-        return result;
-      };
-
-  const auto findCircleBody =
-      [this, position]() -> sketch::GeometryId {
-        double bestDistance = pocCircleBodyTolerance;
-        sketch::GeometryId result =
-            sketch::kInvalidGeometryId;
-
-        for (std::size_t index = 0;
-             index < sketch_.circles().size(); ++index) {
-          const auto id = sketch_.circleId(index);
-          if (id == sketch::kInvalidGeometryId)
-            continue;
-
-          const auto& circle = sketch_.circles()[index];
-          const QPointF center = mapPoint(circle.center);
-
-          const double centerDistance =
-              QLineF(position, center).length();
-
-          // Clicking near the centre must remain ordinary Coincident.
-          if (centerDistance < pocCircleCenterExclusion)
-            continue;
-
-          const double radiusPx =
-              circle.radiusMm * pixelsPerMm_;
-
-          const double bodyDistance =
-              std::abs(centerDistance - radiusPx);
-
-          if (bodyDistance < bestDistance) {
-            bestDistance = bodyDistance;
-            result = id;
-          }
-        }
-
-        return result;
-      };
-
-  const auto createPointOnCircle =
-      [this](sketch::GeometryId circleId,
-             sketch::PointReference endpoint) {
-        if (circleId == sketch::kInvalidGeometryId ||
-            endpoint.lineId == sketch::kInvalidGeometryId)
-          return false;
-
-        // Do not create the same relation twice.
-        for (const auto& existing : sketch_.constraints()) {
-          if (existing.type !=
-              sketch::ConstraintType::PointOnCircle)
-            continue;
-
-          if (existing.firstGeometry == circleId &&
-              existing.secondPoint.lineId == endpoint.lineId &&
-              existing.secondPoint.start == endpoint.start &&
-              existing.secondPoint.circleId ==
-                  sketch::kInvalidGeometryId &&
-              existing.secondPoint.elementCenterId == 0)
-            return true;
-        }
-
-        pushUndoState();
-
-        sketch::Constraint constraint;
-        constraint.type =
-            sketch::ConstraintType::PointOnCircle;
-        constraint.firstGeometry = circleId;
-        constraint.secondPoint = endpoint;
-        sketch_.addConstraint(constraint);
-
-        notifyGeometryChanged();
-        return true;
-      };
-
-  // Circle was chosen first: now accept only a real line endpoint.
-  if (property("pointOnCircleCarrier").isValid()) {
-    const auto carrier =
-        static_cast<sketch::GeometryId>(
-            property("pointOnCircleCarrier").toULongLong());
-
-    const auto endpoint = findLineEndpoint();
-
-    if (endpoint) {
-      (void)createPointOnCircle(carrier, *endpoint);
-
-      setProperty("pointOnCircleCarrier", QVariant());
-      coincidentFirstPoint_.reset();
-
-      emit selectionChanged(QString::fromUtf8(
-          "Ограничение: конец линии на окружности"));
-      update();
-      return;
-    }
-
-    // Clicking elsewhere cancels only this special pending pair and then lets
-    // the normal Coincident tool handle the same click.
-    setProperty("pointOnCircleCarrier", QVariant());
-  }
-
-  const auto endpointHit = findLineEndpoint();
-  const auto circleHit = findCircleBody();
-
-  // Endpoint was chosen previously by the ordinary Coincident first-point
-  // picker. Give a circle-body second click priority over PointOnLine.
-  if (coincidentFirstPoint_ &&
-      coincidentFirstPoint_->lineId !=
-          sketch::kInvalidGeometryId &&
-      coincidentFirstPoint_->circleId ==
-          sketch::kInvalidGeometryId &&
-      coincidentFirstPoint_->elementCenterId == 0 &&
-      circleHit != sketch::kInvalidGeometryId) {
-    const auto endpoint = *coincidentFirstPoint_;
-
-    (void)createPointOnCircle(circleHit, endpoint);
-
-    coincidentFirstPoint_.reset();
-    setProperty("pointOnCircleCarrier", QVariant());
-
-    emit selectionChanged(QString::fromUtf8(
-        "Ограничение: конец линии на окружности"));
-    update();
-    return;
-  }
-
-  // Circle body first. Store only the carrier and wait for an endpoint.
-  //
-  // Endpoint hit has priority so a point that already lies on/near the
-  // circumference is still treated as a point rather than as circle body.
-  if (!coincidentFirstPoint_ &&
-      !endpointHit &&
-      circleHit != sketch::kInvalidGeometryId) {
-    setProperty(
-        "pointOnCircleCarrier",
-        static_cast<qulonglong>(circleHit));
-
-    emit selectionChanged(QString::fromUtf8(
-        "Окружность выбрана: укажите конец линии"));
-    update();
-    return;
-  }
-
-  // MERGED POINT-ON-LINE MODE
-  //
-  // The existing Coincident tool now handles two related workflows:
-  //   point -> point       = Coincident
-  //   line body -> point   = PointOnLine
-  //
-  // Clicking near a line endpoint deliberately falls through to the original
-  // point-selection logic below.
-  constexpr double lineTolerance = 9.0;
-  constexpr double endpointExclusion = 11.0;
-  constexpr double pointTolerance = 10.0;
-
-  // POINT-ON-CIRCLE: ACTIVE CARRIER
-  const QVariant circleCarrierProperty =
-      property("pointOnCircleCarrier");
-
-  if (circleCarrierProperty.isValid()) {
-    const auto carrierCircleId =
-        static_cast<sketch::GeometryId>(
-            circleCarrierProperty.toULongLong());
-
-    if (!sketch_.circleIndex(carrierCircleId)) {
-      setProperty("pointOnCircleCarrier", QVariant());
-      return;
-    }
-
-    double bestPointDistance = pointTolerance;
-    std::optional<sketch::PointReference> clickedPoint;
-
-    // Line endpoints.
-    for (std::size_t index = 0;
-         index < sketch_.lines().size(); ++index) {
-      const auto id = sketch_.lineId(index);
-      if (id == sketch::kInvalidGeometryId) continue;
-
-      const auto& line = sketch_.lines()[index];
-
-      for (const bool start : {true, false}) {
-        const sketch::Point candidate =
-            start ? line.start : line.end;
-
-        const double distance =
-            QLineF(position, mapPoint(candidate)).length();
-
-        if (distance < bestPointDistance) {
-          bestPointDistance = distance;
-          clickedPoint =
-              sketch::PointReference{id, start};
-        }
-      }
-    }
-
-    // Circle centres, except the carrier's own centre.
-    for (std::size_t index = 0;
-         index < sketch_.circles().size(); ++index) {
-      const auto id = sketch_.circleId(index);
-
-      if (id == sketch::kInvalidGeometryId ||
-          id == carrierCircleId)
-        continue;
-
-      const double distance =
-          QLineF(position,
-                 mapPoint(sketch_.circles()[index].center))
-              .length();
-
-      if (distance < bestPointDistance) {
-        bestPointDistance = distance;
-
-        sketch::PointReference center;
-        center.circleId = id;
-        clickedPoint = center;
-      }
-    }
-
-    // Virtual rectangle centres.
-    for (const auto elementId :
-         sketch_.centerNodeElementIds()) {
-      const auto centerPoint =
-          sketch_.elementCenterPoint(elementId);
-
-      if (!centerPoint) continue;
-
-      const double distance =
-          QLineF(position, mapPoint(*centerPoint)).length();
-
-      if (distance < bestPointDistance) {
-        bestPointDistance = distance;
-
-        sketch::PointReference center;
-        center.elementCenterId = elementId;
-        clickedPoint = center;
-      }
-    }
-
-    if (!clickedPoint) {
-      emit selectionChanged(QString::fromUtf8(
-          "Принадлежность: выберите конечную точку"));
-      return;
-    }
-
-    const auto sameReference =
-        [](sketch::PointReference first,
-           sketch::PointReference second) {
-          if (first.elementCenterId != 0 ||
-              second.elementCenterId != 0)
-            return first.elementCenterId != 0 &&
-                   first.elementCenterId ==
-                       second.elementCenterId;
-
-          if (first.circleId !=
-                  sketch::kInvalidGeometryId ||
-              second.circleId !=
-                  sketch::kInvalidGeometryId)
-            return first.circleId !=
-                       sketch::kInvalidGeometryId &&
-                   first.circleId == second.circleId;
-
-          return first.lineId == second.lineId &&
-                 first.start == second.start;
-        };
-
-    for (const auto& constraint :
-         sketch_.constraints()) {
-      if (constraint.type !=
-          sketch::ConstraintType::PointOnCircle)
-        continue;
-
-      if (constraint.firstGeometry == carrierCircleId &&
-          sameReference(constraint.secondPoint,
-                        *clickedPoint)) {
-        setProperty("pointOnCircleCarrier", QVariant());
-        emit selectionChanged(QString::fromUtf8(
-            "Эта точка уже принадлежит выбранной окружности"));
-        update();
-        return;
-      }
-    }
-
-    pushUndoState();
-
-    sketch::Constraint constraint;
-    constraint.type =
-        sketch::ConstraintType::PointOnCircle;
-    constraint.firstGeometry = carrierCircleId;
-    constraint.secondPoint = *clickedPoint;
-    sketch_.addConstraint(constraint);
-
-    setProperty("pointOnCircleCarrier", QVariant());
-    coincidentFirstPoint_.reset();
-
-    emit selectionChanged(QString::fromUtf8(
-        "Ограничение: точка на окружности"));
-    notifyGeometryChanged();
-    update();
-    return;
-  }
-  const QVariant carrierProperty = property("pointOnLineCarrier");
-
-  if (carrierProperty.isValid()) {
-    const auto carrierId = static_cast<sketch::GeometryId>(
-        carrierProperty.toULongLong());
-
-    if (!sketch_.lineIndex(carrierId)) {
-      setProperty("pointOnLineCarrier", QVariant());
-      return;
-    }
-
-    double bestPointDistance = pointTolerance;
-    std::optional<sketch::PointReference> clickedPoint;
-
-    // Line endpoints.
-    for (std::size_t index = 0;
-         index < sketch_.lines().size();
-         ++index) {
-      const auto id = sketch_.lineId(index);
-      if (id == sketch::kInvalidGeometryId)
-        continue;
-
-      const auto& line = sketch_.lines()[index];
-
-      for (const bool start : {true, false}) {
-        const sketch::Point point =
-            start ? line.start : line.end;
-
-        const double distance =
-            QLineF(position, mapPoint(point)).length();
-
-        if (distance < bestPointDistance) {
-          bestPointDistance = distance;
-          clickedPoint = sketch::PointReference{id, start};
-        }
-      }
-    }
-
-    // Circle centers.
-    for (std::size_t index = 0;
-         index < sketch_.circles().size();
-         ++index) {
-      const auto id = sketch_.circleId(index);
-      if (id == sketch::kInvalidGeometryId)
-        continue;
-
-      const double distance =
-          QLineF(position,
-                 mapPoint(sketch_.circles()[index].center)).length();
-
-      if (distance < bestPointDistance) {
-        bestPointDistance = distance;
-
-        sketch::PointReference center;
-        center.circleId = id;
-        clickedPoint = center;
-      }
-    }
-
-
-    // Rectangle center nodes.
-    for (const auto elementId : sketch_.centerNodeElementIds()) {
-      const auto centerPoint =
-          sketch_.elementCenterPoint(elementId);
-      if (!centerPoint) continue;
-
-      const double distance =
-          QLineF(position,
-                 mapPoint(*centerPoint)).length();
-
-      if (distance < bestPointDistance) {
-        bestPointDistance = distance;
-
-        sketch::PointReference center;
-        center.elementCenterId = elementId;
-        clickedPoint = center;
-      }
-    }
-    if (!clickedPoint) {
-      emit selectionChanged(QString::fromUtf8(
-          "Принадлежность: выберите конечную точку или центр окружности"));
-      return;
-    }
-
-    if (clickedPoint->elementCenterId == 0 &&
-        clickedPoint->circleId == sketch::kInvalidGeometryId &&
-        clickedPoint->lineId == carrierId) {
-      emit selectionChanged(QString::fromUtf8(
-          "Принадлежность: выберите точку другого объекта"));
-      return;
-    }
-
-    const auto sameReference =
-        [](sketch::PointReference first,
-           sketch::PointReference second) {
-          if (first.elementCenterId != 0 ||
-              second.elementCenterId != 0) {
-            return first.elementCenterId != 0 &&
-                   first.elementCenterId == second.elementCenterId;
-          }
-
-          if (first.circleId != sketch::kInvalidGeometryId ||
-              second.circleId != sketch::kInvalidGeometryId) {
-            return first.circleId != sketch::kInvalidGeometryId &&
-                   first.circleId == second.circleId;
-          }
-
-          return first.lineId == second.lineId &&
-                 first.start == second.start;
-        };
-
-    for (const auto& constraint : sketch_.constraints()) {
-      if (constraint.type != sketch::ConstraintType::PointOnLine)
-        continue;
-
-      if (constraint.firstGeometry == carrierId &&
-          sameReference(constraint.secondPoint, *clickedPoint)) {
-        setProperty("pointOnLineCarrier", QVariant());
-
-        emit selectionChanged(QString::fromUtf8(
-            "Эта точка уже принадлежит выбранной линии"));
-        update();
-        return;
-      }
-    }
-
-    pushUndoState();
-
-    sketch::Constraint constraint;
-    constraint.type = sketch::ConstraintType::PointOnLine;
-    constraint.firstGeometry = carrierId;
-    constraint.secondPoint = *clickedPoint;
-    sketch_.addConstraint(constraint);
-
-    setProperty("pointOnLineCarrier", QVariant());
-
-    emit selectionChanged(
-        QString::fromUtf8("Ограничение: Принадлежность"));
-    notifyGeometryChanged();
-    update();
-    return;
-  }
-
-  // POINT-FIRST -> LINE-BODY POINT-ON-LINE
-  //
-  // If a point was selected first, allow the second click to be the body of
-  // a line. This makes the merged tool symmetrical:
-  //   line -> point  and  point -> line.
-  if (coincidentFirstPoint_) {
-    double bestCarrierDistance = lineTolerance;
-    std::optional<std::size_t> bestCarrierIndex;
-
-    for (std::size_t index = 0;
-         index < sketch_.lines().size();
-         ++index) {
-      const auto& line = sketch_.lines()[index];
-      const QPointF start = mapPoint(line.start);
-      const QPointF end = mapPoint(line.end);
-
-      // A click near a vertex still means "point", not "line body".
-      if (QLineF(position, start).length() < endpointExclusion ||
-          QLineF(position, end).length() < endpointExclusion)
-        continue;
-
-      const double distance =
-          pointSegmentDistance(position, start, end);
-
-      if (distance < bestCarrierDistance) {
-        bestCarrierDistance = distance;
-        bestCarrierIndex = index;
-      }
-    }
-
-    if (bestCarrierIndex) {
-      const auto carrierId = sketch_.lineId(*bestCarrierIndex);
-      const auto pointReference = *coincidentFirstPoint_;
-
-      if (carrierId != sketch::kInvalidGeometryId &&
-          !(pointReference.elementCenterId == 0 &&
-            pointReference.circleId == sketch::kInvalidGeometryId &&
-            pointReference.lineId == carrierId)) {
-        const auto sameReference =
-            [](sketch::PointReference first,
-               sketch::PointReference second) {
-              if (first.circleId != sketch::kInvalidGeometryId ||
-                  second.circleId != sketch::kInvalidGeometryId) {
-                return first.circleId != sketch::kInvalidGeometryId &&
-                       first.circleId == second.circleId;
-              }
-
-              return first.lineId == second.lineId &&
-                     first.start == second.start;
-            };
-
-        bool duplicate = false;
-
-        for (const auto& constraint : sketch_.constraints()) {
-          if (constraint.type != sketch::ConstraintType::PointOnLine)
-            continue;
-
-          if (constraint.firstGeometry == carrierId &&
-              sameReference(constraint.secondPoint, pointReference)) {
-            duplicate = true;
-            break;
-          }
-        }
-
-        if (!duplicate) {
-          pushUndoState();
-
-          sketch::Constraint constraint;
-          constraint.type = sketch::ConstraintType::PointOnLine;
-          constraint.firstGeometry = carrierId;
-          constraint.secondPoint = pointReference;
-          sketch_.addConstraint(constraint);
-
-          emit selectionChanged(
-              QString::fromUtf8("Ограничение: Принадлежность"));
-          notifyGeometryChanged();
-        } else {
-          emit selectionChanged(QString::fromUtf8(
-              "Эта точка уже принадлежит выбранной линии"));
-        }
-
-        coincidentFirstPoint_.reset();
-        setProperty("pointOnLineCarrier", QVariant());
-        update();
-        return;
-      }
-    }
-  }
-  // POINT-ON-CIRCLE: POINT FIRST
-  if (coincidentFirstPoint_) {
-    constexpr double circleBodyTolerance = 9.0;
-    constexpr double circleCenterExclusion = 11.0;
-
-    sketch::GeometryId carrierCircleId =
-        sketch::kInvalidGeometryId;
-    double bestBodyDistance = circleBodyTolerance;
-
-    for (std::size_t index = 0;
-         index < sketch_.circles().size(); ++index) {
-      const auto id = sketch_.circleId(index);
-      if (id == sketch::kInvalidGeometryId) continue;
-
-      const auto& circle = sketch_.circles()[index];
-      const QPointF center = mapPoint(circle.center);
-
-      const double centerDistance =
-          QLineF(position, center).length();
-
-      // Keep clicking the centre as normal Coincident point selection.
-      if (centerDistance < circleCenterExclusion)
-        continue;
-
-      const double radiusPx =
-          circle.radiusMm * pixelsPerMm_;
-
-      const double bodyDistance =
-          std::abs(centerDistance - radiusPx);
-
-      if (bodyDistance < bestBodyDistance) {
-        bestBodyDistance = bodyDistance;
-        carrierCircleId = id;
-      }
-    }
-
-    if (carrierCircleId !=
-        sketch::kInvalidGeometryId) {
-      const auto pointReference =
-          *coincidentFirstPoint_;
-
-      if (pointReference.circleId == carrierCircleId) {
-        emit selectionChanged(QString::fromUtf8(
-            "Центр окружности нельзя связать с её собственной окружностью"));
-        return;
-      }
-
-      bool duplicate = false;
-
-      for (const auto& constraint :
-           sketch_.constraints()) {
-        if (constraint.type !=
-            sketch::ConstraintType::PointOnCircle)
-          continue;
-
-        if (constraint.firstGeometry != carrierCircleId)
-          continue;
-
-        const auto& existing = constraint.secondPoint;
-
-        if (existing.elementCenterId != 0 ||
-            pointReference.elementCenterId != 0) {
-          duplicate =
-              existing.elementCenterId != 0 &&
-              existing.elementCenterId ==
-                  pointReference.elementCenterId;
-        } else if (
-            existing.circleId != sketch::kInvalidGeometryId ||
-            pointReference.circleId !=
-                sketch::kInvalidGeometryId) {
-          duplicate =
-              existing.circleId != sketch::kInvalidGeometryId &&
-              existing.circleId == pointReference.circleId;
-        } else {
-          duplicate =
-              existing.lineId == pointReference.lineId &&
-              existing.start == pointReference.start;
-        }
-
-        if (duplicate) break;
-      }
-
-      if (!duplicate) {
-        pushUndoState();
-
-        sketch::Constraint constraint;
-        constraint.type =
-            sketch::ConstraintType::PointOnCircle;
-        constraint.firstGeometry = carrierCircleId;
-        constraint.secondPoint = pointReference;
-        sketch_.addConstraint(constraint);
-
-        notifyGeometryChanged();
-      }
-
-      coincidentFirstPoint_.reset();
-      setProperty("pointOnCircleCarrier", QVariant());
-
-      emit selectionChanged(QString::fromUtf8(
-          "Ограничение: точка на окружности"));
-      update();
-      return;
-    }
-  }
-  // FIRST-CLICK POINT PRIORITY
-  //
-  // Endpoints and circle centres take precedence over a nearby segment body.
-  // This prevents a point lying visually on/near another line from
-  // accidentally starting line-first PointOnLine mode.
-  if (!coincidentFirstPoint_ &&
-      !property("pointOnLineCarrier").isValid()) {
-    double firstPointDistance = pointTolerance;
-    std::optional<sketch::PointReference> firstClickedPoint;
-
-    for (std::size_t index = 0;
-         index < sketch_.lines().size();
-         ++index) {
-      const auto id = sketch_.lineId(index);
-      if (id == sketch::kInvalidGeometryId)
-        continue;
-
-      const auto& line = sketch_.lines()[index];
-
-      for (const bool start : {true, false}) {
-        const sketch::Point point =
-            start ? line.start : line.end;
-
-        const double distance =
-            QLineF(position, mapPoint(point)).length();
-
-        if (distance < firstPointDistance) {
-          firstPointDistance = distance;
-          firstClickedPoint =
-              sketch::PointReference{id, start};
-        }
-      }
-    }
-
-    for (std::size_t index = 0;
-         index < sketch_.circles().size();
-         ++index) {
-      const auto id = sketch_.circleId(index);
-      if (id == sketch::kInvalidGeometryId)
-        continue;
-
-      const double distance =
-          QLineF(position,
-                 mapPoint(sketch_.circles()[index].center)).length();
-
-      if (distance < firstPointDistance) {
-        firstPointDistance = distance;
-
-        sketch::PointReference center;
-        center.circleId = id;
-        firstClickedPoint = center;
-      }
-    }
-
-    // CENTER NODE FIRST-CLICK
-    for (const auto elementId : sketch_.centerNodeElementIds()) {
-      const auto centerPoint =
-          sketch_.elementCenterPoint(elementId);
-      if (!centerPoint) continue;
-
-      const double distance =
-          QLineF(position,
-                 mapPoint(*centerPoint)).length();
-
-      if (distance < firstPointDistance) {
-        firstPointDistance = distance;
-
-        sketch::PointReference center;
-        center.elementCenterId = elementId;
-        firstClickedPoint = center;
-      }
-    }
-    if (firstClickedPoint) {
-      coincidentFirstPoint_ = *firstClickedPoint;
-
-      emit selectionChanged(QString::fromUtf8(
-          "Совпадение / Принадлежность: выберите вторую точку или тело линии"));
-      update();
-      return;
-    }
-  }
-  // No first point has been selected for ordinary Coincident yet:
-  // a click on the interior of a segment starts PointOnLine mode.
-  // POINT-ON-CIRCLE: CIRCLE FIRST
-  if (!coincidentFirstPoint_) {
-    constexpr double circleBodyTolerance = 9.0;
-    constexpr double circleCenterExclusion = 11.0;
-
-    sketch::GeometryId carrierCircleId =
-        sketch::kInvalidGeometryId;
-    double bestBodyDistance = circleBodyTolerance;
-
-    for (std::size_t index = 0;
-         index < sketch_.circles().size(); ++index) {
-      const auto id = sketch_.circleId(index);
-      if (id == sketch::kInvalidGeometryId) continue;
-
-      const auto& circle = sketch_.circles()[index];
-      const QPointF center = mapPoint(circle.center);
-
-      const double centerDistance =
-          QLineF(position, center).length();
-
-      if (centerDistance < circleCenterExclusion)
-        continue;
-
-      const double radiusPx =
-          circle.radiusMm * pixelsPerMm_;
-      const double bodyDistance =
-          std::abs(centerDistance - radiusPx);
-
-      if (bodyDistance < bestBodyDistance) {
-        bestBodyDistance = bodyDistance;
-        carrierCircleId = id;
-      }
-    }
-
-    if (carrierCircleId !=
-        sketch::kInvalidGeometryId) {
-      setProperty(
-          "pointOnCircleCarrier",
-          static_cast<qulonglong>(carrierCircleId));
-
-      emit selectionChanged(QString::fromUtf8(
-          "Принадлежность: выберите конечную точку"));
-      update();
-      return;
-    }
-  }
-  if (!coincidentFirstPoint_) {
-    double bestDistance = lineTolerance;
-    std::optional<std::size_t> bestLineIndex;
-
-    for (std::size_t index = 0;
-         index < sketch_.lines().size();
-         ++index) {
-      const auto& line = sketch_.lines()[index];
-      const QPointF start = mapPoint(line.start);
-      const QPointF end = mapPoint(line.end);
-
-      if (QLineF(position, start).length() < endpointExclusion ||
-          QLineF(position, end).length() < endpointExclusion)
-        continue;
-
-      const double distance =
-          pointSegmentDistance(position, start, end);
-
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestLineIndex = index;
-      }
-    }
-
-    if (bestLineIndex) {
-      const auto carrierId = sketch_.lineId(*bestLineIndex);
-
-      if (carrierId != sketch::kInvalidGeometryId) {
-        setProperty("pointOnLineCarrier",
-                    static_cast<qulonglong>(carrierId));
-
-        emit selectionChanged(QString::fromUtf8(
-            "Принадлежность: выберите точку или центр окружности"));
-        update();
-        return;
-      }
-    }
-  }
-
   constexpr double hitTolerance = 10.0;
   double bestDistance = hitTolerance;
   std::optional<sketch::PointReference> clickedPoint;
@@ -4605,25 +2853,6 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
     }
   }
 
-
-  // CENTER NODE ORDINARY PICK
-  for (const auto elementId : sketch_.centerNodeElementIds()) {
-    const auto centerPoint =
-        sketch_.elementCenterPoint(elementId);
-    if (!centerPoint) continue;
-
-    const double distance =
-        QLineF(position,
-               mapPoint(*centerPoint)).length();
-
-    if (distance < bestDistance) {
-      bestDistance = distance;
-
-      sketch::PointReference center;
-      center.elementCenterId = elementId;
-      clickedPoint = center;
-    }
-  }
   if (!clickedPoint) {
     emit selectionChanged(QString::fromUtf8(
         "Совпадение: выберите конец линии или центр окружности"));
@@ -4633,12 +2862,6 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   const auto sameReference =
       [](sketch::PointReference first,
          sketch::PointReference second) {
-    if (first.elementCenterId != 0 ||
-        second.elementCenterId != 0) {
-      return first.elementCenterId != 0 &&
-             first.elementCenterId == second.elementCenterId;
-    }
-
     if (first.circleId != sketch::kInvalidGeometryId ||
         second.circleId != sketch::kInvalidGeometryId) {
       return first.circleId != sketch::kInvalidGeometryId &&
@@ -4669,9 +2892,7 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   }
 
   // Do not collapse a single line by coinciding its own two ends.
-  if (first.elementCenterId == 0 &&
-      second.elementCenterId == 0 &&
-      first.circleId == sketch::kInvalidGeometryId &&
+  if (first.circleId == sketch::kInvalidGeometryId &&
       second.circleId == sketch::kInvalidGeometryId &&
       first.lineId == second.lineId) {
     coincidentFirstPoint_.reset();
@@ -5015,79 +3236,13 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
 
   const auto firstSideIndex =
       findIndex(firstRectangleIds, firstId);
+  const auto secondSideIndex =
+      findIndex(secondRectangleIds, hitId);
 
-  if (!firstSideIndex) {
+  if (!firstSideIndex || !secondSideIndex) {
     resetEqualState();
     return;
   }
-
-  const auto firstLineIndex = sketch_.lineIndex(firstId);
-  if (!firstLineIndex) {
-    resetEqualState();
-    return;
-  }
-
-  const auto& firstSelectedLine =
-      sketch_.lines()[*firstLineIndex];
-
-  const double firstDx =
-      firstSelectedLine.end.xMm - firstSelectedLine.start.xMm;
-  const double firstDy =
-      firstSelectedLine.end.yMm - firstSelectedLine.start.yMm;
-  const double firstLength =
-      std::hypot(firstDx, firstDy);
-
-  if (firstLength <= 1e-9) {
-    resetEqualState();
-    return;
-  }
-
-  const double firstUx = firstDx / firstLength;
-  const double firstUy = firstDy / firstLength;
-
-  // The second click selects the rectangle, not the dimension mapping.
-  // Match its side automatically by orientation so width cannot be
-  // accidentally linked to height.
-  std::optional<std::size_t> secondSideIndex;
-  double bestParallelScore = -1.0;
-
-  for (std::size_t sideIndex = 0;
-       sideIndex < secondRectangleIds.size();
-       ++sideIndex) {
-    const auto candidateIndex =
-        sketch_.lineIndex(secondRectangleIds[sideIndex]);
-    if (!candidateIndex) continue;
-
-    const auto& candidate =
-        sketch_.lines()[*candidateIndex];
-
-    const double dx =
-        candidate.end.xMm - candidate.start.xMm;
-    const double dy =
-        candidate.end.yMm - candidate.start.yMm;
-    const double length = std::hypot(dx, dy);
-    if (length <= 1e-9) continue;
-
-    const double ux = dx / length;
-    const double uy = dy / length;
-
-    // abs(dot) treats parallel and anti-parallel directions as equivalent.
-    const double score =
-        std::abs(firstUx * ux + firstUy * uy);
-
-    if (score > bestParallelScore) {
-      bestParallelScore = score;
-      secondSideIndex = sideIndex;
-    }
-  }
-
-  if (!secondSideIndex) {
-    resetEqualState();
-    return;
-  }
-
-  const auto matchedSecondId =
-      secondRectangleIds[*secondSideIndex];
 
   const auto firstAdjacentId =
       firstRectangleIds[(*firstSideIndex + 1) % 4];
@@ -5113,7 +3268,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
       };
 
   const bool firstPairExists =
-      equalExists(firstId, matchedSecondId);
+      equalExists(firstId, hitId);
   const bool secondPairExists =
       equalExists(firstAdjacentId, secondAdjacentId);
 
@@ -5131,7 +3286,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     sketch::Constraint firstEqual;
     firstEqual.type = sketch::ConstraintType::Equal;
     firstEqual.firstGeometry = firstId;
-    firstEqual.secondGeometry = matchedSecondId;
+    firstEqual.secondGeometry = hitId;
     sketch_.addConstraint(firstEqual);
   }
 
@@ -5456,9 +3611,9 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   constraint.secondGeometry = clickedId;
   sketch_.addConstraint(constraint);
 
-  // addConstraint() already runs the sketch solver. Do not run the full
-  // sequential solver a second time here: with interconnected constraints
-  // that duplicate pass can move geometry twice.
+  // Apply immediately. The solver uses the same rule afterwards during
+  // interactive edits.
+  (void)sketch::BasicSketchSolver::solve(sketch_);
 
   setProperty("perpendicularFirstLine", QVariant());
 
@@ -5697,39 +3852,7 @@ void SketchCanvas::commitAutoDimension() {
     const auto secondId = static_cast<sketch::GeometryId>(
         property("autoDimensionAngleSecondLine").toULongLong());
 
-    double solverAngle = value;
-
-    if (editingExisting) {
-      const auto firstIndex =
-          sketch_.lineIndex(firstId);
-      const auto secondIndex =
-          sketch_.lineIndex(secondId);
-
-      if (firstIndex && secondIndex) {
-        const double currentPrimitive =
-            lineAngleDegrees(
-                sketch_.lines()[*firstIndex],
-                sketch_.lines()[*secondIndex]);
-
-        const double currentVisible =
-            visibleLineAngleDegrees(
-                sketch_.lines()[*firstIndex],
-                sketch_.lines()[*secondIndex]);
-
-        const double supplement =
-            180.0 - currentPrimitive;
-
-        if (std::abs(currentVisible - supplement) <
-            std::abs(currentVisible - currentPrimitive))
-          solverAngle = 180.0 - value;
-      }
-    }
-
-    changed =
-        sketch_.setLineAngleByIds(
-            firstId,
-            secondId,
-            solverAngle);
+    changed = sketch_.setLineAngleByIds(firstId, secondId, value);
     dimension.kind = sketch::DimensionKind::LineAngle;
     dimension.geometryId = firstId;
     // LineAngle uses secondPoint.lineId as the second stable line reference.
@@ -5758,7 +3881,7 @@ void SketchCanvas::commitAutoDimension() {
       angleConstraint.type = sketch::ConstraintType::Angle;
       angleConstraint.firstGeometry = firstId;
       angleConstraint.secondGeometry = secondId;
-      angleConstraint.value = solverAngle;
+      angleConstraint.value = value;
       sketch_.addConstraint(angleConstraint);
     }
   } else if (target == "line") {
@@ -6155,163 +4278,6 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
 
   update();
 }
-namespace {
-
-// Add persistent Coincident constraints from newly created reference points
-// to CAD points that existed before the creation operation.
-//
-// Current PointReference supports line endpoints and circle centers, so this
-// automatically covers line endpoints, rectangle vertices and circle centers.
-void autoCoincidentNewGeometry(
-    sketch::Sketch& sketch,
-    std::size_t oldLineCount,
-    std::size_t oldCircleCount,
-    double toleranceMm) {
-  struct ReferenceCandidate {
-    sketch::PointReference reference;
-    sketch::Point initialPoint;
-  };
-
-  std::vector<sketch::PointReference> oldReferences;
-
-  for (std::size_t index = 0;
-       index < std::min(oldLineCount, sketch.lines().size());
-       ++index) {
-    const auto id = sketch.lineId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
-
-    oldReferences.push_back(sketch::PointReference{id, true});
-    oldReferences.push_back(sketch::PointReference{id, false});
-  }
-
-  for (std::size_t index = 0;
-       index < std::min(oldCircleCount, sketch.circles().size());
-       ++index) {
-    const auto id = sketch.circleId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
-
-    sketch::PointReference center;
-    center.circleId = id;
-    oldReferences.push_back(center);
-  }
-
-  if (oldReferences.empty()) return;
-
-  std::vector<ReferenceCandidate> newReferences;
-
-  const auto addNewReference =
-      [&sketch, &newReferences](sketch::PointReference reference) {
-        const auto point = sketch.referencedPoint(reference);
-        if (!point) return;
-
-        // Rectangle corners are represented by two coincident line endpoints.
-        // One external Coincident per geometric point is enough.
-        const bool duplicatePoint =
-            std::any_of(
-                newReferences.begin(), newReferences.end(),
-                [&point](const ReferenceCandidate& item) {
-                  return std::hypot(
-                             item.initialPoint.xMm - point->xMm,
-                             item.initialPoint.yMm - point->yMm) <= 1e-7;
-                });
-
-        if (!duplicatePoint)
-          newReferences.push_back({reference, *point});
-      };
-
-  for (std::size_t index = oldLineCount;
-       index < sketch.lines().size();
-       ++index) {
-    const auto id = sketch.lineId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
-
-    addNewReference(sketch::PointReference{id, true});
-    addNewReference(sketch::PointReference{id, false});
-  }
-
-  for (std::size_t index = oldCircleCount;
-       index < sketch.circles().size();
-       ++index) {
-    const auto id = sketch.circleId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
-
-    sketch::PointReference center;
-    center.circleId = id;
-    addNewReference(center);
-  }
-
-  const auto sameReference =
-      [](sketch::PointReference first,
-         sketch::PointReference second) {
-        if (first.circleId != sketch::kInvalidGeometryId ||
-            second.circleId != sketch::kInvalidGeometryId) {
-          return first.circleId != sketch::kInvalidGeometryId &&
-                 first.circleId == second.circleId;
-        }
-
-        return first.lineId == second.lineId &&
-               first.start == second.start;
-      };
-
-  const auto constraintExists =
-      [&sketch, &sameReference](
-          sketch::PointReference first,
-          sketch::PointReference second) {
-        return std::any_of(
-            sketch.constraints().begin(),
-            sketch.constraints().end(),
-            [first, second, &sameReference](
-                const sketch::Constraint& constraint) {
-              if (constraint.type !=
-                  sketch::ConstraintType::Coincident)
-                return false;
-
-              return
-                  (sameReference(constraint.firstPoint, first) &&
-                   sameReference(constraint.secondPoint, second)) ||
-                  (sameReference(constraint.firstPoint, second) &&
-                   sameReference(constraint.secondPoint, first));
-            });
-      };
-
-  for (const auto& candidate : newReferences) {
-    const auto currentPoint =
-        sketch.referencedPoint(candidate.reference);
-    if (!currentPoint) continue;
-
-    std::optional<sketch::PointReference> nearest;
-    double bestDistance = toleranceMm;
-
-    for (const auto oldReference : oldReferences) {
-      const auto oldPoint = sketch.referencedPoint(oldReference);
-      if (!oldPoint) continue;
-
-      const double distance =
-          std::hypot(currentPoint->xMm - oldPoint->xMm,
-                     currentPoint->yMm - oldPoint->yMm);
-
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        nearest = oldReference;
-      }
-    }
-
-    if (!nearest ||
-        sameReference(*nearest, candidate.reference) ||
-        constraintExists(*nearest, candidate.reference))
-      continue;
-
-    sketch::Constraint constraint;
-    constraint.type = sketch::ConstraintType::Coincident;
-
-    // Existing geometry is the reference, newly created geometry moves to it.
-    constraint.firstPoint = *nearest;
-    constraint.secondPoint = candidate.reference;
-    sketch.addConstraint(constraint);
-  }
-}
-
-}  // namespace
 void SketchCanvas::commitPoint(sketch::Point point) {
   if (tool_ == Tool::Rectangle && rectangleMode_ == RectangleMode::ThreePoints) {
     commitRectanglePoint(point);
@@ -6328,9 +4294,6 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     update();
     return;
   }
-  const std::size_t oldLineCount = sketch_.lines().size();
-  const std::size_t oldCircleCount = sketch_.circles().size();
-
   if (tool_ == Tool::Line)
     pushUndoState();
   else if (tool_ == Tool::Rectangle)
@@ -6395,17 +4358,8 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     if (rectangleMode_ == RectangleMode::FromCenter) {
       const double dx = point.xMm - anchor_->xMm;
       const double dy = point.yMm - anchor_->yMm;
-
-      const std::size_t firstNewLine = sketch_.lines().size();
-
       sketch_.addRectangle({anchor_->xMm-dx, anchor_->yMm-dy},
                            {anchor_->xMm+dx, anchor_->yMm+dy});
-
-      // addRectangle() creates four lines with one shared elementId.
-      // Register that element as having a virtual CAD center node.
-      if (firstNewLine < sketch_.lines().size())
-        sketch_.markElementCenterNode(
-            sketch_.lines()[firstNewLine].elementId);
     } else {
       sketch_.addRectangle(*anchor_, point);
     }
@@ -6417,12 +4371,6 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     circleDiameterMm_ = 2.0 * radius;
     emit primaryDimensionChanged(circleDiameterMm_);
   }
-  autoCoincidentNewGeometry(
-      sketch_,
-      oldLineCount,
-      oldCircleCount,
-      8.0 / std::max(0.001, pixelsPerMm_));
-
   anchor_.reset();
   hideDimensionEditor();
   notifyGeometryChanged();
@@ -6445,18 +4393,7 @@ void SketchCanvas::commitRectanglePoint(sketch::Point point) {
       const sketch::Point third{second.xMm+nx*height, second.yMm+ny*height};
       const sketch::Point fourth{first.xMm+nx*height, first.yMm+ny*height};
       pushUndoState();
-
-      const std::size_t oldLineCount = sketch_.lines().size();
-      const std::size_t oldCircleCount = sketch_.circles().size();
-
       sketch_.addRectangle(first, second, third, fourth);
-
-      autoCoincidentNewGeometry(
-          sketch_,
-          oldLineCount,
-          oldCircleCount,
-          8.0 / std::max(0.001, pixelsPerMm_));
-
       rectanglePoints_.clear();
       notifyGeometryChanged();
       return;
@@ -6470,18 +4407,7 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
   auto finishCircle = [this](sketch::Point center, double radius) {
     if (!std::isfinite(radius) || radius < 1e-6) return false;
     pushUndoState();
-
-    const std::size_t oldLineCount = sketch_.lines().size();
-    const std::size_t oldCircleCount = sketch_.circles().size();
-
     sketch_.addCircle(center, radius);
-
-    autoCoincidentNewGeometry(
-        sketch_,
-        oldLineCount,
-        oldCircleCount,
-        8.0 / std::max(0.001, pixelsPerMm_));
-
     circleDiameterMm_ = 2.0 * radius;
     emit primaryDimensionChanged(circleDiameterMm_);
     circlePoints_.clear();
@@ -6731,10 +4657,6 @@ void SketchCanvas::setSnapEnabled(bool enabled) {
 void SketchCanvas::commitDimensionEditor() {
   if (!anchor_) return;
   pushUndoState();
-
-  const std::size_t oldLineCount = sketch_.lines().size();
-  const std::size_t oldCircleCount = sketch_.circles().size();
-
   const auto start = *anchor_;
   if (tool_ == Tool::Line) {
     const double angle = secondaryDimension_->value() * 3.141592653589793 / 180.0;
@@ -6757,12 +4679,6 @@ void SketchCanvas::commitDimensionEditor() {
     circleDiameterMm_ = primaryDimension_->value();
     emit primaryDimensionChanged(circleDiameterMm_);
   }
-  autoCoincidentNewGeometry(
-      sketch_,
-      oldLineCount,
-      oldCircleCount,
-      8.0 / std::max(0.001, pixelsPerMm_));
-
   anchor_.reset();
   hideDimensionEditor();
   setFocus();

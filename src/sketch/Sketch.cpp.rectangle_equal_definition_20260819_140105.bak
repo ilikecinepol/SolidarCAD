@@ -1,4 +1,4 @@
-﻿#include "sketch/Sketch.h"
+#include "sketch/Sketch.h"
 
 #include "sketch/SketchSolver.h"
 
@@ -12,7 +12,6 @@ namespace solidar::sketch {
 Sketch::Sketch() { clear(); }
 
 void Sketch::clear() {
-  centerNodeElementIds_.clear();
   lines_.clear();
   circles_.clear();
   lineIds_.clear();
@@ -112,24 +111,6 @@ void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
   addCornerCoincident(fourthLineId, false, firstLineId, true);
 
   // Minimal non-redundant rectangle orientation system.
-  // Opposite sides have equal lengths. Together with the four connected
-  // corners and one right angle, this defines a rectangle without explicit
-  // Parallel constraints.
-  Constraint firstEqual;
-  firstEqual.type = ConstraintType::Equal;
-  firstEqual.firstGeometry = firstLineId;
-  firstEqual.secondGeometry = thirdLineId;
-  addConstraint(firstEqual);
-
-  Constraint secondEqual;
-  secondEqual.type = ConstraintType::Equal;
-  secondEqual.firstGeometry = secondLineId;
-  secondEqual.secondGeometry = fourthLineId;
-  addConstraint(secondEqual);
-
-  // Keep explicit parallel relationships as well. They are mathematically
-  // redundant with the rectangle system, but make the current sequential
-  // solver much more stable during interactive dragging.
   Constraint firstParallel;
   firstParallel.type = ConstraintType::Parallel;
   firstParallel.firstGeometry = firstLineId;
@@ -194,24 +175,6 @@ void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) 
   addCornerCoincident(thirdLineId, false, fourthLineId, true);
   addCornerCoincident(fourthLineId, false, firstLineId, true);
 
-  // Opposite sides have equal lengths. Together with the four connected
-  // corners and one right angle, this defines a rectangle without explicit
-  // Parallel constraints.
-  Constraint firstEqual;
-  firstEqual.type = ConstraintType::Equal;
-  firstEqual.firstGeometry = firstLineId;
-  firstEqual.secondGeometry = thirdLineId;
-  addConstraint(firstEqual);
-
-  Constraint secondEqual;
-  secondEqual.type = ConstraintType::Equal;
-  secondEqual.firstGeometry = secondLineId;
-  secondEqual.secondGeometry = fourthLineId;
-  addConstraint(secondEqual);
-
-  // Keep explicit parallel relationships as well. They are mathematically
-  // redundant with the rectangle system, but make the current sequential
-  // solver much more stable during interactive dragging.
   Constraint firstParallel;
   firstParallel.type = ConstraintType::Parallel;
   firstParallel.firstGeometry = firstLineId;
@@ -280,19 +243,8 @@ void Sketch::removeCircle(std::size_t index) {
 
   auto& dimensions = dimensions_;
   std::erase_if(dimensions, [removedId](const Dimension& dimension) {
-    if (dimension.kind == DimensionKind::CircleDiameter)
-      return dimension.geometryId == removedId;
-
-    // Point-to-point dimensions may reference a circle center through
-    // PointReference::circleId. Remove them together with the circle so no
-    // stale point reference survives deletion.
-    if (dimension.kind == DimensionKind::PointDistance ||
-        dimension.kind == DimensionKind::PointDistanceX ||
-        dimension.kind == DimensionKind::PointDistanceY)
-      return dimension.firstPoint.circleId == removedId ||
-             dimension.secondPoint.circleId == removedId;
-
-    return false;
+    return dimension.kind == DimensionKind::CircleDiameter &&
+           dimension.geometryId == removedId;
   });
 
   std::erase_if(constraints_, [removedId](const Constraint& constraint) {
@@ -344,77 +296,9 @@ void Sketch::removeElement(std::size_t elementId) {
     });
   }
 
-  // A centered composite element exposes a virtual PointReference identified
-  // by elementCenterId rather than by a GeometryId. Clean those references
-  // explicitly when the owning element is deleted.
-  std::erase_if(dimensions_, [elementId](const Dimension& dimension) {
-    return dimension.firstPoint.elementCenterId == elementId ||
-           dimension.secondPoint.elementCenterId == elementId;
-  });
-
-  std::erase_if(constraints_, [elementId](const Constraint& constraint) {
-    return constraint.firstPoint.elementCenterId == elementId ||
-           constraint.secondPoint.elementCenterId == elementId;
-  });
-  std::erase(centerNodeElementIds_, elementId);
   updateBounds();
 }
 
-void Sketch::markElementCenterNode(std::size_t elementId) {
-  if (elementId == 0 || hasElementCenterNode(elementId))
-    return;
-
-  std::size_t lineCount = 0;
-  for (const auto& line : lines_) {
-    if (line.elementId == elementId)
-      ++lineCount;
-  }
-
-  // Current rectangle elements are exactly four perimeter lines.
-  if (lineCount == 4)
-    centerNodeElementIds_.push_back(elementId);
-}
-
-bool Sketch::hasElementCenterNode(std::size_t elementId) const noexcept {
-  return std::find(centerNodeElementIds_.begin(),
-                   centerNodeElementIds_.end(),
-                   elementId) != centerNodeElementIds_.end();
-}
-
-std::optional<Point> Sketch::elementCenterPoint(
-    std::size_t elementId) const noexcept {
-  if (!hasElementCenterNode(elementId))
-    return std::nullopt;
-
-  std::vector<const Line*> elementLines;
-  elementLines.reserve(4);
-
-  for (const auto& line : lines_) {
-    if (line.elementId == elementId)
-      elementLines.push_back(&line);
-  }
-
-  if (elementLines.size() != 4)
-    return std::nullopt;
-
-  // Average the four perimeter starts. Rectangle lines are stored in
-  // perimeter order, so these are exactly the four rectangle vertices.
-  Point center{};
-
-  for (const auto* line : elementLines) {
-    center.xMm += line->start.xMm;
-    center.yMm += line->start.yMm;
-  }
-
-  center.xMm *= 0.25;
-  center.yMm *= 0.25;
-  return center;
-}
-
-const std::vector<std::size_t>&
-Sketch::centerNodeElementIds() const noexcept {
-  return centerNodeElementIds_;
-}
 void Sketch::translateElement(std::size_t elementId, double dxMm,
                               double dyMm) {
   if (dxMm == 0.0 && dyMm == 0.0) return;
@@ -475,63 +359,12 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
          {point->xMm + dxMm, point->yMm + dyMm}});
   }
 
-  // Points constrained to a moved carrier line belong to that moving frame.
-  // Move them by the same delta before the final projection pass.
-  std::vector<PointReference> pointOnLineFollowers;
-
-  const auto samePointReference =
-      [](PointReference first, PointReference second) {
-        if (first.circleId != kInvalidGeometryId ||
-            second.circleId != kInvalidGeometryId) {
-          return first.circleId != kInvalidGeometryId &&
-                 first.circleId == second.circleId;
-        }
-
-        return first.lineId == second.lineId &&
-               first.start == second.start;
-      };
-
-  for (const auto& constraint : constraints_) {
-    if (constraint.type != ConstraintType::PointOnLine ||
-        !isMoved(constraint.firstGeometry))
-      continue;
-
-    const auto duplicate = std::any_of(
-        pointOnLineFollowers.begin(),
-        pointOnLineFollowers.end(),
-        [&constraint, &samePointReference](PointReference item) {
-          return samePointReference(item, constraint.secondPoint);
-        });
-
-    if (!duplicate)
-      pointOnLineFollowers.push_back(constraint.secondPoint);
-  }
-
   for (auto& line : lines_) {
     if (line.elementId != elementId) continue;
     line.start.xMm += dxMm;
     line.start.yMm += dyMm;
     line.end.xMm += dxMm;
     line.end.yMm += dyMm;
-  }
-
-  for (const auto follower : pointOnLineFollowers) {
-    if (follower.circleId != kInvalidGeometryId) {
-      const auto circle = circleIndex(follower.circleId);
-      if (!circle) continue;
-      circles_[*circle].center.xMm += dxMm;
-      circles_[*circle].center.yMm += dyMm;
-      continue;
-    }
-
-    const auto followerIndex = lineIndex(follower.lineId);
-    if (!followerIndex || isMoved(follower.lineId)) continue;
-
-    Point& followerPoint =
-        follower.start ? lines_[*followerIndex].start
-                       : lines_[*followerIndex].end;
-    followerPoint.xMm += dxMm;
-    followerPoint.yMm += dyMm;
   }
 
   const auto same = [](Point first, Point second) {
@@ -742,115 +575,7 @@ void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
 
 bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
   const auto index = lineIndex(id);
-  if (!index || lengthMm <= 0.0) return false;
-
-  const std::size_t elementId = lines_[*index].elementId;
-
-  std::vector<std::size_t> elementLines;
-  for (std::size_t lineIndexValue = 0;
-       lineIndexValue < lines_.size(); ++lineIndexValue) {
-    if (lines_[lineIndexValue].elementId == elementId)
-      elementLines.push_back(lineIndexValue);
-  }
-
-  // A four-line composite element is a rectangle in the current Sketch
-  // model. Resize the whole rectangle instead of stretching one primitive.
-  if (elementLines.size() == 4) {
-    const auto found =
-        std::find(elementLines.begin(), elementLines.end(), *index);
-    if (found == elementLines.end()) return false;
-
-    const std::size_t side =
-        static_cast<std::size_t>(
-            std::distance(elementLines.begin(), found));
-
-    const std::size_t i0 = elementLines[side];
-    const std::size_t i1 = elementLines[(side + 1) % 4];
-    const std::size_t i2 = elementLines[(side + 2) % 4];
-    const std::size_t i3 = elementLines[(side + 3) % 4];
-
-    const Line& selected = lines_[i0];
-    const Line& adjacent = lines_[i1];
-
-    double ux = selected.end.xMm - selected.start.xMm;
-    double uy = selected.end.yMm - selected.start.yMm;
-    const double selectedLength = std::hypot(ux, uy);
-    if (selectedLength <= 1e-9) return false;
-
-    ux /= selectedLength;
-    uy /= selectedLength;
-
-    double vx = adjacent.end.xMm - adjacent.start.xMm;
-    double vy = adjacent.end.yMm - adjacent.start.yMm;
-
-    // Orthogonalize the second rectangle axis. This also repairs a slightly
-    // distorted rectangle instead of preserving its accumulated skew.
-    const double projection = vx * ux + vy * uy;
-    vx -= projection * ux;
-    vy -= projection * uy;
-
-    double adjacentLength = std::hypot(vx, vy);
-    if (adjacentLength <= 1e-9) {
-      // Preserve the handedness using the raw adjacent direction.
-      const double rawX = adjacent.end.xMm - adjacent.start.xMm;
-      const double rawY = adjacent.end.yMm - adjacent.start.yMm;
-      const double cross = ux * rawY - uy * rawX;
-      vx = cross < 0.0 ? uy : -uy;
-      vy = cross < 0.0 ? -ux : ux;
-      adjacentLength = std::hypot(
-          adjacent.end.xMm - adjacent.start.xMm,
-          adjacent.end.yMm - adjacent.start.yMm);
-    } else {
-      vx /= adjacentLength;
-      vy /= adjacentLength;
-
-      // Use the actual adjacent side length, not the orthogonal projection
-      // length, as the preserved second rectangle dimension.
-      adjacentLength = std::hypot(
-          adjacent.end.xMm - adjacent.start.xMm,
-          adjacent.end.yMm - adjacent.start.yMm);
-    }
-
-    if (adjacentLength <= 1e-9) return false;
-
-    // Compute the element centre from all eight stored endpoints. Averaging
-    // makes the operation stable even if Coincident is off by a tiny epsilon.
-    Point center{};
-    for (const auto lineIndexValue : elementLines) {
-      center.xMm += lines_[lineIndexValue].start.xMm;
-      center.yMm += lines_[lineIndexValue].start.yMm;
-      center.xMm += lines_[lineIndexValue].end.xMm;
-      center.yMm += lines_[lineIndexValue].end.yMm;
-    }
-    center.xMm /= 8.0;
-    center.yMm /= 8.0;
-
-    const double halfU = lengthMm * 0.5;
-    const double halfV = adjacentLength * 0.5;
-
-    const Point p0{center.xMm - ux * halfU - vx * halfV,
-                   center.yMm - uy * halfU - vy * halfV};
-    const Point p1{center.xMm + ux * halfU - vx * halfV,
-                   center.yMm + uy * halfU - vy * halfV};
-    const Point p2{center.xMm + ux * halfU + vx * halfV,
-                   center.yMm + uy * halfU + vy * halfV};
-    const Point p3{center.xMm - ux * halfU + vx * halfV,
-                   center.yMm - uy * halfU + vy * halfV};
-
-    lines_[i0].start = p0;
-    lines_[i0].end = p1;
-    lines_[i1].start = p1;
-    lines_[i1].end = p2;
-    lines_[i2].start = p2;
-    lines_[i2].end = p3;
-    lines_[i3].start = p3;
-    lines_[i3].end = p0;
-
-    updateBounds();
-    return true;
-  }
-
-  return setLineLength(*index, lengthMm);
+  return index ? setLineLength(*index, lengthMm) : false;
 }
 
 bool Sketch::setCircleDiameterById(GeometryId id, double diameterMm) {
@@ -982,121 +707,36 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                                double angleDegrees) {
   const auto firstIndex = lineIndex(firstId);
   const auto secondIndex = lineIndex(secondId);
-
   if (!firstIndex || !secondIndex || firstId == secondId ||
       angleDegrees <= 0.0 || angleDegrees >= 180.0)
     return false;
-  // COMPOSITE-SAFE ANGLE DISPATCH
-  //
-  // This primitive rotates only the SECOND line. That is safe for a
-  // standalone line, but rotating one side of a rectangle as if it were an
-  // independent primitive tears the composite apart.
-  //
-  // If exactly one operand belongs to a multi-line element, always rotate
-  // the standalone/smaller operand. If both operands are different composite
-  // elements, reject the primitive operation instead of corrupting geometry.
-  const auto elementLineCount =
-      [this](std::size_t lineIndexValue) {
-        if (lineIndexValue >= lines_.size())
-          return std::size_t{0};
 
-        const std::size_t elementId =
-            lines_[lineIndexValue].elementId;
-
-        std::size_t count = 0;
-        for (const auto& line : lines_) {
-          if (line.elementId == elementId)
-            ++count;
-        }
-
-        return count;
-      };
-
-  const std::size_t firstElementLineCount =
-      elementLineCount(*firstIndex);
-  const std::size_t secondElementLineCount =
-      elementLineCount(*secondIndex);
-
-  const bool firstComposite =
-      firstElementLineCount > 1;
-  const bool secondComposite =
-      secondElementLineCount > 1;
-
-  const std::size_t firstElementId =
-      lines_[*firstIndex].elementId;
-  const std::size_t secondElementId =
-      lines_[*secondIndex].elementId;
-
-  // Internal rectangle constraints (two sides of the SAME composite) still
-  // use the normal primitive implementation below.
-  if (firstElementId != secondElementId) {
-    if (!firstComposite && secondComposite) {
-      // Solver chose the rectangle side as the moving operand. Reverse the
-      // relationship so the standalone line rotates instead.
-      return setLineAngleByIds(secondId, firstId, angleDegrees);
-    }
-
-    if (firstComposite && secondComposite) {
-      // Rotating one primitive of either composite would be destructive.
-      return false;
-    }
-  }
-
-  const Line& first = lines_[*firstIndex];
-  Line& second = lines_[*secondIndex];
+  const auto& first = lines_[*firstIndex];
+  auto& second = lines_[*secondIndex];
 
   const Point oldStart = second.start;
   const Point oldEnd = second.end;
 
   const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm,
-                      a.yMm - b.yMm) <= 1e-7;
+    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
 
-  // Determine the real shared CAD vertex when the lines touch.
-  //
-  // The shared vertex is the hinge. It must stay fixed; only the opposite
-  // endpoint of the moving line is allowed to rotate.
   bool pivotAtStart = true;
-  bool hasSharedPivot = false;
   Point pivot = oldStart;
+
+  if (same(oldStart, first.start) || same(oldStart, first.end)) {
+    pivotAtStart = true;
+    pivot = oldStart;
+  } else if (same(oldEnd, first.start) || same(oldEnd, first.end)) {
+    pivotAtStart = false;
+    pivot = oldEnd;
+  }
+
   Point firstRayEnd = first.end;
-
-  if (same(oldStart, first.start)) {
-    pivotAtStart = true;
-    hasSharedPivot = true;
-    pivot = oldStart;
-    firstRayEnd = first.end;
-  } else if (same(oldStart, first.end)) {
-    pivotAtStart = true;
-    hasSharedPivot = true;
-    pivot = oldStart;
+  if (same(pivot, first.end))
     firstRayEnd = first.start;
-  } else if (same(oldEnd, first.start)) {
-    pivotAtStart = false;
-    hasSharedPivot = true;
-    pivot = oldEnd;
-    firstRayEnd = first.end;
-  } else if (same(oldEnd, first.end)) {
-    pivotAtStart = false;
-    hasSharedPivot = true;
-    pivot = oldEnd;
-    firstRayEnd = first.start;
-  }
 
-  // For disconnected lines keep the historical behaviour: rotate the second
-  // line around its start point, using the first line's own direction as the
-  // angular reference.
-  if (!hasSharedPivot) {
-    pivotAtStart = true;
-    pivot = oldStart;
-    firstRayEnd = {
-        pivot.xMm + (first.end.xMm - first.start.xMm),
-        pivot.yMm + (first.end.yMm - first.start.yMm)};
-  }
-
-  const Point secondRayEnd =
-      pivotAtStart ? oldEnd : oldStart;
+  const Point secondRayEnd = pivotAtStart ? oldEnd : oldStart;
 
   const double firstDx = firstRayEnd.xMm - pivot.xMm;
   const double firstDy = firstRayEnd.yMm - pivot.yMm;
@@ -1105,77 +745,32 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
 
   const double firstLength = std::hypot(firstDx, firstDy);
   const double secondLength = std::hypot(secondDx, secondDy);
+  if (firstLength <= 1e-9 || secondLength <= 1e-9) return false;
 
-  if (firstLength <= 1e-9 || secondLength <= 1e-9)
-    return false;
+  const double cross = firstDx * secondDy - firstDy * secondDx;
+  const double sign = cross < 0.0 ? -1.0 : 1.0;
+  const double target =
+      std::atan2(firstDy, firstDx) +
+      sign * angleDegrees * 3.14159265358979323846 / 180.0;
 
-  constexpr double pi = 3.14159265358979323846;
-  const double targetOffset = angleDegrees * pi / 180.0;
+  const Point oldMoving = pivotAtStart ? oldEnd : oldStart;
+  Point newMoving;
 
-  const double referenceAngle =
-      std::atan2(firstDy, firstDx);
-  const double currentAngle =
-      std::atan2(secondDy, secondDx);
+  if (pivotAtStart) {
+    newMoving = {pivot.xMm + std::cos(target) * secondLength,
+                 pivot.yMm + std::sin(target) * secondLength};
+  } else {
+    newMoving = {pivot.xMm - std::cos(target) * secondLength,
+                 pivot.yMm - std::sin(target) * secondLength};
+  }
 
-  // Both +angle and -angle satisfy an unsigned CAD angle. Pick the solution
-  // that is nearest to the line's current orientation. This prevents a small
-  // correction from unexpectedly turning into a ~180-degree flip.
-  const auto wrappedDelta = [pi](double from, double to) {
-    double delta = to - from;
-
-    while (delta > pi)
-      delta -= 2.0 * pi;
-    while (delta < -pi)
-      delta += 2.0 * pi;
-
-    return delta;
-  };
-
-  const double candidatePositive =
-      referenceAngle + targetOffset;
-  const double candidateNegative =
-      referenceAngle - targetOffset;
-
-  const double positiveMove =
-      std::abs(wrappedDelta(currentAngle, candidatePositive));
-  const double negativeMove =
-      std::abs(wrappedDelta(currentAngle, candidateNegative));
-
-  const double targetAngle =
-      positiveMove <= negativeMove
-          ? candidatePositive
-          : candidateNegative;
-
-  const Point oldMoving =
-      pivotAtStart ? oldEnd : oldStart;
-
-  const Point newMoving{
-      pivot.xMm + std::cos(targetAngle) * secondLength,
-      pivot.yMm + std::sin(targetAngle) * secondLength};
-
-  // Move only the free endpoint. The pivot/opposite endpoint is deliberately
-  // untouched. Existing geometry coincident with the moving endpoint follows
-  // that endpoint as one CAD vertex cluster.
-  if (pivotAtStart)
-    second.end = newMoving;
-  else
-    second.start = newMoving;
-
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    if (index == *secondIndex)
-      continue;
-
-    auto& line = lines_[index];
-
-    if (same(line.start, oldMoving))
-      line.start = newMoving;
-    if (same(line.end, oldMoving))
-      line.end = newMoving;
+  for (auto& line : lines_) {
+    if (same(line.start, oldMoving)) line.start = newMoving;
+    if (same(line.end, oldMoving)) line.end = newMoving;
   }
 
   for (auto& circle : circles_) {
-    if (same(circle.center, oldMoving))
-      circle.center = newMoving;
+    if (same(circle.center, oldMoving)) circle.center = newMoving;
   }
 
   updateBounds();
@@ -1205,9 +800,6 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
 
 std::optional<Point> Sketch::referencedPoint(
     PointReference reference) const noexcept {
-  if (reference.elementCenterId != 0)
-    return elementCenterPoint(reference.elementCenterId);
-
   if (reference.circleId != kInvalidGeometryId) {
     const auto index = circleIndex(reference.circleId);
     if (!index) return std::nullopt;
@@ -1225,29 +817,18 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   const auto second = referencedPoint(secondReference);
   if (!first || !second) return false;
 
-  const auto sameReference =
-      [](PointReference a, PointReference b) {
-        if (a.elementCenterId != 0 || b.elementCenterId != 0)
-          return a.elementCenterId != 0 &&
-                 a.elementCenterId == b.elementCenterId;
+  const bool firstIsCircle =
+      firstReference.circleId != kInvalidGeometryId;
+  const bool secondIsCircle =
+      secondReference.circleId != kInvalidGeometryId;
 
-        if (a.circleId != kInvalidGeometryId ||
-            b.circleId != kInvalidGeometryId)
-          return a.circleId != kInvalidGeometryId &&
-                 a.circleId == b.circleId;
-
-        return a.lineId == b.lineId &&
-               a.start == b.start;
-      };
-
-  if (sameReference(firstReference, secondReference))
+  // Same reference is already coincident.
+  if (firstIsCircle && secondIsCircle &&
+      firstReference.circleId == secondReference.circleId)
     return true;
 
   // Coinciding both ends of one line would collapse it.
-  if (firstReference.elementCenterId == 0 &&
-      secondReference.elementCenterId == 0 &&
-      firstReference.circleId == kInvalidGeometryId &&
-      secondReference.circleId == kInvalidGeometryId &&
+  if (!firstIsCircle && !secondIsCircle &&
       firstReference.lineId != kInvalidGeometryId &&
       firstReference.lineId == secondReference.lineId)
     return false;
@@ -1255,34 +836,13 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   const Point target = *first;
   const Point oldSecond = *second;
 
-  // A virtual rectangle center is not an independently movable coordinate.
-  // Moving it means translating the complete owning rectangle.
-  if (secondReference.elementCenterId != 0) {
-    const double dx = target.xMm - oldSecond.xMm;
-    const double dy = target.yMm - oldSecond.yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != secondReference.elementCenterId)
-        continue;
-
-      line.start.xMm += dx;
-      line.start.yMm += dy;
-      line.end.xMm += dx;
-      line.end.yMm += dy;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  if (secondReference.circleId != kInvalidGeometryId) {
+  if (secondIsCircle) {
     const auto index = circleIndex(secondReference.circleId);
     if (!index) return false;
     circles_[*index].center = target;
   } else {
     const auto same = [](Point a, Point b) {
-      return std::hypot(a.xMm - b.xMm,
-                        a.yMm - b.yMm) <= 1e-7;
+      return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
     };
 
     // Preserve the existing behavior for endpoint clusters that currently
@@ -1290,152 +850,6 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
     for (auto& line : lines_) {
       if (same(line.start, oldSecond)) line.start = target;
       if (same(line.end, oldSecond)) line.end = target;
-    }
-  }
-
-  updateBounds();
-  return true;
-}
-bool Sketch::setPointOnLine(GeometryId lineIdValue,
-                            PointReference pointReference) {
-  const auto carrierIndex = lineIndex(lineIdValue);
-  const auto point = referencedPoint(pointReference);
-
-  if (!carrierIndex || !point) return false;
-
-  // A line endpoint cannot be constrained onto its own carrier segment:
-  // that would be tautological and interferes with normal endpoint editing.
-  if (pointReference.circleId == kInvalidGeometryId &&
-      pointReference.lineId == lineIdValue)
-    return false;
-
-  const auto& carrier = lines_[*carrierIndex];
-  const double dx = carrier.end.xMm - carrier.start.xMm;
-  const double dy = carrier.end.yMm - carrier.start.yMm;
-  const double lengthSquared = dx * dx + dy * dy;
-
-  if (lengthSquared <= 1e-12) return false;
-
-  const double rawT =
-      ((point->xMm - carrier.start.xMm) * dx +
-       (point->yMm - carrier.start.yMm) * dy) /
-      lengthSquared;
-
-  // PointOnLine means point on the finite CAD segment, not on an infinite
-  // mathematical line. Clamp to the two endpoints.
-  const double t = std::clamp(rawT, 0.0, 1.0);
-
-  const Point target{
-      carrier.start.xMm + dx * t,
-      carrier.start.yMm + dy * t};
-
-  const Point oldPoint = *point;
-
-  if (pointReference.elementCenterId != 0) {
-    const double moveX = target.xMm - oldPoint.xMm;
-    const double moveY = target.yMm - oldPoint.yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != pointReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-  } else if (pointReference.circleId != kInvalidGeometryId) {
-    const auto circle = circleIndex(pointReference.circleId);
-    if (!circle) return false;
-    circles_[*circle].center = target;
-  } else {
-    const auto same = [](Point first, Point second) {
-      return std::hypot(first.xMm - second.xMm,
-                        first.yMm - second.yMm) <= 1e-7;
-    };
-
-    // Keep the complete coincident CAD vertex cluster together.
-    for (auto& line : lines_) {
-      if (same(line.start, oldPoint)) line.start = target;
-      if (same(line.end, oldPoint)) line.end = target;
-    }
-
-    for (auto& circle : circles_) {
-      if (same(circle.center, oldPoint))
-        circle.center = target;
-    }
-  }
-
-  updateBounds();
-  return true;
-}
-bool Sketch::setPointOnCircle(GeometryId circleIdValue,
-                              PointReference pointReference) {
-  const auto carrierIndex = circleIndex(circleIdValue);
-  const auto point = referencedPoint(pointReference);
-
-  if (!carrierIndex || !point) return false;
-
-  // The centre of a circle cannot belong to its own circumference.
-  if (pointReference.circleId == circleIdValue)
-    return false;
-
-  const Circle& carrier = circles_[*carrierIndex];
-  if (carrier.radiusMm <= 1e-9) return false;
-
-  const Point oldPoint = *point;
-
-  double dx = oldPoint.xMm - carrier.center.xMm;
-  double dy = oldPoint.yMm - carrier.center.yMm;
-  double length = std::hypot(dx, dy);
-
-  // There is no radial direction if the point is exactly at the centre.
-  // Choose +X deterministically for that degenerate initial case.
-  if (length <= 1e-9) {
-    dx = 1.0;
-    dy = 0.0;
-    length = 1.0;
-  }
-
-  const Point target{
-      carrier.center.xMm + dx / length * carrier.radiusMm,
-      carrier.center.yMm + dy / length * carrier.radiusMm};
-
-  const double moveX = target.xMm - oldPoint.xMm;
-  const double moveY = target.yMm - oldPoint.yMm;
-
-  if (pointReference.elementCenterId != 0) {
-    // Rectangle centre is derived geometry: translate the whole rectangle.
-    for (auto& line : lines_) {
-      if (line.elementId != pointReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-  } else if (pointReference.circleId != kInvalidGeometryId) {
-    const auto movingCircle =
-        circleIndex(pointReference.circleId);
-    if (!movingCircle) return false;
-
-    circles_[*movingCircle].center = target;
-  } else {
-    const auto same = [](Point first, Point second) {
-      return std::hypot(first.xMm - second.xMm,
-                        first.yMm - second.yMm) <= 1e-7;
-    };
-
-    // Keep a geometrically shared vertex together.
-    for (auto& line : lines_) {
-      if (same(line.start, oldPoint)) line.start = target;
-      if (same(line.end, oldPoint)) line.end = target;
-    }
-
-    for (auto& circle : circles_) {
-      if (same(circle.center, oldPoint))
-        circle.center = target;
     }
   }
 
@@ -1513,132 +927,6 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
     point.yMm += dyMm;
   }
 
-  // A drag is the user's active degree of freedom. Before the generic solver
-  // runs, propagate the new length of every moved line through its Equal
-  // component. This prevents an older rectangle in A=B=C from becoming the
-  // accidental source and snapping the actively edited rectangle backwards.
-  std::vector<GeometryId> movedLineIds;
-  for (const auto pointReference : connectedPoints) {
-    if (pointReference.circleId != kInvalidGeometryId ||
-        pointReference.lineId == kInvalidGeometryId)
-      continue;
-
-    if (std::find(movedLineIds.begin(), movedLineIds.end(),
-                  pointReference.lineId) == movedLineIds.end())
-      movedLineIds.push_back(pointReference.lineId);
-  }
-
-  const auto hasDrivingSize =
-      [this](GeometryId lineIdValue) {
-        const auto lineIndexValue = lineIndex(lineIdValue);
-        if (!lineIndexValue) return false;
-
-        for (const auto& item : constraints_) {
-          if (item.value <= 0.0) continue;
-
-          if (item.type == ConstraintType::Length &&
-              item.firstGeometry == lineIdValue)
-            return true;
-
-          if (item.firstPoint.circleId != kInvalidGeometryId ||
-              item.secondPoint.circleId != kInvalidGeometryId)
-            continue;
-
-          if (item.firstPoint.lineId != lineIdValue ||
-              item.secondPoint.lineId != lineIdValue ||
-              item.firstPoint.start == item.secondPoint.start)
-            continue;
-
-          if (item.type == ConstraintType::Distance ||
-              item.type == ConstraintType::DistanceX ||
-              item.type == ConstraintType::DistanceY)
-            return true;
-        }
-
-        return false;
-      };
-
-  for (const auto sourceId : movedLineIds) {
-    const auto sourceIndex = lineIndex(sourceId);
-    if (!sourceIndex) continue;
-
-    // A driving dimension is stronger than an interactive drag.
-    if (hasDrivingSize(sourceId)) continue;
-
-    std::vector<GeometryId> equalGroup{sourceId};
-    bool expandedEqual = true;
-
-    while (expandedEqual) {
-      expandedEqual = false;
-
-      for (const auto& item : constraints_) {
-        if (item.type != ConstraintType::Equal) continue;
-        if (!lineIndex(item.firstGeometry) ||
-            !lineIndex(item.secondGeometry))
-          continue;
-
-        const bool hasFirst =
-            std::find(equalGroup.begin(), equalGroup.end(),
-                      item.firstGeometry) != equalGroup.end();
-        const bool hasSecond =
-            std::find(equalGroup.begin(), equalGroup.end(),
-                      item.secondGeometry) != equalGroup.end();
-
-        if (hasFirst && !hasSecond) {
-          equalGroup.push_back(item.secondGeometry);
-          expandedEqual = true;
-        } else if (!hasFirst && hasSecond) {
-          equalGroup.push_back(item.firstGeometry);
-          expandedEqual = true;
-        }
-      }
-    }
-
-    if (equalGroup.size() <= 1) continue;
-
-    bool groupHasDriving = false;
-    for (const auto groupId : equalGroup) {
-      if (hasDrivingSize(groupId)) {
-        groupHasDriving = true;
-        break;
-      }
-    }
-    if (groupHasDriving) continue;
-
-    const auto& sourceLine = lines_[*sourceIndex];
-    const double targetLength =
-        std::hypot(sourceLine.end.xMm - sourceLine.start.xMm,
-                   sourceLine.end.yMm - sourceLine.start.yMm);
-    if (targetLength <= 1e-9) continue;
-
-    const std::size_t sourceElementId =
-        sourceLine.elementId;
-
-    for (const auto targetId : equalGroup) {
-      if (targetId == sourceId) continue;
-
-      const auto targetIndex = lineIndex(targetId);
-      if (!targetIndex) continue;
-
-      // Internal Equal between opposite sides of the actively edited
-      // rectangle is handled by its own rectangle constraints. Do not resize
-      // the driver element around its centre while the user is dragging it.
-      if (lines_[*targetIndex].elementId == sourceElementId)
-        continue;
-
-      const double currentLength =
-          std::hypot(lines_[*targetIndex].end.xMm -
-                         lines_[*targetIndex].start.xMm,
-                     lines_[*targetIndex].end.yMm -
-                         lines_[*targetIndex].start.yMm);
-
-      if (std::abs(currentLength - targetLength) <= 1e-7)
-        continue;
-
-      (void)setLineLengthById(targetId, targetLength);
-    }
-  }
-
   (void)BasicSketchSolver::solve(*this);
   updateBounds();
   return true;
@@ -1670,115 +958,19 @@ bool Sketch::setPointDistance(PointReference firstReference,
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
   if (!first || !second || distanceMm <= 0.0) return false;
-
   const double dx = second->xMm - first->xMm;
   const double dy = second->yMm - first->yMm;
   const double oldDistance = std::hypot(dx, dy);
   if (oldDistance <= 1e-9) return false;
-
   const Point moved{first->xMm + dx / oldDistance * distanceMm,
                     first->yMm + dy / oldDistance * distanceMm};
-
-  const double moveX = moved.xMm - second->xMm;
-  const double moveY = moved.yMm - second->yMm;
-
-  // SAME-RECTANGLE POINT DISTANCE
-  // If both selected endpoints belong to the same four-line rectangle,
-  // translating the whole element cannot change their internal distance.
-  // Resize the rectangle instead: move the vertex column/row that contains
-  // the second point while keeping the first side anchored.
-  const auto rectangleElementForPoint =
-      [this](PointReference reference) -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
-
-    const std::size_t elementId = lines_[*index].elementId;
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    return count == 4
-               ? std::optional<std::size_t>{elementId}
-               : std::nullopt;
-  };
-
-  const auto firstRectangle =
-      rectangleElementForPoint(firstReference);
-  const auto secondRectangle =
-      rectangleElementForPoint(secondReference);
-
-  if (firstRectangle && secondRectangle &&
-      *firstRectangle == *secondRectangle) {
-    const double oldSecondX = second->xMm;
-    const double oldSecondY = second->yMm;
-
-    const auto resizePoint =
-        [oldSecondX, oldSecondY, moveX, moveY](Point& point) {
-      if (std::abs(point.xMm - oldSecondX) <= 1e-7)
-        point.xMm += moveX;
-      if (std::abs(point.yMm - oldSecondY) <= 1e-7)
-        point.yMm += moveY;
-    };
-
-    for (auto& line : lines_) {
-      if (line.elementId != *secondRectangle)
-        continue;
-
-      resizePoint(line.start);
-      resizePoint(line.end);
-    }
-
-    updateBounds();
-    return true;
-  }
-  // A point-distance attached to a rectangle must move the complete
-  // composite element. Moving only one corner destroys the rectangle and
-  // makes the dimension appear to drift during subsequent solver passes.
-  if (secondReference.circleId == kInvalidGeometryId) {
-    const auto secondLineIndex = lineIndex(secondReference.lineId);
-
-    if (secondLineIndex) {
-      const std::size_t elementId =
-          lines_[*secondLineIndex].elementId;
-
-      std::size_t elementLineCount = 0;
-      for (const auto& line : lines_) {
-        if (line.elementId == elementId)
-          ++elementLineCount;
-      }
-
-      if (elementLineCount == 4) {
-        for (auto& line : lines_) {
-          if (line.elementId != elementId) continue;
-
-          line.start.xMm += moveX;
-          line.start.yMm += moveY;
-          line.end.xMm += moveX;
-          line.end.yMm += moveY;
-        }
-
-        updateBounds();
-        return true;
-      }
-    }
-  }
-
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
-
   for (auto& line : lines_) {
     if (same(line.start, *second)) line.start = moved;
     if (same(line.end, *second)) line.end = moved;
   }
-
   updateBounds();
   return true;
 }
@@ -1792,89 +984,11 @@ bool Sketch::setPointDistanceX(PointReference firstReference,
 
   const double dx = second->xMm - first->xMm;
   const double direction = dx < 0.0 ? -1.0 : 1.0;
-  const Point moved{first->xMm + direction * distanceMm,
-                    second->yMm};
-
-  const double moveX = moved.xMm - second->xMm;
-
-  // SAME-RECTANGLE X DISTANCE
-  // Move only the rectangle column containing the second point. This changes
-  // width while preserving the rectangular topology.
-  const auto rectangleElementForPointX =
-      [this](PointReference reference) -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
-
-    const std::size_t elementId = lines_[*index].elementId;
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    return count == 4
-               ? std::optional<std::size_t>{elementId}
-               : std::nullopt;
-  };
-
-  const auto firstRectangleX =
-      rectangleElementForPointX(firstReference);
-  const auto secondRectangleX =
-      rectangleElementForPointX(secondReference);
-
-  if (firstRectangleX && secondRectangleX &&
-      *firstRectangleX == *secondRectangleX) {
-    const double oldSecondX = second->xMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != *secondRectangleX)
-        continue;
-
-      if (std::abs(line.start.xMm - oldSecondX) <= 1e-7)
-        line.start.xMm += moveX;
-      if (std::abs(line.end.xMm - oldSecondX) <= 1e-7)
-        line.end.xMm += moveX;
-    }
-
-    updateBounds();
-    return true;
-  }
-  if (secondReference.circleId == kInvalidGeometryId) {
-    const auto secondLineIndex = lineIndex(secondReference.lineId);
-
-    if (secondLineIndex) {
-      const std::size_t elementId =
-          lines_[*secondLineIndex].elementId;
-
-      std::size_t elementLineCount = 0;
-      for (const auto& line : lines_) {
-        if (line.elementId == elementId)
-          ++elementLineCount;
-      }
-
-      if (elementLineCount == 4) {
-        for (auto& line : lines_) {
-          if (line.elementId != elementId) continue;
-
-          line.start.xMm += moveX;
-          line.end.xMm += moveX;
-        }
-
-        updateBounds();
-        return true;
-      }
-    }
-  }
+  const Point moved{first->xMm + direction * distanceMm, second->yMm};
 
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
-
   for (auto& line : lines_) {
     if (same(line.start, *second)) line.start = moved;
     if (same(line.end, *second)) line.end = moved;
@@ -1893,89 +1007,11 @@ bool Sketch::setPointDistanceY(PointReference firstReference,
 
   const double dy = second->yMm - first->yMm;
   const double direction = dy < 0.0 ? -1.0 : 1.0;
-  const Point moved{second->xMm,
-                    first->yMm + direction * distanceMm};
-
-  const double moveY = moved.yMm - second->yMm;
-
-  // SAME-RECTANGLE Y DISTANCE
-  // Move only the rectangle row containing the second point. This changes
-  // height while preserving the rectangular topology.
-  const auto rectangleElementForPointY =
-      [this](PointReference reference) -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
-
-    const std::size_t elementId = lines_[*index].elementId;
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    return count == 4
-               ? std::optional<std::size_t>{elementId}
-               : std::nullopt;
-  };
-
-  const auto firstRectangleY =
-      rectangleElementForPointY(firstReference);
-  const auto secondRectangleY =
-      rectangleElementForPointY(secondReference);
-
-  if (firstRectangleY && secondRectangleY &&
-      *firstRectangleY == *secondRectangleY) {
-    const double oldSecondY = second->yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != *secondRectangleY)
-        continue;
-
-      if (std::abs(line.start.yMm - oldSecondY) <= 1e-7)
-        line.start.yMm += moveY;
-      if (std::abs(line.end.yMm - oldSecondY) <= 1e-7)
-        line.end.yMm += moveY;
-    }
-
-    updateBounds();
-    return true;
-  }
-  if (secondReference.circleId == kInvalidGeometryId) {
-    const auto secondLineIndex = lineIndex(secondReference.lineId);
-
-    if (secondLineIndex) {
-      const std::size_t elementId =
-          lines_[*secondLineIndex].elementId;
-
-      std::size_t elementLineCount = 0;
-      for (const auto& line : lines_) {
-        if (line.elementId == elementId)
-          ++elementLineCount;
-      }
-
-      if (elementLineCount == 4) {
-        for (auto& line : lines_) {
-          if (line.elementId != elementId) continue;
-
-          line.start.yMm += moveY;
-          line.end.yMm += moveY;
-        }
-
-        updateBounds();
-        return true;
-      }
-    }
-  }
+  const Point moved{second->xMm, first->yMm + direction * distanceMm};
 
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
-
   for (auto& line : lines_) {
     if (same(line.start, *second)) line.start = moved;
     if (same(line.end, *second)) line.end = moved;
@@ -2021,11 +1057,11 @@ ConstraintId Sketch::addConstraint(Constraint constraint) {
     constraint.id = nextConstraintId_++;
   else
     nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
-
   constraints_.push_back(constraint);
   (void)BasicSketchSolver::solve(*this);
   return constraint.id;
 }
+
 bool Sketch::removeConstraint(ConstraintId id) {
   const auto oldSize = constraints_.size();
   std::erase_if(constraints_, [id](const Constraint& constraint) {

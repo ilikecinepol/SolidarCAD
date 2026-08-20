@@ -1,0 +1,608 @@
+#include "sketch/SketchSolver.h"
+
+#include "sketch/Sketch.h"
+
+#include <algorithm>
+
+namespace solidar::sketch {
+
+SolveResult BasicSketchSolver::solve(Sketch& sketch) {
+  SolveResult result;
+
+  // Resolve point coincidence first. H/V constraints are applied afterwards,
+  // so an orthogonal line can move the whole coincident endpoint cluster.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Coincident) continue;
+
+    const auto validPointReference =
+        [&sketch](PointReference reference) {
+      if (reference.circleId != kInvalidGeometryId)
+        return sketch.circleIndex(reference.circleId).has_value();
+
+      return reference.lineId != kInvalidGeometryId &&
+             sketch.lineIndex(reference.lineId).has_value();
+    };
+
+    if (!validPointReference(constraint.firstPoint) ||
+        !validPointReference(constraint.secondPoint)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setPointsCoincident(constraint.firstPoint,
+                                   constraint.secondPoint))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+
+  for (const auto& constraint : sketch.constraints()) {
+    switch (constraint.type) {
+      case ConstraintType::Horizontal:
+        if (constraint.firstGeometry == kInvalidGeometryId ||
+            !sketch.lineIndex(constraint.firstGeometry)) {
+          ++result.invalidReferences;
+          break;
+        }
+        if (sketch.setLineHorizontalById(constraint.firstGeometry))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Vertical:
+        if (constraint.firstGeometry == kInvalidGeometryId ||
+            !sketch.lineIndex(constraint.firstGeometry)) {
+          ++result.invalidReferences;
+          break;
+        }
+        if (sketch.setLineVerticalById(constraint.firstGeometry))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Length:
+        if (constraint.firstGeometry == kInvalidGeometryId ||
+            !sketch.lineIndex(constraint.firstGeometry) ||
+            constraint.value <= 0.0) {
+          ++result.invalidReferences;
+          break;
+        }
+        if (sketch.setLineLengthById(constraint.firstGeometry,
+                                     constraint.value))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Distance:
+      case ConstraintType::DistanceX:
+      case ConstraintType::DistanceY:
+        if (constraint.firstPoint.lineId == kInvalidGeometryId ||
+            constraint.secondPoint.lineId == kInvalidGeometryId ||
+            !sketch.lineIndex(constraint.firstPoint.lineId) ||
+            !sketch.lineIndex(constraint.secondPoint.lineId) ||
+            constraint.value <= 0.0) {
+          ++result.invalidReferences;
+          break;
+        }
+
+        if ((constraint.type == ConstraintType::Distance &&
+             sketch.setPointDistance(constraint.firstPoint,
+                                     constraint.secondPoint,
+                                     constraint.value)) ||
+            (constraint.type == ConstraintType::DistanceX &&
+             sketch.setPointDistanceX(constraint.firstPoint,
+                                      constraint.secondPoint,
+                                      constraint.value)) ||
+            (constraint.type == ConstraintType::DistanceY &&
+             sketch.setPointDistanceY(constraint.firstPoint,
+                                      constraint.secondPoint,
+                                      constraint.value)))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Angle:
+      case ConstraintType::Perpendicular:
+      case ConstraintType::Parallel:
+      case ConstraintType::Equal:
+        // Applied in final relationship passes below. This simple solver is
+        // sequential, so relative geometry constraints must be last.
+        break;
+      case ConstraintType::Diameter:
+        if (constraint.firstGeometry == kInvalidGeometryId ||
+            !sketch.circleIndex(constraint.firstGeometry) ||
+            constraint.value <= 0.0) {
+          ++result.invalidReferences;
+          break;
+        }
+
+        if (sketch.setCircleDiameterById(constraint.firstGeometry,
+                                         constraint.value))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
+      case ConstraintType::Coincident:
+        // Already handled in the first pass.
+        break;
+
+      default:
+        ++result.unsupported;
+        break;
+    }
+  }
+
+  // Final angular pass. Angle is orientation-sensitive and can otherwise be
+  // overwritten by constraints that happen to appear later in the vector.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Angle) continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        constraint.secondGeometry == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstGeometry) ||
+        !sketch.lineIndex(constraint.secondGeometry) ||
+        constraint.firstGeometry == constraint.secondGeometry ||
+        constraint.value <= 0.0 || constraint.value >= 180.0) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    const auto hasOrthogonalConstraint =
+        [&sketch](GeometryId id) {
+          return std::any_of(
+              sketch.constraints().begin(), sketch.constraints().end(),
+              [id](const Constraint& item) {
+                return item.firstGeometry == id &&
+                       (item.type == ConstraintType::Horizontal ||
+                        item.type == ConstraintType::Vertical);
+              });
+        };
+
+    const bool firstOrthogonal =
+        hasOrthogonalConstraint(constraint.firstGeometry);
+    const bool secondOrthogonal =
+        hasOrthogonalConstraint(constraint.secondGeometry);
+
+    // H/V is a stronger orientation constraint than Angle in this simple
+    // sequential solver. If the second line is H/V-fixed, rotate the first
+    // line instead. If both are fixed, keep both H/V constraints intact.
+    if (firstOrthogonal && secondOrthogonal) {
+      continue;
+    }
+
+    const GeometryId referenceGeometry =
+        secondOrthogonal && !firstOrthogonal
+            ? constraint.secondGeometry
+            : constraint.firstGeometry;
+    const GeometryId movingGeometry =
+        secondOrthogonal && !firstOrthogonal
+            ? constraint.firstGeometry
+            : constraint.secondGeometry;
+
+    if (sketch.setLineAngleByIds(referenceGeometry,
+                                 movingGeometry,
+                                 constraint.value))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+
+  // Perpendicular uses the same rotation primitive as Angle, but always with
+  // 90 degrees. Preserve an existing H/V-fixed line by rotating the other.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Perpendicular) continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        constraint.secondGeometry == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstGeometry) ||
+        !sketch.lineIndex(constraint.secondGeometry) ||
+        constraint.firstGeometry == constraint.secondGeometry) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    const auto orthogonalType =
+        [&sketch](GeometryId id)
+            -> std::optional<ConstraintType> {
+          for (const auto& item : sketch.constraints()) {
+            if (item.firstGeometry != id) continue;
+            if (item.type == ConstraintType::Horizontal ||
+                item.type == ConstraintType::Vertical)
+              return item.type;
+          }
+          return std::nullopt;
+        };
+
+    const auto firstOrthogonal =
+        orthogonalType(constraint.firstGeometry);
+    const auto secondOrthogonal =
+        orthogonalType(constraint.secondGeometry);
+
+    if (firstOrthogonal && secondOrthogonal) {
+      if (*firstOrthogonal != *secondOrthogonal)
+        ++result.applied;
+      else
+        ++result.unsupported;
+      continue;
+    }
+
+    const GeometryId referenceGeometry =
+        secondOrthogonal && !firstOrthogonal
+            ? constraint.secondGeometry
+            : constraint.firstGeometry;
+    const GeometryId movingGeometry =
+        secondOrthogonal && !firstOrthogonal
+            ? constraint.firstGeometry
+            : constraint.secondGeometry;
+
+    if (sketch.setLineAngleByIds(referenceGeometry,
+                                 movingGeometry,
+                                 90.0))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+  // Parallel is another relative orientation constraint. Keep an H/V-fixed
+  // line as reference when only one side has an absolute orientation.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Parallel) continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        constraint.secondGeometry == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstGeometry) ||
+        !sketch.lineIndex(constraint.secondGeometry) ||
+        constraint.firstGeometry == constraint.secondGeometry) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    const auto orthogonalType =
+        [&sketch](GeometryId id)
+            -> std::optional<ConstraintType> {
+          for (const auto& item : sketch.constraints()) {
+            if (item.firstGeometry != id) continue;
+
+            if (item.type == ConstraintType::Horizontal ||
+                item.type == ConstraintType::Vertical)
+              return item.type;
+          }
+
+          return std::nullopt;
+        };
+
+    const auto firstOrthogonal =
+        orthogonalType(constraint.firstGeometry);
+    const auto secondOrthogonal =
+        orthogonalType(constraint.secondGeometry);
+
+    if (firstOrthogonal && secondOrthogonal) {
+      if (*firstOrthogonal == *secondOrthogonal)
+        ++result.applied;
+      else
+        ++result.unsupported;
+      continue;
+    }
+
+    const GeometryId referenceGeometry =
+        secondOrthogonal && !firstOrthogonal
+            ? constraint.secondGeometry
+            : constraint.firstGeometry;
+    const GeometryId movingGeometry =
+        secondOrthogonal && !firstOrthogonal
+            ? constraint.firstGeometry
+            : constraint.secondGeometry;
+
+    if (sketch.setLinesParallelByIds(referenceGeometry,
+                                     movingGeometry))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+  // RECTANGLE/STANDARD ORIENTATION STABILIZATION
+  //
+  // BasicSketchSolver is intentionally simple and sequential. Relative
+  // constraints can slightly disturb a point relation that was solved earlier
+  // in the same pass. A few cheap final iterations are enough for common
+  // sketch chains (especially rectangles) to settle without turning this into
+  // a full nonlinear solver.
+  for (int stabilizationPass = 0; stabilizationPass < 3;
+       ++stabilizationPass) {
+    // 1) Restore coincident corners.
+    for (const auto& constraint : sketch.constraints()) {
+      if (constraint.type != ConstraintType::Coincident) continue;
+
+      const auto validPointReference =
+          [&sketch](PointReference reference) {
+            if (reference.circleId != kInvalidGeometryId)
+              return sketch.circleIndex(reference.circleId).has_value();
+
+            return reference.lineId != kInvalidGeometryId &&
+                   sketch.lineIndex(reference.lineId).has_value();
+          };
+
+      if (!validPointReference(constraint.firstPoint) ||
+          !validPointReference(constraint.secondPoint))
+        continue;
+
+      (void)sketch.setPointsCoincident(constraint.firstPoint,
+                                       constraint.secondPoint);
+    }
+
+    // 2) Re-apply absolute H/V orientation.
+    for (const auto& constraint : sketch.constraints()) {
+      if (constraint.firstGeometry == kInvalidGeometryId ||
+          !sketch.lineIndex(constraint.firstGeometry))
+        continue;
+
+      if (constraint.type == ConstraintType::Horizontal)
+        (void)sketch.setLineHorizontalById(constraint.firstGeometry);
+      else if (constraint.type == ConstraintType::Vertical)
+        (void)sketch.setLineVerticalById(constraint.firstGeometry);
+    }
+
+    // 3) Re-apply parallel pairs. Preserve an H/V-fixed side as reference.
+    for (const auto& constraint : sketch.constraints()) {
+      if (constraint.type != ConstraintType::Parallel) continue;
+
+      if (constraint.firstGeometry == kInvalidGeometryId ||
+          constraint.secondGeometry == kInvalidGeometryId ||
+          constraint.firstGeometry == constraint.secondGeometry ||
+          !sketch.lineIndex(constraint.firstGeometry) ||
+          !sketch.lineIndex(constraint.secondGeometry))
+        continue;
+
+      const auto hasAbsoluteOrientation =
+          [&sketch](GeometryId id) {
+            return std::any_of(
+                sketch.constraints().begin(), sketch.constraints().end(),
+                [id](const Constraint& item) {
+                  return item.firstGeometry == id &&
+                         (item.type == ConstraintType::Horizontal ||
+                          item.type == ConstraintType::Vertical);
+                });
+          };
+
+      const bool firstFixed =
+          hasAbsoluteOrientation(constraint.firstGeometry);
+      const bool secondFixed =
+          hasAbsoluteOrientation(constraint.secondGeometry);
+
+      if (firstFixed && secondFixed)
+        continue;
+
+      const GeometryId referenceGeometry =
+          secondFixed && !firstFixed
+              ? constraint.secondGeometry
+              : constraint.firstGeometry;
+      const GeometryId movingGeometry =
+          secondFixed && !firstFixed
+              ? constraint.firstGeometry
+              : constraint.secondGeometry;
+
+      (void)sketch.setLinesParallelByIds(referenceGeometry,
+                                         movingGeometry);
+    }
+
+    // 4) Re-apply perpendicular pairs using the same H/V priority rule.
+    for (const auto& constraint : sketch.constraints()) {
+      if (constraint.type != ConstraintType::Perpendicular) continue;
+
+      if (constraint.firstGeometry == kInvalidGeometryId ||
+          constraint.secondGeometry == kInvalidGeometryId ||
+          constraint.firstGeometry == constraint.secondGeometry ||
+          !sketch.lineIndex(constraint.firstGeometry) ||
+          !sketch.lineIndex(constraint.secondGeometry))
+        continue;
+
+      const auto hasAbsoluteOrientation =
+          [&sketch](GeometryId id) {
+            return std::any_of(
+                sketch.constraints().begin(), sketch.constraints().end(),
+                [id](const Constraint& item) {
+                  return item.firstGeometry == id &&
+                         (item.type == ConstraintType::Horizontal ||
+                          item.type == ConstraintType::Vertical);
+                });
+          };
+
+      const bool firstFixed =
+          hasAbsoluteOrientation(constraint.firstGeometry);
+      const bool secondFixed =
+          hasAbsoluteOrientation(constraint.secondGeometry);
+
+      if (firstFixed && secondFixed)
+        continue;
+
+      const GeometryId referenceGeometry =
+          secondFixed && !firstFixed
+              ? constraint.secondGeometry
+              : constraint.firstGeometry;
+      const GeometryId movingGeometry =
+          secondFixed && !firstFixed
+              ? constraint.firstGeometry
+              : constraint.secondGeometry;
+
+      (void)sketch.setLineAngleByIds(referenceGeometry,
+                                     movingGeometry,
+                                     90.0);
+    }
+  }
+  // Equal makes two primitives of the same kind share size.
+  // If one side already has a driving dimensional constraint, preserve it
+  // and resize the other side.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Equal) continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        constraint.secondGeometry == kInvalidGeometryId ||
+        constraint.firstGeometry == constraint.secondGeometry) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    const auto firstLine =
+        sketch.lineIndex(constraint.firstGeometry);
+    const auto secondLine =
+        sketch.lineIndex(constraint.secondGeometry);
+
+    if (firstLine && secondLine) {
+      const auto hasDrivingLength =
+          [&sketch](GeometryId id) {
+            return std::any_of(
+                sketch.constraints().begin(),
+                sketch.constraints().end(),
+                [id](const Constraint& item) {
+                  return item.firstGeometry == id &&
+                         item.type == ConstraintType::Length &&
+                         item.value > 0.0;
+                });
+          };
+
+      const bool firstFixed =
+          hasDrivingLength(constraint.firstGeometry);
+      const bool secondFixed =
+          hasDrivingLength(constraint.secondGeometry);
+
+      if (firstFixed && secondFixed) {
+        const auto& first =
+            sketch.lines()[*firstLine];
+        const auto& second =
+            sketch.lines()[*secondLine];
+
+        const double firstLength =
+            std::hypot(first.end.xMm - first.start.xMm,
+                       first.end.yMm - first.start.yMm);
+        const double secondLength =
+            std::hypot(second.end.xMm - second.start.xMm,
+                       second.end.yMm - second.start.yMm);
+
+        if (std::abs(firstLength - secondLength) <= 1e-7)
+          ++result.applied;
+        else
+          ++result.unsupported;
+
+        continue;
+      }
+
+      const GeometryId referenceGeometry =
+          secondFixed && !firstFixed
+              ? constraint.secondGeometry
+              : constraint.firstGeometry;
+      const GeometryId movingGeometry =
+          secondFixed && !firstFixed
+              ? constraint.firstGeometry
+              : constraint.secondGeometry;
+
+      const auto referenceIndex =
+          sketch.lineIndex(referenceGeometry);
+
+      if (!referenceIndex) {
+        ++result.invalidReferences;
+        continue;
+      }
+
+      const auto& reference =
+          sketch.lines()[*referenceIndex];
+
+      const double targetLength =
+          std::hypot(reference.end.xMm - reference.start.xMm,
+                     reference.end.yMm - reference.start.yMm);
+
+      if (targetLength <= 1e-9) {
+        ++result.invalidReferences;
+        continue;
+      }
+
+      if (sketch.setLineLengthById(movingGeometry,
+                                   targetLength))
+        ++result.applied;
+      else
+        ++result.invalidReferences;
+
+      continue;
+    }
+
+    const auto firstCircle =
+        sketch.circleIndex(constraint.firstGeometry);
+    const auto secondCircle =
+        sketch.circleIndex(constraint.secondGeometry);
+
+    if (firstCircle && secondCircle) {
+      const auto hasDrivingCircleSize =
+          [&sketch](GeometryId id) {
+            return std::any_of(
+                sketch.constraints().begin(),
+                sketch.constraints().end(),
+                [id](const Constraint& item) {
+                  return item.firstGeometry == id &&
+                         (item.type == ConstraintType::Diameter ||
+                          item.type == ConstraintType::Radius) &&
+                         item.value > 0.0;
+                });
+          };
+
+      const bool firstFixed =
+          hasDrivingCircleSize(constraint.firstGeometry);
+      const bool secondFixed =
+          hasDrivingCircleSize(constraint.secondGeometry);
+
+      if (firstFixed && secondFixed) {
+        const double firstDiameter =
+            sketch.circles()[*firstCircle].radiusMm * 2.0;
+        const double secondDiameter =
+            sketch.circles()[*secondCircle].radiusMm * 2.0;
+
+        if (std::abs(firstDiameter - secondDiameter) <= 1e-7)
+          ++result.applied;
+        else
+          ++result.unsupported;
+
+        continue;
+      }
+
+      const GeometryId referenceGeometry =
+          secondFixed && !firstFixed
+              ? constraint.secondGeometry
+              : constraint.firstGeometry;
+      const GeometryId movingGeometry =
+          secondFixed && !firstFixed
+              ? constraint.firstGeometry
+              : constraint.secondGeometry;
+
+      const auto referenceIndex =
+          sketch.circleIndex(referenceGeometry);
+
+      if (!referenceIndex) {
+        ++result.invalidReferences;
+        continue;
+      }
+
+      const double targetDiameter =
+          sketch.circles()[*referenceIndex].radiusMm * 2.0;
+
+      if (targetDiameter <= 1e-9) {
+        ++result.invalidReferences;
+        continue;
+      }
+
+      if (sketch.setCircleDiameterById(movingGeometry,
+                                       targetDiameter))
+        ++result.applied;
+      else
+        ++result.invalidReferences;
+
+      continue;
+    }
+
+    // Equal is only meaningful between two lines or two circles.
+    ++result.invalidReferences;
+  }
+  return result;
+}
+
+}  // namespace solidar::sketch
