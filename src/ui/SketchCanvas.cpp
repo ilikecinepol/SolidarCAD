@@ -1,4 +1,4 @@
-﻿#include <array>
+#include <array>
 #include "ui/SketchCanvas.h"
 #include "sketch/SketchSolver.h"
 
@@ -391,6 +391,8 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("parallelFirstLine", QVariant());
   setProperty("equalFirstGeometry", QVariant());
   setProperty("equalFirstKind", QVariant());
+  setProperty("tangentFirstGeometry", QVariant());
+  setProperty("tangentFirstKind", QVariant());
   setProperty("editingDimensionIndex", QVariant());
   hideDimensionEditor();
   setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
@@ -466,6 +468,8 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         return QString::fromUtf8("Равенство");
       case sketch::ConstraintType::Angle:
         return QString::fromUtf8("Угол");
+      case sketch::ConstraintType::Tangent:
+        return QString::fromUtf8("\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xBE");
     }
     return QString::fromUtf8("Ограничение");
   };
@@ -1843,6 +1847,21 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       else
         drawHighlightedLine(id);
     }
+    if (tool_ == Tool::TangentConstraint &&
+        property("tangentFirstGeometry").isValid() &&
+        property("tangentFirstKind").isValid()) {
+      const auto id =
+          static_cast<sketch::GeometryId>(
+              property("tangentFirstGeometry").toULongLong());
+
+      const int kind =
+          property("tangentFirstKind").toInt();
+
+      if (kind == 2)
+        drawHighlightedCircle(id);
+      else if (kind == 1)
+        drawHighlightedLine(id);
+    }
   }
   if (selectionBoxActive_) {
     const QRectF selectionRect(selectionBoxStart_, selectionBoxCurrent_);
@@ -1990,6 +2009,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     handleParallelConstraintClick(event->position());
   } else if (tool_ == Tool::EqualConstraint) {
     handleEqualConstraintClick(event->position());
+  } else if (tool_ == Tool::TangentConstraint) {
+    handleTangentConstraintClick(event->position());
   } else if (tool_ == Tool::Select) {
     const bool additive =
         event->modifiers().testFlag(Qt::ControlModifier);
@@ -2115,34 +2136,51 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     sketch::Point constructionPoint =
         snappedPoint(event->position());
 
-    // CENTER NODE SNAP - CONSTRUCTION ONLY
+    // UNIFIED CONSTRUCTION CAD POINT SNAP
     //
-    // Do not put virtual rectangle centers into snappedPoint(): that function
-    // is also used by dragging and editing. Center-node snapping is deliberately
-    // limited to geometry creation.
+    // Every geometry creation tool uses the same first-class CAD points:
+    // line endpoints, circle centres and virtual rectangle centres.
+    // The picked construction point is moved exactly onto the nearest
+    // existing CAD point before commitPoint() sees it.
     if (snapEnabled_ &&
         (tool_ == Tool::Line ||
          tool_ == Tool::Rectangle ||
          tool_ == Tool::Circle)) {
-      constexpr double centerNodeTolerancePx = 10.0;
-      double bestDistance = centerNodeTolerancePx;
+      constexpr double cadPointTolerancePx = 10.0;
+      double bestDistance = cadPointTolerancePx;
 
-      for (const auto elementId : sketch_.centerNodeElementIds()) {
+      const auto considerPoint =
+          [this, &constructionPoint,
+           &bestDistance, event](
+              sketch::Point candidate) {
+            const double distance =
+                QLineF(
+                    event->position(),
+                    mapPoint(candidate)).length();
+
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              constructionPoint = candidate;
+            }
+          };
+
+      for (const auto& line : sketch_.lines()) {
+        considerPoint(line.start);
+        considerPoint(line.end);
+      }
+
+      for (const auto& circle : sketch_.circles())
+        considerPoint(circle.center);
+
+      for (const auto elementId :
+           sketch_.centerNodeElementIds()) {
         const auto center =
             sketch_.elementCenterPoint(elementId);
-        if (!center) continue;
 
-        const double distance =
-            QLineF(event->position(),
-                   mapPoint(*center)).length();
-
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          constructionPoint = *center;
-        }
+        if (center)
+          considerPoint(*center);
       }
     }
-
     commitPoint(constructionPoint);
   }
 }
@@ -4715,6 +4753,204 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
   notifyGeometryChanged();
   update();
 }
+void SketchCanvas::handleTangentConstraintClick(QPointF position) {
+  constexpr double hitTolerance = 9.0;
+
+  enum class HitKind {
+    None = 0,
+    Line = 1,
+    Circle = 2
+  };
+
+  HitKind hitKind = HitKind::None;
+  sketch::GeometryId hitId = sketch::kInvalidGeometryId;
+  double bestDistance = hitTolerance;
+
+  for (std::size_t index = 0;
+       index < sketch_.lines().size();
+       ++index) {
+    const auto& line = sketch_.lines()[index];
+
+    const double distance =
+        pointSegmentDistance(
+            position,
+            mapPoint(line.start),
+            mapPoint(line.end));
+
+    if (distance >= bestDistance)
+      continue;
+
+    const auto id = sketch_.lineId(index);
+    if (id == sketch::kInvalidGeometryId)
+      continue;
+
+    bestDistance = distance;
+    hitKind = HitKind::Line;
+    hitId = id;
+  }
+
+  for (std::size_t index = 0;
+       index < sketch_.circles().size();
+       ++index) {
+    const auto& circle = sketch_.circles()[index];
+
+    const double distance =
+        std::abs(
+            QLineF(
+                position,
+                mapPoint(circle.center)).length() -
+            circle.radiusMm * pixelsPerMm_);
+
+    if (distance >= bestDistance)
+      continue;
+
+    const auto id = sketch_.circleId(index);
+    if (id == sketch::kInvalidGeometryId)
+      continue;
+
+    bestDistance = distance;
+    hitKind = HitKind::Circle;
+    hitId = id;
+  }
+
+  if (hitKind == HitKind::None ||
+      hitId == sketch::kInvalidGeometryId)
+    return;
+
+  const QVariant firstGeometryProperty =
+      property("tangentFirstGeometry");
+
+  const QVariant firstKindProperty =
+      property("tangentFirstKind");
+
+  if (!firstGeometryProperty.isValid() ||
+      !firstKindProperty.isValid()) {
+    setProperty(
+        "tangentFirstGeometry",
+        static_cast<qulonglong>(hitId));
+
+    setProperty(
+        "tangentFirstKind",
+        static_cast<int>(hitKind));
+
+    if (hitKind == HitKind::Line) {
+      emit selectionChanged(
+          QString::fromUtf8(
+              "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
+              "\xD0\xB2\xD1\x8B\xD0\xB1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD0\xB5 "
+              "\xD0\xBE\xD0\xBA\xD1\x80\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C"));
+    }
+    else {
+      emit selectionChanged(
+          QString::fromUtf8(
+              "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
+              "\xD0\xB2\xD1\x8B\xD0\xB1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD0\xB5 "
+              "\xD0\xBF\xD1\x80\xD1\x8F\xD0\xBC\xD1\x83\xD1\x8E"));
+    }
+
+    update();
+    return;
+  }
+
+  const auto firstId =
+      static_cast<sketch::GeometryId>(
+          firstGeometryProperty.toULongLong());
+
+  const auto firstKind =
+      static_cast<HitKind>(
+          firstKindProperty.toInt());
+
+  if (firstKind == hitKind) {
+    emit selectionChanged(
+        firstKind == HitKind::Line
+            ? QString::fromUtf8(
+                  "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
+                  "\xD0\xBD\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE "
+                  "\xD0\xB2\xD1\x8B\xD0\xB1\xD1\x80\xD0\xB0\xD1\x82\xD1\x8C "
+                  "\xD0\xBE\xD0\xBA\xD1\x80\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C")
+            : QString::fromUtf8(
+                  "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
+                  "\xD0\xBD\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE "
+                  "\xD0\xB2\xD1\x8B\xD0\xB1\xD1\x80\xD0\xB0\xD1\x82\xD1\x8C "
+                  "\xD0\xBF\xD1\x80\xD1\x8F\xD0\xBC\xD1\x83\xD1\x8E"));
+    update();
+    return;
+  }
+
+  sketch::GeometryId lineId =
+      sketch::kInvalidGeometryId;
+
+  sketch::GeometryId circleId =
+      sketch::kInvalidGeometryId;
+
+  if (firstKind == HitKind::Line &&
+      hitKind == HitKind::Circle) {
+    lineId = firstId;
+    circleId = hitId;
+  }
+  else if (firstKind == HitKind::Circle &&
+           hitKind == HitKind::Line) {
+    lineId = hitId;
+    circleId = firstId;
+  }
+
+  const auto resetState = [this]() {
+    setProperty("tangentFirstGeometry", QVariant());
+    setProperty("tangentFirstKind", QVariant());
+  };
+
+  if (lineId == sketch::kInvalidGeometryId ||
+      circleId == sketch::kInvalidGeometryId ||
+      !sketch_.lineIndex(lineId) ||
+      !sketch_.circleIndex(circleId)) {
+    resetState();
+    update();
+    return;
+  }
+
+  for (const auto& constraint :
+       sketch_.constraints()) {
+    if (constraint.type !=
+        sketch::ConstraintType::Tangent)
+      continue;
+
+    if (constraint.firstGeometry == lineId &&
+        constraint.secondGeometry == circleId) {
+      resetState();
+
+      emit selectionChanged(
+          QString::fromUtf8(
+              "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F "
+              "\xD1\x83\xD0\xB6\xD0\xB5 "
+              "\xD1\x83\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB0"));
+
+      update();
+      return;
+    }
+  }
+
+  pushUndoState();
+
+  sketch::Constraint constraint;
+  constraint.type =
+      sketch::ConstraintType::Tangent;
+  constraint.firstGeometry = lineId;
+  constraint.secondGeometry = circleId;
+
+  sketch_.addConstraint(constraint);
+
+  resetState();
+
+  emit selectionChanged(
+      QString::fromUtf8(
+          "\xD0\x9E\xD0\xB3\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB8\xD1\x87\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5: "
+          "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F "
+          "\xD0\xBA "
+          "\xD0\xBE\xD0\xBA\xD1\x80\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD0\xB8"));
+
+  notifyGeometryChanged();
+  update();
+}
 void SketchCanvas::handleEqualConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
 
@@ -6172,47 +6408,117 @@ void autoCoincidentNewGeometry(
     sketch::Point initialPoint;
   };
 
+  const auto sameReference =
+      [](sketch::PointReference first,
+         sketch::PointReference second) {
+        if (first.elementCenterId != 0 ||
+            second.elementCenterId != 0) {
+          return first.elementCenterId != 0 &&
+                 first.elementCenterId ==
+                     second.elementCenterId;
+        }
+
+        if (first.circleId != sketch::kInvalidGeometryId ||
+            second.circleId != sketch::kInvalidGeometryId) {
+          return first.circleId != sketch::kInvalidGeometryId &&
+                 first.circleId == second.circleId;
+        }
+
+        return first.lineId == second.lineId &&
+               first.start == second.start;
+      };
+
   std::vector<sketch::PointReference> oldReferences;
+
+  const auto addOldReference =
+      [&oldReferences, &sameReference](
+          sketch::PointReference reference) {
+        const bool duplicate =
+            std::any_of(
+                oldReferences.begin(),
+                oldReferences.end(),
+                [reference, &sameReference](
+                    sketch::PointReference existing) {
+                  return sameReference(existing, reference);
+                });
+
+        if (!duplicate)
+          oldReferences.push_back(reference);
+      };
 
   for (std::size_t index = 0;
        index < std::min(oldLineCount, sketch.lines().size());
        ++index) {
     const auto id = sketch.lineId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
+    if (id == sketch::kInvalidGeometryId)
+      continue;
 
-    oldReferences.push_back(sketch::PointReference{id, true});
-    oldReferences.push_back(sketch::PointReference{id, false});
+    addOldReference(sketch::PointReference{id, true});
+    addOldReference(sketch::PointReference{id, false});
   }
 
   for (std::size_t index = 0;
        index < std::min(oldCircleCount, sketch.circles().size());
        ++index) {
     const auto id = sketch.circleId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
+    if (id == sketch::kInvalidGeometryId)
+      continue;
 
     sketch::PointReference center;
     center.circleId = id;
-    oldReferences.push_back(center);
+    addOldReference(center);
   }
 
-  if (oldReferences.empty()) return;
+  // Existing virtual centers of composite elements are CAD points too.
+  // Only centers whose element already existed before this creation pass
+  // belong in oldReferences.
+  for (const auto elementId : sketch.centerNodeElementIds()) {
+    bool belongsToOldGeometry = false;
+
+    for (std::size_t index = 0;
+         index < std::min(oldLineCount, sketch.lines().size());
+         ++index) {
+      if (sketch.lines()[index].elementId == elementId) {
+        belongsToOldGeometry = true;
+        break;
+      }
+    }
+
+    if (!belongsToOldGeometry)
+      continue;
+
+    sketch::PointReference center;
+    center.elementCenterId = elementId;
+    addOldReference(center);
+  }
+
+  if (oldReferences.empty())
+    return;
 
   std::vector<ReferenceCandidate> newReferences;
 
   const auto addNewReference =
-      [&sketch, &newReferences](sketch::PointReference reference) {
-        const auto point = sketch.referencedPoint(reference);
-        if (!point) return;
+      [&sketch, &newReferences](
+          sketch::PointReference reference) {
+        const auto point =
+            sketch.referencedPoint(reference);
 
-        // Rectangle corners are represented by two coincident line endpoints.
-        // One external Coincident per geometric point is enough.
+        if (!point)
+          return;
+
+        // Rectangle corners may be represented by two coincident
+        // primitive endpoints. One external constraint per geometric
+        // point is enough.
         const bool duplicatePoint =
             std::any_of(
-                newReferences.begin(), newReferences.end(),
+                newReferences.begin(),
+                newReferences.end(),
                 [&point](const ReferenceCandidate& item) {
                   return std::hypot(
-                             item.initialPoint.xMm - point->xMm,
-                             item.initialPoint.yMm - point->yMm) <= 1e-7;
+                             item.initialPoint.xMm -
+                                 point->xMm,
+                             item.initialPoint.yMm -
+                                 point->yMm) <= 1e-7;
                 });
 
         if (!duplicatePoint)
@@ -6223,35 +6529,51 @@ void autoCoincidentNewGeometry(
        index < sketch.lines().size();
        ++index) {
     const auto id = sketch.lineId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
 
-    addNewReference(sketch::PointReference{id, true});
-    addNewReference(sketch::PointReference{id, false});
+    if (id == sketch::kInvalidGeometryId)
+      continue;
+
+    addNewReference(
+        sketch::PointReference{id, true});
+    addNewReference(
+        sketch::PointReference{id, false});
   }
 
   for (std::size_t index = oldCircleCount;
        index < sketch.circles().size();
        ++index) {
     const auto id = sketch.circleId(index);
-    if (id == sketch::kInvalidGeometryId) continue;
+
+    if (id == sketch::kInvalidGeometryId)
+      continue;
 
     sketch::PointReference center;
     center.circleId = id;
     addNewReference(center);
   }
 
-  const auto sameReference =
-      [](sketch::PointReference first,
-         sketch::PointReference second) {
-        if (first.circleId != sketch::kInvalidGeometryId ||
-            second.circleId != sketch::kInvalidGeometryId) {
-          return first.circleId != sketch::kInvalidGeometryId &&
-                 first.circleId == second.circleId;
-        }
+  // Newly created center-based rectangles expose a virtual center node.
+  // Add it as a new reference so a rectangle created from an existing
+  // CAD point receives a real Coincident constraint at its center.
+  for (const auto elementId : sketch.centerNodeElementIds()) {
+    bool belongsToNewGeometry = false;
 
-        return first.lineId == second.lineId &&
-               first.start == second.start;
-      };
+    for (std::size_t index = oldLineCount;
+         index < sketch.lines().size();
+         ++index) {
+      if (sketch.lines()[index].elementId == elementId) {
+        belongsToNewGeometry = true;
+        break;
+      }
+    }
+
+    if (!belongsToNewGeometry)
+      continue;
+
+    sketch::PointReference center;
+    center.elementCenterId = elementId;
+    addNewReference(center);
+  }
 
   const auto constraintExists =
       [&sketch, &sameReference](
@@ -6267,28 +6589,38 @@ void autoCoincidentNewGeometry(
                 return false;
 
               return
-                  (sameReference(constraint.firstPoint, first) &&
-                   sameReference(constraint.secondPoint, second)) ||
-                  (sameReference(constraint.firstPoint, second) &&
-                   sameReference(constraint.secondPoint, first));
+                  (sameReference(
+                       constraint.firstPoint, first) &&
+                   sameReference(
+                       constraint.secondPoint, second)) ||
+                  (sameReference(
+                       constraint.firstPoint, second) &&
+                   sameReference(
+                       constraint.secondPoint, first));
             });
       };
 
   for (const auto& candidate : newReferences) {
     const auto currentPoint =
         sketch.referencedPoint(candidate.reference);
-    if (!currentPoint) continue;
+
+    if (!currentPoint)
+      continue;
 
     std::optional<sketch::PointReference> nearest;
     double bestDistance = toleranceMm;
 
     for (const auto oldReference : oldReferences) {
-      const auto oldPoint = sketch.referencedPoint(oldReference);
-      if (!oldPoint) continue;
+      const auto oldPoint =
+          sketch.referencedPoint(oldReference);
+
+      if (!oldPoint)
+        continue;
 
       const double distance =
-          std::hypot(currentPoint->xMm - oldPoint->xMm,
-                     currentPoint->yMm - oldPoint->yMm);
+          std::hypot(
+              currentPoint->xMm - oldPoint->xMm,
+              currentPoint->yMm - oldPoint->yMm);
 
       if (distance < bestDistance) {
         bestDistance = distance;
@@ -6297,16 +6629,22 @@ void autoCoincidentNewGeometry(
     }
 
     if (!nearest ||
-        sameReference(*nearest, candidate.reference) ||
-        constraintExists(*nearest, candidate.reference))
+        sameReference(
+            *nearest, candidate.reference) ||
+        constraintExists(
+            *nearest, candidate.reference))
       continue;
 
     sketch::Constraint constraint;
-    constraint.type = sketch::ConstraintType::Coincident;
+    constraint.type =
+        sketch::ConstraintType::Coincident;
 
-    // Existing geometry is the reference, newly created geometry moves to it.
+    // Existing geometry is the reference;
+    // newly created geometry moves to it.
     constraint.firstPoint = *nearest;
-    constraint.secondPoint = candidate.reference;
+    constraint.secondPoint =
+        candidate.reference;
+
     sketch.addConstraint(constraint);
   }
 }
@@ -6467,127 +6805,788 @@ void SketchCanvas::commitRectanglePoint(sketch::Point point) {
 }
 
 void SketchCanvas::commitCirclePoint(sketch::Point point) {
-  auto finishCircle = [this](sketch::Point center, double radius) {
-    if (!std::isfinite(radius) || radius < 1e-6) return false;
-    pushUndoState();
+  constexpr double minRadiusMm = 1e-6;
+  const double referenceToleranceMm =
+      10.0 / std::max(0.001, pixelsPerMm_);
 
-    const std::size_t oldLineCount = sketch_.lines().size();
-    const std::size_t oldCircleCount = sketch_.circles().size();
+  // Resolve a picked construction point back to an existing CAD point.
+  // This is used after the new circle is created to persist the relation
+  // as PointOnCircle rather than merely keeping equal coordinates.
+  const auto nearestExistingReference =
+      [this, referenceToleranceMm](
+          sketch::Point target)
+          -> std::optional<sketch::PointReference> {
+        double bestDistance =
+            referenceToleranceMm;
 
-    sketch_.addCircle(center, radius);
+        std::optional<sketch::PointReference> best;
 
-    autoCoincidentNewGeometry(
-        sketch_,
-        oldLineCount,
-        oldCircleCount,
-        8.0 / std::max(0.001, pixelsPerMm_));
+        const auto consider =
+            [this, target, &bestDistance, &best](
+                sketch::PointReference reference) {
+              const auto candidate =
+                  sketch_.referencedPoint(reference);
 
-    circleDiameterMm_ = 2.0 * radius;
-    emit primaryDimensionChanged(circleDiameterMm_);
-    circlePoints_.clear();
-    circleGuideLines_.clear();
-    notifyGeometryChanged();
-    return true;
-  };
+              if (!candidate)
+                return;
 
-  if (circleMode_ == CircleMode::TwoPoints) {
+              const double distance =
+                  std::hypot(
+                      candidate->xMm - target.xMm,
+                      candidate->yMm - target.yMm);
+
+              if (distance < bestDistance) {
+                bestDistance = distance;
+                best = reference;
+              }
+            };
+
+        for (std::size_t index = 0;
+             index < sketch_.lines().size();
+             ++index) {
+          const auto id = sketch_.lineId(index);
+
+          if (id == sketch::kInvalidGeometryId)
+            continue;
+
+          consider(
+              sketch::PointReference{id, true});
+          consider(
+              sketch::PointReference{id, false});
+        }
+
+        for (std::size_t index = 0;
+             index < sketch_.circles().size();
+             ++index) {
+          const auto id =
+              sketch_.circleId(index);
+
+          if (id == sketch::kInvalidGeometryId)
+            continue;
+
+          sketch::PointReference center;
+          center.circleId = id;
+          consider(center);
+        }
+
+        for (const auto elementId :
+             sketch_.centerNodeElementIds()) {
+          sketch::PointReference center;
+          center.elementCenterId = elementId;
+          consider(center);
+        }
+
+        return best;
+      };
+
+  const auto sameReference =
+      [](sketch::PointReference first,
+         sketch::PointReference second) {
+        if (first.elementCenterId != 0 ||
+            second.elementCenterId != 0) {
+          return first.elementCenterId != 0 &&
+                 first.elementCenterId ==
+                     second.elementCenterId;
+        }
+
+        if (first.circleId !=
+                sketch::kInvalidGeometryId ||
+            second.circleId !=
+                sketch::kInvalidGeometryId) {
+          return first.circleId !=
+                     sketch::kInvalidGeometryId &&
+                 first.circleId ==
+                     second.circleId;
+        }
+
+        return first.lineId == second.lineId &&
+               first.start == second.start;
+      };
+
+  const auto finishCircle =
+      [this, minRadiusMm,
+       &nearestExistingReference,
+       &sameReference](
+          sketch::Point center,
+          double radius,
+          const std::vector<sketch::Point>& definingPoints,
+          const std::vector<sketch::GeometryId>& tangentLineIds) {
+        if (!std::isfinite(radius) ||
+            radius < minRadiusMm)
+          return false;
+
+        // Capture references BEFORE creating the new circle so its own
+        // centre can never be mistaken for one of the source points.
+        std::vector<sketch::PointReference>
+            sourceReferences;
+
+        for (const auto definingPoint :
+             definingPoints) {
+          const auto reference =
+              nearestExistingReference(
+                  definingPoint);
+
+          if (!reference)
+            continue;
+
+          const bool duplicate =
+              std::any_of(
+                  sourceReferences.begin(),
+                  sourceReferences.end(),
+                  [&sameReference, &reference](
+                      sketch::PointReference existing) {
+                    return sameReference(
+                        existing, *reference);
+                  });
+
+          if (!duplicate)
+            sourceReferences.push_back(*reference);
+        }
+
+        pushUndoState();
+
+        const std::size_t oldLineCount =
+            sketch_.lines().size();
+        const std::size_t oldCircleCount =
+            sketch_.circles().size();
+
+        sketch_.addCircle(center, radius);
+
+        if (sketch_.circles().size() <=
+            oldCircleCount) {
+          return false;
+        }
+
+        const auto newCircleId =
+            sketch_.circleId(oldCircleCount);
+
+        // Center-based automatic coincidence is still useful if the
+        // newly computed centre itself happens to be an existing CAD point.
+        autoCoincidentNewGeometry(
+            sketch_,
+            oldLineCount,
+            oldCircleCount,
+            8.0 /
+                std::max(0.001, pixelsPerMm_));
+
+        // Two-point and three-point circles are defined by points on
+        // their circumference. Persist those relations explicitly.
+        if (newCircleId !=
+            sketch::kInvalidGeometryId) {
+          for (const auto source :
+               sourceReferences) {
+            bool duplicate = false;
+
+            for (const auto& existing :
+                 sketch_.constraints()) {
+              if (existing.type !=
+                  sketch::ConstraintType::PointOnCircle)
+                continue;
+
+              if (existing.firstGeometry !=
+                  newCircleId)
+                continue;
+
+              if (sameReference(
+                      existing.secondPoint,
+                      source)) {
+                duplicate = true;
+                break;
+              }
+            }
+
+            if (duplicate)
+              continue;
+
+            sketch::Constraint constraint;
+            constraint.type =
+                sketch::ConstraintType::PointOnCircle;
+            constraint.firstGeometry =
+                newCircleId;
+            constraint.secondPoint = source;
+
+            sketch_.addConstraint(constraint);
+          }
+        }
+        // AUTO TANGENT CONSTRAINTS
+        if (newCircleId != sketch::kInvalidGeometryId) {
+          for (const auto lineId : tangentLineIds) {
+            if (lineId == sketch::kInvalidGeometryId ||
+                !sketch_.lineIndex(lineId))
+              continue;
+
+            bool duplicate = false;
+
+            for (const auto& existing : sketch_.constraints()) {
+              if (existing.type != sketch::ConstraintType::Tangent)
+                continue;
+
+              if (existing.firstGeometry == lineId &&
+                  existing.secondGeometry == newCircleId) {
+                duplicate = true;
+                break;
+              }
+            }
+
+            if (duplicate)
+              continue;
+
+            sketch::Constraint tangent;
+            tangent.type = sketch::ConstraintType::Tangent;
+            tangent.firstGeometry = lineId;
+            tangent.secondGeometry = newCircleId;
+            sketch_.addConstraint(tangent);
+          }
+        }
+
+        circleDiameterMm_ = 2.0 * radius;
+        emit primaryDimensionChanged(
+            circleDiameterMm_);
+
+        circlePoints_.clear();
+        circleGuideLines_.clear();
+
+        notifyGeometryChanged();
+        update();
+        return true;
+      };
+
+  if (circleMode_ ==
+      CircleMode::TwoPoints) {
     circlePoints_.push_back(point);
-    if (circlePoints_.size() == 2) {
-      const auto first = circlePoints_[0];
-      const auto second = circlePoints_[1];
-      finishCircle({(first.xMm + second.xMm) * 0.5,
-                    (first.yMm + second.yMm) * 0.5},
-                   std::hypot(second.xMm - first.xMm,
-                              second.yMm - first.yMm) * 0.5);
+
+    if (circlePoints_.size() < 2) {
+      hoverPoint_ = point;
+      update();
+      return;
     }
-    update();
+
+    const auto first = circlePoints_[0];
+    const auto second = circlePoints_[1];
+
+    const double diameter =
+        std::hypot(
+            second.xMm - first.xMm,
+            second.yMm - first.yMm);
+
+    if (diameter <= minRadiusMm * 2.0) {
+      circlePoints_.clear();
+      update();
+      return;
+    }
+
+    const sketch::Point center{
+        (first.xMm + second.xMm) * 0.5,
+        (first.yMm + second.yMm) * 0.5};
+
+    (void)finishCircle(
+        center,
+        diameter * 0.5,
+        {first, second},
+        {});
+
     return;
   }
-  if (circleMode_ == CircleMode::ThreePoints) {
+
+  if (circleMode_ ==
+      CircleMode::ThreePoints) {
     circlePoints_.push_back(point);
-    if (circlePoints_.size() == 3) {
-      const auto result = circleThroughThreePoints(
-          circlePoints_[0], circlePoints_[1], circlePoints_[2]);
-      if (result) finishCircle(result->first, result->second);
-      else circlePoints_.clear();
+
+    if (circlePoints_.size() < 3) {
+      hoverPoint_ = point;
+      update();
+      return;
     }
-    update();
+
+    const auto first = circlePoints_[0];
+    const auto second = circlePoints_[1];
+    const auto third = circlePoints_[2];
+
+    const auto result =
+        circleThroughThreePoints(
+            first, second, third);
+
+    if (!result) {
+      circlePoints_.clear();
+      update();
+      return;
+    }
+
+    (void)finishCircle(
+        result->first,
+        result->second,
+        {first, second, third},
+        {});
+
     return;
   }
 
-  const auto nearestLine = [this](sketch::Point target)
-      -> std::optional<sketch::Line> {
-    double best = std::numeric_limits<double>::max();
-    std::optional<sketch::Line> result;
-    for (const auto& line : sketch_.lines()) {
-      if (line.dashed) continue;
-      const double distance = pointLineDistance(target, line);
-      if (distance < best) {
-        best = distance;
-        result = line;
+  const auto guideLineId =
+      [this](const sketch::Line& guide)
+          -> sketch::GeometryId {
+        constexpr double epsilon = 1e-7;
+
+        const auto samePoint =
+            [epsilon](sketch::Point first,
+                      sketch::Point second) {
+              return std::hypot(
+                         first.xMm - second.xMm,
+                         first.yMm - second.yMm) <= epsilon;
+            };
+
+        for (std::size_t index = 0;
+             index < sketch_.lines().size();
+             ++index) {
+          const auto& candidate = sketch_.lines()[index];
+
+          if (candidate.elementId != guide.elementId)
+            continue;
+
+          const bool sameOrder =
+              samePoint(candidate.start, guide.start) &&
+              samePoint(candidate.end, guide.end);
+
+          const bool reverseOrder =
+              samePoint(candidate.start, guide.end) &&
+              samePoint(candidate.end, guide.start);
+
+          if (sameOrder || reverseOrder)
+            return sketch_.lineId(index);
+        }
+
+        return sketch::kInvalidGeometryId;
+      };
+  const auto nearestLine =
+      [this](sketch::Point target)
+          -> std::optional<sketch::Line> {
+        double best =
+            std::numeric_limits<double>::max();
+
+        std::optional<sketch::Line> result;
+
+        for (const auto& line :
+             sketch_.lines()) {
+          if (line.dashed)
+            continue;
+
+          const double distance =
+              pointLineDistance(target, line);
+
+          if (distance < best) {
+            best = distance;
+            result = line;
+          }
+        }
+
+        return
+            best <=
+                    std::max(
+                        3.0,
+                        12.0 / pixelsPerMm_)
+                ? result
+                : std::nullopt;
+      };
+
+  if ((circleMode_ ==
+           CircleMode::ThreeTangents &&
+       circleGuideLines_.size() < 3) ||
+      (circleMode_ ==
+           CircleMode::TwoTangentsRadius &&
+       circleGuideLines_.size() < 2)) {
+    const auto line =
+        nearestLine(point);
+
+    if (!line)
+      return;
+
+    const bool duplicate =
+        std::any_of(
+            circleGuideLines_.begin(),
+            circleGuideLines_.end(),
+            [&](const auto& existing) {
+              return existing.elementId ==
+                     line->elementId;
+            });
+
+    if (!duplicate)
+      circleGuideLines_.push_back(*line);
+
+    update();
+
+    if (circleMode_ ==
+        CircleMode::TwoTangentsRadius)
+      return;
+  }
+
+  if (circleMode_ ==
+          CircleMode::ThreeTangents &&
+      circleGuideLines_.size() == 3) {
+    // THREE TANGENTS FINITE-SEGMENT SOLUTION V2
+    //
+    // Three infinite lines have up to four tangent circles:
+    // one incircle and three excircles. Select the solution that best
+    // corresponds to the finite segments clicked by the user.
+
+    const auto p0 =
+        intersectLines(
+            circleGuideLines_[0],
+            circleGuideLines_[1]);
+
+    const auto p1 =
+        intersectLines(
+            circleGuideLines_[1],
+            circleGuideLines_[2]);
+
+    const auto p2 =
+        intersectLines(
+            circleGuideLines_[2],
+            circleGuideLines_[0]);
+
+    if (!p0 || !p1 || !p2) {
+      circleGuideLines_.clear();
+      update();
+      return;
+    }
+
+    const double a =
+        std::hypot(
+            p1->xMm - p2->xMm,
+            p1->yMm - p2->yMm);
+
+    const double b =
+        std::hypot(
+            p0->xMm - p2->xMm,
+            p0->yMm - p2->yMm);
+
+    const double c =
+        std::hypot(
+            p0->xMm - p1->xMm,
+            p0->yMm - p1->yMm);
+
+    const auto weightedCenter =
+        [](sketch::Point first,
+           sketch::Point second,
+           sketch::Point third,
+           double wa,
+           double wb,
+           double wc)
+            -> std::optional<sketch::Point> {
+          const double denominator = wa + wb + wc;
+
+          if (std::abs(denominator) <= 1e-9)
+            return std::nullopt;
+
+          const sketch::Point center{
+              (wa * first.xMm +
+               wb * second.xMm +
+               wc * third.xMm) /
+                  denominator,
+              (wa * first.yMm +
+               wb * second.yMm +
+               wc * third.yMm) /
+                  denominator};
+
+          if (!std::isfinite(center.xMm) ||
+              !std::isfinite(center.yMm))
+            return std::nullopt;
+
+          return center;
+        };
+
+    std::vector<sketch::Point> candidates;
+
+    const auto addCandidate =
+        [&candidates](std::optional<sketch::Point> center) {
+          if (!center)
+            return;
+
+          const bool duplicate =
+              std::any_of(
+                  candidates.begin(),
+                  candidates.end(),
+                  [&center](sketch::Point existing) {
+                    return std::hypot(
+                               existing.xMm - center->xMm,
+                               existing.yMm - center->yMm) <= 1e-7;
+                  });
+
+          if (!duplicate)
+            candidates.push_back(*center);
+        };
+
+    // Incenter.
+    addCandidate(
+        weightedCenter(
+            *p0, *p1, *p2,
+            a, b, c));
+
+    // Three excenters.
+    addCandidate(
+        weightedCenter(
+            *p0, *p1, *p2,
+            -a, b, c));
+
+    addCandidate(
+        weightedCenter(
+            *p0, *p1, *p2,
+            a, -b, c));
+
+    addCandidate(
+        weightedCenter(
+            *p0, *p1, *p2,
+            a, b, -c));
+
+    const auto tangentFootPenalty =
+        [](sketch::Point center,
+           const sketch::Line& line) {
+          const double dx =
+              line.end.xMm - line.start.xMm;
+          const double dy =
+              line.end.yMm - line.start.yMm;
+
+          const double lengthSquared =
+              dx * dx + dy * dy;
+
+          if (lengthSquared <= 1e-12)
+            return 1e12;
+
+          const double t =
+              ((center.xMm - line.start.xMm) * dx +
+               (center.yMm - line.start.yMm) * dy) /
+              lengthSquared;
+
+          if (t >= 0.0 && t <= 1.0)
+            return 0.0;
+
+          const double segmentLength =
+              std::sqrt(lengthSquared);
+
+          const double outside =
+              t < 0.0 ? -t : t - 1.0;
+
+          return outside * outside *
+                 segmentLength * segmentLength;
+        };
+
+    const auto endpointProximityScore =
+        [](sketch::Point center,
+           const sketch::Line& line) {
+          const double d0 =
+              std::hypot(
+                  center.xMm - line.start.xMm,
+                  center.yMm - line.start.yMm);
+
+          const double d1 =
+              std::hypot(
+                  center.xMm - line.end.xMm,
+                  center.yMm - line.end.yMm);
+
+          return std::min(d0, d1);
+        };
+
+    std::optional<sketch::Point> bestCenter;
+    double bestScore =
+        std::numeric_limits<double>::max();
+
+    for (const auto candidate : candidates) {
+      const double r0 =
+          infiniteLineDistance(
+              candidate,
+              circleGuideLines_[0]);
+
+      const double r1 =
+          infiniteLineDistance(
+              candidate,
+              circleGuideLines_[1]);
+
+      const double r2 =
+          infiniteLineDistance(
+              candidate,
+              circleGuideLines_[2]);
+
+      if (!std::isfinite(r0) ||
+          !std::isfinite(r1) ||
+          !std::isfinite(r2))
+        continue;
+
+      const double radius =
+          (r0 + r1 + r2) / 3.0;
+
+      if (radius <= 1e-9)
+        continue;
+
+      const double residual =
+          std::abs(r0 - radius) +
+          std::abs(r1 - radius) +
+          std::abs(r2 - radius);
+
+      const double finitePenalty =
+          tangentFootPenalty(
+              candidate,
+              circleGuideLines_[0]) +
+          tangentFootPenalty(
+              candidate,
+              circleGuideLines_[1]) +
+          tangentFootPenalty(
+              candidate,
+              circleGuideLines_[2]);
+
+      // If several solutions have tangent feet on all finite segments,
+      // prefer the geometrically nearer one instead of a huge remote circle.
+      const double proximity =
+          endpointProximityScore(
+              candidate,
+              circleGuideLines_[0]) +
+          endpointProximityScore(
+              candidate,
+              circleGuideLines_[1]) +
+          endpointProximityScore(
+              candidate,
+              circleGuideLines_[2]);
+
+      const double score =
+          finitePenalty * 1000000.0 +
+          residual * 1000.0 +
+          proximity;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestCenter = candidate;
       }
     }
-    return best <= std::max(3.0, 12.0 / pixelsPerMm_) ? result : std::nullopt;
-  };
 
-  if ((circleMode_ == CircleMode::ThreeTangents && circleGuideLines_.size() < 3) ||
-      (circleMode_ == CircleMode::TwoTangentsRadius && circleGuideLines_.size() < 2)) {
-    const auto line = nearestLine(point);
-    if (!line) return;
-    const bool duplicate = std::any_of(circleGuideLines_.begin(), circleGuideLines_.end(),
-        [&](const auto& existing) { return existing.elementId == line->elementId; });
-    if (!duplicate) circleGuideLines_.push_back(*line);
-    update();
-    if (circleMode_ == CircleMode::TwoTangentsRadius) return;
-  }
-
-  if (circleMode_ == CircleMode::ThreeTangents && circleGuideLines_.size() == 3) {
-    const auto p0 = intersectLines(circleGuideLines_[0], circleGuideLines_[1]);
-    const auto p1 = intersectLines(circleGuideLines_[1], circleGuideLines_[2]);
-    const auto p2 = intersectLines(circleGuideLines_[2], circleGuideLines_[0]);
-    if (!p0 || !p1 || !p2) { circleGuideLines_.clear(); update(); return; }
-    const double a = std::hypot(p1->xMm - p2->xMm, p1->yMm - p2->yMm);
-    const double b = std::hypot(p0->xMm - p2->xMm, p0->yMm - p2->yMm);
-    const double c = std::hypot(p0->xMm - p1->xMm, p0->yMm - p1->yMm);
-    const double sum = a + b + c;
-    if (sum > 1e-9) {
-      const sketch::Point center{(a*p0->xMm+b*p1->xMm+c*p2->xMm)/sum,
-                                 (a*p0->yMm+b*p1->yMm+c*p2->yMm)/sum};
-      finishCircle(center, infiniteLineDistance(center, circleGuideLines_[0]));
+    if (!bestCenter) {
+      circleGuideLines_.clear();
+      update();
+      return;
     }
+
+    const double radius =
+        infiniteLineDistance(
+            *bestCenter,
+            circleGuideLines_[0]);
+
+    (void)finishCircle(
+        *bestCenter,
+        radius,
+        {},
+        std::vector<sketch::GeometryId>{
+            guideLineId(circleGuideLines_[0]),
+            guideLineId(circleGuideLines_[1]),
+            guideLineId(circleGuideLines_[2])});
+
     return;
   }
 
-  if (circleMode_ == CircleMode::TwoTangentsRadius && circleGuideLines_.size() == 2) {
+  if (circleMode_ ==
+          CircleMode::TwoTangentsRadius &&
+      circleGuideLines_.size() == 2) {
     circlePoints_.push_back(point);
-    const double radius = circleDiameterMm_ * 0.5;
-    struct Equation { double nx, ny, c; } equations[2];
+
+    const double radius =
+        circleDiameterMm_ * 0.5;
+
+    struct Equation {
+      double nx;
+      double ny;
+      double c;
+    };
+
+    Equation equations[2];
+
     for (int i = 0; i < 2; ++i) {
-      const auto& line = circleGuideLines_[i];
-      const double dx = line.end.xMm - line.start.xMm;
-      const double dy = line.end.yMm - line.start.yMm;
-      const double length = std::hypot(dx, dy);
-      equations[i] = {-dy / length, dx / length, 0.0};
-      equations[i].c = equations[i].nx * line.start.xMm +
-                       equations[i].ny * line.start.yMm;
+      const auto& line =
+          circleGuideLines_[i];
+
+      const double dx =
+          line.end.xMm -
+          line.start.xMm;
+
+      const double dy =
+          line.end.yMm -
+          line.start.yMm;
+
+      const double length =
+          std::hypot(dx, dy);
+
+      if (length <= 1e-9) {
+        circleGuideLines_.clear();
+        circlePoints_.clear();
+        update();
+        return;
+      }
+
+      equations[i] = {
+          -dy / length,
+          dx / length,
+          0.0};
+
+      equations[i].c =
+          equations[i].nx *
+              line.start.xMm +
+          equations[i].ny *
+              line.start.yMm;
     }
-    double best = std::numeric_limits<double>::max();
+
+    double best =
+        std::numeric_limits<double>::max();
+
     std::optional<sketch::Point> center;
-    const double det = equations[0].nx * equations[1].ny -
-                       equations[0].ny * equations[1].nx;
+
+    const double det =
+        equations[0].nx *
+            equations[1].ny -
+        equations[0].ny *
+            equations[1].nx;
+
     if (std::abs(det) > 1e-9) {
-      for (double s0 : {-1.0, 1.0}) for (double s1 : {-1.0, 1.0}) {
-        const double r0 = equations[0].c + s0 * radius;
-        const double r1 = equations[1].c + s1 * radius;
-        sketch::Point candidate{(r0*equations[1].ny-equations[0].ny*r1)/det,
-                                (equations[0].nx*r1-r0*equations[1].nx)/det};
-        const double distance = std::hypot(candidate.xMm-point.xMm,
-                                           candidate.yMm-point.yMm);
-        if (distance < best) { best = distance; center = candidate; }
+      for (double s0 :
+           {-1.0, 1.0}) {
+        for (double s1 :
+             {-1.0, 1.0}) {
+          const double r0 =
+              equations[0].c +
+              s0 * radius;
+
+          const double r1 =
+              equations[1].c +
+              s1 * radius;
+
+          const sketch::Point candidate{
+              (r0 * equations[1].ny -
+               equations[0].ny * r1) /
+                  det,
+              (equations[0].nx * r1 -
+               r0 * equations[1].nx) /
+                  det};
+
+          const double distance =
+              std::hypot(
+                  candidate.xMm -
+                      point.xMm,
+                  candidate.yMm -
+                      point.yMm);
+
+          if (distance < best) {
+            best = distance;
+            center = candidate;
+          }
+        }
       }
     }
-    if (center) finishCircle(*center, radius);
-    else { circleGuideLines_.clear(); circlePoints_.clear(); update(); }
+
+    if (center)
+      (void)finishCircle(
+          *center,
+          radius,
+          {},
+          std::vector<sketch::GeometryId>{
+              guideLineId(circleGuideLines_[0]),
+              guideLineId(circleGuideLines_[1])});
+
+    circlePoints_.clear();
+    update();
+    return;
   }
 }
 

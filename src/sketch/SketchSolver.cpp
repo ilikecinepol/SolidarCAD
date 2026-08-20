@@ -142,6 +142,10 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // Applied after carrier geometry has settled.
         break;
 
+      case ConstraintType::Tangent:
+        // Applied in the final tangency stabilization pass.
+        break;
+
       default:
         ++result.unsupported;
         break;
@@ -1117,6 +1121,45 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       ++result.applied;
     else
       ++result.invalidReferences;
+  }
+  // TANGENT FINAL STABILIZATION PASS
+  // Sequential projection is repeated because one circle may be tangent
+  // to two or three carrier lines at the same time.
+  constexpr int tangentIterations = 10;
+
+  for (int iteration = 0;
+       iteration < tangentIterations;
+       ++iteration) {
+    bool anyTangent = false;
+
+    for (const auto& constraint : sketch.constraints()) {
+      if (constraint.type != ConstraintType::Tangent)
+        continue;
+
+      anyTangent = true;
+
+      if (constraint.firstGeometry == kInvalidGeometryId ||
+          constraint.secondGeometry == kInvalidGeometryId ||
+          !sketch.lineIndex(constraint.firstGeometry) ||
+          !sketch.circleIndex(constraint.secondGeometry)) {
+        if (iteration == 0)
+          ++result.invalidReferences;
+        continue;
+      }
+
+      if (sketch.setCircleTangentToLine(
+              constraint.firstGeometry,
+              constraint.secondGeometry)) {
+        if (iteration == 0)
+          ++result.applied;
+      }
+      else if (iteration == 0) {
+        ++result.invalidReferences;
+      }
+    }
+
+    if (!anyTangent)
+      break;
   }
   return result;
 }

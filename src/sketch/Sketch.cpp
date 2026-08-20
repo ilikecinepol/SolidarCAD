@@ -1442,6 +1442,45 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
   updateBounds();
   return true;
 }
+bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
+                                    GeometryId circleIdValue) {
+  const auto lineIndexValue = lineIndex(lineIdValue);
+  const auto circleIndexValue = circleIndex(circleIdValue);
+
+  if (!lineIndexValue || !circleIndexValue)
+    return false;
+
+  const Line& line = lines_[*lineIndexValue];
+  Circle& circle = circles_[*circleIndexValue];
+
+  if (!std::isfinite(circle.radiusMm) ||
+      circle.radiusMm <= 1e-9)
+    return false;
+
+  const double dx = line.end.xMm - line.start.xMm;
+  const double dy = line.end.yMm - line.start.yMm;
+  const double length = std::hypot(dx, dy);
+
+  if (length <= 1e-9)
+    return false;
+
+  const double nx = -dy / length;
+  const double ny = dx / length;
+
+  const double signedDistance =
+      (circle.center.xMm - line.start.xMm) * nx +
+      (circle.center.yMm - line.start.yMm) * ny;
+
+  const double side = signedDistance < 0.0 ? -1.0 : 1.0;
+  const double targetDistance = side * circle.radiusMm;
+  const double correction = targetDistance - signedDistance;
+
+  circle.center.xMm += nx * correction;
+  circle.center.yMm += ny * correction;
+
+  updateBounds();
+  return true;
+}
 bool Sketch::translatePoint(PointReference reference, double dxMm,
                             double dyMm) {
   if (!referencedPoint(reference)) return false;

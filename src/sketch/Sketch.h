@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstddef>
 #include <cstdint>
@@ -79,8 +79,8 @@ enum class ConstraintType {
   Angle,
   DistanceX,
   DistanceY,
-  PointOnCircle
-};
+  PointOnCircle,
+  Tangent};
 
 struct Constraint {
   ConstraintId id{kInvalidConstraintId};
@@ -135,7 +135,8 @@ class Sketch final {
                          double angleDegrees);
   bool setPointsCoincident(PointReference first, PointReference second);
   bool setPointOnLine(GeometryId lineId, PointReference pointReference);
-  bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
+  bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
+  bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
