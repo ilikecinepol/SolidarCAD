@@ -14,3 +14,16 @@ compile_commands.json
 .*backup*/
 *.ps1
 angle_dimension_local_diagnostic.txt
+
+# Local one-off patch rollback folders
+.addconstraint_abi_fix_*/
+.center_constraint_reference_*/
+.center_rectangle_node_*/
+.merge_point_on_line_tool_*/
+.point_on_circle_*/
+.point_on_circle_v2_*/
+.rollback_atomic_batching_*/
+
+# Local standalone source backups
+.*_backup_*.cpp
+.sketchcanvas_dimensions_restore_*.cpp
