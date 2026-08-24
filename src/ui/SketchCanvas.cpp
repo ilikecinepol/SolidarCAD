@@ -379,6 +379,20 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("autoDimensionTarget", QVariant());
   setProperty("autoDimensionFirstLine", QVariant());
   setProperty("autoDimensionFirstStart", QVariant());
+  setProperty(
+      "autoDimensionFirstElementCenter",
+      static_cast<qulonglong>(0));
+  setProperty(
+      "autoDimensionSecondElementCenter",
+      static_cast<qulonglong>(0));
+  setProperty(
+      "autoDimensionFirstCircle",
+      static_cast<qulonglong>(
+          sketch::kInvalidGeometryId));
+  setProperty(
+      "autoDimensionSecondCircle",
+      static_cast<qulonglong>(
+          sketch::kInvalidGeometryId));
   setProperty("autoDimensionOffsetMm", QVariant());
   setProperty("autoDimensionAngleRad", QVariant());
   setProperty("autoDimensionPointMode", QVariant());
@@ -476,12 +490,27 @@ SketchCanvas::selectedConstraintPanelEntries() const {
 
   const auto samePoint = [](sketch::PointReference first,
                             sketch::PointReference second) {
-    if (first.circleId != sketch::kInvalidGeometryId ||
-        second.circleId != sketch::kInvalidGeometryId)
-      return first.circleId != sketch::kInvalidGeometryId &&
-             first.circleId == second.circleId;
+    // CRASH-FREE 05: COMPLETE POINTREFERENCE IDENTITY
+    if (first.elementCenterId != 0 ||
+        second.elementCenterId != 0) {
+      return first.elementCenterId != 0 &&
+             second.elementCenterId != 0 &&
+             first.elementCenterId == second.elementCenterId;
+    }
 
-    return first.lineId == second.lineId && first.start == second.start;
+    if (first.circleId != sketch::kInvalidGeometryId ||
+        second.circleId != sketch::kInvalidGeometryId) {
+      return first.circleId != sketch::kInvalidGeometryId &&
+             second.circleId != sketch::kInvalidGeometryId &&
+             first.circleId == second.circleId;
+    }
+
+    if (first.lineId == sketch::kInvalidGeometryId ||
+        second.lineId == sketch::kInvalidGeometryId)
+      return false;
+
+    return first.lineId == second.lineId &&
+           first.start == second.start;
   };
 
   const auto samePointPair = [&samePoint](
@@ -684,12 +713,27 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
 
   const auto samePoint = [](sketch::PointReference first,
                             sketch::PointReference second) {
-    if (first.circleId != sketch::kInvalidGeometryId ||
-        second.circleId != sketch::kInvalidGeometryId)
-      return first.circleId != sketch::kInvalidGeometryId &&
-             first.circleId == second.circleId;
+    // CRASH-FREE 05: COMPLETE POINTREFERENCE IDENTITY
+    if (first.elementCenterId != 0 ||
+        second.elementCenterId != 0) {
+      return first.elementCenterId != 0 &&
+             second.elementCenterId != 0 &&
+             first.elementCenterId == second.elementCenterId;
+    }
 
-    return first.lineId == second.lineId && first.start == second.start;
+    if (first.circleId != sketch::kInvalidGeometryId ||
+        second.circleId != sketch::kInvalidGeometryId) {
+      return first.circleId != sketch::kInvalidGeometryId &&
+             second.circleId != sketch::kInvalidGeometryId &&
+             first.circleId == second.circleId;
+    }
+
+    if (first.lineId == sketch::kInvalidGeometryId ||
+        second.lineId == sketch::kInvalidGeometryId)
+      return false;
+
+    return first.lineId == second.lineId &&
+           first.start == second.start;
   };
 
   const auto samePointPair =
@@ -1580,11 +1624,19 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       const sketch::PointReference firstReference{
           static_cast<sketch::GeometryId>(
               property("autoDimensionFirstLine").toULongLong()),
-          property("autoDimensionFirstStart").toBool()};
+          property("autoDimensionFirstStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionFirstElementCenter").toULongLong())};
       const sketch::PointReference secondReference{
           static_cast<sketch::GeometryId>(
               property("autoDimensionSecondLine").toULongLong()),
-          property("autoDimensionSecondStart").toBool()};
+          property("autoDimensionSecondStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionSecondCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionSecondElementCenter").toULongLong())};
 
       const auto firstPoint =
           sketch_.referencedPoint(firstReference);
@@ -1657,8 +1709,13 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       property("autoDimensionFirstLine").isValid() &&
       property("autoDimensionTarget").toString().isEmpty()) {
     const sketch::PointReference first{
-        static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
-        property("autoDimensionFirstStart").toBool()};
+          static_cast<sketch::GeometryId>(
+              property("autoDimensionFirstLine").toULongLong()),
+          property("autoDimensionFirstStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionFirstElementCenter").toULongLong())};
     if (const auto point = sketch_.referencedPoint(first)) {
       painter.setPen(QPen(QColor("#0872f9"), 2.0));
       painter.setBrush(QColor(8, 114, 249, 55));
@@ -1908,6 +1965,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     setProperty("equalFirstGeometry", QVariant());
     setProperty("equalFirstKind", QVariant());
     setProperty("equalFirstElement", QVariant());
+    setProperty("tangentFirstGeometry", QVariant());
+    setProperty("tangentFirstKind", QVariant());
 
     rectanglePoints_.clear();
     circlePoints_.clear();
@@ -2257,12 +2316,28 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
                     dimension.firstPoint.lineId));
     setProperty("autoDimensionFirstStart",
                 dimension.firstPoint.start);
+    setProperty(
+        "autoDimensionFirstCircle",
+        static_cast<qulonglong>(
+            dimension.firstPoint.circleId));
+    setProperty(
+        "autoDimensionFirstElementCenter",
+        static_cast<qulonglong>(
+            dimension.firstPoint.elementCenterId));
 
     setProperty("autoDimensionSecondLine",
                 static_cast<qulonglong>(
                     dimension.secondPoint.lineId));
     setProperty("autoDimensionSecondStart",
                 dimension.secondPoint.start);
+    setProperty(
+        "autoDimensionSecondCircle",
+        static_cast<qulonglong>(
+            dimension.secondPoint.circleId));
+    setProperty(
+        "autoDimensionSecondElementCenter",
+        static_cast<qulonglong>(
+            dimension.secondPoint.elementCenterId));
 
     primaryDimension_->setPrefix(QString());
   }
@@ -2289,8 +2364,7 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
           dimension.valueMm);
     }
   } else {
-    primaryDimension_->setSuffix(
-        QString::fromUtf8(" РјРј"));
+    primaryDimension_->setSuffix(QString::fromUtf8("\xD0\xBC\xD0\xBC"));
     primaryDimension_->setRange(
         0.01, 100000.0);
     primaryDimension_->setValue(
@@ -2606,11 +2680,19 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
       const sketch::PointReference firstReference{
           static_cast<sketch::GeometryId>(
               property("autoDimensionFirstLine").toULongLong()),
-          property("autoDimensionFirstStart").toBool()};
+          property("autoDimensionFirstStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionFirstElementCenter").toULongLong())};
       const sketch::PointReference secondReference{
           static_cast<sketch::GeometryId>(
               property("autoDimensionSecondLine").toULongLong()),
-          property("autoDimensionSecondStart").toBool()};
+          property("autoDimensionSecondStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionSecondCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionSecondElementCenter").toULongLong())};
 
       const auto firstPoint =
           sketch_.referencedPoint(firstReference);
@@ -3037,6 +3119,26 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
 
         const auto samePoint = [](sketch::PointReference first,
                                   sketch::PointReference second) {
+          // CRASH-FREE 05: COMPLETE DELETE REFERENCE IDENTITY
+          if (first.elementCenterId != 0 ||
+              second.elementCenterId != 0) {
+            return first.elementCenterId != 0 &&
+                   second.elementCenterId != 0 &&
+                   first.elementCenterId ==
+                       second.elementCenterId;
+          }
+
+          if (first.circleId != sketch::kInvalidGeometryId ||
+              second.circleId != sketch::kInvalidGeometryId) {
+            return first.circleId != sketch::kInvalidGeometryId &&
+                   second.circleId != sketch::kInvalidGeometryId &&
+                   first.circleId == second.circleId;
+          }
+
+          if (first.lineId == sketch::kInvalidGeometryId ||
+              second.lineId == sketch::kInvalidGeometryId)
+            return false;
+
           return first.lineId == second.lineId &&
                  first.start == second.start;
         };
@@ -5806,17 +5908,86 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
       }
     }
   }
+  // CRASH-FREE 06 V2: CIRCLE CENTER AUTODIMENSION
+  //
+  // Circle centres compete with line endpoints in the same point hit-test.
+  // PointReference already supports circleId, so this keeps all geometry
+  // references stable and lets the existing distance solver do the work.
+  for (std::size_t index = 0;
+       index < sketch_.circles().size();
+       ++index) {
+    const auto circleId =
+        sketch_.circleId(index);
+
+    if (circleId ==
+        sketch::kInvalidGeometryId)
+      continue;
+
+    const double distance =
+        QLineF(
+            position,
+            mapPoint(
+                sketch_.circles()[index].center))
+            .length();
+
+    if (distance >= pointDistance)
+      continue;
+
+    pointDistance = distance;
+
+    sketch::PointReference centerReference;
+    centerReference.circleId = circleId;
+    clickedPoint = centerReference;
+  }
+  // CRASH-FREE 08 V2: RECTANGLE CENTER AUTODIMENSION
+  //
+  // Virtual centres of composite elements are first-class CAD points.
+  // They compete with line endpoints and circle centres in the same
+  // point hit-test used by AutoDimension.
+  for (const auto elementId :
+       sketch_.centerNodeElementIds()) {
+    const auto center =
+        sketch_.elementCenterPoint(elementId);
+
+    if (!center)
+      continue;
+
+    const double distance =
+        QLineF(position, mapPoint(*center)).length();
+
+    if (distance >= pointDistance)
+      continue;
+
+    pointDistance = distance;
+
+    sketch::PointReference centerReference;
+    centerReference.elementCenterId = elementId;
+    clickedPoint = centerReference;
+  }
   if (clickedPoint) {
     if (!property("autoDimensionFirstLine").isValid()) {
       setProperty("autoDimensionFirstLine",
                   static_cast<qulonglong>(clickedPoint->lineId));
       setProperty("autoDimensionFirstStart", clickedPoint->start);
+      setProperty(
+          "autoDimensionFirstCircle",
+          static_cast<qulonglong>(
+              clickedPoint->circleId));
+      setProperty(
+          "autoDimensionFirstElementCenter",
+          static_cast<qulonglong>(
+              clickedPoint->elementCenterId));
       update();
       return;
     }
     const sketch::PointReference first{
-        static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
-        property("autoDimensionFirstStart").toBool()};
+        static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstLine").toULongLong()),
+        property("autoDimensionFirstStart").toBool(),
+        static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionFirstElementCenter").toULongLong())};
     const auto firstPoint = sketch_.referencedPoint(first);
     const auto secondPoint = sketch_.referencedPoint(*clickedPoint);
     if (!firstPoint || !secondPoint) return;
@@ -5830,6 +6001,14 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
     setProperty("autoDimensionSecondLine",
                 static_cast<qulonglong>(clickedPoint->lineId));
     setProperty("autoDimensionSecondStart", clickedPoint->start);
+    setProperty(
+        "autoDimensionSecondCircle",
+        static_cast<qulonglong>(
+            clickedPoint->circleId));
+    setProperty(
+        "autoDimensionSecondElementCenter",
+        static_cast<qulonglong>(
+            clickedPoint->elementCenterId));
     primaryDimension_->setPrefix(QString());
     primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
     primaryDimension_->setRange(0.01, 100000.0);
@@ -6053,11 +6232,21 @@ void SketchCanvas::commitAutoDimension() {
     }
   } else if (target == "points") {
     const sketch::PointReference first{
-        static_cast<sketch::GeometryId>(property("autoDimensionFirstLine").toULongLong()),
-        property("autoDimensionFirstStart").toBool()};
+          static_cast<sketch::GeometryId>(
+              property("autoDimensionFirstLine").toULongLong()),
+          property("autoDimensionFirstStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionFirstElementCenter").toULongLong())};
     const sketch::PointReference second{
-        static_cast<sketch::GeometryId>(property("autoDimensionSecondLine").toULongLong()),
-        property("autoDimensionSecondStart").toBool()};
+          static_cast<sketch::GeometryId>(
+              property("autoDimensionSecondLine").toULongLong()),
+          property("autoDimensionSecondStart").toBool(),
+          static_cast<sketch::GeometryId>(
+            property("autoDimensionSecondCircle").toULongLong()),
+        static_cast<std::size_t>(
+            property("autoDimensionSecondElementCenter").toULongLong())};
 
     const QString pointMode =
         property("autoDimensionPointMode").toString();
@@ -6132,6 +6321,22 @@ void SketchCanvas::commitAutoDimension() {
   setProperty("autoDimensionTarget", QVariant());
   setProperty("autoDimensionFirstLine", QVariant());
   setProperty("autoDimensionFirstStart", QVariant());
+  // CRASH-FREE 08 V2: RESET ELEMENT CENTER CHANNELS
+  setProperty(
+      "autoDimensionFirstElementCenter",
+      static_cast<qulonglong>(0));
+  setProperty(
+      "autoDimensionSecondElementCenter",
+      static_cast<qulonglong>(0));
+  // CRASH-FREE 06 V2: RESET CIRCLE POINT CHANNELS
+  setProperty(
+      "autoDimensionFirstCircle",
+      static_cast<qulonglong>(
+          sketch::kInvalidGeometryId));
+  setProperty(
+      "autoDimensionSecondCircle",
+      static_cast<qulonglong>(
+          sketch::kInvalidGeometryId));
   setProperty("autoDimensionPointMode", QVariant());
   setProperty("autoDimensionDirectLineId", QVariant());
   setProperty("autoDimensionAngleFirstLine", QVariant());

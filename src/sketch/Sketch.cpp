@@ -1,4 +1,4 @@
-﻿#include "sketch/Sketch.h"
+#include "sketch/Sketch.h"
 
 #include "sketch/SketchSolver.h"
 
@@ -570,53 +570,105 @@ void Sketch::translateSelection(
   if (dxMm == 0.0 && dyMm == 0.0) return;
   if (elementIds.empty() && circleIds.empty()) return;
 
-  const auto elementSelected = [&elementIds](std::size_t elementId) {
-    return std::find(elementIds.begin(), elementIds.end(), elementId) !=
-           elementIds.end();
-  };
+  const auto elementSelected =
+      [&elementIds](std::size_t elementId) {
+        return std::find(
+                   elementIds.begin(),
+                   elementIds.end(),
+                   elementId) !=
+               elementIds.end();
+      };
 
-  const auto circleSelected = [&circleIds](GeometryId id) {
-    return std::find(circleIds.begin(), circleIds.end(), id) != circleIds.end();
-  };
+  const auto circleSelected =
+      [&circleIds](GeometryId id) {
+        return std::find(
+                   circleIds.begin(),
+                   circleIds.end(),
+                   id) !=
+               circleIds.end();
+      };
 
-  const auto sameReference = [](PointReference first, PointReference second) {
-    if (first.circleId != kInvalidGeometryId ||
-        second.circleId != kInvalidGeometryId) {
-      return first.circleId != kInvalidGeometryId &&
-             first.circleId == second.circleId;
-    }
+  // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY IN GROUP DRAG
+  const auto sameReference =
+      [](PointReference first,
+         PointReference second) {
+        if (first.elementCenterId != 0 ||
+            second.elementCenterId != 0) {
+          return first.elementCenterId != 0 &&
+                 second.elementCenterId != 0 &&
+                 first.elementCenterId ==
+                     second.elementCenterId;
+        }
 
-    return first.lineId == second.lineId && first.start == second.start;
-  };
+        if (first.circleId != kInvalidGeometryId ||
+            second.circleId != kInvalidGeometryId) {
+          return first.circleId != kInvalidGeometryId &&
+                 second.circleId != kInvalidGeometryId &&
+                 first.circleId == second.circleId;
+        }
 
-  // Seed the Coincident graph with every endpoint/center that belongs to the
-  // selected objects. The graph is expanded before any geometry is mutated.
+        if (first.lineId == kInvalidGeometryId ||
+            second.lineId == kInvalidGeometryId)
+          return false;
+
+        return first.lineId == second.lineId &&
+               first.start == second.start;
+      };
+
   std::vector<PointReference> movedReferences;
 
   const auto addReference =
-      [&movedReferences, &sameReference](PointReference reference) {
-        const bool exists = std::any_of(
-            movedReferences.begin(), movedReferences.end(),
-            [reference, &sameReference](PointReference item) {
-              return sameReference(item, reference);
-            });
+      [&movedReferences,
+       &sameReference](PointReference reference) {
+        const bool exists =
+            std::any_of(
+                movedReferences.begin(),
+                movedReferences.end(),
+                [reference,
+                 &sameReference](
+                    PointReference item) {
+                  return sameReference(
+                      item,
+                      reference);
+                });
 
-        if (!exists) movedReferences.push_back(reference);
+        if (!exists)
+          movedReferences.push_back(reference);
       };
 
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    if (!elementSelected(lines_[index].elementId)) continue;
+  for (std::size_t index = 0;
+       index < lines_.size();
+       ++index) {
+    if (!elementSelected(
+            lines_[index].elementId))
+      continue;
 
-    const GeometryId id = lineIds_[index];
-    if (id == kInvalidGeometryId) continue;
+    const GeometryId id =
+        lineIds_[index];
+
+    if (id == kInvalidGeometryId)
+      continue;
 
     addReference(PointReference{id, true});
     addReference(PointReference{id, false});
+
+    if (hasElementCenterNode(
+            lines_[index].elementId)) {
+      PointReference center;
+      center.elementCenterId =
+          lines_[index].elementId;
+      addReference(center);
+    }
   }
 
-  for (std::size_t index = 0; index < circles_.size(); ++index) {
-    const GeometryId id = circleIds_[index];
-    if (!circleSelected(id)) continue;
+  for (std::size_t index = 0;
+       index < circles_.size();
+       ++index) {
+    const GeometryId id =
+        circleIds_[index];
+
+    if (!circleSelected(id))
+      continue;
 
     PointReference center;
     center.circleId = id;
@@ -624,31 +676,54 @@ void Sketch::translateSelection(
   }
 
   bool expanded = true;
+
   while (expanded) {
     expanded = false;
 
-    for (const auto& constraint : constraints_) {
-      if (constraint.type != ConstraintType::Coincident) continue;
+    for (const auto& constraint :
+         constraints_) {
+      if (constraint.type !=
+          ConstraintType::Coincident)
+        continue;
 
-      const auto first = constraint.firstPoint;
-      const auto second = constraint.secondPoint;
+      const auto first =
+          constraint.firstPoint;
+      const auto second =
+          constraint.secondPoint;
 
-      const bool hasFirst = std::any_of(
-          movedReferences.begin(), movedReferences.end(),
-          [first, &sameReference](PointReference item) {
-            return sameReference(item, first);
-          });
+      if (!referencedPoint(first) ||
+          !referencedPoint(second))
+        continue;
 
-      const bool hasSecond = std::any_of(
-          movedReferences.begin(), movedReferences.end(),
-          [second, &sameReference](PointReference item) {
-            return sameReference(item, second);
-          });
+      const bool hasFirst =
+          std::any_of(
+              movedReferences.begin(),
+              movedReferences.end(),
+              [first,
+               &sameReference](
+                  PointReference item) {
+                return sameReference(
+                    item,
+                    first);
+              });
+
+      const bool hasSecond =
+          std::any_of(
+              movedReferences.begin(),
+              movedReferences.end(),
+              [second,
+               &sameReference](
+                  PointReference item) {
+                return sameReference(
+                    item,
+                    second);
+              });
 
       if (hasFirst && !hasSecond) {
         addReference(second);
         expanded = true;
-      } else if (hasSecond && !hasFirst) {
+      }
+      else if (hasSecond && !hasFirst) {
         addReference(first);
         expanded = true;
       }
@@ -656,22 +731,57 @@ void Sketch::translateSelection(
   }
 
   const auto referenceMoves =
-      [&movedReferences, &sameReference](PointReference reference) {
+      [&movedReferences,
+       &sameReference](
+          PointReference reference) {
         return std::any_of(
-            movedReferences.begin(), movedReferences.end(),
-            [reference, &sameReference](PointReference item) {
-              return sameReference(item, reference);
+            movedReferences.begin(),
+            movedReferences.end(),
+            [reference,
+             &sameReference](
+                PointReference item) {
+              return sameReference(
+                  item,
+                  reference);
             });
       };
 
-  // Every primitive coordinate is changed at most once. This is the critical
-  // difference from repeatedly calling translateElement(), where Coincident
-  // propagation and the solver could move the same vertex several times.
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    auto& line = lines_[index];
-    const GeometryId id = lineIds_[index];
+  std::vector<std::size_t>
+      centerMovedElements;
 
-    if (elementSelected(line.elementId)) {
+  for (const auto reference :
+       movedReferences) {
+    if (reference.elementCenterId == 0)
+      continue;
+
+    if (std::find(
+            centerMovedElements.begin(),
+            centerMovedElements.end(),
+            reference.elementCenterId) ==
+        centerMovedElements.end())
+      centerMovedElements.push_back(
+          reference.elementCenterId);
+  }
+
+  const auto centerElementMoves =
+      [&centerMovedElements](
+          std::size_t elementId) {
+        return std::find(
+                   centerMovedElements.begin(),
+                   centerMovedElements.end(),
+                   elementId) !=
+               centerMovedElements.end();
+      };
+
+  for (std::size_t index = 0;
+       index < lines_.size();
+       ++index) {
+    auto& line = lines_[index];
+    const GeometryId id =
+        lineIds_[index];
+
+    if (elementSelected(line.elementId) ||
+        centerElementMoves(line.elementId)) {
       line.start.xMm += dxMm;
       line.start.yMm += dyMm;
       line.end.xMm += dxMm;
@@ -679,31 +789,35 @@ void Sketch::translateSelection(
       continue;
     }
 
-    if (referenceMoves(PointReference{id, true})) {
+    if (referenceMoves(
+            PointReference{id, true})) {
       line.start.xMm += dxMm;
       line.start.yMm += dyMm;
     }
 
-    if (referenceMoves(PointReference{id, false})) {
+    if (referenceMoves(
+            PointReference{id, false})) {
       line.end.xMm += dxMm;
       line.end.yMm += dyMm;
     }
   }
 
-  for (std::size_t index = 0; index < circles_.size(); ++index) {
-    const GeometryId id = circleIds_[index];
+  for (std::size_t index = 0;
+       index < circles_.size();
+       ++index) {
+    const GeometryId id =
+        circleIds_[index];
 
     PointReference center;
     center.circleId = id;
 
-    if (circleSelected(id) || referenceMoves(center)) {
+    if (circleSelected(id) ||
+        referenceMoves(center)) {
       circles_[index].center.xMm += dxMm;
       circles_[index].center.yMm += dyMm;
     }
   }
 
-  // Solve once, on the final group position instead of on partially moved
-  // intermediate states.
   (void)BasicSketchSolver::solve(*this);
   updateBounds();
 }
@@ -1459,11 +1573,12 @@ bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
 
   const double dx = line.end.xMm - line.start.xMm;
   const double dy = line.end.yMm - line.start.yMm;
-  const double length = std::hypot(dx, dy);
+  const double lengthSquared = dx * dx + dy * dy;
 
-  if (length <= 1e-9)
+  if (lengthSquared <= 1e-12)
     return false;
 
+  const double length = std::sqrt(lengthSquared);
   const double nx = -dy / length;
   const double ny = dx / length;
 
@@ -1471,12 +1586,31 @@ bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
       (circle.center.xMm - line.start.xMm) * nx +
       (circle.center.yMm - line.start.yMm) * ny;
 
-  const double side = signedDistance < 0.0 ? -1.0 : 1.0;
-  const double targetDistance = side * circle.radiusMm;
-  const double correction = targetDistance - signedDistance;
+  const double side =
+      signedDistance < 0.0 ? -1.0 : 1.0;
 
-  circle.center.xMm += nx * correction;
-  circle.center.yMm += ny * correction;
+  // CRASH-FREE 04: FINITE SEGMENT TANGENCY
+  //
+  // Tangency belongs to the finite CAD segment. Project the circle centre
+  // onto the carrier and clamp the contact parameter to [0, 1]. This keeps
+  // the contact at the endpoint instead of letting the circle continue along
+  // an imaginary extension of the line.
+  const double rawT =
+      ((circle.center.xMm - line.start.xMm) * dx +
+       (circle.center.yMm - line.start.yMm) * dy) /
+      lengthSquared;
+
+  const double t =
+      std::clamp(rawT, 0.0, 1.0);
+
+  const Point contact{
+      line.start.xMm + dx * t,
+      line.start.yMm + dy * t};
+
+  circle.center.xMm =
+      contact.xMm + side * nx * circle.radiusMm;
+  circle.center.yMm =
+      contact.yMm + side * ny * circle.radiusMm;
 
   updateBounds();
   return true;
@@ -1486,19 +1620,36 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
   if (!referencedPoint(reference)) return false;
   if (dxMm == 0.0 && dyMm == 0.0) return true;
 
-  const auto sameReference = [](PointReference first,
-                                PointReference second) {
-    if (first.circleId != kInvalidGeometryId ||
-        second.circleId != kInvalidGeometryId) {
-      return first.circleId != kInvalidGeometryId &&
-             first.circleId == second.circleId;
-    }
+  // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY
+  //
+  // A virtual element centre is its own reference class. Never compare two
+  // centre references through their default invalid lineId values.
+  const auto sameReference =
+      [](PointReference first,
+         PointReference second) {
+        if (first.elementCenterId != 0 ||
+            second.elementCenterId != 0) {
+          return first.elementCenterId != 0 &&
+                 second.elementCenterId != 0 &&
+                 first.elementCenterId ==
+                     second.elementCenterId;
+        }
 
-    return first.lineId == second.lineId &&
-           first.start == second.start;
-  };
+        if (first.circleId != kInvalidGeometryId ||
+            second.circleId != kInvalidGeometryId) {
+          return first.circleId != kInvalidGeometryId &&
+                 second.circleId != kInvalidGeometryId &&
+                 first.circleId == second.circleId;
+        }
 
-  // Find the complete CAD vertex component connected by Coincident.
+        if (first.lineId == kInvalidGeometryId ||
+            second.lineId == kInvalidGeometryId)
+          return false;
+
+        return first.lineId == second.lineId &&
+               first.start == second.start;
+      };
+
   std::vector<PointReference> connectedPoints{reference};
   bool changed = true;
 
@@ -1506,91 +1657,205 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
     changed = false;
 
     for (const auto& constraint : constraints_) {
-      if (constraint.type != ConstraintType::Coincident) continue;
+      if (constraint.type != ConstraintType::Coincident)
+        continue;
 
       const auto first = constraint.firstPoint;
       const auto second = constraint.secondPoint;
-      if (!referencedPoint(first) || !referencedPoint(second)) continue;
 
-      const bool containsFirst = std::any_of(
-          connectedPoints.begin(), connectedPoints.end(),
-          [first, &sameReference](PointReference item) {
-            return sameReference(item, first);
-          });
+      if (!referencedPoint(first) ||
+          !referencedPoint(second))
+        continue;
 
-      const bool containsSecond = std::any_of(
-          connectedPoints.begin(), connectedPoints.end(),
-          [second, &sameReference](PointReference item) {
-            return sameReference(item, second);
-          });
+      const bool containsFirst =
+          std::any_of(
+              connectedPoints.begin(),
+              connectedPoints.end(),
+              [first, &sameReference](
+                  PointReference item) {
+                return sameReference(item, first);
+              });
+
+      const bool containsSecond =
+          std::any_of(
+              connectedPoints.begin(),
+              connectedPoints.end(),
+              [second, &sameReference](
+                  PointReference item) {
+                return sameReference(item, second);
+              });
 
       if (containsFirst && !containsSecond) {
         connectedPoints.push_back(second);
         changed = true;
-      } else if (containsSecond && !containsFirst) {
+      }
+      else if (containsSecond && !containsFirst) {
         connectedPoints.push_back(first);
         changed = true;
       }
     }
   }
 
+  // CRASH-FREE 04: VIRTUAL CENTER MOVEMENT
+  //
+  // Virtual rectangle centres are derived coordinates. Moving one means
+  // translating its whole owning element exactly once.
+  std::vector<std::size_t> movedCenterElements;
+
   for (const auto pointReference : connectedPoints) {
-    if (pointReference.circleId != kInvalidGeometryId) {
-      const auto index = circleIndex(pointReference.circleId);
-      if (!index) continue;
+    if (pointReference.elementCenterId == 0)
+      continue;
+
+    if (std::find(
+            movedCenterElements.begin(),
+            movedCenterElements.end(),
+            pointReference.elementCenterId) !=
+        movedCenterElements.end())
+      continue;
+
+    bool foundElement = false;
+
+    for (auto& line : lines_) {
+      if (line.elementId !=
+          pointReference.elementCenterId)
+        continue;
+
+      foundElement = true;
+      line.start.xMm += dxMm;
+      line.start.yMm += dyMm;
+      line.end.xMm += dxMm;
+      line.end.yMm += dyMm;
+    }
+
+    if (foundElement)
+      movedCenterElements.push_back(
+          pointReference.elementCenterId);
+  }
+
+  for (const auto pointReference : connectedPoints) {
+    if (pointReference.elementCenterId != 0)
+      continue;
+
+    if (pointReference.circleId !=
+        kInvalidGeometryId) {
+      const auto index =
+          circleIndex(pointReference.circleId);
+
+      if (!index)
+        continue;
+
       circles_[*index].center.xMm += dxMm;
       circles_[*index].center.yMm += dyMm;
       continue;
     }
 
-    const auto index = lineIndex(pointReference.lineId);
-    if (!index) continue;
+    const auto index =
+        lineIndex(pointReference.lineId);
+
+    if (!index)
+      continue;
+
+    // If this endpoint belongs to an element already translated through its
+    // virtual centre, do not apply the same displacement twice.
+    if (std::find(
+            movedCenterElements.begin(),
+            movedCenterElements.end(),
+            lines_[*index].elementId) !=
+        movedCenterElements.end())
+      continue;
 
     Point& point =
-        pointReference.start ? lines_[*index].start : lines_[*index].end;
+        pointReference.start
+            ? lines_[*index].start
+            : lines_[*index].end;
+
     point.xMm += dxMm;
     point.yMm += dyMm;
   }
 
-  // A drag is the user's active degree of freedom. Before the generic solver
-  // runs, propagate the new length of every moved line through its Equal
-  // component. This prevents an older rectangle in A=B=C from becoming the
-  // accidental source and snapping the actively edited rectangle backwards.
   std::vector<GeometryId> movedLineIds;
-  for (const auto pointReference : connectedPoints) {
-    if (pointReference.circleId != kInvalidGeometryId ||
-        pointReference.lineId == kInvalidGeometryId)
+
+  for (const auto pointReference :
+       connectedPoints) {
+    if (pointReference.elementCenterId != 0 ||
+        pointReference.circleId !=
+            kInvalidGeometryId ||
+        pointReference.lineId ==
+            kInvalidGeometryId)
       continue;
 
-    if (std::find(movedLineIds.begin(), movedLineIds.end(),
-                  pointReference.lineId) == movedLineIds.end())
-      movedLineIds.push_back(pointReference.lineId);
+    if (std::find(
+            movedLineIds.begin(),
+            movedLineIds.end(),
+            pointReference.lineId) ==
+        movedLineIds.end())
+      movedLineIds.push_back(
+          pointReference.lineId);
+  }
+
+  // Lines translated through a virtual centre are also active moved
+  // geometries for Equal propagation.
+  for (std::size_t index = 0;
+       index < lines_.size();
+       ++index) {
+    if (std::find(
+            movedCenterElements.begin(),
+            movedCenterElements.end(),
+            lines_[index].elementId) ==
+        movedCenterElements.end())
+      continue;
+
+    const auto id = lineIds_[index];
+
+    if (id != kInvalidGeometryId &&
+        std::find(
+            movedLineIds.begin(),
+            movedLineIds.end(),
+            id) ==
+            movedLineIds.end())
+      movedLineIds.push_back(id);
   }
 
   const auto hasDrivingSize =
       [this](GeometryId lineIdValue) {
-        const auto lineIndexValue = lineIndex(lineIdValue);
-        if (!lineIndexValue) return false;
+        const auto lineIndexValue =
+            lineIndex(lineIdValue);
+
+        if (!lineIndexValue)
+          return false;
 
         for (const auto& item : constraints_) {
-          if (item.value <= 0.0) continue;
+          if (item.value <= 0.0)
+            continue;
 
-          if (item.type == ConstraintType::Length &&
-              item.firstGeometry == lineIdValue)
+          if (item.type ==
+                  ConstraintType::Length &&
+              item.firstGeometry ==
+                  lineIdValue)
             return true;
 
-          if (item.firstPoint.circleId != kInvalidGeometryId ||
-              item.secondPoint.circleId != kInvalidGeometryId)
+          if (item.firstPoint.circleId !=
+                  kInvalidGeometryId ||
+              item.secondPoint.circleId !=
+                  kInvalidGeometryId ||
+              item.firstPoint.elementCenterId != 0 ||
+              item.secondPoint.elementCenterId != 0)
             continue;
 
-          if (item.firstPoint.lineId != lineIdValue ||
-              item.secondPoint.lineId != lineIdValue ||
-              item.firstPoint.start == item.secondPoint.start)
+          if (item.firstPoint.lineId !=
+                  lineIdValue ||
+              item.secondPoint.lineId !=
+                  lineIdValue ||
+              item.firstPoint.start ==
+                  item.secondPoint.start)
             continue;
 
-          if (item.type == ConstraintType::Distance ||
-              item.type == ConstraintType::DistanceX ||
-              item.type == ConstraintType::DistanceY)
+          if (item.type ==
+                  ConstraintType::Distance ||
+              item.type ==
+                  ConstraintType::DistanceX ||
+              item.type ==
+                  ConstraintType::DistanceY)
             return true;
         }
 
@@ -1598,83 +1863,120 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       };
 
   for (const auto sourceId : movedLineIds) {
-    const auto sourceIndex = lineIndex(sourceId);
-    if (!sourceIndex) continue;
+    const auto sourceIndex =
+        lineIndex(sourceId);
 
-    // A driving dimension is stronger than an interactive drag.
-    if (hasDrivingSize(sourceId)) continue;
+    if (!sourceIndex)
+      continue;
 
-    std::vector<GeometryId> equalGroup{sourceId};
+    if (hasDrivingSize(sourceId))
+      continue;
+
+    std::vector<GeometryId> equalGroup{
+        sourceId};
+
     bool expandedEqual = true;
 
     while (expandedEqual) {
       expandedEqual = false;
 
       for (const auto& item : constraints_) {
-        if (item.type != ConstraintType::Equal) continue;
+        if (item.type !=
+            ConstraintType::Equal)
+          continue;
+
         if (!lineIndex(item.firstGeometry) ||
             !lineIndex(item.secondGeometry))
           continue;
 
         const bool hasFirst =
-            std::find(equalGroup.begin(), equalGroup.end(),
-                      item.firstGeometry) != equalGroup.end();
+            std::find(
+                equalGroup.begin(),
+                equalGroup.end(),
+                item.firstGeometry) !=
+            equalGroup.end();
+
         const bool hasSecond =
-            std::find(equalGroup.begin(), equalGroup.end(),
-                      item.secondGeometry) != equalGroup.end();
+            std::find(
+                equalGroup.begin(),
+                equalGroup.end(),
+                item.secondGeometry) !=
+            equalGroup.end();
 
         if (hasFirst && !hasSecond) {
-          equalGroup.push_back(item.secondGeometry);
+          equalGroup.push_back(
+              item.secondGeometry);
           expandedEqual = true;
-        } else if (!hasFirst && hasSecond) {
-          equalGroup.push_back(item.firstGeometry);
+        }
+        else if (!hasFirst && hasSecond) {
+          equalGroup.push_back(
+              item.firstGeometry);
           expandedEqual = true;
         }
       }
     }
 
-    if (equalGroup.size() <= 1) continue;
+    if (equalGroup.size() <= 1)
+      continue;
 
     bool groupHasDriving = false;
+
     for (const auto groupId : equalGroup) {
       if (hasDrivingSize(groupId)) {
         groupHasDriving = true;
         break;
       }
     }
-    if (groupHasDriving) continue;
 
-    const auto& sourceLine = lines_[*sourceIndex];
+    if (groupHasDriving)
+      continue;
+
+    const auto& sourceLine =
+        lines_[*sourceIndex];
+
     const double targetLength =
-        std::hypot(sourceLine.end.xMm - sourceLine.start.xMm,
-                   sourceLine.end.yMm - sourceLine.start.yMm);
-    if (targetLength <= 1e-9) continue;
+        std::hypot(
+            sourceLine.end.xMm -
+                sourceLine.start.xMm,
+            sourceLine.end.yMm -
+                sourceLine.start.yMm);
+
+    if (targetLength <= 1e-9)
+      continue;
 
     const std::size_t sourceElementId =
         sourceLine.elementId;
 
-    for (const auto targetId : equalGroup) {
-      if (targetId == sourceId) continue;
+    for (const auto targetId :
+         equalGroup) {
+      if (targetId == sourceId)
+        continue;
 
-      const auto targetIndex = lineIndex(targetId);
-      if (!targetIndex) continue;
+      const auto targetIndex =
+          lineIndex(targetId);
 
-      // Internal Equal between opposite sides of the actively edited
-      // rectangle is handled by its own rectangle constraints. Do not resize
-      // the driver element around its centre while the user is dragging it.
-      if (lines_[*targetIndex].elementId == sourceElementId)
+      if (!targetIndex)
+        continue;
+
+      if (lines_[*targetIndex].elementId ==
+          sourceElementId)
         continue;
 
       const double currentLength =
-          std::hypot(lines_[*targetIndex].end.xMm -
-                         lines_[*targetIndex].start.xMm,
-                     lines_[*targetIndex].end.yMm -
-                         lines_[*targetIndex].start.yMm);
+          std::hypot(
+              lines_[*targetIndex].end.xMm -
+                  lines_[*targetIndex].start.xMm,
+              lines_[*targetIndex].end.yMm -
+                  lines_[*targetIndex].start.yMm);
 
-      if (std::abs(currentLength - targetLength) <= 1e-7)
+      if (std::abs(
+              currentLength -
+              targetLength) <= 1e-7)
         continue;
 
-      (void)setLineLengthById(targetId, targetLength);
+      (void)setLineLengthById(
+          targetId,
+          targetLength);
     }
   }
 
@@ -1780,6 +2082,37 @@ bool Sketch::setPointDistance(PointReference firstReference,
   // A point-distance attached to a rectangle must move the complete
   // composite element. Moving only one corner destroys the rectangle and
   // makes the dimension appear to drift during subsequent solver passes.
+  // CRASH-FREE 07: MOVABLE NON-LINE POINT REFERENCES
+  //
+  // PointReference may denote a circle centre or a virtual composite centre,
+  // not only a line endpoint. A driving point-distance must move whichever
+  // CAD point is the SECOND reference.
+  if (secondReference.elementCenterId != 0) {
+    for (auto& line : lines_) {
+      if (line.elementId != secondReference.elementCenterId)
+        continue;
+
+      line.start.xMm += moveX;
+      line.start.yMm += moveY;
+      line.end.xMm += moveX;
+      line.end.yMm += moveY;
+    }
+
+    updateBounds();
+    return true;
+  }
+
+  if (secondReference.circleId != kInvalidGeometryId) {
+    const auto circle =
+        circleIndex(secondReference.circleId);
+
+    if (!circle)
+      return false;
+
+    circles_[*circle].center = moved;
+    updateBounds();
+    return true;
+  }
   if (secondReference.circleId == kInvalidGeometryId) {
     const auto secondLineIndex = lineIndex(secondReference.lineId);
 
@@ -1883,6 +2216,31 @@ bool Sketch::setPointDistanceX(PointReference firstReference,
     updateBounds();
     return true;
   }
+  // CRASH-FREE 07: X DISTANCE TO NON-LINE POINT
+  if (secondReference.elementCenterId != 0) {
+    for (auto& line : lines_) {
+      if (line.elementId != secondReference.elementCenterId)
+        continue;
+
+      line.start.xMm += moveX;
+      line.end.xMm += moveX;
+    }
+
+    updateBounds();
+    return true;
+  }
+
+  if (secondReference.circleId != kInvalidGeometryId) {
+    const auto circle =
+        circleIndex(secondReference.circleId);
+
+    if (!circle)
+      return false;
+
+    circles_[*circle].center.xMm = moved.xMm;
+    updateBounds();
+    return true;
+  }
   if (secondReference.circleId == kInvalidGeometryId) {
     const auto secondLineIndex = lineIndex(secondReference.lineId);
 
@@ -1981,6 +2339,31 @@ bool Sketch::setPointDistanceY(PointReference firstReference,
         line.end.yMm += moveY;
     }
 
+    updateBounds();
+    return true;
+  }
+  // CRASH-FREE 07: Y DISTANCE TO NON-LINE POINT
+  if (secondReference.elementCenterId != 0) {
+    for (auto& line : lines_) {
+      if (line.elementId != secondReference.elementCenterId)
+        continue;
+
+      line.start.yMm += moveY;
+      line.end.yMm += moveY;
+    }
+
+    updateBounds();
+    return true;
+  }
+
+  if (secondReference.circleId != kInvalidGeometryId) {
+    const auto circle =
+        circleIndex(secondReference.circleId);
+
+    if (!circle)
+      return false;
+
+    circles_[*circle].center.yMm = moved.yMm;
     updateBounds();
     return true;
   }

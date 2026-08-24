@@ -16,7 +16,12 @@
     <file alias="sketch/mirror.png">sketch/mirror.png</file>
     <file alias="sketch/dimension.png">sketch/dimension.png</file>
     <file alias="sketch/auto-dimension.png">sketch/dimension/auto-dimension.png</file>
-    <file alias="sketch/orthogonal-constraint.png">sketch/orthogonal-constraint.png</file>
+    <file alias="sketch/constraint/orthogonal.png">sketch/constraint/orthogonal.png</file>
+    <file alias="sketch/constraint/coincident.png">sketch/constraint/coincident.png</file>
+    <file alias="sketch/constraint/perpendicular.png">sketch/constraint/perpendicular.png</file>
+    <file alias="sketch/constraint/parallel.png">sketch/constraint/parallel.png</file>
+    <file alias="sketch/constraint/equal.png">sketch/constraint/equal.png</file>
+    <file alias="sketch/constraint/tangent.png">sketch/constraint/tangent.png</file>
     <file alias="sketch/circle/center-radius.png">sketch/circle/center-radius.png</file>
     <file alias="sketch/circle/two-points.png">sketch/circle/two-points.png</file>
     <file alias="sketch/circle/three-points.png">sketch/circle/three-points.png</file>

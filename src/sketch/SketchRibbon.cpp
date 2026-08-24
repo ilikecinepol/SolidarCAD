@@ -144,81 +144,38 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   toolGroup->addButton(dimension);
   constraintsLayout->addWidget(dimension);
   auto* orthogonalTool = toolButton(
-      ":/icons/sketch/orthogonal-constraint.png",
+      ":/icons/sketch/constraint/orthogonal.png",
       QString::fromUtf8("Горизонтально/вертикально"), this);
   toolGroup->addButton(orthogonalTool);
   constraintsLayout->addWidget(orthogonalTool);
 
-  auto* coincidentTool = new QPushButton(QString::fromUtf8("●●"), this);
-  coincidentTool->setObjectName("toolButton");
-  coincidentTool->setCheckable(true);
-  coincidentTool->setFixedSize(54, 54);
-  coincidentTool->setFocusPolicy(Qt::NoFocus);
-  coincidentTool->setCursor(Qt::PointingHandCursor);
-  coincidentTool->setToolTip(QString::fromUtf8("Совпадение / Принадлежность"));
+  auto* coincidentTool = toolButton(
+      ":/icons/sketch/constraint/coincident.png",
+      QString::fromUtf8("Совпадение / Принадлежность"), this);
   toolGroup->addButton(coincidentTool);
   constraintsLayout->addWidget(coincidentTool);
 
-  auto* perpendicularTool =
-      new QPushButton(QString::fromUtf8("⊥"), this);
-  perpendicularTool->setObjectName("toolButton");
-  perpendicularTool->setCheckable(true);
-  perpendicularTool->setFixedSize(54, 54);
-  perpendicularTool->setFocusPolicy(Qt::NoFocus);
-  perpendicularTool->setCursor(Qt::PointingHandCursor);
-  perpendicularTool->setToolTip(
-      QString::fromUtf8("Перпендикулярность"));
-  QFont perpendicularFont = perpendicularTool->font();
-  perpendicularFont.setPointSize(22);
-  perpendicularTool->setFont(perpendicularFont);
+  auto* perpendicularTool = toolButton(
+      ":/icons/sketch/constraint/perpendicular.png",
+      QString::fromUtf8("Перпендикулярность"), this);
   toolGroup->addButton(perpendicularTool);
   constraintsLayout->addWidget(perpendicularTool);
 
-  auto* parallelTool =
-      new QPushButton(QString::fromUtf8("∥"), this);
-  parallelTool->setObjectName("toolButton");
-  parallelTool->setCheckable(true);
-  parallelTool->setFixedSize(54, 54);
-  parallelTool->setFocusPolicy(Qt::NoFocus);
-  parallelTool->setCursor(Qt::PointingHandCursor);
-  parallelTool->setToolTip(QString::fromUtf8("Параллельность"));
-  QFont parallelFont = parallelTool->font();
-  parallelFont.setPointSize(20);
-  parallelTool->setFont(parallelFont);
+  auto* parallelTool = toolButton(
+      ":/icons/sketch/constraint/parallel.png",
+      QString::fromUtf8("Параллельность"), this);
   toolGroup->addButton(parallelTool);
   constraintsLayout->addWidget(parallelTool);
 
-  auto* equalTool =
-      new QPushButton(QString::fromUtf8("="), this);
-  equalTool->setObjectName("toolButton");
-  equalTool->setCheckable(true);
-  equalTool->setFixedSize(54, 54);
-  equalTool->setFocusPolicy(Qt::NoFocus);
-  equalTool->setCursor(Qt::PointingHandCursor);
-  equalTool->setToolTip(QString::fromUtf8("Эквивалентность"));
-  QFont equalFont = equalTool->font();
-  equalFont.setPointSize(20);
-  equalFont.setBold(true);
-  equalTool->setFont(equalFont);
+  auto* equalTool = toolButton(
+      ":/icons/sketch/constraint/equal.png",
+      QString::fromUtf8("Эквивалентность"), this);
   toolGroup->addButton(equalTool);
   constraintsLayout->addWidget(equalTool);
 
-  auto* tangentTool =
-      new QPushButton(QStringLiteral("T"), this);
-  tangentTool->setObjectName("toolButton");
-  tangentTool->setCheckable(true);
-  tangentTool->setFixedSize(54, 54);
-  tangentTool->setFocusPolicy(Qt::NoFocus);
-  tangentTool->setCursor(Qt::PointingHandCursor);
-  tangentTool->setToolTip(
-      QString::fromUtf8(
-          "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F "
-          "\xD0\xBA "
-          "\xD0\xBE\xD0\xBA\xD1\x80\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD0\xB8"));
-  QFont tangentFont = tangentTool->font();
-  tangentFont.setPointSize(18);
-  tangentFont.setBold(true);
-  tangentTool->setFont(tangentFont);
+  auto* tangentTool = toolButton(
+      ":/icons/sketch/constraint/tangent.png",
+      QString::fromUtf8("Касательная к окружности"), this);
   toolGroup->addButton(tangentTool);
   constraintsLayout->addWidget(tangentTool);
 

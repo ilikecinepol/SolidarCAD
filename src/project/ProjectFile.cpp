@@ -160,17 +160,30 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
           {"firstPointLine", firstPointLine},
           {"firstPointStart", constraint.firstPoint.start},
           {"firstPointCircle", firstPointCircle},
+          {"firstPointElementCenter",
+           static_cast<qint64>(constraint.firstPoint.elementCenterId)},
           {"secondPointLine", secondPointLine},
           {"secondPointStart", constraint.secondPoint.start},
           {"secondPointCircle", secondPointCircle},
+          {"secondPointElementCenter",
+           static_cast<qint64>(constraint.secondPoint.elementCenterId)},
           {"value", constraint.value}});
+    }
+
+    QJsonArray centerNodeElementIds;
+    for (const auto elementId :
+         saved.geometry.centerNodeElementIds()) {
+      centerNodeElementIds.append(
+          static_cast<qint64>(elementId));
     }
 
     sketches.append(QJsonObject{{"support", saved.support},
                                 {"lines", lines},
                                 {"circles", circles},
                                 {"dimensions", dimensions},
-                                {"constraints", constraints}});
+                                {"constraints", constraints},
+                                {"centerNodeElementIds",
+                                 centerNodeElementIds}});
   }
   root["sketches"] = sketches;
   QJsonObject extrusion{{"enabled", data.hasExtrusion}};
@@ -251,6 +264,20 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
                                circle.value("radius").toDouble());
       if (circle.value("dashed").toBool())
         saved.geometry.setCircleDashed(saved.geometry.circles().size() - 1, true);
+    }
+    // CRASH-FREE 05: RESTORE VIRTUAL CENTER OWNERSHIP
+    //
+    // elementId grouping is restored with line geometry. Re-register only
+    // the composite elements that originally exposed a virtual CAD centre.
+    // Old files simply have no centerNodeElementIds array.
+    for (const auto centerValue :
+         savedObject.value("centerNodeElementIds").toArray()) {
+      const auto elementId =
+          static_cast<std::size_t>(
+              centerValue.toInteger());
+
+      if (elementId != 0)
+        saved.geometry.markElementCenterNode(elementId);
     }
     for (const auto dimensionValue : savedObject.value("dimensions").toArray()) {
       const auto object = dimensionValue.toObject();
@@ -362,6 +389,22 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
         constraint.secondPoint.circleId =
             saved.geometry.circleId(
                 static_cast<std::size_t>(secondPointCircle));
+      }
+
+      const qint64 firstPointElementCenter =
+          object.value("firstPointElementCenter").toInteger(0);
+      if (firstPointElementCenter > 0) {
+        constraint.firstPoint.elementCenterId =
+            static_cast<std::size_t>(
+                firstPointElementCenter);
+      }
+
+      const qint64 secondPointElementCenter =
+          object.value("secondPointElementCenter").toInteger(0);
+      if (secondPointElementCenter > 0) {
+        constraint.secondPoint.elementCenterId =
+            static_cast<std::size_t>(
+                secondPointElementCenter);
       }
 
       saved.geometry.addConstraint(constraint);
