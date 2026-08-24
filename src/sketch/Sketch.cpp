@@ -1018,6 +1018,61 @@ bool Sketch::setLinesParallelByIds(GeometryId firstId,
   if (!firstIndex || !secondIndex || firstId == secondId)
     return false;
 
+  // CRASH-FREE 11: COMPOSITE-SAFE PARALLEL DISPATCH
+  //
+  // Parallel is a relative orientation constraint. Rotating only one side of
+  // a rectangle tears the composite apart. If exactly one operand is a
+  // composite, always rotate the standalone operand. If both operands belong
+  // to different composites, reject this primitive operation rather than
+  // deform either element.
+  const auto elementLineCount =
+      [this](std::size_t lineIndexValue) {
+        if (lineIndexValue >= lines_.size())
+          return std::size_t{0};
+
+        const std::size_t elementId =
+            lines_[lineIndexValue].elementId;
+
+        std::size_t count = 0;
+
+        for (const auto& line : lines_) {
+          if (line.elementId == elementId)
+            ++count;
+        }
+
+        return count;
+      };
+
+  const std::size_t firstElementCount =
+      elementLineCount(*firstIndex);
+  const std::size_t secondElementCount =
+      elementLineCount(*secondIndex);
+
+  const bool firstComposite =
+      firstElementCount > 1;
+  const bool secondComposite =
+      secondElementCount > 1;
+
+  const std::size_t firstElementId =
+      lines_[*firstIndex].elementId;
+  const std::size_t secondElementId =
+      lines_[*secondIndex].elementId;
+
+  if (firstElementId != secondElementId) {
+    if (!firstComposite && secondComposite) {
+      // Reverse the relationship: keep the rectangle side as reference and
+      // rotate the standalone line instead.
+      return setLinesParallelByIds(
+          secondId,
+          firstId);
+    }
+
+    if (firstComposite && secondComposite) {
+      // Rotating one side of either composite would destroy its shape.
+      return false;
+    }
+  }
+
   const auto& first = lines_[*firstIndex];
   auto& second = lines_[*secondIndex];
 

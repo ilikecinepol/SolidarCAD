@@ -1,4 +1,4 @@
-﻿#include "sketch/SketchSolver.h"
+#include "sketch/SketchSolver.h"
 
 #include "sketch/Sketch.h"
 
@@ -324,6 +324,36 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       ++result.invalidReferences;
   }
 
+  // CRASH-FREE 11: COMPOSITE RELATIONSHIP GUARD
+  //
+  // Primitive orientation setters may only rotate a standalone line relative
+  // to a composite side. Two different composite elements need a future
+  // whole-element rigid transform solver; never deform one rectangle side.
+  const auto compositeLineElement =
+      [&sketch](GeometryId id)
+          -> std::optional<std::size_t> {
+        const auto index =
+            sketch.lineIndex(id);
+
+        if (!index)
+          return std::nullopt;
+
+        const std::size_t elementId =
+            sketch.lines()[*index].elementId;
+
+        std::size_t count = 0;
+
+        for (const auto& line :
+             sketch.lines()) {
+          if (line.elementId == elementId)
+            ++count;
+        }
+
+        if (count <= 1)
+          return std::nullopt;
+
+        return elementId;
+      };
   // Perpendicular uses the same rotation primitive as Angle, but always with
   // 90 degrees. Preserve an existing H/V-fixed line by rotating the other.
   for (const auto& constraint : sketch.constraints()) {
@@ -1122,43 +1152,608 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
     else
       ++result.invalidReferences;
   }
-  // TANGENT FINAL STABILIZATION PASS
-  // Sequential projection is repeated because one circle may be tangent
-  // to two or three carrier lines at the same time.
-  constexpr int tangentIterations = 10;
+  // CRASH-FREE 10: GROUPED MULTI-TANGENT SOLVER
+  //
+  // Sequentially projecting one circle onto Tangent A, then B, then C makes
+  // the last constraint win. Instead, collect every Tangent that targets the
+  // same circle and solve that circle as one system.
+  std::vector<GeometryId> processedTangentCircles;
 
-  for (int iteration = 0;
-       iteration < tangentIterations;
-       ++iteration) {
-    bool anyTangent = false;
+  const auto alreadyProcessedTangentCircle =
+      [&processedTangentCircles](GeometryId id) {
+        return std::find(
+                   processedTangentCircles.begin(),
+                   processedTangentCircles.end(),
+                   id) !=
+               processedTangentCircles.end();
+      };
 
-    for (const auto& constraint : sketch.constraints()) {
-      if (constraint.type != ConstraintType::Tangent)
+  for (const auto& seed :
+       sketch.constraints()) {
+    if (seed.type != ConstraintType::Tangent)
+      continue;
+
+    const GeometryId circleId =
+        seed.secondGeometry;
+
+    if (circleId == kInvalidGeometryId ||
+        alreadyProcessedTangentCircle(circleId))
+      continue;
+
+    processedTangentCircles.push_back(circleId);
+
+    const auto circleIndex =
+        sketch.circleIndex(circleId);
+
+    if (!circleIndex) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    const auto& circle =
+        sketch.circles()[*circleIndex];
+
+    if (!std::isfinite(circle.radiusMm) ||
+        circle.radiusMm <= 1e-9) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    std::vector<GeometryId> carrierIds;
+
+    for (const auto& item :
+         sketch.constraints()) {
+      if (item.type != ConstraintType::Tangent ||
+          item.secondGeometry != circleId)
         continue;
 
-      anyTangent = true;
-
-      if (constraint.firstGeometry == kInvalidGeometryId ||
-          constraint.secondGeometry == kInvalidGeometryId ||
-          !sketch.lineIndex(constraint.firstGeometry) ||
-          !sketch.circleIndex(constraint.secondGeometry)) {
-        if (iteration == 0)
-          ++result.invalidReferences;
-        continue;
-      }
-
-      if (sketch.setCircleTangentToLine(
-              constraint.firstGeometry,
-              constraint.secondGeometry)) {
-        if (iteration == 0)
-          ++result.applied;
-      }
-      else if (iteration == 0) {
+      if (item.firstGeometry ==
+              kInvalidGeometryId ||
+          !sketch.lineIndex(item.firstGeometry)) {
         ++result.invalidReferences;
+        continue;
+      }
+
+      if (std::find(
+              carrierIds.begin(),
+              carrierIds.end(),
+              item.firstGeometry) ==
+          carrierIds.end()) {
+        carrierIds.push_back(
+            item.firstGeometry);
       }
     }
 
-    if (!anyTangent)
+    if (carrierIds.empty())
+      continue;
+
+    if (carrierIds.size() == 1) {
+      if (sketch.setCircleTangentToLine(
+              carrierIds.front(),
+              circleId))
+        ++result.applied;
+      else
+        ++result.invalidReferences;
+
+      continue;
+    }
+
+    struct TangentCandidate {
+      Point center;
+      double residual{};
+      double finitePenalty{};
+      double movement{};
+    };
+
+    std::optional<TangentCandidate>
+        bestCandidate;
+
+    const auto evaluateCandidate =
+        [&sketch,
+         &carrierIds,
+         &circle](Point candidate) {
+          TangentCandidate scored;
+          scored.center = candidate;
+
+          scored.movement =
+              std::hypot(
+                  candidate.xMm -
+                      circle.center.xMm,
+                  candidate.yMm -
+                      circle.center.yMm);
+
+          for (const auto lineId :
+               carrierIds) {
+            const auto index =
+                sketch.lineIndex(lineId);
+
+            if (!index) {
+              scored.residual += 1e9;
+              continue;
+            }
+
+            const auto& line =
+                sketch.lines()[*index];
+
+            const double dx =
+                line.end.xMm -
+                line.start.xMm;
+            const double dy =
+                line.end.yMm -
+                line.start.yMm;
+            const double lengthSquared =
+                dx * dx + dy * dy;
+
+            if (lengthSquared <= 1e-12) {
+              scored.residual += 1e9;
+              continue;
+            }
+
+            const double length =
+                std::sqrt(lengthSquared);
+            const double nx =
+                -dy / length;
+            const double ny =
+                dx / length;
+
+            const double signedDistance =
+                (candidate.xMm -
+                     line.start.xMm) *
+                    nx +
+                (candidate.yMm -
+                     line.start.yMm) *
+                    ny;
+
+            scored.residual +=
+                std::abs(
+                    std::abs(signedDistance) -
+                    circle.radiusMm);
+
+            const double rawT =
+                ((candidate.xMm -
+                      line.start.xMm) *
+                     dx +
+                 (candidate.yMm -
+                      line.start.yMm) *
+                     dy) /
+                lengthSquared;
+
+            if (rawT < 0.0)
+              scored.finitePenalty +=
+                  -rawT * length;
+            else if (rawT > 1.0)
+              scored.finitePenalty +=
+                  (rawT - 1.0) * length;
+          }
+
+          return scored;
+        };
+
+    for (std::size_t first = 0;
+         first < carrierIds.size();
+         ++first) {
+      const auto firstIndex =
+          sketch.lineIndex(
+              carrierIds[first]);
+
+      if (!firstIndex)
+        continue;
+
+      const auto& firstLine =
+          sketch.lines()[*firstIndex];
+
+      const double firstDx =
+          firstLine.end.xMm -
+          firstLine.start.xMm;
+      const double firstDy =
+          firstLine.end.yMm -
+          firstLine.start.yMm;
+      const double firstLength =
+          std::hypot(firstDx, firstDy);
+
+      if (firstLength <= 1e-9)
+        continue;
+
+      const double firstNx =
+          -firstDy / firstLength;
+      const double firstNy =
+          firstDx / firstLength;
+
+      for (std::size_t second =
+               first + 1;
+           second < carrierIds.size();
+           ++second) {
+        const auto secondIndex =
+            sketch.lineIndex(
+                carrierIds[second]);
+
+        if (!secondIndex)
+          continue;
+
+        const auto& secondLine =
+            sketch.lines()[*secondIndex];
+
+        const double secondDx =
+            secondLine.end.xMm -
+            secondLine.start.xMm;
+        const double secondDy =
+            secondLine.end.yMm -
+            secondLine.start.yMm;
+        const double secondLength =
+            std::hypot(
+                secondDx,
+                secondDy);
+
+        if (secondLength <= 1e-9)
+          continue;
+
+        const double secondNx =
+            -secondDy / secondLength;
+        const double secondNy =
+            secondDx / secondLength;
+
+        const double determinant =
+            firstNx * secondNy -
+            firstNy * secondNx;
+
+        if (std::abs(determinant) <=
+            1e-10)
+          continue;
+
+        for (const double firstSide :
+             {-1.0, 1.0}) {
+          for (const double secondSide :
+               {-1.0, 1.0}) {
+            const double firstConstant =
+                firstNx *
+                    firstLine.start.xMm +
+                firstNy *
+                    firstLine.start.yMm +
+                firstSide *
+                    circle.radiusMm;
+
+            const double secondConstant =
+                secondNx *
+                    secondLine.start.xMm +
+                secondNy *
+                    secondLine.start.yMm +
+                secondSide *
+                    circle.radiusMm;
+
+            const Point candidate{
+                (firstConstant *
+                     secondNy -
+                 firstNy *
+                     secondConstant) /
+                    determinant,
+                (firstNx *
+                     secondConstant -
+                 firstConstant *
+                     secondNx) /
+                    determinant};
+
+            if (!std::isfinite(
+                    candidate.xMm) ||
+                !std::isfinite(
+                    candidate.yMm))
+              continue;
+
+            const auto scored =
+                evaluateCandidate(candidate);
+
+            if (!bestCandidate) {
+              bestCandidate = scored;
+              continue;
+            }
+
+            constexpr double
+                residualTolerance = 1e-7;
+            constexpr double
+                finiteTolerance = 1e-7;
+
+            const bool betterResidual =
+                scored.residual <
+                bestCandidate->residual -
+                    residualTolerance;
+
+            const bool equalResidual =
+                std::abs(
+                    scored.residual -
+                    bestCandidate->residual) <=
+                residualTolerance;
+
+            const bool betterFinite =
+                equalResidual &&
+                scored.finitePenalty <
+                    bestCandidate
+                            ->finitePenalty -
+                        finiteTolerance;
+
+            const bool equalFinite =
+                equalResidual &&
+                std::abs(
+                    scored.finitePenalty -
+                    bestCandidate
+                        ->finitePenalty) <=
+                    finiteTolerance;
+
+            const bool closerBranch =
+                equalFinite &&
+                scored.movement <
+                    bestCandidate->movement;
+
+            if (betterResidual ||
+                betterFinite ||
+                closerBranch)
+              bestCandidate = scored;
+          }
+        }
+      }
+    }
+
+    if (!bestCandidate) {
+      bool anyApplied = false;
+
+      for (const auto lineId :
+           carrierIds) {
+        anyApplied =
+            sketch.setCircleTangentToLine(
+                lineId,
+                circleId) ||
+            anyApplied;
+      }
+
+      if (anyApplied)
+        ++result.applied;
+      else
+        ++result.invalidReferences;
+
+      continue;
+    }
+
+    const double moveX =
+        bestCandidate->center.xMm -
+        circle.center.xMm;
+    const double moveY =
+        bestCandidate->center.yMm -
+        circle.center.yMm;
+
+    sketch.translateCircleById(
+        circleId,
+        moveX,
+        moveY);
+
+    ++result.applied;
+  }
+  // CRASH-FREE 11: FINAL COMPOSITE-SAFE EQUAL STABILIZATION
+  //
+  // Orientation relationships are solved after the main Equal pass. Re-apply
+  // Equal here so Parallel/Perpendicular/Angle cannot leave an equal pair one
+  // step out of sync. setLineLengthById() is rectangle-aware and resizes a
+  // four-line composite as one rectangle rather than stretching one side.
+  for (const auto& constraint :
+       sketch.constraints()) {
+    if (constraint.type !=
+        ConstraintType::Equal)
+      continue;
+
+    if (constraint.firstGeometry ==
+            kInvalidGeometryId ||
+        constraint.secondGeometry ==
+            kInvalidGeometryId ||
+        constraint.firstGeometry ==
+            constraint.secondGeometry)
+      continue;
+
+    const auto firstLineIndex =
+        sketch.lineIndex(
+            constraint.firstGeometry);
+    const auto secondLineIndex =
+        sketch.lineIndex(
+            constraint.secondGeometry);
+
+    if (firstLineIndex &&
+        secondLineIndex) {
+      const auto& firstLine =
+          sketch.lines()[*firstLineIndex];
+      const auto& secondLine =
+          sketch.lines()[*secondLineIndex];
+
+      const double firstLength =
+          std::hypot(
+              firstLine.end.xMm -
+                  firstLine.start.xMm,
+              firstLine.end.yMm -
+                  firstLine.start.yMm);
+
+      const double secondLength =
+          std::hypot(
+              secondLine.end.xMm -
+                  secondLine.start.xMm,
+              secondLine.end.yMm -
+                  secondLine.start.yMm);
+
+      if (firstLength <= 1e-9 ||
+          secondLength <= 1e-9)
+        continue;
+
+      // Prefer the geometry with an explicit driving size as reference.
+      const auto drivingLength =
+          [&sketch](GeometryId id)
+              -> std::optional<double> {
+            for (const auto& item :
+                 sketch.constraints()) {
+              if (item.type ==
+                      ConstraintType::Length &&
+                  item.firstGeometry == id &&
+                  std::isfinite(item.value) &&
+                  item.value > 0.0)
+                return item.value;
+
+              if (item.firstPoint.lineId != id ||
+                  item.secondPoint.lineId != id ||
+                  item.firstPoint.start ==
+                      item.secondPoint.start)
+                continue;
+
+              if ((item.type ==
+                       ConstraintType::Distance ||
+                   item.type ==
+                       ConstraintType::DistanceX ||
+                   item.type ==
+                       ConstraintType::DistanceY) &&
+                  std::isfinite(item.value) &&
+                  item.value > 0.0)
+                return item.value;
+            }
+
+            return std::nullopt;
+          };
+
+      const auto firstDriving =
+          drivingLength(
+              constraint.firstGeometry);
+      const auto secondDriving =
+          drivingLength(
+              constraint.secondGeometry);
+
+      GeometryId movingGeometry =
+          constraint.secondGeometry;
+      double targetLength =
+          firstLength;
+
+      if (secondDriving &&
+          !firstDriving) {
+        movingGeometry =
+            constraint.firstGeometry;
+        targetLength =
+            *secondDriving;
+      }
+      else if (firstDriving) {
+        targetLength =
+            *firstDriving;
+      }
+
+      const auto movingIndex =
+          sketch.lineIndex(
+              movingGeometry);
+
+      if (!movingIndex)
+        continue;
+
+      const auto& movingLine =
+          sketch.lines()[*movingIndex];
+
+      const double currentLength =
+          std::hypot(
+              movingLine.end.xMm -
+                  movingLine.start.xMm,
+              movingLine.end.yMm -
+                  movingLine.start.yMm);
+
+      if (std::abs(
+              currentLength -
+              targetLength) <= 1e-7)
+        continue;
+
+      (void)sketch.setLineLengthById(
+          movingGeometry,
+          targetLength);
+
+      continue;
+    }
+
+    const auto firstCircleIndex =
+        sketch.circleIndex(
+            constraint.firstGeometry);
+    const auto secondCircleIndex =
+        sketch.circleIndex(
+            constraint.secondGeometry);
+
+    if (firstCircleIndex &&
+        secondCircleIndex) {
+      const double targetDiameter =
+          sketch.circles()[*firstCircleIndex]
+              .radiusMm *
+          2.0;
+
+      const double currentDiameter =
+          sketch.circles()[*secondCircleIndex]
+              .radiusMm *
+          2.0;
+
+      if (std::abs(
+              currentDiameter -
+              targetDiameter) > 1e-7)
+        (void)sketch.setCircleDiameterById(
+            constraint.secondGeometry,
+            targetDiameter);
+    }
+  }
+  // CRASH-FREE 09 V2: FINAL DRIVING DIMENSION STABILIZATION
+  //
+  // The solver is sequential. Equal/orientation/point/tangent passes may move
+  // geometry after a Distance/X/Y was initially solved. Re-apply all active
+  // driving dimensions at the very end. For compatible constraints this makes
+  // drag converge back to the exact requested values instead of silently
+  // changing an older dimension.
+  constexpr int drivingDimensionIterations = 8;
+
+  for (int iteration = 0;
+       iteration < drivingDimensionIterations;
+       ++iteration) {
+    bool anyDrivingDimension = false;
+
+    for (const auto& constraint :
+         sketch.constraints()) {
+      if (constraint.type !=
+              ConstraintType::Distance &&
+          constraint.type !=
+              ConstraintType::DistanceX &&
+          constraint.type !=
+              ConstraintType::DistanceY)
+        continue;
+
+      if (!std::isfinite(constraint.value) ||
+          constraint.value <= 0.0 ||
+          !sketch.referencedPoint(
+              constraint.firstPoint) ||
+          !sketch.referencedPoint(
+              constraint.secondPoint))
+        continue;
+
+      bool applied = false;
+
+      if (constraint.type ==
+          ConstraintType::Distance) {
+        applied =
+            sketch.setPointDistance(
+                constraint.firstPoint,
+                constraint.secondPoint,
+                constraint.value);
+      }
+      else if (constraint.type ==
+               ConstraintType::DistanceX) {
+        applied =
+            sketch.setPointDistanceX(
+                constraint.firstPoint,
+                constraint.secondPoint,
+                constraint.value);
+      }
+      else if (constraint.type ==
+               ConstraintType::DistanceY) {
+        applied =
+            sketch.setPointDistanceY(
+                constraint.firstPoint,
+                constraint.secondPoint,
+                constraint.value);
+      }
+
+      anyDrivingDimension =
+          anyDrivingDimension || applied;
+    }
+
+    if (!anyDrivingDimension)
       break;
   }
   return result;

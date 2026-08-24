@@ -331,6 +331,310 @@ double infiniteLineDistance(sketch::Point point, const sketch::Line& line) {
                   line.end.yMm * line.start.xMm) / length;
 }
 
+struct TwoTangentCirclePreview {
+  sketch::Point center;
+  double radiusMm{};
+};
+
+std::optional<TwoTangentCirclePreview>
+twoTangentCircleForRadius(
+    const sketch::Line& first,
+    const sketch::Line& second,
+    double radiusMm,
+    sketch::Point hint) {
+  if (!std::isfinite(radiusMm) ||
+      radiusMm <= 1e-6)
+    return std::nullopt;
+
+  const double firstDx =
+      first.end.xMm - first.start.xMm;
+  const double firstDy =
+      first.end.yMm - first.start.yMm;
+  const double secondDx =
+      second.end.xMm - second.start.xMm;
+  const double secondDy =
+      second.end.yMm - second.start.yMm;
+
+  const double firstLengthSquared =
+      firstDx * firstDx + firstDy * firstDy;
+  const double secondLengthSquared =
+      secondDx * secondDx + secondDy * secondDy;
+
+  if (firstLengthSquared <= 1e-12 ||
+      secondLengthSquared <= 1e-12)
+    return std::nullopt;
+
+  const double firstLength =
+      std::sqrt(firstLengthSquared);
+  const double secondLength =
+      std::sqrt(secondLengthSquared);
+
+  const double n1x = -firstDy / firstLength;
+  const double n1y = firstDx / firstLength;
+  const double n2x = -secondDy / secondLength;
+  const double n2y = secondDx / secondLength;
+
+  const double determinant =
+      n1x * n2y - n1y * n2x;
+
+  if (std::abs(determinant) <= 1e-10)
+    return std::nullopt;
+
+  const double c1 =
+      n1x * first.start.xMm +
+      n1y * first.start.yMm;
+  const double c2 =
+      n2x * second.start.xMm +
+      n2y * second.start.yMm;
+
+  std::optional<TwoTangentCirclePreview> best;
+  double bestMovement =
+      std::numeric_limits<double>::max();
+
+  for (const double s1 : {-1.0, 1.0}) {
+    for (const double s2 : {-1.0, 1.0}) {
+      const double r1 = c1 + s1 * radiusMm;
+      const double r2 = c2 + s2 * radiusMm;
+
+      const sketch::Point center{
+          (r1 * n2y - n1y * r2) / determinant,
+          (n1x * r2 - r1 * n2x) / determinant};
+
+      if (!std::isfinite(center.xMm) ||
+          !std::isfinite(center.yMm))
+        continue;
+
+      // TWO-TANGENT FINITE SEGMENT DIAMETER LIMIT
+      const double firstT =
+          ((center.xMm - first.start.xMm) * firstDx +
+           (center.yMm - first.start.yMm) * firstDy) /
+          firstLengthSquared;
+
+      const double secondT =
+          ((center.xMm - second.start.xMm) * secondDx +
+           (center.yMm - second.start.yMm) * secondDy) /
+          secondLengthSquared;
+
+      constexpr double finiteTolerance = 1e-8;
+
+      if (firstT < -finiteTolerance ||
+          firstT > 1.0 + finiteTolerance ||
+          secondT < -finiteTolerance ||
+          secondT > 1.0 + finiteTolerance)
+        continue;
+
+      const double movement =
+          std::hypot(
+              center.xMm - hint.xMm,
+              center.yMm - hint.yMm);
+
+      if (movement < bestMovement) {
+        bestMovement = movement;
+        best = TwoTangentCirclePreview{
+            center,
+            radiusMm};
+      }
+    }
+  }
+
+  return best;
+}
+
+std::optional<TwoTangentCirclePreview>
+clampedTwoTangentCircleForRadius(
+    const sketch::Line& first,
+    const sketch::Line& second,
+    double requestedRadiusMm,
+    sketch::Point hint) {
+  const double requested =
+      std::max(0.01, requestedRadiusMm);
+
+  if (const auto exact =
+          twoTangentCircleForRadius(
+              first,
+              second,
+              requested,
+              hint))
+    return exact;
+
+  double low = 0.01;
+  double high = requested;
+
+  std::optional<TwoTangentCirclePreview> best =
+      twoTangentCircleForRadius(
+          first,
+          second,
+          low,
+          hint);
+
+  if (!best)
+    return std::nullopt;
+
+  for (int iteration = 0;
+       iteration < 48;
+       ++iteration) {
+    const double mid =
+        (low + high) * 0.5;
+
+    const auto candidate =
+        twoTangentCircleForRadius(
+            first,
+            second,
+            mid,
+            hint);
+
+    if (candidate) {
+      low = mid;
+      best = candidate;
+    } else {
+      high = mid;
+    }
+  }
+
+  return best;
+}
+std::optional<TwoTangentCirclePreview>
+twoTangentCircleFromCursor(
+    const sketch::Line& first,
+    const sketch::Line& second,
+    sketch::Point cursor) {
+  const double firstDx =
+      first.end.xMm - first.start.xMm;
+  const double firstDy =
+      first.end.yMm - first.start.yMm;
+  const double secondDx =
+      second.end.xMm - second.start.xMm;
+  const double secondDy =
+      second.end.yMm - second.start.yMm;
+
+  const double firstLength =
+      std::hypot(firstDx, firstDy);
+  const double secondLength =
+      std::hypot(secondDx, secondDy);
+
+  if (firstLength <= 1e-9 ||
+      secondLength <= 1e-9)
+    return std::nullopt;
+
+  const double n1x = -firstDy / firstLength;
+  const double n1y = firstDx / firstLength;
+  const double n2x = -secondDy / secondLength;
+  const double n2y = secondDx / secondLength;
+
+  const double determinant =
+      n1x * n2y - n1y * n2x;
+
+  if (std::abs(determinant) <= 1e-10)
+    return std::nullopt;
+
+  const double c1 =
+      n1x * first.start.xMm +
+      n1y * first.start.yMm;
+  const double c2 =
+      n2x * second.start.xMm +
+      n2y * second.start.yMm;
+
+  const sketch::Point base{
+      (c1 * n2y - n1y * c2) /
+          determinant,
+      (n1x * c2 - c1 * n2x) /
+          determinant};
+
+  std::optional<TwoTangentCirclePreview> best;
+  double bestScore =
+      std::numeric_limits<double>::max();
+
+  for (const double s1 : {-1.0, 1.0}) {
+    for (const double s2 : {-1.0, 1.0}) {
+      const sketch::Point direction{
+          (s1 * n2y - n1y * s2) /
+              determinant,
+          (n1x * s2 - s1 * n2x) /
+              determinant};
+
+      const double directionSquared =
+          direction.xMm * direction.xMm +
+          direction.yMm * direction.yMm;
+
+      if (directionSquared <= 1e-12)
+        continue;
+
+      const double cursorX =
+          cursor.xMm - base.xMm;
+      const double cursorY =
+          cursor.yMm - base.yMm;
+
+      double radiusMm =
+          (cursorX * direction.xMm +
+           cursorY * direction.yMm) /
+          directionSquared;
+
+      radiusMm =
+          std::max(0.01, radiusMm);
+
+      const sketch::Point center{
+          base.xMm +
+              direction.xMm * radiusMm,
+          base.yMm +
+              direction.yMm * radiusMm};
+
+      double score =
+          std::hypot(
+              center.xMm - cursor.xMm,
+              center.yMm - cursor.yMm);
+
+      const auto finitePenalty =
+          [center](const sketch::Line& line) {
+            const double dx =
+                line.end.xMm - line.start.xMm;
+            const double dy =
+                line.end.yMm - line.start.yMm;
+            const double lengthSquared =
+                dx * dx + dy * dy;
+
+            if (lengthSquared <= 1e-12)
+              return 1000000.0;
+
+            const double t =
+                ((center.xMm -
+                      line.start.xMm) *
+                     dx +
+                 (center.yMm -
+                      line.start.yMm) *
+                     dy) /
+                lengthSquared;
+
+            if (t < 0.0)
+              return -t *
+                     std::sqrt(lengthSquared);
+
+            if (t > 1.0)
+              return (t - 1.0) *
+                     std::sqrt(lengthSquared);
+
+            return 0.0;
+          };
+
+      score +=
+          0.25 *
+          (finitePenalty(first) +
+           finitePenalty(second));
+
+      if (score < bestScore) {
+        bestScore = score;
+        best =
+            TwoTangentCirclePreview{
+                center,
+                radiusMm};
+      }
+    }
+  }
+
+  return best;
+}
+
+// TWO-TANGENT LIVE DIAMETER PREVIEW
+
 }  // namespace
 
 SketchCanvas::SketchCanvas(QWidget* parent) : QWidget(parent) {
@@ -365,6 +669,7 @@ void SketchCanvas::setRectangle(double widthMm, double heightMm) {
 }
 
 void SketchCanvas::setTool(Tool tool) {
+  setProperty("twoTangentRadiusPreviewActive", false);
   tool_ = tool;
   anchor_.reset();
   setProperty("dragPointLineId", QVariant());
@@ -423,6 +728,7 @@ void SketchCanvas::setRectangleMode(RectangleMode mode) {
 }
 
 void SketchCanvas::setCircleMode(CircleMode mode) {
+  setProperty("twoTangentRadiusPreviewActive", false);
   circleMode_ = mode;
   anchor_.reset();
   coincidentFirstPoint_.reset();
@@ -852,11 +1158,41 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
           sketch_.lineIndex(dimension.secondPoint.lineId);
       if (!firstIndex || !secondIndex) return false;
 
-      value = lineAngleDegrees(sketch_.lines()[*firstIndex],
-                               sketch_.lines()[*secondIndex]);
-      constraint.type = sketch::ConstraintType::Angle;
-      constraint.firstGeometry = dimension.geometryId;
-      constraint.secondGeometry = dimension.secondPoint.lineId;
+      const double primitiveAngle =
+          lineAngleDegrees(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondIndex]);
+
+      const double visibleAngle =
+          visibleLineAngleDegrees(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondIndex]);
+
+      value = visibleAngle;
+
+      double solverAngle =
+          visibleAngle;
+
+      const double supplement =
+          180.0 - primitiveAngle;
+
+      if (std::abs(
+              visibleAngle -
+              supplement) <
+          std::abs(
+              visibleAngle -
+              primitiveAngle))
+        solverAngle =
+            180.0 - visibleAngle;
+
+      constraint.type =
+          sketch::ConstraintType::Angle;
+      constraint.firstGeometry =
+          dimension.geometryId;
+      constraint.secondGeometry =
+          dimension.secondPoint.lineId;
+      constraint.value =
+          solverAngle;
       break;
     }
   }
@@ -864,9 +1200,14 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
   if (value <= 1e-9) return false;
 
   pushUndoState();
-  constraint.value = value;
+  if (dimension.kind !=
+      sketch::DimensionKind::LineAngle)
+    constraint.value = value;
+
   sketch_.addConstraint(constraint);
-  sketch_.setDimensionValue(dimensionIndex, value);
+  sketch_.setDimensionValue(
+      dimensionIndex,
+      value);
 
   notifyGeometryChanged();
   update();
@@ -1461,7 +1802,15 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   }
 
   painter.restore();
-  if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible()) {
+  // CRASH-FREE 13: NO DUPLICATE PREVIEW WHILE EDITING
+  //
+  // A stored dimension is already rendered by the permanent dimension loop
+  // above. Drawing the transient AutoDimension preview at the same time
+  // produces a second dimension line. Preview remains enabled for NEW
+  // dimensions only.
+  if (tool_ == Tool::AutoDimension &&
+      primaryDimension_->isVisible() &&
+      !property("editingDimensionIndex").isValid()) {
     const QString target = property("autoDimensionTarget").toString();
 
     if (target == "angle") {
@@ -1767,6 +2116,51 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         painter.drawEllipse(mapPoint(preview->first), radius, radius);
       }
     }
+    // TWO-TANGENT SEMITRANSPARENT PREVIEW
+    if (circleMode_ ==
+            CircleMode::TwoTangentsRadius &&
+        circleGuideLines_.size() == 2 &&
+        property(
+            "twoTangentRadiusPreviewActive")
+            .toBool()) {
+      const double previewDiameter =
+          primaryDimension_->isVisible()
+              ? primaryDimension_->value()
+              : circleDiameterMm_;
+
+      const auto preview =
+          clampedTwoTangentCircleForRadius(
+              circleGuideLines_[0],
+              circleGuideLines_[1],
+              std::max(
+                  0.01,
+                  previewDiameter * 0.5),
+              hoverPoint_);
+
+      if (preview) {
+        painter.save();
+
+        painter.setPen(
+            QPen(
+                QColor(10, 114, 255, 190),
+                1.8,
+                Qt::DashLine));
+
+        painter.setBrush(
+            QColor(10, 114, 255, 48));
+
+        const double radiusPx =
+            preview->radiusMm *
+            pixelsPerMm_;
+
+        painter.drawEllipse(
+            mapPoint(preview->center),
+            radiusPx,
+            radiusPx);
+
+        painter.restore();
+      }
+    }
     painter.setBrush(QColor("#0a72ff"));
     for (const auto& point : circlePoints_)
       painter.drawEllipse(mapPoint(point), 4.0, 4.0);
@@ -2005,9 +2399,11 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         const auto firstIndex = sketch_.lineIndex(directLineId);
         if (firstIndex) {
           const auto secondId = sketch_.lineId(*secondLineIndex);
-          const double angle = lineAngleDegrees(
-              sketch_.lines()[*firstIndex],
-              sketch_.lines()[*secondLineIndex]);
+          // CRASH-FREE 12: INITIAL VISIBLE ANGLE VALUE
+          const double angle =
+              visibleLineAngleDegrees(
+                  sketch_.lines()[*firstIndex],
+                  sketch_.lines()[*secondLineIndex]);
 
           if (angle > 1e-6 && angle < 180.0 - 1e-6) {
             setProperty("autoDimensionTarget", "angle");
@@ -2265,6 +2661,10 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
 
   setProperty("editingDimensionIndex",
               static_cast<qulonglong>(*found));
+
+  // CRASH-FREE 13: KEEP EDITED DIMENSION SELECTED
+  setProperty("selectedDimension",
+              static_cast<qulonglong>(*found));
   setProperty("autoDimensionOffsetMm",
               dimension.offsetMm);
   setProperty("autoDimensionAngleRad",
@@ -2434,6 +2834,88 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         hoverPoint_ = *center;
       }
     }
+  }
+  // TWO-TANGENT MOUSE DIAMETER DRIVE
+  if (tool_ == Tool::Circle &&
+      circleMode_ ==
+          CircleMode::TwoTangentsRadius &&
+      circleGuideLines_.size() == 2 &&
+      property(
+          "twoTangentRadiusPreviewActive")
+          .toBool()) {
+    primaryDimension_->setPrefix(
+        QString::fromUtf8("Ø "));
+    primaryDimension_->setSuffix(
+        QString::fromUtf8(" мм"));
+    primaryDimension_->setRange(
+        0.02, 100000.0);
+
+    if (!primaryDimension_->isVisible()) {
+      primaryDimension_->show();
+      primaryDimension_->raise();
+    }
+
+    if (!primaryDimension_->hasFocus()) {
+      const auto cursorPreview =
+          twoTangentCircleFromCursor(
+              circleGuideLines_[0],
+              circleGuideLines_[1],
+              hoverPoint_);
+
+      if (cursorPreview) {
+        const auto finitePreview =
+            clampedTwoTangentCircleForRadius(
+                circleGuideLines_[0],
+                circleGuideLines_[1],
+                cursorPreview->radiusMm,
+                hoverPoint_);
+
+        if (finitePreview) {
+          circleDiameterMm_ =
+              finitePreview->radiusMm * 2.0;
+
+          const QSignalBlocker blocker(
+              primaryDimension_);
+
+          primaryDimension_->setValue(
+              circleDiameterMm_);
+
+          primaryDimension_->move(
+              (event->position() +
+               QPointF(18.0, 18.0)).toPoint());
+
+          emit primaryDimensionChanged(
+              circleDiameterMm_);
+        }
+      }
+    } else {
+      const auto finitePreview =
+          clampedTwoTangentCircleForRadius(
+              circleGuideLines_[0],
+              circleGuideLines_[1],
+              primaryDimension_->value() * 0.5,
+              hoverPoint_);
+
+      if (finitePreview) {
+        const double actualDiameter =
+            finitePreview->radiusMm * 2.0;
+
+        circleDiameterMm_ =
+            actualDiameter;
+
+        if (std::abs(
+                primaryDimension_->value() -
+                actualDiameter) > 1e-6) {
+          const QSignalBlocker blocker(
+              primaryDimension_);
+          primaryDimension_->setValue(
+              actualDiameter);
+          primaryDimension_->selectAll();
+        }
+      }
+    }
+
+    update();
   }
   if (property("draggingDimensionLabel").isValid() &&
       (event->buttons() & Qt::LeftButton)) {
@@ -2617,6 +3099,15 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
   }
   if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible() &&
       property("autoDimensionTarget").isValid()) {
+    // CRASH-FREE 13: EXISTING DIMENSION EDIT LOCK
+    //
+    // Double-click restoration already sets the exact stored dimension kind:
+    // aligned / X / Y / line / circle / angle. Cursor movement must not run
+    // the new-dimension heuristic again, must not move the editor and must not
+    // alter annotation placement. Only the typed numeric value is editable.
+    if (property("editingDimensionIndex").isValid()) {
+      update();
+    } else {
     const QString target =
         property("autoDimensionTarget").toString();
 
@@ -2764,7 +3255,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     }
 
     update();
-  }  if (dragging_ && (event->buttons() & Qt::LeftButton)) {
+      }
+}  if (dragging_ && (event->buttons() & Qt::LeftButton)) {
     const auto current = snappedPoint(event->position());
     const double dx = current.xMm - dragPoint_.xMm;
     const double dy = current.yMm - dragPoint_.yMm;
@@ -3280,7 +3772,39 @@ bool SketchCanvas::eventFilter(QObject* watched, QEvent* event) {
       }
       return true;
     }
-    if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+    if (keyEvent->key() == Qt::Key_Return ||
+        keyEvent->key() == Qt::Key_Enter) {
+      // TWO-TANGENT NUMERIC ENTER
+      if (tool_ == Tool::Circle &&
+          circleMode_ ==
+              CircleMode::TwoTangentsRadius &&
+          circleGuideLines_.size() == 2 &&
+          property(
+              "twoTangentRadiusPreviewActive")
+              .toBool()) {
+        const auto finitePreview =
+            clampedTwoTangentCircleForRadius(
+                circleGuideLines_[0],
+                circleGuideLines_[1],
+                primaryDimension_->value() * 0.5,
+                hoverPoint_);
+
+        if (finitePreview) {
+          circleDiameterMm_ =
+              finitePreview->radiusMm * 2.0;
+
+          {
+            const QSignalBlocker blocker(
+                primaryDimension_);
+            primaryDimension_->setValue(
+                circleDiameterMm_);
+          }
+
+          commitCirclePoint(hoverPoint_);
+        }
+        return true;
+      }
+
       if (tool_ == Tool::AutoDimension)
         commitAutoDimension();
       else
@@ -6114,30 +6638,45 @@ void SketchCanvas::commitAutoDimension() {
 
     double solverAngle = value;
 
-    if (editingExisting) {
-      const auto firstIndex =
-          sketch_.lineIndex(firstId);
-      const auto secondIndex =
-          sketch_.lineIndex(secondId);
+    // CRASH-FREE 12: VISIBLE ANGLE BRANCH MAPPING
+    //
+    // The UI dimension describes the visible finite-segment sector, while the
+    // solver works with the primitive line directions. For disconnected lines
+    // these can be supplementary (for example visible 30° vs primitive 150°).
+    // Determine that branch BEFORE both initial creation and later editing.
+    const auto firstIndex =
+        sketch_.lineIndex(firstId);
+    const auto secondIndex =
+        sketch_.lineIndex(secondId);
 
-      if (firstIndex && secondIndex) {
-        const double currentPrimitive =
-            lineAngleDegrees(
-                sketch_.lines()[*firstIndex],
-                sketch_.lines()[*secondIndex]);
+    if (firstIndex && secondIndex) {
+      const double currentPrimitive =
+          lineAngleDegrees(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondIndex]);
 
-        const double currentVisible =
-            visibleLineAngleDegrees(
-                sketch_.lines()[*firstIndex],
-                sketch_.lines()[*secondIndex]);
+      const double currentVisible =
+          visibleLineAngleDegrees(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondIndex]);
 
-        const double supplement =
-            180.0 - currentPrimitive;
+      const double supplement =
+          180.0 - currentPrimitive;
 
-        if (std::abs(currentVisible - supplement) <
-            std::abs(currentVisible - currentPrimitive))
-          solverAngle = 180.0 - value;
-      }
+      const double primitiveError =
+          std::abs(
+              currentVisible -
+              currentPrimitive);
+
+      const double supplementError =
+          std::abs(
+              currentVisible -
+              supplement);
+
+      if (supplementError <
+          primitiveError)
+        solverAngle =
+            180.0 - value;
     }
 
     changed =
@@ -6277,7 +6816,13 @@ void SketchCanvas::commitAutoDimension() {
             constraint.type != sketch::ConstraintType::DistanceY)
           continue;
 
-        const bool sameOrder =
+              // CRASH-FREE 09 V2: KEEP INDEPENDENT DISTANCE MODES
+      //
+      // Aligned, X and Y are separate driving constraints. Replacing an
+      // existing dimension must remove only the SAME mode for the SAME pair.
+      if (constraint.type != constraintType)
+        continue;
+const bool sameOrder =
             constraint.firstPoint.lineId == first.lineId &&
             constraint.firstPoint.start == first.start &&
             constraint.secondPoint.lineId == second.lineId &&
@@ -6342,6 +6887,10 @@ void SketchCanvas::commitAutoDimension() {
   setProperty("autoDimensionAngleFirstLine", QVariant());
   setProperty("autoDimensionAngleSecondLine", QVariant());
   setProperty("editingDimensionIndex", QVariant());
+
+  // CRASH-FREE 13: EDIT SESSION CLEANUP
+  setProperty("selectedDimension", QVariant());
+
   hideDimensionEditor();
   setFocus();
   notifyGeometryChanged();
@@ -7415,12 +7964,51 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
 
     if (!duplicate)
       circleGuideLines_.push_back(*line);
-
     update();
 
     if (circleMode_ ==
-        CircleMode::TwoTangentsRadius)
+        CircleMode::TwoTangentsRadius) {
+      if (circleGuideLines_.size() == 2) {
+        // TWO-TANGENT LIVE PREVIEW START
+        setProperty(
+            "twoTangentRadiusPreviewActive",
+            true);
+
+        primaryDimension_->setPrefix(
+            QString::fromUtf8("Ø "));
+        primaryDimension_->setSuffix(
+            QString::fromUtf8(" мм"));
+        primaryDimension_->setRange(
+            0.02, 100000.0);
+        primaryDimension_->setDecimals(2);
+        primaryDimension_->setValue(
+            std::max(0.02, circleDiameterMm_));
+
+        const auto intersection =
+            intersectLines(
+                circleGuideLines_[0],
+                circleGuideLines_[1]);
+
+        const QPointF editorPoint =
+            intersection
+                ? mapPoint(*intersection)
+                : mapPoint(point);
+
+        primaryDimension_->move(
+            (editorPoint +
+             QPointF(18.0, 18.0)).toPoint());
+        primaryDimension_->show();
+        primaryDimension_->raise();
+        primaryDimension_->clearFocus();
+
+        emit selectionChanged(
+            QString::fromUtf8(
+                "Перемещайте мышь для изменения диаметра, "
+                "щелкните для подтверждения или введите Ø и нажмите Enter"));
+      }
+
       return;
+    }
   }
 
   if (circleMode_ ==
@@ -7688,8 +8276,42 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
       circleGuideLines_.size() == 2) {
     circlePoints_.push_back(point);
 
+    const double requestedDiameter =
+        primaryDimension_->isVisible()
+            ? primaryDimension_->value()
+            : circleDiameterMm_;
+
+    circleDiameterMm_ =
+        std::max(0.02, requestedDiameter);
+
+    const auto finiteRequestedCircle =
+        clampedTwoTangentCircleForRadius(
+            circleGuideLines_[0],
+            circleGuideLines_[1],
+            circleDiameterMm_ * 0.5,
+            point);
+
+    if (!finiteRequestedCircle) {
+      emit selectionChanged(
+          QString::fromUtf8(
+              "Для выбранных отрезков невозможно построить "
+              "касательную окружность этого диаметра"));
+      update();
+      return;
+    }
+
+    circleDiameterMm_ =
+        finiteRequestedCircle->radiusMm * 2.0;
+
+    {
+      const QSignalBlocker blocker(
+          primaryDimension_);
+      primaryDimension_->setValue(
+          circleDiameterMm_);
+    }
+
     const double radius =
-        circleDiameterMm_ * 0.5;
+        finiteRequestedCircle->radiusMm;
 
     struct Equation {
       double nx;
@@ -7780,15 +8402,65 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
       }
     }
 
-    if (center)
-      (void)finishCircle(
-          *center,
-          radius,
-          {},
-          std::vector<sketch::GeometryId>{
-              guideLineId(circleGuideLines_[0]),
-              guideLineId(circleGuideLines_[1])});
+    if (finiteRequestedCircle) {
 
+      const std::size_t circlesBefore =
+          sketch_.circles().size();
+
+      const bool created =
+          finishCircle(
+              finiteRequestedCircle->center,
+              radius,
+              {},
+              std::vector<sketch::GeometryId>{
+                  guideLineId(circleGuideLines_[0]),
+                  guideLineId(circleGuideLines_[1])});
+
+      if (created &&
+          sketch_.circles().size() >
+              circlesBefore) {
+        const std::size_t createdIndex =
+            sketch_.circles().size() - 1;
+
+        const auto createdCircleId =
+            sketch_.circleId(createdIndex);
+
+        if (createdCircleId !=
+            sketch::kInvalidGeometryId) {
+          // AUTO DRIVING DIAMETER AFTER TWO TANGENTS
+          sketch::Dimension diameterDimension;
+          diameterDimension.kind =
+              sketch::DimensionKind::CircleDiameter;
+          diameterDimension.geometryId =
+              createdCircleId;
+          diameterDimension.valueMm =
+              circleDiameterMm_;
+          diameterDimension.offsetMm = 0.0;
+          diameterDimension.angleRad = 0.0;
+
+          sketch_.storeDimension(
+              diameterDimension);
+
+          sketch::Constraint diameterConstraint;
+          diameterConstraint.type =
+              sketch::ConstraintType::Diameter;
+          diameterConstraint.firstGeometry =
+              createdCircleId;
+          diameterConstraint.value =
+              circleDiameterMm_;
+
+          sketch_.addConstraint(
+              diameterConstraint);
+
+          notifyGeometryChanged();
+        }
+      }
+    }
+
+    setProperty(
+        "twoTangentRadiusPreviewActive",
+        false);
+    hideDimensionEditor();
     circlePoints_.clear();
     update();
     return;
