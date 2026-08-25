@@ -1,5 +1,7 @@
 #include "ui/MainWindow.h"
 
+#include "model/ExtrudeFeature.h"
+
 #include <algorithm>
 #include <cmath>
 #include <QDockWidget>
@@ -901,6 +903,11 @@ void MainWindow::extrudeSketch() {
   }
 
   const double height = extrusionLengthSpin_->value();
+  if (!std::isfinite(height) || height <= 0.0) {
+    QMessageBox::warning(this, QString::fromUtf8("Некорректная длина"),
+                         QString::fromUtf8("Длина выдавливания должна быть больше нуля."));
+    return;
+  }
   const bool addToBody = hasExtrusion_ &&
                          viewport_->extrusionCandidateOnBodyCap() &&
                          !fromBodyFace;
@@ -917,6 +924,9 @@ void MainWindow::extrudeSketch() {
     hasExtrusion_ = previousHasExtrusion;
     extrusionSourceSketch_ = previousSource;
     viewport_->setBox(document_.box());
+    viewport_->setBodyShape(document_.activeBody()
+                                ? document_.activeBody()->resultShape()
+                                : ShapeFeature::ShapePtr{});
     viewport_->setSolidSketch(previousSolidSketch);
     viewport_->setSolidSupport(previousSolidSupport);
     viewport_->setSolidVisible(previousHasExtrusion);
@@ -925,6 +935,26 @@ void MainWindow::extrudeSketch() {
     rebuildFeatureTree();
     rebuildHistoryPanel();
   });
+
+  auto& modelSketch = document_.addSketch(
+      kInvalidSketchId,
+      "Extrude profile " + std::to_string(document_.sketches().size() + 1),
+      sketch);
+  Body* modelBody = document_.activeBody();
+  if (!modelBody) modelBody = &document_.addBody();
+  modelBody->addFeature(std::make_unique<ExtrudeFeature>(
+      modelSketch.id, height,
+      "Extrude " + std::to_string(modelBody->features().size() + 1)));
+  if (!document_.rebuild()) {
+    const std::string error = modelBody->activeFeature()
+                                  ? modelBody->activeFeature()->error()
+                                  : "Extrude rebuild failed";
+    document_ = previousDocument;
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка выдавливания"),
+                         QString::fromStdString(error));
+    return;
+  }
+  viewport_->setBodyShape(modelBody->resultShape());
 
   if (!addToBody)
     document_.setBox({fromBodyFace ? document_.box().widthMm : sketch.widthMm(),

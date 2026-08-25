@@ -1,5 +1,9 @@
 #include "ui/Viewport.h"
 
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+#include <TopoDS_Shape.hxx>
+
 #include <QLineF>
 #include <QDoubleSpinBox>
 #include <QKeyEvent>
@@ -126,6 +130,23 @@ void Viewport::setBox(BoxParameters parameters) {
   update();
 }
 
+void Viewport::setBodyShape(ShapeFeature::ShapePtr shape) {
+  bodyShape_ = std::move(shape);
+  if (bodyShape_ && !bodyShape_->IsNull()) {
+    Bnd_Box bounds;
+    BRepBndLib::Add(*bodyShape_, bounds);
+    double xMin = 0.0;
+    double yMin = 0.0;
+    double zMin = 0.0;
+    double xMax = 0.0;
+    double yMax = 0.0;
+    double zMax = 0.0;
+    bounds.Get(xMin, yMin, zMin, xMax, yMax, zMax);
+    box_ = {xMax - xMin, yMax - yMin, zMax - zMin};
+  }
+  update();
+}
+
 void Viewport::setSketch(const sketch::Sketch& sketch) {
   sketch_ = sketch;
   update();
@@ -222,6 +243,7 @@ void Viewport::setBasePlaneVisible(int plane, bool visible) {
 }
 
 void Viewport::resetScene() {
+  bodyShape_.reset();
   sketch_.clear();
   solidSketch_.clear();
   additiveExtrusions_.clear();

@@ -66,9 +66,9 @@ ShapeFeature::ShapePtr Body::resultShape() const noexcept {
   return active && active->isValid() ? active->shape() : ShapeFeature::ShapePtr{};
 }
 
-bool Body::rebuild() {
+bool Body::rebuild(const RebuildContext& context) {
   for (auto& feature : features_) {
-    if (feature->isDirty() && !feature->rebuild()) return false;
+    if (feature->isDirty() && !feature->rebuild(context)) return false;
     if (!feature->isValid()) return false;
   }
   return true;

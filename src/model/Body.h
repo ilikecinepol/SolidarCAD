@@ -32,7 +32,7 @@ class Body final {
   [[nodiscard]] ShapeFeature* activeFeature() noexcept;
   [[nodiscard]] const ShapeFeature* activeFeature() const noexcept;
   [[nodiscard]] ShapeFeature::ShapePtr resultShape() const noexcept;
-  [[nodiscard]] bool rebuild();
+  [[nodiscard]] bool rebuild(const RebuildContext& context);
   void markDirtyFrom(std::size_t index) noexcept;
 
  private:

@@ -6,6 +6,12 @@
 
 namespace solidar {
 
+class Document;
+
+struct RebuildContext {
+  const Document& document;
+};
+
 using FeatureId = std::uint64_t;
 inline constexpr FeatureId kInvalidFeatureId = 0;
 
@@ -31,7 +37,7 @@ class Feature {
   void setDirty(bool dirty = true) noexcept;
 
   [[nodiscard]] virtual std::string typeName() const = 0;
-  virtual bool rebuild() = 0;
+  virtual bool rebuild(const RebuildContext& context) = 0;
   [[nodiscard]] virtual std::unique_ptr<Feature> clone() const = 0;
 
  protected:

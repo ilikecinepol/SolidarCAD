@@ -14,7 +14,7 @@ class TestShapeFeature final : public solidar::ShapeFeature {
   TestShapeFeature(solidar::FeatureId id, std::string name, bool succeeds)
       : ShapeFeature(id, std::move(name)), succeeds_(succeeds) {}
 
-  bool rebuild() override {
+  bool rebuild(const solidar::RebuildContext&) override {
     ++rebuildCount;
     if (succeeds_) {
       markValid();

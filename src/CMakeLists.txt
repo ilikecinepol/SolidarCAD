@@ -11,6 +11,8 @@ add_library(solidar_model
   model/Body.h
   model/Document.cpp
   model/Document.h
+  model/ExtrudeFeature.cpp
+  model/ExtrudeFeature.h
   model/Feature.cpp
   model/Feature.h
   model/ShapeFeature.cpp
@@ -22,6 +24,10 @@ add_library(solidar_model
   sketch/SketchSolver.h
 )
 target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
+target_link_libraries(solidar_model PUBLIC
+  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim
+)
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)
 
@@ -109,6 +115,13 @@ if(WIN32)
       VERBATIM
     )
   endif()
+  add_custom_command(TARGET solidar POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:solidar>
+            $<TARGET_FILE_DIR:solidar>
+    COMMAND_EXPAND_LISTS
+    COMMENT "Deploying OCCT runtime libraries next to SolidarCAD"
+  )
 endif()
 
 install(TARGETS solidar RUNTIME DESTINATION bin)

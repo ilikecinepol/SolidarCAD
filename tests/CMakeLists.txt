@@ -2,6 +2,10 @@ add_executable(document_tests document_tests.cpp)
 target_link_libraries(document_tests PRIVATE solidar_model)
 add_test(NAME document_tests COMMAND document_tests)
 
+add_executable(extrude_feature_tests extrude_feature_tests.cpp)
+target_link_libraries(extrude_feature_tests PRIVATE solidar_model)
+add_test(NAME extrude_feature_tests COMMAND extrude_feature_tests)
+
 add_executable(project_file_tests project_file_tests.cpp)
 target_link_libraries(project_file_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME project_file_tests COMMAND project_file_tests)
@@ -25,10 +29,13 @@ if(WIN32)
                          DIRECTORY)
 
   set_tests_properties(
+    document_tests
+    extrude_feature_tests
     project_file_tests
     editor_smoke_tests
+    sketch_regression_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
-        "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY}"
+        "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"
   )
 endif()

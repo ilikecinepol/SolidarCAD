@@ -25,6 +25,7 @@ class Viewport final : public QWidget {
  public:
   explicit Viewport(QWidget* parent = nullptr);
   void setBox(BoxParameters parameters);
+  void setBodyShape(ShapeFeature::ShapePtr shape);
   void setSketch(const sketch::Sketch& sketch);
   void setSolidSketch(const sketch::Sketch& sketch);
   void setSolidVisible(bool visible);
@@ -82,6 +83,7 @@ class Viewport final : public QWidget {
   void rebuildSelectedExtrusionSketch();
   enum class PickMode { None, SketchPlane, ExtrusionSurface };
   BoxParameters box_;
+  ShapeFeature::ShapePtr bodyShape_;
   sketch::Sketch sketch_;
   sketch::Sketch solidSketch_;
   std::vector<SolidFeature> additiveExtrusions_;
