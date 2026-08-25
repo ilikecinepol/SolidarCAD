@@ -7,8 +7,14 @@ function(solidar_warnings target)
 endfunction()
 
 add_library(solidar_model
+  model/Body.cpp
+  model/Body.h
   model/Document.cpp
   model/Document.h
+  model/Feature.cpp
+  model/Feature.h
+  model/ShapeFeature.cpp
+  model/ShapeFeature.h
   model/SolidFeature.h
   sketch/Sketch.cpp
   sketch/Sketch.h

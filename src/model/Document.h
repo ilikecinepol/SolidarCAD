@@ -4,15 +4,15 @@
 #include <string>
 #include <vector>
 
+#include "model/Body.h"
+
 namespace solidar {
 
-using FeatureId = std::uint64_t;
+enum class DocumentFeatureType { Sketch, Extrude };
 
-enum class FeatureType { Sketch, Extrude };
-
-struct Feature {
+struct DocumentFeature {
   FeatureId id{};
-  FeatureType type{FeatureType::Sketch};
+  DocumentFeatureType type{DocumentFeatureType::Sketch};
   std::string name;
 };
 
@@ -26,12 +26,19 @@ class Document final {
  public:
   Document();
 
-  [[nodiscard]] const std::vector<Feature>& features() const noexcept;
+  [[nodiscard]] const std::vector<DocumentFeature>& features() const noexcept;
+  Body& addBody(std::string name = {});
+  [[nodiscard]] std::vector<Body>& bodies() noexcept;
+  [[nodiscard]] const std::vector<Body>& bodies() const noexcept;
+  [[nodiscard]] Body* activeBody() noexcept;
+  [[nodiscard]] const Body* activeBody() const noexcept;
+  [[nodiscard]] bool rebuild();
   [[nodiscard]] const BoxParameters& box() const noexcept;
   void setBox(BoxParameters parameters);
 
  private:
-  std::vector<Feature> features_;
+  std::vector<DocumentFeature> features_;
+  std::vector<Body> bodies_;
   BoxParameters box_;
 };
 
