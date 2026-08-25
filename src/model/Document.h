@@ -5,15 +5,17 @@
 #include <vector>
 
 #include "model/Body.h"
+#include "sketch/Sketch.h"
 
 namespace solidar {
 
-enum class DocumentFeatureType { Sketch, Extrude };
+using SketchId = std::uint64_t;
+inline constexpr SketchId kInvalidSketchId = 0;
 
-struct DocumentFeature {
-  FeatureId id{};
-  DocumentFeatureType type{DocumentFeatureType::Sketch};
+struct DocumentSketch {
+  SketchId id{kInvalidSketchId};
   std::string name;
+  sketch::Sketch geometry;
 };
 
 struct BoxParameters {
@@ -26,10 +28,20 @@ class Document final {
  public:
   Document();
 
-  [[nodiscard]] const std::vector<DocumentFeature>& features() const noexcept;
+  DocumentSketch& addSketch(std::string name = {});
+  DocumentSketch& addSketch(SketchId id, std::string name,
+                            sketch::Sketch geometry = {});
+  [[nodiscard]] std::vector<DocumentSketch>& sketches() noexcept;
+  [[nodiscard]] const std::vector<DocumentSketch>& sketches() const noexcept;
+  [[nodiscard]] DocumentSketch* findSketch(SketchId id) noexcept;
+  [[nodiscard]] const DocumentSketch* findSketch(SketchId id) const noexcept;
+
   Body& addBody(std::string name = {});
+  Body& addBody(BodyId id, std::string name);
   [[nodiscard]] std::vector<Body>& bodies() noexcept;
   [[nodiscard]] const std::vector<Body>& bodies() const noexcept;
+  [[nodiscard]] Body* findBody(BodyId id) noexcept;
+  [[nodiscard]] const Body* findBody(BodyId id) const noexcept;
   [[nodiscard]] Body* activeBody() noexcept;
   [[nodiscard]] const Body* activeBody() const noexcept;
   [[nodiscard]] bool rebuild();
@@ -37,7 +49,9 @@ class Document final {
   void setBox(BoxParameters parameters);
 
  private:
-  std::vector<DocumentFeature> features_;
+  static SketchId nextSketchId() noexcept;
+
+  std::vector<DocumentSketch> sketches_;
   std::vector<Body> bodies_;
   BoxParameters box_;
 };

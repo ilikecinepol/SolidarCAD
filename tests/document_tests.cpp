@@ -11,6 +11,8 @@ class TestShapeFeature final : public solidar::ShapeFeature {
  public:
   TestShapeFeature(std::string name, bool succeeds)
       : ShapeFeature(std::move(name)), succeeds_(succeeds) {}
+  TestShapeFeature(solidar::FeatureId id, std::string name, bool succeeds)
+      : ShapeFeature(id, std::move(name)), succeeds_(succeeds) {}
 
   bool rebuild() override {
     ++rebuildCount;
@@ -38,28 +40,82 @@ class TestShapeFeature final : public solidar::ShapeFeature {
 
 int main() {
   solidar::Document document;
-  assert(document.features().size() == 2);
+  assert(document.sketches().empty());
   assert(document.bodies().empty());
 
-  auto& body = document.addBody();
-  assert(document.activeBody() == &body);
-  assert(body.name() == "Body 1");
+  auto& profile = document.addSketch();
+  const auto profileId = profile.id;
+  assert(profileId != solidar::kInvalidSketchId);
+  assert(profile.name == "Sketch 1");
+  assert(document.findSketch(profileId) == &profile);
+  assert(document.findSketch(solidar::kInvalidSketchId) == nullptr);
+
+  document.addSketch(5000, "Restored sketch");
+  const auto generatedSketchId = document.addSketch("After restore").id;
+  assert(generatedSketchId > 5000);
+
+  auto& firstBody = document.addBody();
+  const auto firstBodyId = firstBody.id();
+  assert(firstBodyId != solidar::kInvalidBodyId);
+  assert(firstBody.name() == "Body 1");
+
+  auto& secondBody = document.addBody("Body 2");
+  const auto secondBodyId = secondBody.id();
+  assert(secondBodyId != firstBodyId);
+  assert(document.activeBody() == &secondBody);
+  assert(document.findBody(firstBodyId) != nullptr);
+  assert(document.findBody(secondBodyId) == &secondBody);
+  assert(document.findBody(solidar::kInvalidBodyId) == nullptr);
+
+  // Adding to a vector may invalidate references, so resolve model objects by
+  // their stable ID just as a future ExtrudeFeature will resolve its Sketch.
+  auto* body = document.findBody(firstBodyId);
+  assert(body != nullptr);
   auto first = std::make_unique<TestShapeFeature>("First", true);
   const auto firstId = first->id();
   auto* firstPtr = first.get();
-  body.addFeature(std::move(first));
-  body.addFeature(std::make_unique<TestShapeFeature>("Second", true));
+  auto second = std::make_unique<TestShapeFeature>("Second", true);
+  const auto secondId = second->id();
+  assert(secondId != firstId);
+  auto* secondPtr = second.get();
+  body->addFeature(std::move(first));
+  body->addFeature(std::move(second));
   assert(document.rebuild());
   assert(firstPtr->rebuildCount == 1);
   assert(firstPtr->isValid());
-  assert(body.activeFeature()->name() == "Second");
+  assert(body->activeFeature()->name() == "Second");
+
+  body->markDirtyFrom(1);
+  assert(!firstPtr->isDirty());
+  assert(secondPtr->isDirty());
+  assert(document.rebuild());
+  assert(firstPtr->rebuildCount == 1);
+  assert(secondPtr->rebuildCount == 2);
 
   // Document snapshots used by the existing undo stack must deep-copy bodies.
   solidar::Document snapshot = document;
-  assert(snapshot.activeBody() != document.activeBody());
-  assert(snapshot.activeBody()->features().front()->id() == firstId);
+  auto* snapshotBody = snapshot.findBody(firstBodyId);
+  assert(snapshotBody != nullptr);
+  assert(snapshotBody != document.findBody(firstBodyId));
+  assert(snapshotBody->id() == firstBodyId);
+  assert(snapshotBody->features().front()->id() == firstId);
+  assert(snapshot.findSketch(profileId) != document.findSketch(profileId));
+  assert(snapshot.findSketch(profileId)->id == profileId);
   firstPtr->setDirty();
-  assert(snapshot.activeBody()->features().front()->isValid());
+  document.findSketch(profileId)->name = "Changed profile";
+  assert(snapshotBody->features().front()->isValid());
+  assert(snapshot.findSketch(profileId)->name == "Sketch 1");
+
+  // Restored IDs advance the generators, preventing collisions after load.
+  solidar::Document restored;
+  restored.addBody(6000, "Restored body");
+  assert(restored.addBody("Generated body").id() > 6000);
+  auto restoredFeature =
+      std::make_unique<TestShapeFeature>(7000, "Restored feature", true);
+  const auto restoredFeatureId = restoredFeature->id();
+  auto generatedFeature = std::make_unique<TestShapeFeature>("Generated", true);
+  assert(restoredFeatureId == 7000);
+  assert(generatedFeature->id() > restoredFeatureId);
 
   auto& failingBody = document.addBody("Failing body");
   auto failing = std::make_unique<TestShapeFeature>("Failure", false);
