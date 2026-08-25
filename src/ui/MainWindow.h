@@ -45,6 +45,7 @@ class MainWindow final : public QMainWindow {
   void updateFromSketch(double widthMm, double heightMm);
   void finishSketch();
   void extrudeSketch();
+  void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
   void applyHistoryPosition(int position);

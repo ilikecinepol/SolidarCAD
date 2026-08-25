@@ -912,30 +912,21 @@ void MainWindow::extrudeSketch() {
                          viewport_->extrusionCandidateOnBodyCap() &&
                          !fromBodyFace;
 
+  const Body* activeBody = document_.activeBody();
+  const bool hasParametricBody = activeBody && activeBody->resultShape();
+  if (hasParametricBody && (addToBody || fromBodyFace)) {
+    QMessageBox::information(
+        this, QString::fromUtf8("Выдавливание"),
+        QString::fromUtf8("Второе аддитивное выдавливание пока не подключено к "
+                          "параметрическому Body."));
+    return;
+  }
+
   const Document previousDocument = document_;
   const bool previousHasExtrusion = hasExtrusion_;
   const auto previousSource = extrusionSourceSketch_;
   const sketch::Sketch previousSolidSketch = viewport_->solidSketch();
   const QString previousSolidSupport = viewport_->solidSupport();
-  pushUndoAction([this, previousDocument, previousHasExtrusion, previousSource,
-                  previousSolidSketch, previousSolidSupport, addToBody] {
-    if (addToBody) viewport_->removeLastAdditiveExtrusion();
-    document_ = previousDocument;
-    hasExtrusion_ = previousHasExtrusion;
-    extrusionSourceSketch_ = previousSource;
-    viewport_->setBox(document_.box());
-    viewport_->setBodyShape(document_.activeBody()
-                                ? document_.activeBody()->resultShape()
-                                : ShapeFeature::ShapePtr{});
-    viewport_->setSolidSketch(previousSolidSketch);
-    viewport_->setSolidSupport(previousSolidSupport);
-    viewport_->setSolidVisible(previousHasExtrusion);
-    historyPosition_ = static_cast<int>(sketchHistory_.size()) +
-                       (hasExtrusion_ ? 1 : 0);
-    rebuildFeatureTree();
-    rebuildHistoryPanel();
-  });
-
   auto& modelSketch = document_.addSketch(
       kInvalidSketchId,
       "Extrude profile " + std::to_string(document_.sketches().size() + 1),
@@ -950,33 +941,37 @@ void MainWindow::extrudeSketch() {
                                   ? modelBody->activeFeature()->error()
                                   : "Extrude rebuild failed";
     document_ = previousDocument;
+    refreshBodyViewFromDocument();
     QMessageBox::warning(this, QString::fromUtf8("Ошибка выдавливания"),
                          QString::fromStdString(error));
     return;
   }
-  viewport_->setBodyShape(modelBody->resultShape());
+  pushUndoAction([this, previousDocument, previousHasExtrusion, previousSource,
+                  previousSolidSketch, previousSolidSupport] {
+    document_ = previousDocument;
+    extrusionSourceSketch_ = previousSource;
+    viewport_->setSolidSketch(previousSolidSketch);
+    viewport_->setSolidSupport(previousSolidSupport);
+    refreshBodyViewFromDocument();
+    // Compatibility for projects saved before Body owned the B-Rep.
+    if (!hasExtrusion_ && previousHasExtrusion) {
+      viewport_->setBox(document_.box());
+      viewport_->setSolidVisible(true);
+      hasExtrusion_ = true;
+    }
+    historyPosition_ = static_cast<int>(sketchHistory_.size()) +
+                       (hasExtrusion_ ? 1 : 0);
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
 
-  if (!addToBody)
-    document_.setBox({fromBodyFace ? document_.box().widthMm : sketch.widthMm(),
-                      fromBodyFace ? document_.box().depthMm : sketch.heightMm(),
-                      fromBodyFace ? document_.box().heightMm + std::abs(height)
-                                   : std::abs(height)});
+  refreshBodyViewFromDocument();
   viewport_->setSketch(sketch);
   const QString pickedSupport = viewport_->extrusionCandidateSupport();
   const QString operationSupport = fromBodyFace ? previousSolidSupport
       : pickedSupport.isEmpty() ? currentSketchSupport_ : pickedSupport;
-  if (addToBody) {
-    viewport_->commitAdditiveExtrusion(sketch, operationSupport,
-                                       previousDocument.box().heightMm, height);
-  } else {
-    viewport_->setSolidSketch(sketch);
-    viewport_->setSolidSupport(operationSupport);
-    if (height < 0.0 && !fromBodyFace)
-      viewport_->setSolidSupport(viewport_->solidSupport() + QStringLiteral("|NEG"));
-  }
-  viewport_->setBox(document_.box());
-  viewport_->setSolidVisible(true);
-  hasExtrusion_ = true;
+  viewport_->setSolidSketch(sketch);
+  viewport_->setSolidSupport(operationSupport);
   const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
   extrusionSourceSketch_ = pickedIndex != static_cast<std::size_t>(-1)
                                ? std::optional<std::size_t>(pickedIndex)
@@ -993,6 +988,14 @@ void MainWindow::extrudeSketch() {
   workspaceStack_->setCurrentWidget(viewport_);
   statusBar()->showMessage(
       QString::fromUtf8("Создано твёрдое тело: выдавливание %1 мм").arg(height), 4000);
+}
+
+void MainWindow::refreshBodyViewFromDocument() {
+  ShapeFeature::ShapePtr shape;
+  if (const Body* body = document_.activeBody()) shape = body->resultShape();
+  hasExtrusion_ = static_cast<bool>(shape);
+  viewport_->setBodyShape(std::move(shape));
+  viewport_->setSolidVisible(hasExtrusion_);
 }
 
 void MainWindow::rebuildHistoryPanel() {
@@ -1079,21 +1082,33 @@ void MainWindow::editSketchStep(std::size_t index) {
 
 void MainWindow::editExtrusionStep() {
   if (!hasExtrusion_) return;
+  Body* body = document_.activeBody();
+  auto* extrude = body
+                      ? dynamic_cast<ExtrudeFeature*>(body->activeFeature())
+                      : nullptr;
+  if (!extrude) return;
   bool accepted = false;
   const double height = QInputDialog::getDouble(
       this, QString::fromUtf8("Изменить выдавливание"),
-      QString::fromUtf8("Расстояние, мм:"), document_.box().heightMm,
+      QString::fromUtf8("Расстояние, мм:"), extrude->lengthMm(),
       0.01, 100000.0, 2, &accepted);
   if (!accepted) return;
-  const BoxParameters previousBox = document_.box();
-  pushUndoAction([this, previousBox] {
-    document_.setBox(previousBox);
-    viewport_->setBox(previousBox);
+  const Document previousDocument = document_;
+  extrude->setLengthMm(height);
+  if (!document_.rebuild()) {
+    const QString error = QString::fromStdString(extrude->error());
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка выдавливания"), error);
+    return;
+  }
+  pushUndoAction([this, previousDocument] {
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
   });
-  auto box = document_.box();
-  box.heightMm = height;
-  document_.setBox(box);
-  viewport_->setBox(box);
+  refreshBodyViewFromDocument();
   statusBar()->showMessage(
       QString::fromUtf8("Выдавливание изменено: %1 мм").arg(height), 3000);
 }

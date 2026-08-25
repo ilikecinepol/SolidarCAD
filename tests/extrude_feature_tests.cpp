@@ -64,6 +64,14 @@ int main() {
   assert(near(bounds.y, 35.0));
   assert(near(bounds.z, 50.0));
 
+  // BoxParameters is compatibility/UI data, never the source of Body geometry.
+  document.setBox({999.0, 777.0, 333.0});
+  assert(document.rebuild());
+  bounds = extentsOf(*body.resultShape());
+  assert(near(bounds.x, 80.0));
+  assert(near(bounds.y, 35.0));
+  assert(near(bounds.z, 50.0));
+
   const solidar::Document snapshot = document;
   extrudePtr->setLengthMm(80.0);
   assert(extrudePtr->isDirty());
@@ -76,6 +84,12 @@ int main() {
   assert(snapshotExtrude->id() == extrudePtr->id());
   assert(near(snapshotExtrude->lengthMm(), 50.0));
   assert(near(extentsOf(*snapshot.activeBody()->resultShape()).z, 50.0));
+
+  // A failed rebuild must clear the old successful result, not leave stale 3D.
+  extrudePtr->setLengthMm(0.0);
+  assert(!document.rebuild());
+  assert(!extrudePtr->hasShape());
+  assert(!body.resultShape());
 
   solidar::Document openProfile;
   auto& openSketch = openProfile.addSketch();

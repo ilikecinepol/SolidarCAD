@@ -558,6 +558,7 @@ void Viewport::paintEvent(QPaintEvent*) {
   painter.translate(cameraPan_);
 
   refreshSelectedExtrusionPolygon();
+  const bool hasParametricBody = bodyShape_ && !bodyShape_->IsNull();
 
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
@@ -601,20 +602,24 @@ void Viewport::paintEvent(QPaintEvent*) {
                      plane == 0 ? "XY" : plane == 1 ? "XZ" : "YZ");
   }
 
-  if (solidVisible_ && solidSketch_.lines().empty() && solidSketch_.circles().empty())
+  if (solidVisible_ &&
+      (hasParametricBody || (solidSketch_.lines().empty() &&
+                             solidSketch_.circles().empty())))
     for (std::size_t faceIndex = 0; faceIndex < faces.size(); ++faceIndex) {
-    QPolygonF polygon;
-    for (const int index : faces[faceIndex])
-      polygon << project(vertices[index], size(), yaw_, pitch_, zoom_);
-    if (!isFrontFacing(polygon)) continue;
-    painter.setBrush(colors[faceIndex]);
-    painter.setPen(QPen(static_cast<int>(faceIndex) == selectedFace_
-                            ? QColor("#075eff") : QColor("#4d5863"),
-                        static_cast<int>(faceIndex) == selectedFace_ ? 3.0 : 1.4));
-    painter.drawPolygon(polygon);
-  }
+      QPolygonF polygon;
+      for (const int index : faces[faceIndex])
+        polygon << project(vertices[index], size(), yaw_, pitch_, zoom_);
+      if (!isFrontFacing(polygon)) continue;
+      painter.setBrush(colors[faceIndex]);
+      painter.setPen(QPen(static_cast<int>(faceIndex) == selectedFace_
+                              ? QColor("#075eff")
+                              : QColor("#4d5863"),
+                          static_cast<int>(faceIndex) == selectedFace_ ? 3.0
+                                                                       : 1.4));
+      painter.drawPolygon(polygon);
+    }
 
-  if (solidVisible_ && !solidSketch_.lines().empty()) {
+  if (solidVisible_ && !hasParametricBody && !solidSketch_.lines().empty()) {
     QPolygonF bottom;
     QPolygonF top;
     const Point3 normal = supportNormal(solidSupportName_);
@@ -649,7 +654,8 @@ void Viewport::paintEvent(QPaintEvent*) {
     }
   }
 
-  if (solidVisible_) for (const auto& circle : solidSketch_.circles()) {
+  if (solidVisible_ && !hasParametricBody)
+    for (const auto& circle : solidSketch_.circles()) {
     QPolygonF top;
     QPolygonF bottom;
     const Point3 normal = supportNormal(solidSupportName_);
@@ -691,7 +697,8 @@ void Viewport::paintEvent(QPaintEvent*) {
   // records, but are painted as one additive body.  In particular their base
   // starts on the old cap instead of at the global sketch plane; drawing them
   // from zero was the source of the cylinder-through-block artefact.
-  if (solidVisible_) for (const auto& feature : additiveExtrusions_) {
+  if (solidVisible_ && !hasParametricBody)
+    for (const auto& feature : additiveExtrusions_) {
     const Point3 normal = supportNormal(feature.supportName);
     const float baseDistance = static_cast<float>(feature.startMm);
     const float capDistance = static_cast<float>(feature.startMm + feature.lengthMm);
