@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
@@ -42,6 +43,12 @@ bool near(double actual, double expected) {
 }  // namespace
 
 int main() {
+  const auto xy = solidar::SketchPlacement::xy();
+  const auto xyPoint = xy.toWorld(10.0, 20.0);
+  assert(near(xyPoint.x, 10.0));
+  assert(near(xyPoint.y, 20.0));
+  assert(near(xyPoint.z, 0.0));
+
   solidar::Document document;
   auto& sketch = document.addSketch("Rectangle");
   sketch.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
@@ -90,6 +97,79 @@ int main() {
   assert(!document.rebuild());
   assert(!extrudePtr->hasShape());
   assert(!body.resultShape());
+
+  solidar::Document xzDocument;
+  auto& xzSketch = xzDocument.addSketch("XZ Rectangle");
+  xzSketch.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
+  xzSketch.placement = solidar::SketchPlacement::xz();
+  auto& xzBody = xzDocument.addBody();
+  xzBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      xzSketch.id, 50.0, "XZ Extrude"));
+  assert(xzDocument.rebuild());
+  const auto xzBounds = extentsOf(*xzBody.resultShape());
+  assert(near(xzBounds.x, 80.0));
+  assert(near(xzBounds.y, 50.0));
+  assert(near(xzBounds.z, 35.0));
+
+  solidar::Document attachedDocument;
+  auto& baseSketch = attachedDocument.addSketch("Base");
+  baseSketch.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
+  auto& attachedBody = attachedDocument.addBody();
+  auto baseExtrude = std::make_unique<solidar::ExtrudeFeature>(
+      baseSketch.id, 50.0, "Base Extrude");
+  auto* baseExtrudePtr = baseExtrude.get();
+  attachedBody.addFeature(std::move(baseExtrude));
+  assert(attachedDocument.rebuild());
+
+  std::optional<std::size_t> topFaceIndex;
+  for (std::size_t index = 0; index < 32; ++index) {
+    const auto resolved =
+        solidar::resolveFacePlacement(*attachedBody.resultShape(), index);
+    if (!resolved.planar) continue;
+    const auto normal = resolved.placement.normal();
+    if (normal.z > 0.9 && near(resolved.placement.origin.z, 50.0)) {
+      topFaceIndex = index;
+      break;
+    }
+  }
+  assert(topFaceIndex);
+  auto& faceSketch = attachedDocument.addSketch("Sketch on top face");
+  faceSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+  assert(attachedDocument.attachSketchToFace(
+      faceSketch.id,
+      {attachedBody.id(), baseExtrudePtr->id(), *topFaceIndex}));
+  assert(faceSketch.supportResolved);
+  assert(near(faceSketch.placement.origin.z, 50.0));
+  const auto faceOrigin = faceSketch.placement.toWorld(0.0, 0.0);
+  const auto faceX = faceSketch.placement.toWorld(10.0, 0.0);
+  const auto faceY = faceSketch.placement.toWorld(0.0, 10.0);
+  const auto faceNormal = faceSketch.placement.normal();
+  assert(near(faceOrigin.z, 50.0));
+  assert(near(faceX.z, 50.0));
+  assert(near(faceY.z, 50.0));
+  assert(near(faceNormal.x, 0.0));
+  assert(near(faceNormal.y, 0.0));
+  assert(near(faceNormal.z, 1.0));
+  assert(near(std::hypot(faceX.x - faceOrigin.x,
+                         faceX.y - faceOrigin.y),
+              10.0));
+  assert(near(std::hypot(faceY.x - faceOrigin.x,
+                         faceY.y - faceOrigin.y),
+              10.0));
+
+  const solidar::Document attachedSnapshot = attachedDocument;
+  baseExtrudePtr->setLengthMm(80.0);
+  assert(attachedDocument.rebuild());
+  assert(faceSketch.supportResolved);
+  assert(near(faceSketch.placement.origin.z, 80.0));
+  const auto& snapshotFaceSketch = attachedSnapshot.sketches().back();
+  assert(snapshotFaceSketch.support.type == solidar::SketchSupportType::Face);
+  assert(near(snapshotFaceSketch.placement.origin.z, 50.0));
+
+  faceSketch.support.face.faceIndex = 9999;
+  attachedDocument.updateSketchPlacements();
+  assert(!faceSketch.supportResolved);
+  assert(!faceSketch.geometry.lines().empty());
 
   solidar::Document openProfile;
   auto& openSketch = openProfile.addSketch();

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "model/Body.h"
+#include "model/SketchPlacement.h"
 #include "sketch/Sketch.h"
 
 namespace solidar {
@@ -16,6 +17,9 @@ struct DocumentSketch {
   SketchId id{kInvalidSketchId};
   std::string name;
   sketch::Sketch geometry;
+  SketchPlacement placement{SketchPlacement::xy()};
+  SketchSupport support{};
+  bool supportResolved{true};
 };
 
 struct BoxParameters {
@@ -45,6 +49,8 @@ class Document final {
   [[nodiscard]] Body* activeBody() noexcept;
   [[nodiscard]] const Body* activeBody() const noexcept;
   [[nodiscard]] bool rebuild();
+  bool attachSketchToFace(SketchId sketchId, FaceReference reference);
+  void updateSketchPlacements();
   [[nodiscard]] const BoxParameters& box() const noexcept;
   void setBox(BoxParameters parameters);
 

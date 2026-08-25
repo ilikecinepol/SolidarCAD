@@ -59,6 +59,10 @@ bool ExtrudeFeature::rebuild(const RebuildContext& context) {
     markError("Extrude profile sketch was not found");
     return false;
   }
+  if (!profile->supportResolved) {
+    markError("Extrude profile support is unresolved");
+    return false;
+  }
 
   const auto& geometry = profile->geometry;
   if (geometry.lines().size() < 3) {
@@ -79,9 +83,12 @@ bool ExtrudeFeature::rebuild(const RebuildContext& context) {
     std::size_t edgeCount = 0;
     for (const auto& line : geometry.lines()) {
       if (line.dashed) continue;
-      BRepBuilderAPI_MakeEdge edgeBuilder(
-          gp_Pnt(line.start.xMm, line.start.yMm, 0.0),
-          gp_Pnt(line.end.xMm, line.end.yMm, 0.0));
+      const auto start = profile->placement.toWorld(line.start.xMm,
+                                                     line.start.yMm);
+      const auto end = profile->placement.toWorld(line.end.xMm,
+                                                   line.end.yMm);
+      BRepBuilderAPI_MakeEdge edgeBuilder(gp_Pnt(start.x, start.y, start.z),
+                                          gp_Pnt(end.x, end.y, end.z));
       if (!edgeBuilder.IsDone()) {
         markError("Extrude could not build a profile edge");
         return false;
@@ -100,8 +107,11 @@ bool ExtrudeFeature::rebuild(const RebuildContext& context) {
       return false;
     }
 
-    BRepPrimAPI_MakePrism prismBuilder(faceBuilder.Face(),
-                                       gp_Vec(0.0, 0.0, lengthMm_));
+    const auto normal = profile->placement.normal();
+    BRepPrimAPI_MakePrism prismBuilder(
+        faceBuilder.Face(),
+        gp_Vec(normal.x * lengthMm_, normal.y * lengthMm_,
+               normal.z * lengthMm_));
     prismBuilder.Build();
     if (!prismBuilder.IsDone() || prismBuilder.Shape().IsNull()) {
       markError("Extrude could not build a solid prism");

@@ -6,6 +6,7 @@
 #include <QString>
 #include <QWidget>
 #include <vector>
+#include <optional>
 
 #include "model/Document.h"
 #include "model/SolidFeature.h"
@@ -27,13 +28,20 @@ class Viewport final : public QWidget {
   void setBox(BoxParameters parameters);
   void setBodyShape(ShapeFeature::ShapePtr shape);
   void setSketch(const sketch::Sketch& sketch);
+  void setSketch(const sketch::Sketch& sketch,
+                 const SketchPlacement& placement);
   void setSolidSketch(const sketch::Sketch& sketch);
   void setSolidVisible(bool visible);
   void setSolidSupport(const QString& supportName);
   void setSketchVisible(bool visible);
   void addSketch(const sketch::Sketch& sketch, const QString& supportName);
+  void addSketch(const sketch::Sketch& sketch, const QString& supportName,
+                 const SketchPlacement& placement);
   void updateSketch(std::size_t index, const sketch::Sketch& sketch,
                     const QString& supportName);
+  void updateSketch(std::size_t index, const sketch::Sketch& sketch,
+                    const QString& supportName,
+                    const SketchPlacement& placement);
   void removeSketch(std::size_t index);
   void setSketchVisible(std::size_t index, bool visible);
   void setOriginVisible(bool visible);
@@ -46,6 +54,7 @@ class Viewport final : public QWidget {
   void setExtrusionPreviewLength(double lengthMm);
   [[nodiscard]] bool hasSelectedFace() const noexcept;
   [[nodiscard]] QString selectedFaceName() const;
+  [[nodiscard]] std::optional<std::size_t> selectedBodyFaceIndex() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
@@ -85,6 +94,7 @@ class Viewport final : public QWidget {
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   sketch::Sketch sketch_;
+  SketchPlacement sketchPlacement_{SketchPlacement::xy()};
   sketch::Sketch solidSketch_;
   std::vector<SolidFeature> additiveExtrusions_;
   bool solidVisible_{false};
@@ -93,6 +103,7 @@ class Viewport final : public QWidget {
   struct DisplaySketch {
     sketch::Sketch geometry;
     QString supportName;
+    SketchPlacement placement;
     bool visible{true};
   };
   std::vector<DisplaySketch> displaySketches_;
@@ -100,6 +111,7 @@ class Viewport final : public QWidget {
   bool basePlanesVisible_[3]{false, false, false};
   PickMode pickMode_{PickMode::None};
   int selectedFace_{-1};
+  std::size_t hoveredBodyFaceIndex_{static_cast<std::size_t>(-1)};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
   bool selectedOrigin_{false};

@@ -89,7 +89,40 @@ bool Document::rebuild() {
   const RebuildContext context{*this};
   for (auto& body : bodies_)
     if (!body.rebuild(context)) return false;
+  updateSketchPlacements();
   return true;
+}
+
+bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
+  auto* sketch = findSketch(sketchId);
+  if (!sketch) return false;
+  sketch->support = {SketchSupportType::Face, reference};
+  updateSketchPlacements();
+  return sketch->supportResolved;
+}
+
+void Document::updateSketchPlacements() {
+  for (auto& sketch : sketches_) {
+    if (sketch.support.type != SketchSupportType::Face) continue;
+    const auto& reference = sketch.support.face;
+    const Body* body = findBody(reference.bodyId);
+    const ShapeFeature* feature = nullptr;
+    if (body) {
+      for (const auto& candidate : body->features())
+        if (candidate->id() == reference.featureId) {
+          feature = candidate.get();
+          break;
+        }
+    }
+    if (!feature || !feature->isValid() || !feature->shape()) {
+      sketch.supportResolved = false;
+      continue;
+    }
+    const auto resolved =
+        resolveFacePlacement(*feature->shape(), reference.faceIndex);
+    sketch.supportResolved = resolved.planar;
+    if (resolved.planar) sketch.placement = resolved.placement;
+  }
 }
 
 SketchId Document::nextSketchId() noexcept {

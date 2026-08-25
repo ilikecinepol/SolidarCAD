@@ -180,6 +180,8 @@ void MainWindow::createProject() {
   extrusionSourceSketch_.reset();
   selectedExtrusionSurface_.clear();
   currentSketchSupport_ = QStringLiteral("XY");
+  currentSketchPlacement_ = SketchPlacement::xy();
+  currentSketchFaceReference_.reset();
   if (extrusionDock_) extrusionDock_->hide();
   viewport_->hideExtrusionManipulator();
   viewport_->resetScene();
@@ -210,13 +212,22 @@ void MainWindow::openProject() {
 bool MainWindow::loadProject(const QString& path, QString* error) {
   project::ProjectData data;
   if (!project::ProjectFile::load(path, &data, error)) return false;
+  document_ = Document{};
   document_.setBox(data.box);
   sketchHistory_.clear();
   viewport_->resetScene();
   viewport_->setBox(document_.box());
   for (const auto& saved : data.sketches) {
-    sketchHistory_.push_back({saved.geometry, saved.support});
-    viewport_->addSketch(saved.geometry, saved.support);
+    auto& modelSketch = document_.addSketch("Loaded sketch");
+    modelSketch.geometry = saved.geometry;
+    modelSketch.placement = saved.support.contains(QStringLiteral("XZ"))
+                                ? SketchPlacement::xz()
+                                : saved.support.contains(QStringLiteral("YZ"))
+                                      ? SketchPlacement::yz()
+                                      : SketchPlacement::xy();
+    sketchHistory_.push_back(
+        {saved.geometry, saved.support, modelSketch.id});
+    viewport_->addSketch(saved.geometry, saved.support, modelSketch.placement);
   }
   sketchCount_ = sketchHistory_.size();
   hasExtrusion_ = data.hasExtrusion;
@@ -309,7 +320,7 @@ void MainWindow::buildUi() {
   drawingSheet_ = new DrawingSheetView(this);
   drawingSheet_->hide();
   viewport_->setBox(document_.box());
-  viewport_->setSketch(sketchCanvas_->sketch());
+  viewport_->setSketch(sketchCanvas_->sketch(), currentSketchPlacement_);
   drawingSheet_->setRectangle(document_.box().widthMm, document_.box().depthMm);
   workspaceStack_->addWidget(viewport_);
   workspaceStack_->addWidget(sketchCanvas_);
@@ -667,6 +678,33 @@ void MainWindow::buildUi() {
           [this](const QString& plane) {
             modelRibbon_->clearActiveTool();
             currentSketchSupport_ = plane;
+            currentSketchFaceReference_.reset();
+            currentSketchPlacement_ = plane.contains(QStringLiteral("XZ"))
+                                          ? SketchPlacement::xz()
+                                          : plane.contains(QStringLiteral("YZ"))
+                                                ? SketchPlacement::yz()
+                                                : SketchPlacement::xy();
+            if (plane.startsWith(QString::fromUtf8("Грань тела"))) {
+              const auto faceIndex = viewport_->selectedBodyFaceIndex();
+              const Body* body = document_.activeBody();
+              const ShapeFeature* feature = body ? body->activeFeature() : nullptr;
+              const auto shape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
+              if (!faceIndex || !body || !feature || !shape) {
+                QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
+                                     QString::fromUtf8("Не удалось определить грань Body."));
+                return;
+              }
+              const auto resolved = resolveFacePlacement(*shape, *faceIndex);
+              if (!resolved.planar) {
+                QMessageBox::information(
+                    this, QString::fromUtf8("Sketch on Face"),
+                    QStringLiteral("Sketch on Face 1.0 supports planar faces only"));
+                return;
+              }
+              currentSketchPlacement_ = resolved.placement;
+              currentSketchFaceReference_ =
+                  FaceReference{body->id(), feature->id(), *faceIndex};
+            }
             sketchCanvas_->resetSketch();
             sketchCanvas_->setReferenceBody(document_.box(), plane,
                                              hasExtrusion_);
@@ -819,7 +857,7 @@ void MainWindow::updateFromSketch(double widthMm, double heightMm) {
   }
   // Editing a sketch must not resize an existing solid. Body dimensions are
   // changed only when a modelling operation (for example extrusion) commits.
-  viewport_->setSketch(sketchCanvas_->sketch());
+  viewport_->setSketch(sketchCanvas_->sketch(), currentSketchPlacement_);
   drawingSheet_->setRectangle(widthMm, heightMm);
   statusBar()->showMessage(
       QString::fromUtf8("Геометрия эскиза обновлена"), 1200);
@@ -837,25 +875,47 @@ void MainWindow::finishSketch() {
   if (editingSketchIndex_ && *editingSketchIndex_ < sketchHistory_.size()) {
     const std::size_t index = *editingSketchIndex_;
     const SketchHistoryEntry previous = sketchHistory_[index];
-    pushUndoAction([this, index, previous] {
+    const Document previousDocument = document_;
+    pushUndoAction([this, index, previous, previousDocument] {
       if (index >= sketchHistory_.size()) return;
+      document_ = previousDocument;
       sketchHistory_[index] = previous;
-      viewport_->updateSketch(index, previous.geometry, previous.support);
+      const auto* restored = document_.findSketch(previous.documentSketchId);
+      viewport_->updateSketch(index, previous.geometry, previous.support,
+                              restored ? restored->placement
+                                       : SketchPlacement::xy());
       if (hasExtrusion_ && extrusionSourceSketch_ == index)
         viewport_->setSolidSketch(previous.geometry);
       rebuildFeatureTree();
       rebuildHistoryPanel();
     });
-    sketchHistory_[index] = {sketch, currentSketchSupport_};
-    viewport_->updateSketch(index, sketch, currentSketchSupport_);
+    sketchHistory_[index].geometry = sketch;
+    sketchHistory_[index].support = currentSketchSupport_;
+    if (auto* modelSketch =
+            document_.findSketch(sketchHistory_[index].documentSketchId)) {
+      modelSketch->geometry = sketch;
+      modelSketch->placement = currentSketchPlacement_;
+    }
+    viewport_->updateSketch(index, sketch, currentSketchSupport_,
+                            currentSketchPlacement_);
     if (hasExtrusion_ && extrusionSourceSketch_ == index)
       viewport_->setSolidSketch(sketch);
     statusBar()->showMessage(
         QString::fromUtf8("Эскиз %1 обновлён").arg(index + 1), 3000);
   } else {
     const std::size_t index = sketchHistory_.size();
-    pushUndoAction([this, index] {
+    const Document previousDocument = document_;
+    auto& modelSketch = document_.addSketch(
+        "Sketch " + std::to_string(document_.sketches().size() + 1));
+    modelSketch.geometry = sketch;
+    modelSketch.placement = currentSketchPlacement_;
+    if (currentSketchFaceReference_)
+      document_.attachSketchToFace(modelSketch.id,
+                                   *currentSketchFaceReference_);
+    const SketchId modelSketchId = modelSketch.id;
+    pushUndoAction([this, index, previousDocument] {
       if (index >= sketchHistory_.size()) return;
+      document_ = previousDocument;
       sketchHistory_.erase(sketchHistory_.begin() +
                            static_cast<std::ptrdiff_t>(index));
       viewport_->removeSketch(index);
@@ -867,8 +927,10 @@ void MainWindow::finishSketch() {
       rebuildFeatureTree();
       rebuildHistoryPanel();
     });
-    viewport_->addSketch(sketch, currentSketchSupport_);
-    sketchHistory_.push_back({sketch, currentSketchSupport_});
+    viewport_->addSketch(sketch, currentSketchSupport_,
+                         currentSketchPlacement_);
+    sketchHistory_.push_back(
+        {sketch, currentSketchSupport_, modelSketchId});
     ++sketchCount_;
   }
   editingSketchIndex_.reset();
@@ -885,12 +947,14 @@ void MainWindow::extrudeSketch() {
   const bool fromBodyFace = selectedExtrusionSurface_.startsWith(
       QString::fromUtf8("Грань тела"));
   const auto& pickedSketch = viewport_->extrusionCandidateSketch();
-  const auto& sketch = fromBodyFace
-                           ? viewport_->solidSketch()
-                           : (pickedSketch.lines().empty() &&
-                                      pickedSketch.circles().empty()
-                                  ? sketchCanvas_->sketch()
-                                  : pickedSketch);
+  // Keep an owned snapshot. Rebuild/viewport refresh mutates several Sketch
+  // caches and must not invalidate the profile while the operation is using it.
+  const sketch::Sketch sketch =
+      fromBodyFace
+          ? viewport_->solidSketch()
+          : (pickedSketch.lines().empty() && pickedSketch.circles().empty()
+                 ? sketchCanvas_->sketch()
+                 : pickedSketch);
   if (!fromBodyFace && sketch.lines().empty() && sketch.circles().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
@@ -927,14 +991,29 @@ void MainWindow::extrudeSketch() {
   const auto previousSource = extrusionSourceSketch_;
   const sketch::Sketch previousSolidSketch = viewport_->solidSketch();
   const QString previousSolidSupport = viewport_->solidSupport();
-  auto& modelSketch = document_.addSketch(
-      kInvalidSketchId,
-      "Extrude profile " + std::to_string(document_.sketches().size() + 1),
-      sketch);
+  const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
+  const std::size_t sourceIndex =
+      pickedIndex != static_cast<std::size_t>(-1)
+          ? pickedIndex
+          : sketchCount_ > 0 ? sketchCount_ - 1
+                             : static_cast<std::size_t>(-1);
+  DocumentSketch* modelSketch =
+      sourceIndex < sketchHistory_.size()
+          ? document_.findSketch(sketchHistory_[sourceIndex].documentSketchId)
+          : nullptr;
+  if (!modelSketch) {
+    modelSketch = &document_.addSketch(
+        kInvalidSketchId,
+        "Extrude profile " + std::to_string(document_.sketches().size() + 1),
+        sketch);
+    modelSketch->placement = currentSketchPlacement_;
+  } else {
+    modelSketch->geometry = sketch;
+  }
   Body* modelBody = document_.activeBody();
   if (!modelBody) modelBody = &document_.addBody();
   modelBody->addFeature(std::make_unique<ExtrudeFeature>(
-      modelSketch.id, height,
+      modelSketch->id, height,
       "Extrude " + std::to_string(modelBody->features().size() + 1)));
   if (!document_.rebuild()) {
     const std::string error = modelBody->activeFeature()
@@ -972,7 +1051,6 @@ void MainWindow::extrudeSketch() {
       : pickedSupport.isEmpty() ? currentSketchSupport_ : pickedSupport;
   viewport_->setSolidSketch(sketch);
   viewport_->setSolidSupport(operationSupport);
-  const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
   extrusionSourceSketch_ = pickedIndex != static_cast<std::size_t>(-1)
                                ? std::optional<std::size_t>(pickedIndex)
                                : sketchCount_ > 0
@@ -996,6 +1074,14 @@ void MainWindow::refreshBodyViewFromDocument() {
   hasExtrusion_ = static_cast<bool>(shape);
   viewport_->setBodyShape(std::move(shape));
   viewport_->setSolidVisible(hasExtrusion_);
+  for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
+    const auto* modelSketch =
+        document_.findSketch(sketchHistory_[index].documentSketchId);
+    if (!modelSketch) continue;
+    viewport_->updateSketch(index, modelSketch->geometry,
+                            sketchHistory_[index].support,
+                            modelSketch->placement);
+  }
 }
 
 void MainWindow::rebuildHistoryPanel() {
@@ -1070,6 +1156,13 @@ void MainWindow::editSketchStep(std::size_t index) {
   if (index >= sketchHistory_.size()) return;
   editingSketchIndex_ = index;
   currentSketchSupport_ = sketchHistory_[index].support;
+  currentSketchFaceReference_.reset();
+  if (const auto* modelSketch =
+          document_.findSketch(sketchHistory_[index].documentSketchId)) {
+    currentSketchPlacement_ = modelSketch->placement;
+    if (modelSketch->support.type == SketchSupportType::Face)
+      currentSketchFaceReference_ = modelSketch->support.face;
+  }
   sketchCanvas_->loadSketch(sketchHistory_[index].geometry);
   sketchCanvas_->setReferenceBody(document_.box(), currentSketchSupport_,
                                   hasExtrusion_);

@@ -72,6 +72,8 @@ class MainWindow final : public QMainWindow {
   std::optional<std::size_t> extrusionSourceSketch_;
   QString selectedExtrusionSurface_;
   QString currentSketchSupport_{QStringLiteral("XY")};
+  SketchPlacement currentSketchPlacement_{SketchPlacement::xy()};
+  std::optional<FaceReference> currentSketchFaceReference_;
   QAction* undoAction_{nullptr};
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
@@ -85,6 +87,7 @@ class MainWindow final : public QMainWindow {
   struct SketchHistoryEntry {
     sketch::Sketch geometry;
     QString support;
+    SketchId documentSketchId{kInvalidSketchId};
   };
   std::vector<SketchHistoryEntry> sketchHistory_;
   std::optional<std::size_t> editingSketchIndex_;

@@ -3,7 +3,7 @@
 #include <QPointer>
 
 #include "home/HomeWindow.h"
-#include "ui/MainWindow.h"
+#include "ui/EditorFactory.h"
 
 int main(int argc, char* argv[]) {
   QApplication application(argc, argv);
@@ -11,18 +11,20 @@ int main(int argc, char* argv[]) {
   QApplication::setOrganizationName("Solidar CAD");
 
   if (argc > 1) {
-    solidar::MainWindow editor;
     QString error;
-    if (!editor.loadProject(QString::fromLocal8Bit(argv[1]), &error)) {
+    QPointer<QMainWindow> editor(solidar::createEditorWindow(
+        QString::fromLocal8Bit(argv[1]), &error));
+    if (!editor) {
       QMessageBox::critical(nullptr, QString::fromUtf8("Ошибка открытия"), error);
       return 1;
     }
-    editor.showMaximized();
+    editor->setAttribute(Qt::WA_DeleteOnClose);
+    editor->showMaximized();
     return application.exec();
   }
 
   solidar::home::HomeWindow home;
-  QPointer<solidar::MainWindow> editor;
+  QPointer<QMainWindow> editor;
   QObject::connect(&home, &solidar::home::HomeWindow::projectRequested,
                    &application, [&](const QString& path) {
                      if (editor) {
@@ -30,16 +32,15 @@ int main(int argc, char* argv[]) {
                        editor->activateWindow();
                        return;
                      }
-                     editor = new solidar::MainWindow;
-                     editor->setAttribute(Qt::WA_DeleteOnClose);
                      QString error;
-                     if (!editor->loadProject(path, &error)) {
+                     editor = solidar::createEditorWindow(path, &error);
+                     if (!editor) {
                        QMessageBox::critical(&home,
                                              QString::fromUtf8("Ошибка открытия"),
                                              error);
-                       delete editor.data();
                        return;
                      }
+                     editor->setAttribute(Qt::WA_DeleteOnClose);
                      QObject::connect(editor, &QObject::destroyed, &home, [&home] {
                        home.showMaximized();
                        home.raise();

@@ -17,6 +17,8 @@ add_library(solidar_model
   model/Feature.h
   model/ShapeFeature.cpp
   model/ShapeFeature.h
+  model/SketchPlacement.cpp
+  model/SketchPlacement.h
   model/SolidFeature.h
   sketch/Sketch.cpp
   sketch/Sketch.h
@@ -72,6 +74,8 @@ target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)
 solidar_warnings(solidar_viewport3d)
 
 add_library(solidar_editor
+  ui/EditorFactory.cpp
+  ui/EditorFactory.h
   ui/MainWindow.cpp
   ui/MainWindow.h
 )
