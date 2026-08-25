@@ -13,6 +13,10 @@ add_library(solidar_model
   model/Document.h
   model/ExtrudeFeature.cpp
   model/ExtrudeFeature.h
+  model/PocketFeature.cpp
+  model/PocketFeature.h
+  model/SketchProfileBuilder.cpp
+  model/SketchProfileBuilder.h
   model/Feature.cpp
   model/Feature.h
   model/ShapeFeature.cpp
@@ -28,7 +32,7 @@ add_library(solidar_model
 target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(solidar_model PUBLIC
-  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim
+  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool
 )
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)

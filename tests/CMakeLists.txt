@@ -6,6 +6,10 @@ add_executable(extrude_feature_tests extrude_feature_tests.cpp)
 target_link_libraries(extrude_feature_tests PRIVATE solidar_model)
 add_test(NAME extrude_feature_tests COMMAND extrude_feature_tests)
 
+add_executable(pocket_feature_tests pocket_feature_tests.cpp)
+target_link_libraries(pocket_feature_tests PRIVATE solidar_model)
+add_test(NAME pocket_feature_tests COMMAND pocket_feature_tests)
+
 add_executable(project_file_tests project_file_tests.cpp)
 target_link_libraries(project_file_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME project_file_tests COMMAND project_file_tests)
@@ -31,6 +35,7 @@ if(WIN32)
   set_tests_properties(
     document_tests
     extrude_feature_tests
+    pocket_feature_tests
     project_file_tests
     editor_smoke_tests
     sketch_regression_tests

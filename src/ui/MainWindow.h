@@ -45,12 +45,14 @@ class MainWindow final : public QMainWindow {
   void updateFromSketch(double widthMm, double heightMm);
   void finishSketch();
   void extrudeSketch();
+  void createPocket();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
   void applyHistoryPosition(int position);
   void editSketchStep(std::size_t index);
   void editExtrusionStep();
+  void editPocketStep();
   void exportPdf();
   void printDrawing();
   void undoLastAction();

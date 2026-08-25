@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "model/ExtrudeFeature.h"
+#include "model/PocketFeature.h"
 
 #include <algorithm>
 #include <cmath>
@@ -674,6 +675,8 @@ void MainWindow::buildUi() {
                 QString::fromUtf8("Выберите замкнутый контур или грань тела"));
             viewport_->beginExtrusionSurfaceSelection();
           });
+  connect(modelRibbon_, &ModelRibbon::pocketRequested, this,
+          &MainWindow::createPocket);
   connect(viewport_, &Viewport::sketchPlanePicked, this,
           [this](const QString& plane) {
             modelRibbon_->clearActiveTool();
@@ -1084,6 +1087,54 @@ void MainWindow::refreshBodyViewFromDocument() {
   }
 }
 
+void MainWindow::createPocket() {
+  Body* body = document_.activeBody();
+  if (!body || !body->resultShape() || sketchHistory_.empty()) {
+    QMessageBox::information(this, QString::fromUtf8("Карман"),
+                             QString::fromUtf8("Сначала создайте Body и эскиз на его грани."));
+    return;
+  }
+  const auto& historySketch = sketchHistory_.back();
+  DocumentSketch* profile = document_.findSketch(historySketch.documentSketchId);
+  if (!profile || profile->support.type != SketchSupportType::Face ||
+      !profile->supportResolved || !profile->geometry.isClosed()) {
+    QMessageBox::warning(this, QString::fromUtf8("Карман"),
+                         QString::fromUtf8("Нужен замкнутый эскиз на разрешённой плоской грани."));
+    return;
+  }
+  bool accepted = false;
+  const double depth = QInputDialog::getDouble(
+      this, QString::fromUtf8("Создать карман"),
+      QString::fromUtf8("Глубина, мм:"), 20.0, 0.01, 100000.0, 2, &accepted);
+  if (!accepted) return;
+
+  const Document previousDocument = document_;
+  body->addFeature(std::make_unique<PocketFeature>(
+      profile->id, depth,
+      "Pocket " + std::to_string(body->features().size())));
+  if (!document_.rebuild()) {
+    const QString error = QString::fromStdString(
+        body->activeFeature() ? body->activeFeature()->error()
+                              : "Pocket rebuild failed");
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка кармана"), error);
+    return;
+  }
+  pushUndoAction([this, previousDocument] {
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  modelRibbon_->clearActiveTool();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  statusBar()->showMessage(
+      QString::fromUtf8("Создан карман глубиной %1 мм").arg(depth), 4000);
+}
+
 void MainWindow::rebuildHistoryPanel() {
   if (!historyLayout_) return;
   while (QLayoutItem* item = historyLayout_->takeAt(0)) {
@@ -1119,6 +1170,13 @@ void MainWindow::rebuildHistoryPanel() {
             QString::fromUtf8("Выдавливание"),
             QString::fromUtf8("Изменить глубину выдавливания"),
             [this] { editExtrusionStep(); });
+  }
+  if (const Body* body = document_.activeBody();
+      body && dynamic_cast<const PocketFeature*>(body->activeFeature())) {
+    addStep(QIcon(QStringLiteral(":/icons/extrude.png")),
+            QString::fromUtf8("Карман"),
+            QString::fromUtf8("Изменить глубину кармана"),
+            [this] { editPocketStep(); });
   }
   if (historySlider_) {
     const QSignalBlocker blocker(historySlider_);
@@ -1176,9 +1234,16 @@ void MainWindow::editSketchStep(std::size_t index) {
 void MainWindow::editExtrusionStep() {
   if (!hasExtrusion_) return;
   Body* body = document_.activeBody();
-  auto* extrude = body
-                      ? dynamic_cast<ExtrudeFeature*>(body->activeFeature())
-                      : nullptr;
+  ExtrudeFeature* extrude = nullptr;
+  std::size_t extrudeIndex = 0;
+  if (body)
+    for (std::size_t index = 0; index < body->features().size(); ++index)
+      if (auto* candidate =
+              dynamic_cast<ExtrudeFeature*>(body->features()[index].get())) {
+        extrude = candidate;
+        extrudeIndex = index;
+        break;
+      }
   if (!extrude) return;
   bool accepted = false;
   const double height = QInputDialog::getDouble(
@@ -1188,6 +1253,7 @@ void MainWindow::editExtrusionStep() {
   if (!accepted) return;
   const Document previousDocument = document_;
   extrude->setLengthMm(height);
+  body->markDirtyFrom(extrudeIndex);
   if (!document_.rebuild()) {
     const QString error = QString::fromStdString(extrude->error());
     document_ = previousDocument;
@@ -1204,6 +1270,40 @@ void MainWindow::editExtrusionStep() {
   refreshBodyViewFromDocument();
   statusBar()->showMessage(
       QString::fromUtf8("Выдавливание изменено: %1 мм").arg(height), 3000);
+}
+
+void MainWindow::editPocketStep() {
+  Body* body = document_.activeBody();
+  auto* pocket = body
+                     ? dynamic_cast<PocketFeature*>(body->activeFeature())
+                     : nullptr;
+  if (!pocket) return;
+  bool accepted = false;
+  const double depth = QInputDialog::getDouble(
+      this, QString::fromUtf8("Изменить карман"),
+      QString::fromUtf8("Глубина, мм:"), pocket->depthMm(),
+      0.01, 100000.0, 2, &accepted);
+  if (!accepted) return;
+  const Document previousDocument = document_;
+  pocket->setDepthMm(depth);
+  if (!document_.rebuild()) {
+    const QString error = QString::fromStdString(pocket->error());
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка кармана"), error);
+    return;
+  }
+  pushUndoAction([this, previousDocument] {
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  statusBar()->showMessage(
+      QString::fromUtf8("Глубина кармана изменена: %1 мм").arg(depth), 3000);
 }
 
 void MainWindow::rebuildFeatureTree() {
@@ -1256,6 +1356,13 @@ void MainWindow::rebuildFeatureTree() {
     bodyItem->setData(0, Qt::UserRole, 3);
     bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
     bodyItem->setCheckState(0, Qt::Checked);
+    if (const Body* body = document_.activeBody())
+      for (const auto& feature : body->features())
+        new QTreeWidgetItem(
+            bodyItem,
+            {QString::fromStdString(feature->name().empty()
+                                        ? feature->typeName()
+                                        : feature->name())});
   }
   auto* components = new QTreeWidgetItem(project, {QString::fromUtf8("Компоненты")});
   new QTreeWidgetItem(components, {QString::fromUtf8("Компоненты отсутствуют")});

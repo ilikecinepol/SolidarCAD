@@ -16,6 +16,7 @@ class ModelRibbon final : public QWidget {
  signals:
   void createSketchRequested();
   void extrudeRequested();
+  void pocketRequested();
 
  private:
   QButtonGroup* toolGroup_{nullptr};

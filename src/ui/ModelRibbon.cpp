@@ -59,16 +59,20 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
                                      QString::fromUtf8("Создать эскиз"), this);
   auto* extrude = commandButton(QStringLiteral(":/icons/extrude.png"),
                                 QString::fromUtf8("Выдавливание"), this);
+  auto* pocket = commandButton(QStringLiteral(":/icons/extrude.png"),
+                               QString::fromUtf8("Карман"), this);
   createSketch->setCheckable(true);
   extrude->setCheckable(true);
   toolGroup_ = new QButtonGroup(this);
   toolGroup_->setExclusive(true);
   toolGroup_->addButton(createSketch);
   toolGroup_->addButton(extrude);
+  toolGroup_->addButton(pocket);
   auto* creation = new QHBoxLayout;
   creation->setSpacing(5);
   creation->addWidget(createSketch);
   creation->addWidget(extrude);
+  creation->addWidget(pocket);
   root->addWidget(group(QString::fromUtf8("СОЗДАНИЕ"), creation, this));
   root->addWidget(separator(this));
 
@@ -89,6 +93,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::createSketchRequested);
   connect(extrude, &QToolButton::clicked, this,
           &ModelRibbon::extrudeRequested);
+  connect(pocket, &QToolButton::clicked, this,
+          &ModelRibbon::pocketRequested);
 
   setStyleSheet(R"(
     QWidget#modelRibbon { background:#ffffff; border-bottom:1px solid #d8e1ef; }

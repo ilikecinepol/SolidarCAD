@@ -89,7 +89,6 @@ bool Document::rebuild() {
   const RebuildContext context{*this};
   for (auto& body : bodies_)
     if (!body.rebuild(context)) return false;
-  updateSketchPlacements();
   return true;
 }
 

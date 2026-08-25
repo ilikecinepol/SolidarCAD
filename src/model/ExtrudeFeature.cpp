@@ -1,17 +1,15 @@
 #include "model/ExtrudeFeature.h"
 
-#include <BRepBuilderAPI_MakeEdge.hxx>
-#include <BRepBuilderAPI_MakeFace.hxx>
-#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS_Shape.hxx>
-#include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
 
 #include <cmath>
 #include <memory>
 #include <utility>
+
+#include "model/SketchProfileBuilder.h"
 
 namespace solidar {
 
@@ -59,57 +57,17 @@ bool ExtrudeFeature::rebuild(const RebuildContext& context) {
     markError("Extrude profile sketch was not found");
     return false;
   }
-  if (!profile->supportResolved) {
-    markError("Extrude profile support is unresolved");
-    return false;
-  }
-
-  const auto& geometry = profile->geometry;
-  if (geometry.lines().size() < 3) {
-    markError("Extrude profile has insufficient line geometry");
-    return false;
-  }
-  if (!geometry.circles().empty()) {
-    markError("Extrude 1.0 supports line profiles only");
-    return false;
-  }
-  if (!geometry.isClosed()) {
-    markError("Extrude profile is not closed");
-    return false;
-  }
-
   try {
-    BRepBuilderAPI_MakeWire wireBuilder;
-    std::size_t edgeCount = 0;
-    for (const auto& line : geometry.lines()) {
-      if (line.dashed) continue;
-      const auto start = profile->placement.toWorld(line.start.xMm,
-                                                     line.start.yMm);
-      const auto end = profile->placement.toWorld(line.end.xMm,
-                                                   line.end.yMm);
-      BRepBuilderAPI_MakeEdge edgeBuilder(gp_Pnt(start.x, start.y, start.z),
-                                          gp_Pnt(end.x, end.y, end.z));
-      if (!edgeBuilder.IsDone()) {
-        markError("Extrude could not build a profile edge");
-        return false;
-      }
-      wireBuilder.Add(edgeBuilder.Edge());
-      ++edgeCount;
-    }
-    if (edgeCount < 3 || !wireBuilder.IsDone()) {
-      markError("Extrude could not build a profile wire");
-      return false;
-    }
-
-    BRepBuilderAPI_MakeFace faceBuilder(wireBuilder.Wire(), true);
-    if (!faceBuilder.IsDone()) {
-      markError("Extrude could not build a profile face");
+    TopoDS_Face profileFace;
+    std::string profileError;
+    if (!buildPlanarFaceFromSketch(*profile, &profileFace, &profileError)) {
+      markError("Extrude " + profileError);
       return false;
     }
 
     const auto normal = profile->placement.normal();
     BRepPrimAPI_MakePrism prismBuilder(
-        faceBuilder.Face(),
+        profileFace,
         gp_Vec(normal.x * lengthMm_, normal.y * lengthMm_,
                normal.z * lengthMm_));
     prismBuilder.Build();

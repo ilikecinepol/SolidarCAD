@@ -4,12 +4,17 @@
 #include <memory>
 #include <string>
 
+class TopoDS_Shape;
+
 namespace solidar {
 
 class Document;
+class Body;
 
 struct RebuildContext {
-  const Document& document;
+  Document& document;
+  const Body* body{};
+  const TopoDS_Shape* previousShape{};
 };
 
 using FeatureId = std::uint64_t;

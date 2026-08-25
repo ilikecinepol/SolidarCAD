@@ -6,8 +6,22 @@ cmake_minimum_required(VERSION 3.24)
 # rebuilding the entire OCCT port on every Qt Creator configure in that case.
 set(_solidar_bootstrap_occt_root
     "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/vcpkg/blds/opencascade")
-if(EXISTS "${_solidar_bootstrap_occt_root}/x64-windows-rel/win64/vc14/lib/TKPrim.lib"
-   OR EXISTS "${_solidar_bootstrap_occt_root}/x64-windows-dbg/win64/vc14/libd/TKPrim.lib")
+# Never change manifest mode in an existing Qt Creator build tree. Its
+# generated toolchain records the mode selected during the first configure.
+if(DEFINED VCPKG_MANIFEST_INSTALL AND NOT VCPKG_MANIFEST_INSTALL)
+  set(VCPKG_MANIFEST_MODE OFF CACHE BOOL
+      "Keep the build directory's original vcpkg mode" FORCE)
+endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(_solidar_bootstrap_occt_lib
+      "${_solidar_bootstrap_occt_root}/x64-windows-dbg/win64/vc14/libd")
+else()
+  set(_solidar_bootstrap_occt_lib
+      "${_solidar_bootstrap_occt_root}/x64-windows-rel/win64/vc14/lib")
+endif()
+if(EXISTS "${_solidar_bootstrap_occt_lib}/TKPrim.lib"
+   AND EXISTS "${_solidar_bootstrap_occt_lib}/TKBO.lib"
+   AND EXISTS "${_solidar_bootstrap_occt_lib}/TKBool.lib")
   set(VCPKG_MANIFEST_MODE OFF CACHE BOOL
       "Use the already-built local OCCT toolkits" FORCE)
 endif()
@@ -59,9 +73,12 @@ if(NOT OpenCASCADE_FOUND)
   endif()
 
   set(_solidar_occt_toolkits
-      TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKPrim)
+      TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKPrim
+      TKBO TKBool)
   if(EXISTS "${_solidar_occt_build_dir}/include/opencascade/TopoDS_Shape.hxx"
-     AND EXISTS "${_solidar_occt_lib_dir}/TKPrim.lib")
+     AND EXISTS "${_solidar_occt_lib_dir}/TKPrim.lib"
+     AND EXISTS "${_solidar_occt_lib_dir}/TKBO.lib"
+     AND EXISTS "${_solidar_occt_lib_dir}/TKBool.lib")
     set(OpenCASCADE_FOUND TRUE)
     set(OpenCASCADE_INCLUDE_DIR
         "${_solidar_occt_build_dir}/include/opencascade")
