@@ -1253,15 +1253,156 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
     firstRayEnd = first.start;
   }
 
-  // For disconnected lines keep the historical behaviour: rotate the second
-  // line around its start point, using the first line's own direction as the
-  // angular reference.
+  // CRASH-FREE 16: FIX ANGLE ENDPOINT PIVOT
+  //
+  // A CAD angle is frequently created where an endpoint of one line touches
+  // the BODY of another line. That is a real angular vertex even though the
+  // two primitives do not share endpoint coordinates. Keep that endpoint
+  // fixed and rotate only the opposite/free endpoint.
+  if (!hasSharedPivot) {
+    const auto pointOnFiniteSegment =
+        [](Point point, const Line& carrier) {
+          const double dx =
+              carrier.end.xMm -
+              carrier.start.xMm;
+          const double dy =
+              carrier.end.yMm -
+              carrier.start.yMm;
+          const double lengthSquared =
+              dx * dx + dy * dy;
+
+          if (lengthSquared <= 1e-12)
+            return false;
+
+          const double t =
+              ((point.xMm - carrier.start.xMm) * dx +
+               (point.yMm - carrier.start.yMm) * dy) /
+              lengthSquared;
+
+          constexpr double parameterTolerance =
+              1e-7;
+
+          if (t < -parameterTolerance ||
+              t > 1.0 + parameterTolerance)
+            return false;
+
+          const double clampedT =
+              std::clamp(t, 0.0, 1.0);
+
+          const Point projected{
+              carrier.start.xMm +
+                  clampedT * dx,
+              carrier.start.yMm +
+                  clampedT * dy};
+
+          const double carrierLength =
+              std::sqrt(lengthSquared);
+
+          // Scale tolerance slightly with geometry size, while keeping a
+          // strict absolute floor for normal millimetre-sized sketches.
+          const double distanceTolerance =
+              std::max(
+                  1e-7,
+                  carrierLength * 1e-8);
+
+          return std::hypot(
+                     point.xMm - projected.xMm,
+                     point.yMm - projected.yMm) <=
+                 distanceTolerance;
+        };
+
+    const bool startOnFirst =
+        pointOnFiniteSegment(
+            oldStart,
+            first);
+    const bool endOnFirst =
+        pointOnFiniteSegment(
+            oldEnd,
+            first);
+
+    if (startOnFirst != endOnFirst) {
+      pivotAtStart =
+          startOnFirst;
+
+      pivot =
+          pivotAtStart
+              ? oldStart
+              : oldEnd;
+
+      hasSharedPivot = true;
+
+      // The reference line may continue on both sides of an interior pivot.
+      // Use the endpoint that points most strongly toward the current moving
+      // ray. This keeps the visible angular branch stable instead of flipping
+      // by 180 degrees when the carrier is crossed.
+      const Point movingEnd =
+          pivotAtStart
+              ? oldEnd
+              : oldStart;
+
+      const double movingDx =
+          movingEnd.xMm -
+          pivot.xMm;
+      const double movingDy =
+          movingEnd.yMm -
+          pivot.yMm;
+
+      const double startDx =
+          first.start.xMm -
+          pivot.xMm;
+      const double startDy =
+          first.start.yMm -
+          pivot.yMm;
+      const double endDx =
+          first.end.xMm -
+          pivot.xMm;
+      const double endDy =
+          first.end.yMm -
+          pivot.yMm;
+
+      const double startLength =
+          std::hypot(startDx, startDy);
+      const double endLength =
+          std::hypot(endDx, endDy);
+
+      double startScore =
+          -std::numeric_limits<double>::infinity();
+      double endScore =
+          -std::numeric_limits<double>::infinity();
+
+      if (startLength > 1e-9) {
+        startScore =
+            (movingDx * startDx +
+             movingDy * startDy) /
+            startLength;
+      }
+
+      if (endLength > 1e-9) {
+        endScore =
+            (movingDx * endDx +
+             movingDy * endDy) /
+            endLength;
+      }
+
+      firstRayEnd =
+          endScore >= startScore
+              ? first.end
+              : first.start;
+    }
+  }
+
+  // Truly disconnected lines have no CAD hinge. Preserve the historical
+  // fallback only for that case.
   if (!hasSharedPivot) {
     pivotAtStart = true;
     pivot = oldStart;
     firstRayEnd = {
-        pivot.xMm + (first.end.xMm - first.start.xMm),
-        pivot.yMm + (first.end.yMm - first.start.yMm)};
+        pivot.xMm +
+            (first.end.xMm -
+             first.start.xMm),
+        pivot.yMm +
+            (first.end.yMm -
+             first.start.yMm)};
   }
 
   const Point secondRayEnd =

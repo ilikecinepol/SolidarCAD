@@ -1238,11 +1238,17 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       continue;
     }
 
+    // CRASH-FREE 15: STRICT FINITE MULTI-TANGENT
+    //
+    // Tangency belongs to an actual CAD segment, not to its infinite carrier.
+    // A candidate whose perpendicular foot falls outside ANY selected segment
+    // is invalid and must never win merely because its infinite-line residual
+    // is mathematically perfect.
     struct TangentCandidate {
       Point center;
       double residual{};
-      double finitePenalty{};
       double movement{};
+      bool finiteValid{true};
     };
 
     std::optional<TangentCandidate>
@@ -1318,12 +1324,15 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
                      dy) /
                 lengthSquared;
 
-            if (rawT < 0.0)
-              scored.finitePenalty +=
-                  -rawT * length;
-            else if (rawT > 1.0)
-              scored.finitePenalty +=
-                  (rawT - 1.0) * length;
+            // A tiny tolerance avoids rejecting a contact numerically sitting
+            // on an endpoint. Anything genuinely beyond the finite segment is
+            // not a valid tangent solution.
+            constexpr double finiteParameterTolerance =
+                1e-8;
+
+            if (rawT < -finiteParameterTolerance ||
+                rawT > 1.0 + finiteParameterTolerance)
+              scored.finiteValid = false;
           }
 
           return scored;
@@ -1441,15 +1450,17 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
             const auto scored =
                 evaluateCandidate(candidate);
 
+            // Never solve Tangent against an imaginary extension.
+            if (!scored.finiteValid)
+              continue;
+
             if (!bestCandidate) {
               bestCandidate = scored;
               continue;
             }
 
-            constexpr double
-                residualTolerance = 1e-7;
-            constexpr double
-                finiteTolerance = 1e-7;
+            constexpr double residualTolerance =
+                1e-7;
 
             const bool betterResidual =
                 scored.residual <
@@ -1462,28 +1473,12 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
                     bestCandidate->residual) <=
                 residualTolerance;
 
-            const bool betterFinite =
-                equalResidual &&
-                scored.finitePenalty <
-                    bestCandidate
-                            ->finitePenalty -
-                        finiteTolerance;
-
-            const bool equalFinite =
-                equalResidual &&
-                std::abs(
-                    scored.finitePenalty -
-                    bestCandidate
-                        ->finitePenalty) <=
-                    finiteTolerance;
-
             const bool closerBranch =
-                equalFinite &&
+                equalResidual &&
                 scored.movement <
                     bestCandidate->movement;
 
             if (betterResidual ||
-                betterFinite ||
                 closerBranch)
               bestCandidate = scored;
           }
@@ -1492,22 +1487,14 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
     }
 
     if (!bestCandidate) {
-      bool anyApplied = false;
-
-      for (const auto lineId :
-           carrierIds) {
-        anyApplied =
-            sketch.setCircleTangentToLine(
-                lineId,
-                circleId) ||
-            anyApplied;
-      }
-
-      if (anyApplied)
-        ++result.applied;
-      else
-        ++result.invalidReferences;
-
+      // CRASH-FREE 15: NO IMAGINARY-CARRIER FALLBACK
+      //
+      // There is currently no center at this fixed radius that touches all
+      // requested FINITE segments. Leave the circle where it is rather than
+      // silently satisfying the constraints on extensions of those segments.
+      // The constraints remain stored and may become solvable again after a
+      // later geometry move.
+      ++result.unsupported;
       continue;
     }
 

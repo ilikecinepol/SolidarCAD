@@ -5700,7 +5700,25 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
   const QString firstKind = firstKindProperty.toString();
   const QString secondKind = kindName(hitKind);
 
-  if (firstKind != secondKind) {
+  // CRASH-FREE 14: LINE-RECTANGLE EQUAL
+  //
+  // A click on a rectangle still resolves to one concrete perimeter line
+  // (hitId). Equal between a standalone line and a rectangle therefore means
+  // equality with THAT selected side. Rectangle + Rectangle keeps the
+  // dedicated width/height mapping below.
+  const bool firstLineLike =
+      firstKind == QStringLiteral("line") ||
+      firstKind == QStringLiteral("rectangle");
+  const bool secondLineLike =
+      secondKind == QStringLiteral("line") ||
+      secondKind == QStringLiteral("rectangle");
+  const bool mixedLineRectangle =
+      firstLineLike &&
+      secondLineLike &&
+      firstKind != secondKind;
+
+  if (firstKind != secondKind &&
+      !mixedLineRectangle) {
     resetEqualState();
     emit selectionChanged(QString::fromUtf8(
         "Эквивалентность: выберите два объекта одного типа"));
@@ -5763,6 +5781,80 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     return;
   }
 
+  if (mixedLineRectangle) {
+    if (firstId == hitId ||
+        !sketch_.lineIndex(firstId) ||
+        !sketch_.lineIndex(hitId)) {
+      resetEqualState();
+      emit selectionChanged(QString::fromUtf8(
+          "Эквивалентность: выберите две разные линии"));
+      update();
+      return;
+    }
+
+    for (const auto& constraint : sketch_.constraints()) {
+      if (constraint.type !=
+          sketch::ConstraintType::Equal)
+        continue;
+
+      const bool sameOrder =
+          constraint.firstGeometry == firstId &&
+          constraint.secondGeometry == hitId;
+      const bool reverseOrder =
+          constraint.firstGeometry == hitId &&
+          constraint.secondGeometry == firstId;
+
+      if (sameOrder || reverseOrder) {
+        resetEqualState();
+        emit selectionChanged(
+            QString::fromUtf8(
+                "Эти линии уже эквивалентны"));
+        update();
+        return;
+      }
+    }
+
+    pushUndoState();
+
+    sketch::Constraint constraint;
+    constraint.type =
+        sketch::ConstraintType::Equal;
+    constraint.firstGeometry = firstId;
+    constraint.secondGeometry = hitId;
+    sketch_.addConstraint(constraint);
+
+    (void)sketch::BasicSketchSolver::solve(sketch_);
+
+    resetEqualState();
+
+    const auto hitIndex =
+        sketch_.lineIndex(hitId);
+
+    clearGeometrySelection();
+
+    if (hitIndex) {
+      selectedElementIds_.push_back(
+          sketch_.lines()[*hitIndex].elementId);
+      selectionKind_ = SelectionKind::Line;
+      selectionElementId_ =
+          sketch_.lines()[*hitIndex].elementId;
+      selectionLineId_ = hitId;
+      selectionCircleId_ =
+          sketch::kInvalidGeometryId;
+
+      emit lineStyleSelectionChanged(
+          true,
+          sketch_.lines()[*hitIndex].dashed);
+    }
+
+    emit selectionChanged(
+        QString::fromUtf8(
+            "Ограничение: Эквивалентность"));
+
+    notifyGeometryChanged();
+    update();
+    return;
+  }
   if (firstKind == QStringLiteral("line")) {
     if (firstId == hitId ||
         !sketch_.lineIndex(firstId) ||
@@ -6739,6 +6831,25 @@ void SketchCanvas::commitAutoDimension() {
       lengthConstraint.firstGeometry = id;
       lengthConstraint.value = value;
       sketch_.addConstraint(lengthConstraint);
+
+      // CRASH-FREE 14: PROPAGATE DRIVING LENGTH THROUGH EQUAL
+      //
+      // Direct dimension editing already resized this geometry. If it belongs
+      // to an Equal relationship, immediately solve that relationship so its
+      // follower receives the new driving size in the same user action.
+      const bool participatesInEqual =
+          std::any_of(
+              sketch_.constraints().begin(),
+              sketch_.constraints().end(),
+              [id](const sketch::Constraint& item) {
+                return item.type ==
+                           sketch::ConstraintType::Equal &&
+                       (item.firstGeometry == id ||
+                        item.secondGeometry == id);
+              });
+
+      if (participatesInEqual)
+        (void)sketch::BasicSketchSolver::solve(sketch_);
     }
   } else if (target == "circle") {
     const auto id = static_cast<sketch::GeometryId>(
