@@ -13,6 +13,8 @@ add_library(solidar_model
   model/Document.h
   model/ExtrudeFeature.cpp
   model/ExtrudeFeature.h
+  model/ExtrudeOperationDetector.cpp
+  model/ExtrudeOperationDetector.h
   model/PocketFeature.cpp
   model/PocketFeature.h
   model/SketchProfileBuilder.cpp
@@ -24,6 +26,11 @@ add_library(solidar_model
   model/SketchPlacement.cpp
   model/SketchPlacement.h
   model/SolidFeature.h
+  model/macro/MacroDefinition.h
+  model/macro/MacroExecutor.cpp
+  model/macro/MacroExecutor.h
+  model/macro/MacroReferences.cpp
+  model/macro/MacroReferences.h
   sketch/Sketch.cpp
   sketch/Sketch.h
   sketch/SketchSolver.cpp

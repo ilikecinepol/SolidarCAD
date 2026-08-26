@@ -46,6 +46,8 @@ class MainWindow final : public QMainWindow {
   void updateFromSketch(double widthMm, double heightMm);
   void finishSketch();
   void extrudeSketch();
+  void updateAutomaticExtrudeOperation();
+  void normalizeExtrusionDistance();
   void createPocket();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
@@ -85,6 +87,8 @@ class MainWindow final : public QMainWindow {
   QDockWidget* extrusionDock_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
+  QCheckBox* extrusionReverseCheck_{nullptr};
+  bool extrudeOperationManuallyChanged_{false};
   QDockWidget* sketchSettingsDock_{nullptr};
   QComboBox* sketchLineTypeCombo_{nullptr};
   QTreeWidget* sketchConstraintsList_{nullptr};

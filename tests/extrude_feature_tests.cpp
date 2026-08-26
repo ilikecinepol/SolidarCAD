@@ -17,6 +17,7 @@
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+#include "model/ExtrudeOperationDetector.h"
 
 namespace {
 
@@ -335,6 +336,41 @@ int main() {
   assert(!noIntersection.rebuild());
   assert(noIntersectionBody.activeFeature()->error().find("does not intersect") !=
          std::string::npos);
+
+  // Automatic operation selection uses an OCCT common, face orientation and
+  // keeps signed UI input out of ExtrudeFeature.
+  solidar::Document detectionDocument;
+  auto& detectionBase = detectionDocument.addSketch("Detection base");
+  detectionBase.geometry.addRectangle({0.0, 0.0}, {40.0, 40.0});
+  auto& detectionBody = detectionDocument.addBody();
+  detectionBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      detectionBase.id, 20.0));
+  assert(detectionDocument.rebuild());
+  auto& faceProfile = detectionDocument.addSketch("Face profile");
+  faceProfile.geometry.addRectangle({5.0, 5.0}, {15.0, 15.0});
+  assert(detectionDocument.attachSketchToFace(
+      faceProfile.id,
+      {detectionBody.id(), detectionBody.activeFeature()->id(),
+       topFaceOf(*detectionBody.resultShape(), 20.0)}));
+  const auto detectionShape = detectionBody.resultShape();
+  assert(solidar::detectExtrudeOperation(faceProfile, 5.0, false, nullptr,
+                                         true) ==
+         solidar::ExtrudeOperation::NewBody);
+  assert(solidar::detectExtrudeOperation(faceProfile, 5.0, false,
+                                         detectionShape.get(), true) ==
+         solidar::ExtrudeOperation::Join);
+  assert(solidar::detectExtrudeOperation(faceProfile, 5.0, true,
+                                         detectionShape.get(), true) ==
+         solidar::ExtrudeOperation::Cut);
+  auto remoteProfile = faceProfile;
+  remoteProfile.support.type = solidar::SketchSupportType::BasePlane;
+  remoteProfile.placement.origin.x = 100.0;
+  assert(solidar::detectExtrudeOperation(remoteProfile, 5.0, false,
+                                         detectionShape.get(), false) ==
+         solidar::ExtrudeOperation::NewBody);
+  const auto normalized = solidar::normalizeExtrusionInput(-20.0, false);
+  assert(near(normalized.distanceMm, 20.0));
+  assert(normalized.reversed);
 
   solidar::Document mixedDocument;
   auto& mixed = mixedDocument.addSketch("Mixed");

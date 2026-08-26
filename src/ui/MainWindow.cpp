@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "model/ExtrudeFeature.h"
+#include "model/ExtrudeOperationDetector.h"
 #include "model/PocketFeature.h"
 
 #include <algorithm>
@@ -350,10 +351,14 @@ void MainWindow::buildUi() {
   extrusionForm->addRow(QString::fromUtf8("Длина:"), extrusionLengthSpin_);
   extrusionOperationCombo_ = new QComboBox(extrusionPanel);
   extrusionOperationCombo_->addItems(
-      {QString::fromUtf8("Новое тело"), QStringLiteral("Join"),
-       QStringLiteral("Cut")});
+      {QString::fromUtf8("Новое тело"), QString::fromUtf8("Объединить"),
+       QString::fromUtf8("Вырезать")});
   extrusionForm->addRow(QString::fromUtf8("Операция:"),
                         extrusionOperationCombo_);
+  extrusionReverseCheck_ =
+      new QCheckBox(QString::fromUtf8("Обратное направление"), extrusionPanel);
+  extrusionForm->addRow(QString::fromUtf8("Направление:"),
+                        extrusionReverseCheck_);
   auto* extrusionButtons = new QHBoxLayout;
   auto* cancelExtrusion = new QPushButton(QString::fromUtf8("Отмена"), extrusionPanel);
   auto* acceptExtrusion = new QPushButton(QString::fromUtf8("Применить"), extrusionPanel);
@@ -371,12 +376,32 @@ void MainWindow::buildUi() {
   extrusionDock_->setMinimumWidth(250);
   addDockWidget(Qt::RightDockWidgetArea, extrusionDock_);
   extrusionDock_->hide();
-  connect(extrusionLengthSpin_, &QDoubleSpinBox::valueChanged,
-          viewport_, &Viewport::setExtrusionPreviewLength);
+  connect(extrusionLengthSpin_, &QDoubleSpinBox::valueChanged, this,
+          [this](double value) {
+            const double signedValue = extrusionReverseCheck_->isChecked()
+                                           ? -std::abs(value)
+                                           : std::abs(value);
+            viewport_->setExtrusionPreviewLength(signedValue);
+            updateAutomaticExtrudeOperation();
+          });
+  connect(extrusionLengthSpin_, &QDoubleSpinBox::editingFinished, this,
+          &MainWindow::normalizeExtrusionDistance);
+  connect(extrusionReverseCheck_, &QCheckBox::toggled, this, [this](bool) {
+    viewport_->setExtrusionPreviewLength(
+        extrusionReverseCheck_->isChecked()
+            ? -std::abs(extrusionLengthSpin_->value())
+            : std::abs(extrusionLengthSpin_->value()));
+    updateAutomaticExtrudeOperation();
+  });
+  connect(extrusionOperationCombo_, &QComboBox::currentIndexChanged, this,
+          [this](int) { extrudeOperationManuallyChanged_ = true; });
   connect(viewport_, &Viewport::extrusionPreviewLengthChanged, this,
           [this](double value) {
-            const QSignalBlocker blocker(extrusionLengthSpin_);
-            extrusionLengthSpin_->setValue(value);
+            const QSignalBlocker distanceBlocker(extrusionLengthSpin_);
+            const QSignalBlocker reverseBlocker(extrusionReverseCheck_);
+            extrusionLengthSpin_->setValue(std::abs(value));
+            extrusionReverseCheck_->setChecked(value < 0.0);
+            updateAutomaticExtrudeOperation();
           });
   connect(viewport_, &Viewport::bodyMoveCommitted, this,
           [this](QPointF previous, QPointF) {
@@ -679,8 +704,10 @@ void MainWindow::buildUi() {
           });
   connect(modelRibbon_, &ModelRibbon::extrudeRequested, this,
           [this] {
-            extrusionOperationCombo_->setCurrentIndex(
-                document_.activeBody() ? 1 : 0);
+            extrudeOperationManuallyChanged_ = false;
+            extrusionReverseCheck_->setChecked(false);
+            const QSignalBlocker blocker(extrusionOperationCombo_);
+            extrusionOperationCombo_->setCurrentIndex(0);
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите замкнутый контур или грань тела"));
             viewport_->beginExtrusionSurfaceSelection();
@@ -688,13 +715,15 @@ void MainWindow::buildUi() {
   connect(modelRibbon_, &ModelRibbon::pocketRequested, this,
           [this] {
             if (!document_.activeBody()) {
-              QMessageBox::information(this, QString::fromUtf8("Cut"),
+              QMessageBox::information(this, QString::fromUtf8("Вырезать"),
                   QString::fromUtf8("Сначала создайте Body."));
               return;
             }
+            extrudeOperationManuallyChanged_ = true;
             extrusionOperationCombo_->setCurrentIndex(2);
+            extrusionReverseCheck_->setChecked(true);
             statusBar()->showMessage(
-                QString::fromUtf8("Выберите профиль для Extrude Cut"));
+                QString::fromUtf8("Выберите профиль для вырезания"));
             viewport_->beginExtrusionSurfaceSelection();
           });
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
@@ -772,7 +801,11 @@ void MainWindow::buildUi() {
             selectedExtrusionSurface_ = surface;
             statusBar()->showMessage(QString::fromUtf8("Поверхность: ") + surface);
             extrusionLengthSpin_->setValue(document_.box().heightMm);
-            viewport_->showExtrusionManipulator(extrusionLengthSpin_->value());
+            viewport_->showExtrusionManipulator(
+                extrusionReverseCheck_->isChecked()
+                    ? -extrusionLengthSpin_->value()
+                    : extrusionLengthSpin_->value());
+            updateAutomaticExtrudeOperation();
             extrusionDock_->show();
             extrusionDock_->raise();
           });
@@ -985,6 +1018,37 @@ void MainWindow::finishSketch() {
       QString::fromUtf8("Эскиз завершён — модель перестроена"), 3000);
 }
 
+void MainWindow::normalizeExtrusionDistance() {
+  const auto input = normalizeExtrusionInput(
+      extrusionLengthSpin_->value(), extrusionReverseCheck_->isChecked());
+  const QSignalBlocker distanceBlocker(extrusionLengthSpin_);
+  const QSignalBlocker reverseBlocker(extrusionReverseCheck_);
+  extrusionLengthSpin_->setValue(input.distanceMm);
+  extrusionReverseCheck_->setChecked(input.reversed);
+  viewport_->setExtrusionPreviewLength(input.reversed ? -input.distanceMm
+                                                       : input.distanceMm);
+  updateAutomaticExtrudeOperation();
+}
+
+void MainWindow::updateAutomaticExtrudeOperation() {
+  if (extrudeOperationManuallyChanged_) return;
+  ExtrudeOperation operation = ExtrudeOperation::NewBody;
+  const Body* body = document_.activeBody();
+  const std::size_t index = viewport_->extrusionCandidateSketchIndex();
+  const DocumentSketch* profile =
+      index < sketchHistory_.size()
+          ? document_.findSketch(sketchHistory_[index].documentSketchId)
+          : nullptr;
+  const auto targetShape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
+  if (profile && targetShape)
+    operation = detectExtrudeOperation(
+        *profile, extrusionLengthSpin_->value(),
+        extrusionReverseCheck_->isChecked(), targetShape.get(),
+        profile->support.type == SketchSupportType::Face);
+  const QSignalBlocker blocker(extrusionOperationCombo_);
+  extrusionOperationCombo_->setCurrentIndex(static_cast<int>(operation));
+}
+
 void MainWindow::extrudeSketch() {
   const bool fromBodyFace = selectedExtrusionSurface_.startsWith(
       QString::fromUtf8("Грань тела"));
@@ -1008,7 +1072,9 @@ void MainWindow::extrudeSketch() {
     return;
   }
 
-  const double height = extrusionLengthSpin_->value();
+  const auto input = normalizeExtrusionInput(
+      extrusionLengthSpin_->value(), extrusionReverseCheck_->isChecked());
+  const double height = input.distanceMm;
   if (!std::isfinite(height) || height == 0.0) {
     QMessageBox::warning(this, QString::fromUtf8("Некорректная длина"),
                          QString::fromUtf8("Длина выдавливания не должна быть равна нулю."));
@@ -1016,10 +1082,11 @@ void MainWindow::extrudeSketch() {
   }
   const auto operation = static_cast<ExtrudeOperation>(
       std::clamp(extrusionOperationCombo_->currentIndex(), 0, 2));
-  const bool reversed = height < 0.0;
+  const bool reversed = input.reversed;
   if (operation != ExtrudeOperation::NewBody && !document_.activeBody()) {
     QMessageBox::warning(this, QString::fromUtf8("Выдавливание"),
-                         QString::fromUtf8("Для Join/Cut нужен активный Body."));
+                         QString::fromUtf8(
+                             "Для объединения или вырезания нужен активный Body."));
     return;
   }
 
@@ -1051,7 +1118,7 @@ void MainWindow::extrudeSketch() {
                         ? &document_.addBody()
                         : document_.activeBody();
   modelBody->addFeature(std::make_unique<ExtrudeFeature>(
-      modelSketch->id, std::abs(height),
+      modelSketch->id, height,
       "Extrude " + std::to_string(modelBody->features().size() + 1),
       operation, reversed));
   if (!document_.rebuild()) {
@@ -1333,8 +1400,9 @@ void MainWindow::editExtrusionStep() {
   distance->setValue(extrude->reversed() ? -extrude->lengthMm()
                                            : extrude->lengthMm());
   auto* operation = new QComboBox(&dialog);
-  operation->addItems({QString::fromUtf8("Новое тело"), QStringLiteral("Join"),
-                       QStringLiteral("Cut")});
+  operation->addItems({QString::fromUtf8("Новое тело"),
+                       QString::fromUtf8("Объединить"),
+                       QString::fromUtf8("Вырезать")});
   operation->setCurrentIndex(static_cast<int>(extrude->operation()));
   // Moving an existing feature between Bodies is intentionally outside 2.0.
   if (extrude->operation() == ExtrudeOperation::NewBody)
