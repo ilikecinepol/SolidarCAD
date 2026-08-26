@@ -32,7 +32,7 @@ add_library(solidar_model
 target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(solidar_model PUBLIC
-  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool
+  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool TKMesh
 )
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)
@@ -68,6 +68,8 @@ target_link_libraries(solidar_drawing_ui PUBLIC solidar_model Qt6::Widgets)
 solidar_warnings(solidar_drawing_ui)
 
 add_library(solidar_viewport3d
+  ui/BodyRenderMesh.cpp
+  ui/BodyRenderMesh.h
   ui/ModelRibbon.cpp
   ui/ModelRibbon.h
   ui/Viewport.cpp

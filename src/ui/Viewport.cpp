@@ -38,6 +38,39 @@ struct Point3 {
   float z;
 };
 
+struct ProjectedPoint {
+  QPointF screen;
+  double depth{};
+};
+
+ProjectedPoint projectBodyPoint(Point3d point, Point3d center, const QSize& size,
+                                float yaw, float pitch, float zoom) {
+  // Keep the solid in the same world-space projection as sketches and
+  // construction geometry. Fit All supplies the screen-space centering.
+  (void)center;
+  const double x = point.x;
+  const double y = point.y;
+  const double z = point.z;
+  const double yr = yaw * std::numbers::pi / 180.0;
+  const double pr = pitch * std::numbers::pi / 180.0;
+  const double x1 = x * std::cos(yr) - y * std::sin(yr);
+  const double y1 = x * std::sin(yr) + y * std::cos(yr);
+  const double y2 = y1 * std::cos(pr) - z * std::sin(pr);
+  const double depth = y1 * std::sin(pr) + z * std::cos(pr);
+  const double scale = std::min(size.width(), size.height()) * 0.008 * zoom;
+  return {{size.width() * 0.5 + x1 * scale,
+           size.height() * 0.52 + y2 * scale}, depth};
+}
+
+double pointSegmentDistance(QPointF point, QPointF a, QPointF b) {
+  const QPointF ab = b - a;
+  const double length2 = QPointF::dotProduct(ab, ab);
+  if (length2 < 1e-12) return QLineF(point, a).length();
+  const double t = std::clamp(QPointF::dotProduct(point - a, ab) / length2,
+                              0.0, 1.0);
+  return QLineF(point, a + ab * t).length();
+}
+
 QPointF project(Point3 point, const QSize& size, float yaw, float pitch,
                 float zoom) {
   const float yawRadians = yaw * std::numbers::pi_v<float> / 180.0F;
@@ -180,9 +213,18 @@ std::vector<QPolygonF> projectedBodyFaces(const TopoDS_Shape& shape,
   return polygons;
 }
 
-void Viewport::setBodyShape(ShapeFeature::ShapePtr shape) {
+void Viewport::setBodyShape(ShapeFeature::ShapePtr shape, BodyId bodyId,
+                            FeatureId featureId) {
   bodyShape_ = std::move(shape);
+  bodyId_ = bodyId;
+  bodyFeatureId_ = featureId;
+  selectedFace_ = -1;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  bodyRenderMesh_.clear();
   if (bodyShape_ && !bodyShape_->IsNull()) {
+    bodyRenderMesh_.rebuild(*bodyShape_);
     Bnd_Box bounds;
     BRepBndLib::Add(*bodyShape_, bounds);
     double xMin = 0.0;
@@ -315,6 +357,9 @@ void Viewport::setBasePlaneVisible(int plane, bool visible) {
 
 void Viewport::resetScene() {
   bodyShape_.reset();
+  bodyRenderMesh_.clear();
+  bodyId_ = kInvalidBodyId;
+  bodyFeatureId_ = kInvalidFeatureId;
   sketch_.clear();
   solidSketch_.clear();
   additiveExtrusions_.clear();
@@ -426,7 +471,10 @@ QString Viewport::selectedFaceName() const {
   static const std::array<const char*, 6> names{
       "Нижняя", "Верхняя", "Передняя",
       "Правая", "Задняя", "Левая"};
-  return selectedFace_ >= 0 ? QString::fromUtf8(names[selectedFace_]) : QString{};
+  if (selectedFace_ < 0) return {};
+  if (selectedFace_ < static_cast<int>(names.size()))
+    return QString::fromUtf8(names[static_cast<std::size_t>(selectedFace_)]);
+  return QString::fromUtf8("Грань #%1").arg(selectedFace_ + 1);
 }
 
 std::optional<std::size_t> Viewport::selectedBodyFaceIndex() const noexcept {
@@ -434,6 +482,53 @@ std::optional<std::size_t> Viewport::selectedBodyFaceIndex() const noexcept {
              ? std::optional<std::size_t>(static_cast<std::size_t>(selectedFace_))
              : std::nullopt;
 }
+
+std::optional<FaceReference> Viewport::selectedBodyFace() const noexcept {
+  if (selectedFace_ < 0) return std::nullopt;
+  return FaceReference{bodyId_, bodyFeatureId_,
+                       static_cast<std::size_t>(selectedFace_)};
+}
+
+std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
+  if (selectedBodyEdgeIndex_ == static_cast<std::size_t>(-1)) return std::nullopt;
+  return EdgeReference{bodyId_, bodyFeatureId_, selectedBodyEdgeIndex_};
+}
+
+void Viewport::fitAll() {
+  if (bodyRenderMesh_.diagonal() <= 1e-9) return;
+  double minX = std::numeric_limits<double>::max();
+  double minY = minX;
+  double maxX = -minX;
+  double maxY = -minX;
+  for (const auto& triangle : bodyRenderMesh_.triangles()) {
+    for (const Point3d point : {triangle.a, triangle.b, triangle.c}) {
+      const auto projected = projectBodyPoint(point, bodyRenderMesh_.center(),
+                                              size(), yaw_, pitch_, 1.0F);
+      minX = std::min(minX, projected.screen.x());
+      minY = std::min(minY, projected.screen.y());
+      maxX = std::max(maxX, projected.screen.x());
+      maxY = std::max(maxY, projected.screen.y());
+    }
+  }
+  const double projectedWidth = std::max(1.0, maxX - minX);
+  const double projectedHeight = std::max(1.0, maxY - minY);
+  zoom_ = static_cast<float>(std::clamp(
+      0.88 * std::min(width() / projectedWidth, height() / projectedHeight),
+      0.02, 100.0));
+  const QPointF viewportCenter(width() * 0.5, height() * 0.52);
+  const QPointF boundsCenter((minX + maxX) * 0.5, (minY + maxY) * 0.5);
+  cameraPan_ = viewportCenter -
+      (viewportCenter + (boundsCenter - viewportCenter) * zoom_);
+  update();
+}
+
+void Viewport::viewTop() { yaw_ = 0; pitch_ = 0; fitAll(); }
+void Viewport::viewBottom() { yaw_ = 0; pitch_ = 180; fitAll(); }
+void Viewport::viewFront() { yaw_ = 0; pitch_ = -90; fitAll(); }
+void Viewport::viewBack() { yaw_ = 0; pitch_ = 90; fitAll(); }
+void Viewport::viewRight() { yaw_ = 90; pitch_ = 90; fitAll(); }
+void Viewport::viewLeft() { yaw_ = -90; pitch_ = 90; fitAll(); }
+void Viewport::viewIsometric() { yaw_ = -45; pitch_ = 30; fitAll(); }
 
 const sketch::Sketch& Viewport::extrusionCandidateSketch() const noexcept {
   return selectedExtrusionSketch_;
@@ -680,18 +775,62 @@ void Viewport::paintEvent(QPaintEvent*) {
   }
 
   if (solidVisible_ && hasParametricBody) {
-    const auto bodyFaces = projectedBodyFaces(*bodyShape_, size(), yaw_, pitch_,
-                                              zoom_, offsetX_, offsetY_);
-    for (std::size_t faceIndex = 0; faceIndex < bodyFaces.size(); ++faceIndex) {
-      const auto& polygon = bodyFaces[faceIndex];
-      if (polygon.size() < 3) continue;
-      painter.setBrush(colors[faceIndex % colors.size()]);
-      painter.setPen(QPen(static_cast<int>(faceIndex) == selectedFace_
-                              ? QColor("#075eff")
-                              : QColor("#4d5863"),
-                          static_cast<int>(faceIndex) == selectedFace_ ? 3.0
-                                                                       : 1.4));
-      painter.drawPolygon(polygon);
+    struct PaintedTriangle {
+      QPolygonF polygon;
+      double depth;
+      double brightness;
+      std::size_t faceIndex;
+    };
+    std::vector<PaintedTriangle> painted;
+    painted.reserve(bodyRenderMesh_.triangles().size());
+    const Point3d center = bodyRenderMesh_.center();
+    const Vector3d light{0.25, -0.35, 0.90};
+    for (const auto& triangle : bodyRenderMesh_.triangles()) {
+      const auto a = projectBodyPoint(triangle.a, center, size(), yaw_, pitch_, zoom_);
+      const auto b = projectBodyPoint(triangle.b, center, size(), yaw_, pitch_, zoom_);
+      const auto c = projectBodyPoint(triangle.c, center, size(), yaw_, pitch_, zoom_);
+      const double diffuse = std::max(0.0, triangle.normal.x * light.x +
+          triangle.normal.y * light.y + triangle.normal.z * light.z);
+      painted.push_back({QPolygonF{a.screen, b.screen, c.screen},
+                         (a.depth + b.depth + c.depth) / 3.0,
+                         0.48 + 0.42 * diffuse, triangle.faceIndex});
+    }
+    std::sort(painted.begin(), painted.end(),
+              [](const auto& a, const auto& b) { return a.depth < b.depth; });
+    painter.setPen(Qt::NoPen);
+    for (const auto& triangle : painted) {
+      QColor color(205, 214, 224);
+      if (triangle.faceIndex == static_cast<std::size_t>(selectedFace_))
+        color = QColor(54, 132, 245);
+      else if (triangle.faceIndex == hoveredBodyFaceIndex_)
+        color = QColor(126, 181, 247);
+      color = color.darker(static_cast<int>(100.0 / triangle.brightness));
+      painter.setBrush(color);
+      painter.drawPolygon(triangle.polygon);
+    }
+    for (const auto& edge : bodyRenderMesh_.edges()) {
+      const bool selected = edge.edgeIndex == selectedBodyEdgeIndex_;
+      const bool hovered = edge.edgeIndex == hoveredBodyEdgeIndex_;
+      painter.setPen(QPen(selected ? QColor("#ff8a00")
+                                  : hovered ? QColor("#00a6ff")
+                                            : QColor("#344353"),
+                          selected ? 3.2 : hovered ? 2.8 : 1.15));
+      for (std::size_t index = 1; index < edge.points.size(); ++index) {
+        const auto a = projectBodyPoint(edge.points[index - 1], center, size(),
+                                        yaw_, pitch_, zoom_);
+        const auto b = projectBodyPoint(edge.points[index], center, size(),
+                                        yaw_, pitch_, zoom_);
+        const QPointF midpoint = (a.screen + b.screen) * 0.5;
+        double surfaceDepth = -std::numeric_limits<double>::max();
+        for (const auto& triangle : painted)
+          if (triangle.polygon.containsPoint(midpoint, Qt::OddEvenFill))
+            surfaceDepth = std::max(surfaceDepth, triangle.depth);
+        const double segmentDepth = (a.depth + b.depth) * 0.5;
+        if (!selected && !hovered &&
+            segmentDepth + bodyRenderMesh_.diagonal() * 1e-4 < surfaceDepth)
+          continue;
+        painter.drawLine(a.screen, b.screen);
+      }
     }
   } else if (solidVisible_ && solidSketch_.lines().empty() &&
              solidSketch_.circles().empty()) {
@@ -853,7 +992,7 @@ void Viewport::paintEvent(QPaintEvent*) {
     }
   }
 
-  if (solidVisible_ && selectedFace_ >= 0) {
+  if (solidVisible_ && !hasParametricBody && selectedFace_ >= 0) {
     if (!solidSketch_.circles().empty()) {
       const auto& circle = solidSketch_.circles().front();
       const Point3 normal = supportNormal(solidSupportName_);
@@ -1462,9 +1601,34 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   if (pickMode_ != PickMode::None) return;
 
   selectedFace_ = -1;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
+
+  if (bodyShape_ && !bodyShape_->IsNull() && solidVisible_) {
+    updateBodyHover(scenePosition);
+    if (hoveredBodyEdgeIndex_ != static_cast<std::size_t>(-1)) {
+      selectedBodyEdgeIndex_ = hoveredBodyEdgeIndex_;
+      emit selectionChanged(QString::fromUtf8("Тело 1 • Ребро ") +
+                            QString::number(selectedBodyEdgeIndex_ + 1));
+      update();
+      return;
+    }
+    if (hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1)) {
+      selectedFace_ = static_cast<int>(hoveredBodyFaceIndex_);
+      emit selectionChanged(QString::fromUtf8("Тело 1 • Грань ") +
+                            QString::number(selectedFace_ + 1));
+      update();
+      return;
+    }
+    emit selectionChanged({});
+    update();
+    return;
+  }
 
   // Points have the highest picking priority because they occupy the
   // smallest area on screen.
@@ -1632,6 +1796,46 @@ void Viewport::rebuildSelectedExtrusionSketch() {
   }
 }
 
+void Viewport::updateBodyHover(QPointF position) {
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  if (!solidVisible_ || bodyRenderMesh_.triangles().empty()) return;
+  const Point3d center = bodyRenderMesh_.center();
+  double nearestDepth = -std::numeric_limits<double>::max();
+  for (const auto& triangle : bodyRenderMesh_.triangles()) {
+    const auto a = projectBodyPoint(triangle.a, center, size(), yaw_, pitch_, zoom_);
+    const auto b = projectBodyPoint(triangle.b, center, size(), yaw_, pitch_, zoom_);
+    const auto c = projectBodyPoint(triangle.c, center, size(), yaw_, pitch_, zoom_);
+    const QPolygonF polygon{a.screen, b.screen, c.screen};
+    if (!polygon.containsPoint(position, Qt::OddEvenFill)) continue;
+    const double depth = (a.depth + b.depth + c.depth) / 3.0;
+    if (depth > nearestDepth) {
+      nearestDepth = depth;
+      hoveredBodyFaceIndex_ = triangle.faceIndex;
+    }
+  }
+
+  double edgeDistance = 7.0;
+  for (const auto& edge : bodyRenderMesh_.edges()) {
+    for (std::size_t index = 1; index < edge.points.size(); ++index) {
+      const auto a = projectBodyPoint(edge.points[index - 1], center, size(),
+                                      yaw_, pitch_, zoom_);
+      const auto b = projectBodyPoint(edge.points[index], center, size(),
+                                      yaw_, pitch_, zoom_);
+      const double distance = pointSegmentDistance(position, a.screen, b.screen);
+      const double depth = (a.depth + b.depth) * 0.5;
+      // Suppress segments clearly behind the surface under the cursor. This is
+      // a lightweight visible-edge approximation, not a full HLR pass.
+      if (distance <= edgeDistance && depth + bodyRenderMesh_.diagonal() * 1e-4 >= nearestDepth) {
+        edgeDistance = distance;
+        hoveredBodyEdgeIndex_ = edge.edgeIndex;
+      }
+    }
+  }
+  if (hoveredBodyEdgeIndex_ != static_cast<std::size_t>(-1))
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+}
+
 void Viewport::updateSketchPlaneHover(QPointF position) {
   extrusionHoverPolygon_.clear();
   extrusionHoverPath_ = {};
@@ -1645,17 +1849,33 @@ void Viewport::updateSketchPlaneHover(QPointF position) {
 
   // Planar faces of the current solid have priority over construction planes.
   if (solidVisible_ && bodyShape_ && !bodyShape_->IsNull()) {
-    const auto faces = projectedBodyFaces(*bodyShape_, size(), yaw_, pitch_, zoom_,
-                                          offsetX_, offsetY_);
-    for (std::size_t index = faces.size(); index-- > 0;) {
-      const auto& polygon = faces[index];
-      if (polygon.size() < 3 ||
-          !polygon.containsPoint(position, Qt::OddEvenFill))
+    const Point3d center = bodyRenderMesh_.center();
+    double depth = -std::numeric_limits<double>::max();
+    for (const auto& triangle : bodyRenderMesh_.triangles()) {
+      const auto a = projectBodyPoint(triangle.a, center, size(), yaw_, pitch_, zoom_);
+      const auto b = projectBodyPoint(triangle.b, center, size(), yaw_, pitch_, zoom_);
+      const auto c = projectBodyPoint(triangle.c, center, size(), yaw_, pitch_, zoom_);
+      const QPolygonF polygon{a.screen, b.screen, c.screen};
+      const double candidateDepth = (a.depth + b.depth + c.depth) / 3.0;
+      if (!polygon.containsPoint(position, Qt::OddEvenFill) || candidateDepth <= depth)
         continue;
-      extrusionHoverPolygon_ = polygon;
-      hoveredBodyFaceIndex_ = index;
-      hoveredExtrusionSurface_ =
-          QString::fromUtf8("Грань тела #%1").arg(index + 1);
+      depth = candidateDepth;
+      hoveredBodyFaceIndex_ = triangle.faceIndex;
+    }
+    if (hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1)) {
+      QPainterPath facePath;
+      for (const auto& triangle : bodyRenderMesh_.triangles()) {
+        if (triangle.faceIndex != hoveredBodyFaceIndex_) continue;
+        QPolygonF polygon;
+        for (const Point3d point : {triangle.a, triangle.b, triangle.c})
+          polygon << projectBodyPoint(point, center, size(), yaw_, pitch_, zoom_).screen;
+        facePath.addPolygon(polygon);
+      }
+      extrusionHoverPath_ = facePath.simplified();
+      const auto polygons = extrusionHoverPath_.toFillPolygons();
+      if (!polygons.empty()) extrusionHoverPolygon_ = polygons.front();
+      hoveredExtrusionSurface_ = QString::fromUtf8("Грань тела #%1").arg(
+          hoveredBodyFaceIndex_ + 1);
       hoveredExtrusionSupport_ = hoveredExtrusionSurface_;
       return;
     }
@@ -2113,6 +2333,9 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     yaw_ += static_cast<float>(delta.x()) * 0.5F;
     pitch_ += static_cast<float>(delta.y()) * 0.5F;
     lastMousePosition_ = event->position().toPoint();
+    update();
+  } else if (event->buttons() == Qt::NoButton) {
+    updateBodyHover(event->position() - cameraPan_);
     update();
   }
 }

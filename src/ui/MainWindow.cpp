@@ -677,6 +677,11 @@ void MainWindow::buildUi() {
           });
   connect(modelRibbon_, &ModelRibbon::pocketRequested, this,
           &MainWindow::createPocket);
+  connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
+  connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
+  connect(modelRibbon_, &ModelRibbon::topRequested, viewport_, &Viewport::viewTop);
+  connect(modelRibbon_, &ModelRibbon::frontRequested, viewport_, &Viewport::viewFront);
+  connect(modelRibbon_, &ModelRibbon::rightRequested, viewport_, &Viewport::viewRight);
   connect(viewport_, &Viewport::sketchPlanePicked, this,
           [this](const QString& plane) {
             modelRibbon_->clearActiveTool();
@@ -1073,9 +1078,16 @@ void MainWindow::extrudeSketch() {
 
 void MainWindow::refreshBodyViewFromDocument() {
   ShapeFeature::ShapePtr shape;
-  if (const Body* body = document_.activeBody()) shape = body->resultShape();
+  BodyId bodyId = kInvalidBodyId;
+  FeatureId featureId = kInvalidFeatureId;
+  if (const Body* body = document_.activeBody()) {
+    shape = body->resultShape();
+    bodyId = body->id();
+    if (const ShapeFeature* feature = body->activeFeature())
+      featureId = feature->id();
+  }
   hasExtrusion_ = static_cast<bool>(shape);
-  viewport_->setBodyShape(std::move(shape));
+  viewport_->setBodyShape(std::move(shape), bodyId, featureId);
   viewport_->setSolidVisible(hasExtrusion_);
   for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
     const auto* modelSketch =

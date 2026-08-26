@@ -9,6 +9,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <array>
+
 namespace solidar {
 namespace {
 
@@ -85,7 +87,16 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
     layout->addWidget(label);
     return group(title, layout, this);
   };
-  root->addWidget(placeholderGroup(QString::fromUtf8("РЕДАКТИРОВАНИЕ")), 1);
+  auto* views = new QHBoxLayout;
+  views->setSpacing(3);
+  const std::array<const char*, 5> viewNames{{"Fit", "ISO", "Top", "Front", "Right"}};
+  std::array<QToolButton*, 5> viewButtons{};
+  for (std::size_t index = 0; index < viewNames.size(); ++index) {
+    viewButtons[index] = commandButton({}, viewNames[index], this);
+    viewButtons[index]->setMinimumSize(58, 56);
+    views->addWidget(viewButtons[index]);
+  }
+  root->addWidget(group(QString::fromUtf8("ВИД"), views, this), 1);
   root->addWidget(separator(this));
   root->addWidget(placeholderGroup(QString::fromUtf8("РАСШИРЕННЫЕ")), 1);
 
@@ -95,6 +106,11 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::extrudeRequested);
   connect(pocket, &QToolButton::clicked, this,
           &ModelRibbon::pocketRequested);
+  connect(viewButtons[0], &QToolButton::clicked, this, &ModelRibbon::fitRequested);
+  connect(viewButtons[1], &QToolButton::clicked, this, &ModelRibbon::isoRequested);
+  connect(viewButtons[2], &QToolButton::clicked, this, &ModelRibbon::topRequested);
+  connect(viewButtons[3], &QToolButton::clicked, this, &ModelRibbon::frontRequested);
+  connect(viewButtons[4], &QToolButton::clicked, this, &ModelRibbon::rightRequested);
 
   setStyleSheet(R"(
     QWidget#modelRibbon { background:#ffffff; border-bottom:1px solid #d8e1ef; }

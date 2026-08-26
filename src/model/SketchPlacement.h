@@ -41,6 +41,13 @@ struct FaceReference {
   std::size_t faceIndex{};
 };
 
+struct EdgeReference {
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId featureId{kInvalidFeatureId};
+  // Temporary until persistent topological naming is introduced.
+  std::size_t edgeIndex{};
+};
+
 enum class SketchSupportType { BasePlane, Face };
 
 struct SketchSupport {

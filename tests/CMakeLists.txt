@@ -22,6 +22,10 @@ add_executable(sketch_regression_tests sketch_regression_tests.cpp)
 target_link_libraries(sketch_regression_tests PRIVATE solidar_model)
 add_test(NAME sketch_regression_tests COMMAND sketch_regression_tests)
 
+add_executable(body_render_mesh_tests body_render_mesh_tests.cpp)
+target_link_libraries(body_render_mesh_tests PRIVATE solidar_viewport3d)
+add_test(NAME body_render_mesh_tests COMMAND body_render_mesh_tests)
+
 # SOLIDAR TEST QT RUNTIME PATH
 # On Windows the Qt-dependent test executables need Qt DLLs at runtime.
 # Configure CTest itself so users do not need to edit PATH manually.
@@ -39,6 +43,7 @@ if(WIN32)
     project_file_tests
     editor_smoke_tests
     sketch_regression_tests
+    body_render_mesh_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"

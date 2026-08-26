@@ -11,6 +11,7 @@
 #include "model/Document.h"
 #include "model/SolidFeature.h"
 #include "sketch/Sketch.h"
+#include "ui/BodyRenderMesh.h"
 
 class QMouseEvent;
 class QPaintEvent;
@@ -26,7 +27,9 @@ class Viewport final : public QWidget {
  public:
   explicit Viewport(QWidget* parent = nullptr);
   void setBox(BoxParameters parameters);
-  void setBodyShape(ShapeFeature::ShapePtr shape);
+  void setBodyShape(ShapeFeature::ShapePtr shape,
+                    BodyId bodyId = kInvalidBodyId,
+                    FeatureId featureId = kInvalidFeatureId);
   void setSketch(const sketch::Sketch& sketch);
   void setSketch(const sketch::Sketch& sketch,
                  const SketchPlacement& placement);
@@ -55,6 +58,16 @@ class Viewport final : public QWidget {
   [[nodiscard]] bool hasSelectedFace() const noexcept;
   [[nodiscard]] QString selectedFaceName() const;
   [[nodiscard]] std::optional<std::size_t> selectedBodyFaceIndex() const noexcept;
+  [[nodiscard]] std::optional<FaceReference> selectedBodyFace() const noexcept;
+  [[nodiscard]] std::optional<EdgeReference> selectedBodyEdge() const noexcept;
+  void fitAll();
+  void viewTop();
+  void viewBottom();
+  void viewFront();
+  void viewBack();
+  void viewRight();
+  void viewLeft();
+  void viewIsometric();
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
@@ -90,9 +103,13 @@ class Viewport final : public QWidget {
   void refreshSelectedExtrusionPolygon();
   [[nodiscard]] QPointF extrusionScreenOffset() const;
   void rebuildSelectedExtrusionSketch();
+  void updateBodyHover(QPointF position);
   enum class PickMode { None, SketchPlane, ExtrusionSurface };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
+  BodyRenderMesh bodyRenderMesh_;
+  BodyId bodyId_{kInvalidBodyId};
+  FeatureId bodyFeatureId_{kInvalidFeatureId};
   sketch::Sketch sketch_;
   SketchPlacement sketchPlacement_{SketchPlacement::xy()};
   sketch::Sketch solidSketch_;
@@ -112,6 +129,8 @@ class Viewport final : public QWidget {
   PickMode pickMode_{PickMode::None};
   int selectedFace_{-1};
   std::size_t hoveredBodyFaceIndex_{static_cast<std::size_t>(-1)};
+  std::size_t hoveredBodyEdgeIndex_{static_cast<std::size_t>(-1)};
+  std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
   bool selectedOrigin_{false};
