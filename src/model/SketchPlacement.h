@@ -16,6 +16,11 @@ struct Point3d {
   double z{};
 };
 
+struct Point2d {
+  double x{};
+  double y{};
+};
+
 struct Vector3d {
   double x{};
   double y{};
@@ -31,6 +36,7 @@ struct SketchPlacement {
   [[nodiscard]] static SketchPlacement xz() noexcept;
   [[nodiscard]] static SketchPlacement yz() noexcept;
   [[nodiscard]] Point3d toWorld(double xMm, double yMm) const noexcept;
+  [[nodiscard]] Point2d toLocal(Point3d world) const noexcept;
   [[nodiscard]] Vector3d normal() const noexcept;
 };
 

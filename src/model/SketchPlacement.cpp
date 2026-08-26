@@ -36,6 +36,23 @@ Point3d SketchPlacement::toWorld(double xMm, double yMm) const noexcept {
           origin.z + xDirection.z * xMm + yDirection.z * yMm};
 }
 
+Point2d SketchPlacement::toLocal(Point3d world) const noexcept {
+  const Vector3d delta{world.x - origin.x, world.y - origin.y,
+                       world.z - origin.z};
+  const double xLengthSquared = xDirection.x * xDirection.x +
+                                xDirection.y * xDirection.y +
+                                xDirection.z * xDirection.z;
+  const double yLengthSquared = yDirection.x * yDirection.x +
+                                yDirection.y * yDirection.y +
+                                yDirection.z * yDirection.z;
+  return {(delta.x * xDirection.x + delta.y * xDirection.y +
+           delta.z * xDirection.z) /
+              (xLengthSquared > 0.0 ? xLengthSquared : 1.0),
+          (delta.x * yDirection.x + delta.y * yDirection.y +
+           delta.z * yDirection.z) /
+              (yLengthSquared > 0.0 ? yLengthSquared : 1.0)};
+}
+
 Vector3d SketchPlacement::normal() const noexcept {
   return normalized({xDirection.y * yDirection.z - xDirection.z * yDirection.y,
                      xDirection.z * yDirection.x - xDirection.x * yDirection.z,

@@ -15,6 +15,10 @@
 #include <QVariant>
 #include <QWheelEvent>
 
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS_Shape.hxx>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -1237,6 +1241,61 @@ void SketchCanvas::setReferenceBody(BoxParameters box, const QString& support,
   update();
 }
 
+void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
+  clearSketchEditContext();
+  referencePlacement_ = context.placement;
+  if (!context.supportShape || context.supportShape->IsNull() ||
+      !context.supportFace)
+    return;
+
+  referenceBodyMesh_.rebuild(*context.supportShape);
+  std::size_t faceIndex = 0;
+  for (TopExp_Explorer faces(*context.supportShape, TopAbs_FACE); faces.More();
+       faces.Next(), ++faceIndex) {
+    if (faceIndex != context.supportFace->faceIndex) continue;
+    referenceFaceMesh_.rebuild(faces.Current());
+    break;
+  }
+  realReferenceBodyVisible_ = !referenceBodyMesh_.triangles().empty();
+  if (!realReferenceBodyVisible_) return;
+
+  const BodyRenderMesh& fitMesh = referenceFaceMesh_.edges().empty()
+                                      ? referenceBodyMesh_
+                                      : referenceFaceMesh_;
+  double minU = std::numeric_limits<double>::max();
+  double minV = std::numeric_limits<double>::max();
+  double maxU = std::numeric_limits<double>::lowest();
+  double maxV = std::numeric_limits<double>::lowest();
+  const auto includePoint = [&](Point3d point) {
+    const auto local = referencePlacement_.toLocal(point);
+    minU = std::min(minU, local.x);
+    minV = std::min(minV, local.y);
+    maxU = std::max(maxU, local.x);
+    maxV = std::max(maxV, local.y);
+  };
+  for (const auto& edge : fitMesh.edges())
+    for (const auto& point : edge.points) includePoint(point);
+  if (minU <= maxU && minV <= maxV) {
+    const double spanU = std::max(1.0, maxU - minU);
+    const double spanV = std::max(1.0, maxV - minV);
+    const double availableWidth = std::max(100.0, width() - kRulerLeft - 50.0);
+    const double availableHeight = std::max(100.0, height() - kRulerTop - 50.0);
+    pixelsPerMm_ = std::clamp(0.82 * std::min(availableWidth / spanU,
+                                             availableHeight / spanV),
+                              0.05, 50.0);
+    setProperty("sketchPanX", -(minU + maxU) * 0.5 * pixelsPerMm_);
+    setProperty("sketchPanY", (minV + maxV) * 0.5 * pixelsPerMm_);
+  }
+  update();
+}
+
+void SketchCanvas::clearSketchEditContext() {
+  referenceBodyMesh_.clear();
+  referenceFaceMesh_.clear();
+  realReferenceBodyVisible_ = false;
+  update();
+}
+
 void SketchCanvas::setReferenceProfile(const sketch::Sketch& profile,
                                        bool visible) {
   referenceProfile_ = profile;
@@ -1297,6 +1356,14 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
 }
 
 bool SketchCanvas::canUndo() const noexcept { return !undoStack_.empty(); }
+
+bool SketchCanvas::hasRealReferenceBody() const noexcept {
+  return realReferenceBodyVisible_;
+}
+
+std::size_t SketchCanvas::referenceFaceEdgeCount() const noexcept {
+  return referenceFaceMesh_.edges().size();
+}
 
 void SketchCanvas::undo() {
   if (undoStack_.empty()) return;
@@ -1439,7 +1506,67 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.setPen(QPen(QColor("#34a26b"), 1.1));
   painter.drawLine(QPointF(origin.x(), kRulerTop), QPointF(origin.x(), height()));
 
-  if (referenceBodyVisible_ && !referenceProfileVisible_) {
+  if (realReferenceBodyVisible_) {
+    struct ProjectedTriangle {
+      QPolygonF polygon;
+      double depth{};
+      double facing{};
+    };
+    const Vector3d normal = referencePlacement_.normal();
+    const auto depthOf = [&](Point3d point) {
+      return (point.x - referencePlacement_.origin.x) * normal.x +
+             (point.y - referencePlacement_.origin.y) * normal.y +
+             (point.z - referencePlacement_.origin.z) * normal.z;
+    };
+    const auto projected = [&](Point3d point) {
+      const auto local = referencePlacement_.toLocal(point);
+      return mapPoint({local.x, local.y});
+    };
+    std::vector<ProjectedTriangle> triangles;
+    triangles.reserve(referenceBodyMesh_.triangles().size());
+    for (const auto& triangle : referenceBodyMesh_.triangles()) {
+      triangles.push_back(
+          {{projected(triangle.a), projected(triangle.b), projected(triangle.c)},
+           (depthOf(triangle.a) + depthOf(triangle.b) + depthOf(triangle.c)) /
+               3.0,
+           std::abs(triangle.normal.x * normal.x +
+                    triangle.normal.y * normal.y +
+                    triangle.normal.z * normal.z)});
+    }
+    std::sort(triangles.begin(), triangles.end(),
+              [](const auto& first, const auto& second) {
+                return first.depth < second.depth;
+              });
+    painter.setPen(Qt::NoPen);
+    for (const auto& triangle : triangles) {
+      const int shade = static_cast<int>(150 + triangle.facing * 35.0);
+      painter.setBrush(QColor(shade, shade + 3, shade + 7, 72));
+      painter.drawPolygon(triangle.polygon);
+    }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(82, 94, 108, 105), 1.0));
+    for (const auto& edge : referenceBodyMesh_.edges()) {
+      QPolygonF curve;
+      for (const auto& point : edge.points) curve << projected(point);
+      painter.drawPolyline(curve);
+    }
+    painter.setBrush(QColor(205, 218, 232, 48));
+    painter.setPen(Qt::NoPen);
+    for (const auto& triangle : referenceFaceMesh_.triangles()) {
+      QPolygonF polygon{projected(triangle.a), projected(triangle.b),
+                        projected(triangle.c)};
+      painter.drawPolygon(polygon);
+    }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(58, 75, 94, 205), 2.0));
+    for (const auto& edge : referenceFaceMesh_.edges()) {
+      QPolygonF boundary;
+      for (const auto& point : edge.points) boundary << projected(point);
+      painter.drawPolyline(boundary);
+    }
+  }
+  if (!realReferenceBodyVisible_ && referenceBodyVisible_ &&
+      !referenceProfileVisible_) {
     double bodyWidth = referenceBox_.widthMm;
     double bodyHeight = referenceBox_.depthMm;
     if (referenceSupport_.contains("XZ") ||
@@ -1458,7 +1585,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     painter.setPen(QPen(QColor("#596570"), 1.6));
     painter.drawRect(bodyRect.normalized());
   }
-  if (referenceBodyVisible_ && referenceProfileVisible_) {
+  if (!realReferenceBodyVisible_ && referenceBodyVisible_ &&
+      referenceProfileVisible_) {
     painter.setBrush(Qt::NoBrush);
     painter.setPen(QPen(QColor("#596570"), 1.6));
     for (const auto& line : referenceProfile_.lines())

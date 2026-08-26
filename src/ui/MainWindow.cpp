@@ -713,27 +713,39 @@ void MainWindow::buildUi() {
                                                 ? SketchPlacement::yz()
                                                 : SketchPlacement::xy();
             if (plane.startsWith(QString::fromUtf8("Грань тела"))) {
-              const auto faceIndex = viewport_->selectedBodyFaceIndex();
-              const Body* body = document_.activeBody();
-              const ShapeFeature* feature = body ? body->activeFeature() : nullptr;
-              const auto shape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
-              if (!faceIndex || !body || !feature || !shape) {
+              const auto faceReference = viewport_->selectedBodyFace();
+              if (!faceReference) {
                 QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
                                      QString::fromUtf8("Не удалось определить грань Body."));
                 return;
               }
-              const auto resolved = resolveFacePlacement(*shape, *faceIndex);
+              const Body* body = document_.findBody(faceReference->bodyId);
+              const ShapeFeature* feature = nullptr;
+              if (body)
+                for (const auto& candidate : body->features())
+                  if (candidate->id() == faceReference->featureId) {
+                    feature = candidate.get();
+                    break;
+                  }
+              const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
+              if (!shape) {
+                QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
+                                     QStringLiteral("Sketch support face could not be resolved"));
+                return;
+              }
+              const auto resolved =
+                  resolveFacePlacement(*shape, faceReference->faceIndex);
               if (!resolved.planar) {
                 QMessageBox::information(
                     this, QString::fromUtf8("Sketch on Face"),
-                    QStringLiteral("Sketch on Face 1.0 supports planar faces only"));
+                    QStringLiteral("Sketch on curved surfaces is not supported yet"));
                 return;
               }
               currentSketchPlacement_ = resolved.placement;
-              currentSketchFaceReference_ =
-                  FaceReference{body->id(), feature->id(), *faceIndex};
+              currentSketchFaceReference_ = *faceReference;
             }
             sketchCanvas_->resetSketch();
+            sketchCanvas_->clearSketchEditContext();
             sketchCanvas_->setReferenceBody(document_.box(), plane,
                                              hasExtrusion_);
             const QString support = viewport_->solidSupport();
@@ -749,6 +761,8 @@ void MainWindow::buildUi() {
                   plane.contains(QString::fromUtf8("Нижняя"))));
             sketchCanvas_->setReferenceProfile(viewport_->solidSketch(),
                                                hasExtrusion_ && capFace);
+            if (currentSketchFaceReference_ && !configureSketchEditContext())
+              return;
             workspaceStack_->setCurrentWidget(sketchCanvas_);
             ribbonStack_->setCurrentWidget(sketchRibbon_);
             statusBar()->showMessage(QString::fromUtf8("Рабочая плоскость: ") + plane);
@@ -1238,6 +1252,36 @@ void MainWindow::applyHistoryPosition(int position) {
       2500);
 }
 
+bool MainWindow::configureSketchEditContext() {
+  if (!currentSketchFaceReference_) return true;
+  const FaceReference reference = *currentSketchFaceReference_;
+  const Body* body = document_.findBody(reference.bodyId);
+  const ShapeFeature* feature = nullptr;
+  if (body)
+    for (const auto& candidate : body->features())
+      if (candidate->id() == reference.featureId) {
+        feature = candidate.get();
+        break;
+      }
+  const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
+  if (!shape) {
+    QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
+                         QStringLiteral("Sketch support face could not be resolved"));
+    return false;
+  }
+  const auto resolved = resolveFacePlacement(*shape, reference.faceIndex);
+  if (!resolved.planar) {
+    QMessageBox::information(
+        this, QString::fromUtf8("Sketch on Face"),
+        QStringLiteral("Sketch on curved surfaces is not supported yet"));
+    return false;
+  }
+  currentSketchPlacement_ = resolved.placement;
+  sketchCanvas_->setSketchEditContext(
+      {kInvalidSketchId, currentSketchPlacement_, shape, reference});
+  return true;
+}
+
 void MainWindow::editSketchStep(std::size_t index) {
   if (index >= sketchHistory_.size()) return;
   editingSketchIndex_ = index;
@@ -1248,6 +1292,11 @@ void MainWindow::editSketchStep(std::size_t index) {
     currentSketchPlacement_ = modelSketch->placement;
     if (modelSketch->support.type == SketchSupportType::Face)
       currentSketchFaceReference_ = modelSketch->support.face;
+  }
+  sketchCanvas_->clearSketchEditContext();
+  if (currentSketchFaceReference_ && !configureSketchEditContext()) {
+    editingSketchIndex_.reset();
+    return;
   }
   sketchCanvas_->loadSketch(sketchHistory_[index].geometry);
   sketchCanvas_->setReferenceBody(document_.box(), currentSketchSupport_,

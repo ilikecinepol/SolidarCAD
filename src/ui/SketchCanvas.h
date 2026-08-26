@@ -9,6 +9,7 @@
 
 #include "sketch/Sketch.h"
 #include "model/Document.h"
+#include "ui/BodyRenderMesh.h"
 
 class QKeyEvent;
 class QMouseEvent;
@@ -18,6 +19,13 @@ class QDoubleSpinBox;
 class QEvent;
 
 namespace solidar {
+
+struct SketchEditContext {
+  SketchId sketchId{kInvalidSketchId};
+  SketchPlacement placement{SketchPlacement::xy()};
+  ShapeFeature::ShapePtr supportShape;
+  std::optional<FaceReference> supportFace;
+};
 
 class SketchCanvas final : public QWidget {
   Q_OBJECT
@@ -62,10 +70,14 @@ class SketchCanvas final : public QWidget {
   void setRectangleMode(RectangleMode mode);
   void undo();
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
+  void setSketchEditContext(const SketchEditContext& context);
+  void clearSketchEditContext();
   void setReferenceProfile(const sketch::Sketch& profile, bool visible);
   [[nodiscard]] bool canUndo() const noexcept;
   [[nodiscard]] Tool tool() const noexcept;
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
+  [[nodiscard]] bool hasRealReferenceBody() const noexcept;
+  [[nodiscard]] std::size_t referenceFaceEdgeCount() const noexcept;
   struct ConstraintPanelEntry {
     QString description;
     sketch::ConstraintId constraintId{sketch::kInvalidConstraintId};
@@ -173,6 +185,10 @@ signals:
   BoxParameters referenceBox_{};
   QString referenceSupport_;
   bool referenceBodyVisible_{false};
+  BodyRenderMesh referenceBodyMesh_;
+  BodyRenderMesh referenceFaceMesh_;
+  SketchPlacement referencePlacement_{SketchPlacement::xy()};
+  bool realReferenceBodyVisible_{false};
   sketch::Sketch referenceProfile_;
   bool referenceProfileVisible_{false};
 };

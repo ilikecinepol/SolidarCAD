@@ -60,6 +60,7 @@ class MainWindow final : public QMainWindow {
   void pushUndoAction(std::function<void()> action);
   void updateUndoAvailability();
   void updateSketchConstraintPanel();
+  bool configureSketchEditContext();
 
   Document document_;
   Viewport* viewport_{nullptr};

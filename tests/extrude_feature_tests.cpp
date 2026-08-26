@@ -68,6 +68,14 @@ int main() {
   assert(near(xyPoint.x, 10.0));
   assert(near(xyPoint.y, 20.0));
   assert(near(xyPoint.z, 0.0));
+  for (const auto& placement : {solidar::SketchPlacement::xy(),
+                                solidar::SketchPlacement::xz(),
+                                solidar::SketchPlacement::yz()}) {
+    const auto world = placement.toWorld(-17.5, 8.25);
+    const auto local = placement.toLocal(world);
+    assert(near(local.x, -17.5));
+    assert(near(local.y, 8.25));
+  }
 
   solidar::Document document;
   auto& sketch = document.addSketch("Rectangle");
@@ -154,7 +162,7 @@ int main() {
   }
   assert(topFaceIndex);
   auto& faceSketch = attachedDocument.addSketch("Sketch on top face");
-  faceSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+  faceSketch.geometry.addRectangle({-25.0, 5.0}, {-15.0, 15.0});
   assert(attachedDocument.attachSketchToFace(
       faceSketch.id,
       {attachedBody.id(), baseExtrudePtr->id(), *topFaceIndex}));
@@ -170,6 +178,10 @@ int main() {
   assert(near(faceNormal.x, 0.0));
   assert(near(faceNormal.y, 0.0));
   assert(near(faceNormal.z, 1.0));
+  const auto faceRoundTrip = faceSketch.placement.toLocal(
+      faceSketch.placement.toWorld(-21.0, 12.0));
+  assert(near(faceRoundTrip.x, -21.0));
+  assert(near(faceRoundTrip.y, 12.0));
   assert(near(std::hypot(faceX.x - faceOrigin.x,
                          faceX.y - faceOrigin.y),
               10.0));
@@ -182,6 +194,8 @@ int main() {
   assert(attachedDocument.rebuild());
   assert(faceSketch.supportResolved);
   assert(near(faceSketch.placement.origin.z, 80.0));
+  assert(near(faceSketch.geometry.lines().front().start.xMm, -25.0));
+  assert(near(faceSketch.geometry.lines().front().start.yMm, 5.0));
   const auto& snapshotFaceSketch = attachedSnapshot.sketches().back();
   assert(snapshotFaceSketch.support.type == solidar::SketchSupportType::Face);
   assert(near(snapshotFaceSketch.placement.origin.z, 50.0));
