@@ -2,12 +2,10 @@
 
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepGProp.hxx>
-#include <BRepPrimAPI_MakePrism.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopExp_Explorer.hxx>
-#include <gp_Vec.hxx>
 
 #include <cmath>
 #include <memory>
@@ -58,24 +56,16 @@ bool PocketFeature::rebuild(const RebuildContext& context) {
     markError("Pocket profile sketch was not found");
     return false;
   }
-  TopoDS_Face profileFace;
   std::string profileError;
-  if (!buildPlanarFaceFromSketch(*profile, &profileFace, &profileError)) {
+  TopoDS_Shape prismShape;
+  if (!buildExtrusionPrismFromSketch(*profile, depthMm_, true, &prismShape,
+                                     &profileError)) {
     markError("Pocket " + profileError);
     return false;
   }
 
   try {
-    const auto normal = profile->placement.normal();
-    BRepPrimAPI_MakePrism prism(
-        profileFace, gp_Vec(-normal.x * depthMm_, -normal.y * depthMm_,
-                            -normal.z * depthMm_));
-    prism.Build();
-    if (!prism.IsDone() || prism.Shape().IsNull()) {
-      markError("Pocket could not build the cutting prism");
-      return false;
-    }
-    BRepAlgoAPI_Cut cut(*context.previousShape, prism.Shape());
+    BRepAlgoAPI_Cut cut(*context.previousShape, prismShape);
     cut.Build();
     if (!cut.IsDone() || cut.Shape().IsNull()) {
       markError("Pocket boolean cut failed");

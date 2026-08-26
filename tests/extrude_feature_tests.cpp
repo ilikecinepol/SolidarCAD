@@ -1,5 +1,7 @@
 #include <BRepBndLib.hxx>
+#include <BRepGProp.hxx>
 #include <Bnd_Box.hxx>
+#include <GProp_GProps.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 
@@ -10,6 +12,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 
 #include "model/Document.h"
@@ -38,6 +41,23 @@ Extents extentsOf(const TopoDS_Shape& shape) {
 
 bool near(double actual, double expected) {
   return std::abs(actual - expected) <= 1e-5;
+}
+
+double volumeOf(const TopoDS_Shape& shape) {
+  GProp_GProps properties;
+  BRepGProp::VolumeProperties(shape, properties);
+  return properties.Mass();
+}
+
+std::size_t topFaceOf(const TopoDS_Shape& shape, double z) {
+  for (std::size_t index = 0; index < 64; ++index) {
+    const auto resolved = solidar::resolveFacePlacement(shape, index);
+    if (resolved.planar && resolved.placement.normal().z > 0.9 &&
+        near(resolved.placement.origin.z, z))
+      return index;
+  }
+  assert(false && "Top face was not found");
+  return 0;
 }
 
 }  // namespace
@@ -208,4 +228,115 @@ int main() {
   assert(!missingProfile.rebuild());
   assert(missingPtr->state() == solidar::FeatureState::Error);
   assert(!missingPtr->hasShape());
+
+  // A single Circle is a first-class profile on any Sketch placement.
+  solidar::Document circleDocument;
+  auto& circleSketch = circleDocument.addSketch("Circle");
+  circleSketch.geometry.addCircle({0.0, 0.0}, 10.0);
+  auto& circleBody = circleDocument.addBody();
+  circleBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      circleSketch.id, 50.0, "Cylinder"));
+  assert(circleDocument.rebuild());
+  assert(std::abs(volumeOf(*circleBody.resultShape()) -
+                  std::numbers::pi * 100.0 * 50.0) < 1e-3);
+
+  solidar::Document xzCircleDocument;
+  auto& xzCircle = xzCircleDocument.addSketch("XZ Circle");
+  xzCircle.geometry.addCircle({0.0, 0.0}, 10.0);
+  xzCircle.placement = solidar::SketchPlacement::xz();
+  auto& xzCircleBody = xzCircleDocument.addBody();
+  xzCircleBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      xzCircle.id, 50.0, "XZ Cylinder"));
+  assert(xzCircleDocument.rebuild());
+  const auto xzCylinderBounds = extentsOf(*xzCircleBody.resultShape());
+  assert(near(xzCylinderBounds.x, 20.0));
+  assert(near(xzCylinderBounds.y, 50.0));
+  assert(near(xzCylinderBounds.z, 20.0));
+
+  // Circle Join and Cut share the same prism builder and preserve one Body.
+  solidar::Document booleanDocument;
+  auto& booleanBase = booleanDocument.addSketch("Boolean base");
+  booleanBase.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
+  auto& booleanBody = booleanDocument.addBody();
+  auto booleanBaseFeature = std::make_unique<solidar::ExtrudeFeature>(
+      booleanBase.id, 50.0, "Base");
+  const auto booleanBaseFeatureId = booleanBaseFeature->id();
+  booleanBody.addFeature(std::move(booleanBaseFeature));
+  assert(booleanDocument.rebuild());
+  auto& joinCircle = booleanDocument.addSketch("Join circle");
+  const auto joinCircleId = joinCircle.id;
+  joinCircle.geometry.addCircle({10.0, 10.0}, 5.0);
+  assert(booleanDocument.attachSketchToFace(
+      joinCircle.id, {booleanBody.id(), booleanBaseFeatureId,
+                      topFaceOf(*booleanBody.resultShape(), 50.0)}));
+  booleanBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      joinCircle.id, 20.0, "Circle Join", solidar::ExtrudeOperation::Join));
+  assert(booleanDocument.rebuild());
+  assert(booleanDocument.bodies().size() == 1);
+  assert(std::abs(volumeOf(*booleanBody.resultShape()) -
+                  (140000.0 + std::numbers::pi * 25.0 * 20.0)) < 1e-2);
+
+  auto& cutCircle = booleanDocument.addSketch("Cut circle");
+  cutCircle.geometry.addCircle({25.0, 10.0}, 5.0);
+  const auto* joinFeature = booleanBody.activeFeature();
+  assert(booleanDocument.attachSketchToFace(
+      cutCircle.id, {booleanBody.id(), joinFeature->id(),
+                     topFaceOf(*booleanBody.resultShape(), 50.0)}));
+  booleanBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      cutCircle.id, 20.0, "Circle Cut", solidar::ExtrudeOperation::Cut, true));
+  assert(booleanDocument.rebuild());
+  assert(booleanDocument.bodies().size() == 1);
+  assert(std::abs(volumeOf(*booleanBody.resultShape()) - 140000.0) < 1e-2);
+
+  auto* mutableBase = dynamic_cast<solidar::ExtrudeFeature*>(
+      booleanBody.features().front().get());
+  assert(mutableBase);
+  mutableBase->setLengthMm(80.0);
+  assert(booleanDocument.rebuild());
+  assert(near(booleanDocument.findSketch(joinCircleId)->placement.origin.z, 80.0));
+  assert(std::abs(volumeOf(*booleanBody.resultShape()) - 224000.0) < 1e-2);
+
+  // New Body is independent from the active Body and becomes the new active Body.
+  auto& secondProfile = booleanDocument.addSketch("Second body circle");
+  secondProfile.geometry.addCircle({120.0, 0.0}, 7.0);
+  auto& secondBody = booleanDocument.addBody();
+  secondBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      secondProfile.id, 15.0, "Second Body"));
+  assert(booleanDocument.rebuild());
+  assert(booleanDocument.bodies().size() == 2);
+  assert(booleanDocument.activeBody() == &booleanDocument.bodies().back());
+  assert(booleanDocument.bodies()[0].resultShape());
+  assert(booleanDocument.bodies()[1].resultShape());
+
+  solidar::Document noIntersection;
+  auto& noIntersectionBase = noIntersection.addSketch("Base");
+  noIntersectionBase.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+  auto& noIntersectionBody = noIntersection.addBody();
+  noIntersectionBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      noIntersectionBase.id, 10.0));
+  auto& remote = noIntersection.addSketch("Remote");
+  remote.geometry.addCircle({100.0, 100.0}, 5.0);
+  noIntersectionBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      remote.id, 10.0, "Remote Join", solidar::ExtrudeOperation::Join));
+  assert(!noIntersection.rebuild());
+  assert(noIntersectionBody.activeFeature()->error().find("does not intersect") !=
+         std::string::npos);
+
+  solidar::Document mixedDocument;
+  auto& mixed = mixedDocument.addSketch("Mixed");
+  mixed.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+  mixed.geometry.addCircle({10.0, 10.0}, 3.0);
+  auto& mixedBody = mixedDocument.addBody();
+  mixedBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(mixed.id, 10.0));
+  assert(!mixedDocument.rebuild());
+  assert(mixedBody.activeFeature()->error().find("one profile") != std::string::npos);
+
+  solidar::Document invalidCircleDocument;
+  auto& invalidCircle = invalidCircleDocument.addSketch("Invalid circle");
+  invalidCircle.geometry.addCircle({0.0, 0.0},
+                                   std::numeric_limits<double>::quiet_NaN());
+  auto& invalidCircleBody = invalidCircleDocument.addBody();
+  invalidCircleBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      invalidCircle.id, 10.0));
+  assert(!invalidCircleDocument.rebuild());
 }

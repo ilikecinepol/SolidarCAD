@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <QDockWidget>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -346,6 +348,16 @@ void MainWindow::buildUi() {
   extrusionLengthSpin_->setSuffix(QStringLiteral(" mm"));
   extrusionLengthSpin_->setValue(document_.box().heightMm);
   extrusionForm->addRow(QString::fromUtf8("Длина:"), extrusionLengthSpin_);
+  extrusionOperationCombo_ = new QComboBox(extrusionPanel);
+  extrusionOperationCombo_->addItems(
+      {QString::fromUtf8("Новое тело"), QStringLiteral("Join"),
+       QStringLiteral("Cut")});
+  extrusionForm->addRow(QString::fromUtf8("Операция:"),
+                        extrusionOperationCombo_);
+  extrusionReverseCheck_ = new QCheckBox(QString::fromUtf8("Обратное направление"),
+                                         extrusionPanel);
+  extrusionForm->addRow(QString::fromUtf8("Направление:"),
+                        extrusionReverseCheck_);
   auto* extrusionButtons = new QHBoxLayout;
   auto* cancelExtrusion = new QPushButton(QString::fromUtf8("Отмена"), extrusionPanel);
   auto* acceptExtrusion = new QPushButton(QString::fromUtf8("Применить"), extrusionPanel);
@@ -671,12 +683,26 @@ void MainWindow::buildUi() {
           });
   connect(modelRibbon_, &ModelRibbon::extrudeRequested, this,
           [this] {
+            extrusionOperationCombo_->setCurrentIndex(
+                document_.activeBody() ? 1 : 0);
+            extrusionReverseCheck_->setChecked(false);
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите замкнутый контур или грань тела"));
             viewport_->beginExtrusionSurfaceSelection();
           });
   connect(modelRibbon_, &ModelRibbon::pocketRequested, this,
-          &MainWindow::createPocket);
+          [this] {
+            if (!document_.activeBody()) {
+              QMessageBox::information(this, QString::fromUtf8("Cut"),
+                  QString::fromUtf8("Сначала создайте Body."));
+              return;
+            }
+            extrusionOperationCombo_->setCurrentIndex(2);
+            extrusionReverseCheck_->setChecked(true);
+            statusBar()->showMessage(
+                QString::fromUtf8("Выберите профиль для Extrude Cut"));
+            viewport_->beginExtrusionSurfaceSelection();
+          });
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
   connect(modelRibbon_, &ModelRibbon::topRequested, viewport_, &Viewport::viewTop);
@@ -980,17 +1006,12 @@ void MainWindow::extrudeSketch() {
                          QString::fromUtf8("Длина выдавливания должна быть больше нуля."));
     return;
   }
-  const bool addToBody = hasExtrusion_ &&
-                         viewport_->extrusionCandidateOnBodyCap() &&
-                         !fromBodyFace;
-
-  const Body* activeBody = document_.activeBody();
-  const bool hasParametricBody = activeBody && activeBody->resultShape();
-  if (hasParametricBody && (addToBody || fromBodyFace)) {
-    QMessageBox::information(
-        this, QString::fromUtf8("Выдавливание"),
-        QString::fromUtf8("Второе аддитивное выдавливание пока не подключено к "
-                          "параметрическому Body."));
+  const auto operation = static_cast<ExtrudeOperation>(
+      std::clamp(extrusionOperationCombo_->currentIndex(), 0, 2));
+  const bool reversed = extrusionReverseCheck_->isChecked();
+  if (operation != ExtrudeOperation::NewBody && !document_.activeBody()) {
+    QMessageBox::warning(this, QString::fromUtf8("Выдавливание"),
+                         QString::fromUtf8("Для Join/Cut нужен активный Body."));
     return;
   }
 
@@ -1018,11 +1039,13 @@ void MainWindow::extrudeSketch() {
   } else {
     modelSketch->geometry = sketch;
   }
-  Body* modelBody = document_.activeBody();
-  if (!modelBody) modelBody = &document_.addBody();
+  Body* modelBody = operation == ExtrudeOperation::NewBody
+                        ? &document_.addBody()
+                        : document_.activeBody();
   modelBody->addFeature(std::make_unique<ExtrudeFeature>(
       modelSketch->id, height,
-      "Extrude " + std::to_string(modelBody->features().size() + 1)));
+      "Extrude " + std::to_string(modelBody->features().size() + 1),
+      operation, reversed));
   if (!document_.rebuild()) {
     const std::string error = modelBody->activeFeature()
                                   ? modelBody->activeFeature()->error()
@@ -1077,17 +1100,16 @@ void MainWindow::extrudeSketch() {
 }
 
 void MainWindow::refreshBodyViewFromDocument() {
-  ShapeFeature::ShapePtr shape;
-  BodyId bodyId = kInvalidBodyId;
-  FeatureId featureId = kInvalidFeatureId;
-  if (const Body* body = document_.activeBody()) {
-    shape = body->resultShape();
-    bodyId = body->id();
-    if (const ShapeFeature* feature = body->activeFeature())
-      featureId = feature->id();
+  std::vector<BodyViewShape> shapes;
+  for (const Body& body : document_.bodies()) {
+    auto shape = body.resultShape();
+    if (!shape) continue;
+    const ShapeFeature* feature = body.activeFeature();
+    shapes.push_back({body.id(), feature ? feature->id() : kInvalidFeatureId,
+                      std::move(shape)});
   }
-  hasExtrusion_ = static_cast<bool>(shape);
-  viewport_->setBodyShape(std::move(shape), bodyId, featureId);
+  hasExtrusion_ = !shapes.empty();
+  viewport_->setBodyShapes(std::move(shapes));
   viewport_->setSolidVisible(hasExtrusion_);
   for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
     const auto* modelSketch =
@@ -1249,7 +1271,7 @@ void MainWindow::editExtrusionStep() {
   ExtrudeFeature* extrude = nullptr;
   std::size_t extrudeIndex = 0;
   if (body)
-    for (std::size_t index = 0; index < body->features().size(); ++index)
+    for (std::size_t index = body->features().size(); index-- > 0;)
       if (auto* candidate =
               dynamic_cast<ExtrudeFeature*>(body->features()[index].get())) {
         extrude = candidate;
@@ -1257,14 +1279,42 @@ void MainWindow::editExtrusionStep() {
         break;
       }
   if (!extrude) return;
-  bool accepted = false;
-  const double height = QInputDialog::getDouble(
-      this, QString::fromUtf8("Изменить выдавливание"),
-      QString::fromUtf8("Расстояние, мм:"), extrude->lengthMm(),
-      0.01, 100000.0, 2, &accepted);
-  if (!accepted) return;
+  QDialog dialog(this);
+  dialog.setWindowTitle(QString::fromUtf8("Изменить выдавливание"));
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* form = new QFormLayout;
+  auto* distance = new QDoubleSpinBox(&dialog);
+  distance->setRange(0.01, 100000.0);
+  distance->setDecimals(2);
+  distance->setSuffix(QStringLiteral(" mm"));
+  distance->setValue(extrude->lengthMm());
+  auto* reverse = new QCheckBox(QString::fromUtf8("Обратное направление"), &dialog);
+  reverse->setChecked(extrude->reversed());
+  auto* operation = new QComboBox(&dialog);
+  operation->addItems({QString::fromUtf8("Новое тело"), QStringLiteral("Join"),
+                       QStringLiteral("Cut")});
+  operation->setCurrentIndex(static_cast<int>(extrude->operation()));
+  // Moving an existing feature between Bodies is intentionally outside 2.0.
+  if (extrude->operation() == ExtrudeOperation::NewBody)
+    operation->setEnabled(false);
+  else
+    operation->setItemData(0, 0, Qt::UserRole - 1);
+  form->addRow(QString::fromUtf8("Расстояние:"), distance);
+  form->addRow(QString::fromUtf8("Операция:"), operation);
+  form->addRow(QString::fromUtf8("Направление:"), reverse);
+  layout->addLayout(form);
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                        QDialogButtonBox::Cancel, &dialog);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  layout->addWidget(buttons);
+  if (dialog.exec() != QDialog::Accepted) return;
+  const double height = distance->value();
   const Document previousDocument = document_;
   extrude->setLengthMm(height);
+  extrude->setReversed(reverse->isChecked());
+  if (extrude->operation() != ExtrudeOperation::NewBody)
+    extrude->setOperation(static_cast<ExtrudeOperation>(operation->currentIndex()));
   body->markDirtyFrom(extrudeIndex);
   if (!document_.rebuild()) {
     const QString error = QString::fromStdString(extrude->error());
@@ -1359,22 +1409,24 @@ void MainWindow::rebuildFeatureTree() {
     }
   }
   auto* models = new QTreeWidgetItem(project, {QString::fromUtf8("Модели")});
-  auto* bodyItem = new QTreeWidgetItem(
-      models, {hasExtrusion_ ? QString::fromUtf8("▣  Тело 1")
-                             : QString::fromUtf8("Твёрдых тел нет")});
-  if (!activeExtrusion)
-    bodyItem->setText(0, QString::fromUtf8("Твёрдых тел нет"));
-  if (activeExtrusion) {
-    bodyItem->setData(0, Qt::UserRole, 3);
-    bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
-    bodyItem->setCheckState(0, Qt::Checked);
-    if (const Body* body = document_.activeBody())
-      for (const auto& feature : body->features())
+  if (!activeExtrusion || document_.bodies().empty()) {
+    new QTreeWidgetItem(models, {QString::fromUtf8("Твёрдых тел нет")});
+  } else {
+    for (std::size_t bodyIndex = 0; bodyIndex < document_.bodies().size(); ++bodyIndex) {
+      const Body& body = document_.bodies()[bodyIndex];
+      auto* bodyItem = new QTreeWidgetItem(
+          models, {QString::fromUtf8("▣  Body%1").arg(bodyIndex + 1, 3, 10,
+                                                       QLatin1Char('0'))});
+      bodyItem->setData(0, Qt::UserRole, 3);
+      bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
+      bodyItem->setCheckState(0, Qt::Checked);
+      for (const auto& feature : body.features())
         new QTreeWidgetItem(
             bodyItem,
             {QString::fromStdString(feature->name().empty()
                                         ? feature->typeName()
                                         : feature->name())});
+    }
   }
   auto* components = new QTreeWidgetItem(project, {QString::fromUtf8("Компоненты")});
   new QTreeWidgetItem(components, {QString::fromUtf8("Компоненты отсутствуют")});

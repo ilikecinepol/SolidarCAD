@@ -1,6 +1,7 @@
 #include "ui/Viewport.h"
 
 #include <BRepBndLib.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
@@ -215,14 +216,46 @@ std::vector<QPolygonF> projectedBodyFaces(const TopoDS_Shape& shape,
 
 void Viewport::setBodyShape(ShapeFeature::ShapePtr shape, BodyId bodyId,
                             FeatureId featureId) {
-  bodyShape_ = std::move(shape);
-  bodyId_ = bodyId;
-  bodyFeatureId_ = featureId;
+  std::vector<BodyViewShape> shapes;
+  if (shape) shapes.push_back({bodyId, featureId, std::move(shape)});
+  setBodyShapes(std::move(shapes));
+}
+
+void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
+  bodyShape_.reset();
+  bodyId_ = kInvalidBodyId;
+  bodyFeatureId_ = kInvalidFeatureId;
   selectedFace_ = -1;
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   bodyRenderMesh_.clear();
+  bodyTopologyRanges_.clear();
+  TopoDS_Compound compound;
+  BRep_Builder compoundBuilder;
+  compoundBuilder.MakeCompound(compound);
+  std::size_t firstFace = 0;
+  std::size_t firstEdge = 0;
+  for (const auto& item : shapes) {
+    if (!item.shape || item.shape->IsNull()) continue;
+    std::size_t faceCount = 0;
+    std::size_t edgeCount = 0;
+    for (TopExp_Explorer faces(*item.shape, TopAbs_FACE); faces.More();
+         faces.Next())
+      ++faceCount;
+    for (TopExp_Explorer edges(*item.shape, TopAbs_EDGE); edges.More();
+         edges.Next())
+      ++edgeCount;
+    bodyTopologyRanges_.push_back({item.bodyId, item.featureId,
+        firstFace, faceCount, firstEdge, edgeCount});
+    firstFace += faceCount;
+    firstEdge += edgeCount;
+    compoundBuilder.Add(compound, *item.shape);
+    bodyId_ = item.bodyId;
+    bodyFeatureId_ = item.featureId;
+  }
+  if (!bodyTopologyRanges_.empty())
+    bodyShape_ = std::make_shared<TopoDS_Shape>(compound);
   if (bodyShape_ && !bodyShape_->IsNull()) {
     bodyRenderMesh_.rebuild(*bodyShape_);
     Bnd_Box bounds;
@@ -358,6 +391,7 @@ void Viewport::setBasePlaneVisible(int plane, bool visible) {
 void Viewport::resetScene() {
   bodyShape_.reset();
   bodyRenderMesh_.clear();
+  bodyTopologyRanges_.clear();
   bodyId_ = kInvalidBodyId;
   bodyFeatureId_ = kInvalidFeatureId;
   sketch_.clear();
@@ -375,6 +409,9 @@ void Viewport::resetScene() {
   solidVisible_ = false;
   sketchVisible_ = true;
   selectedFace_ = -1;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
@@ -485,13 +522,22 @@ std::optional<std::size_t> Viewport::selectedBodyFaceIndex() const noexcept {
 
 std::optional<FaceReference> Viewport::selectedBodyFace() const noexcept {
   if (selectedFace_ < 0) return std::nullopt;
-  return FaceReference{bodyId_, bodyFeatureId_,
-                       static_cast<std::size_t>(selectedFace_)};
+  const auto global = static_cast<std::size_t>(selectedFace_);
+  for (const auto& range : bodyTopologyRanges_)
+    if (global >= range.firstFace && global < range.firstFace + range.faceCount)
+      return FaceReference{range.bodyId, range.featureId,
+                           global - range.firstFace};
+  return std::nullopt;
 }
 
 std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
   if (selectedBodyEdgeIndex_ == static_cast<std::size_t>(-1)) return std::nullopt;
-  return EdgeReference{bodyId_, bodyFeatureId_, selectedBodyEdgeIndex_};
+  for (const auto& range : bodyTopologyRanges_)
+    if (selectedBodyEdgeIndex_ >= range.firstEdge &&
+        selectedBodyEdgeIndex_ < range.firstEdge + range.edgeCount)
+      return EdgeReference{range.bodyId, range.featureId,
+                           selectedBodyEdgeIndex_ - range.firstEdge};
+  return std::nullopt;
 }
 
 void Viewport::fitAll() {
@@ -1601,6 +1647,9 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   if (pickMode_ != PickMode::None) return;
 
   selectedFace_ = -1;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);

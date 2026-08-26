@@ -21,6 +21,12 @@ class QDoubleSpinBox;
 
 namespace solidar {
 
+struct BodyViewShape {
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId featureId{kInvalidFeatureId};
+  ShapeFeature::ShapePtr shape;
+};
+
 class Viewport final : public QWidget {
   Q_OBJECT
 
@@ -30,6 +36,7 @@ class Viewport final : public QWidget {
   void setBodyShape(ShapeFeature::ShapePtr shape,
                     BodyId bodyId = kInvalidBodyId,
                     FeatureId featureId = kInvalidFeatureId);
+  void setBodyShapes(std::vector<BodyViewShape> shapes);
   void setSketch(const sketch::Sketch& sketch);
   void setSketch(const sketch::Sketch& sketch,
                  const SketchPlacement& placement);
@@ -108,6 +115,15 @@ class Viewport final : public QWidget {
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
+  struct BodyTopologyRange {
+    BodyId bodyId{kInvalidBodyId};
+    FeatureId featureId{kInvalidFeatureId};
+    std::size_t firstFace{};
+    std::size_t faceCount{};
+    std::size_t firstEdge{};
+    std::size_t edgeCount{};
+  };
+  std::vector<BodyTopologyRange> bodyTopologyRanges_;
   BodyId bodyId_{kInvalidBodyId};
   FeatureId bodyFeatureId_{kInvalidFeatureId};
   sketch::Sketch sketch_;
