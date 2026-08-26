@@ -84,7 +84,6 @@ class MainWindow final : public QMainWindow {
   QDockWidget* extrusionDock_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
-  QCheckBox* extrusionReverseCheck_{nullptr};
   QDockWidget* sketchSettingsDock_{nullptr};
   QComboBox* sketchLineTypeCombo_{nullptr};
   QTreeWidget* sketchConstraintsList_{nullptr};

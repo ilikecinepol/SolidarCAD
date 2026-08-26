@@ -354,10 +354,6 @@ void MainWindow::buildUi() {
        QStringLiteral("Cut")});
   extrusionForm->addRow(QString::fromUtf8("Операция:"),
                         extrusionOperationCombo_);
-  extrusionReverseCheck_ = new QCheckBox(QString::fromUtf8("Обратное направление"),
-                                         extrusionPanel);
-  extrusionForm->addRow(QString::fromUtf8("Направление:"),
-                        extrusionReverseCheck_);
   auto* extrusionButtons = new QHBoxLayout;
   auto* cancelExtrusion = new QPushButton(QString::fromUtf8("Отмена"), extrusionPanel);
   auto* acceptExtrusion = new QPushButton(QString::fromUtf8("Применить"), extrusionPanel);
@@ -685,7 +681,6 @@ void MainWindow::buildUi() {
           [this] {
             extrusionOperationCombo_->setCurrentIndex(
                 document_.activeBody() ? 1 : 0);
-            extrusionReverseCheck_->setChecked(false);
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите замкнутый контур или грань тела"));
             viewport_->beginExtrusionSurfaceSelection();
@@ -698,7 +693,6 @@ void MainWindow::buildUi() {
               return;
             }
             extrusionOperationCombo_->setCurrentIndex(2);
-            extrusionReverseCheck_->setChecked(true);
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите профиль для Extrude Cut"));
             viewport_->beginExtrusionSurfaceSelection();
@@ -1001,14 +995,14 @@ void MainWindow::extrudeSketch() {
   }
 
   const double height = extrusionLengthSpin_->value();
-  if (!std::isfinite(height) || height <= 0.0) {
+  if (!std::isfinite(height) || height == 0.0) {
     QMessageBox::warning(this, QString::fromUtf8("Некорректная длина"),
-                         QString::fromUtf8("Длина выдавливания должна быть больше нуля."));
+                         QString::fromUtf8("Длина выдавливания не должна быть равна нулю."));
     return;
   }
   const auto operation = static_cast<ExtrudeOperation>(
       std::clamp(extrusionOperationCombo_->currentIndex(), 0, 2));
-  const bool reversed = extrusionReverseCheck_->isChecked();
+  const bool reversed = height < 0.0;
   if (operation != ExtrudeOperation::NewBody && !document_.activeBody()) {
     QMessageBox::warning(this, QString::fromUtf8("Выдавливание"),
                          QString::fromUtf8("Для Join/Cut нужен активный Body."));
@@ -1043,7 +1037,7 @@ void MainWindow::extrudeSketch() {
                         ? &document_.addBody()
                         : document_.activeBody();
   modelBody->addFeature(std::make_unique<ExtrudeFeature>(
-      modelSketch->id, height,
+      modelSketch->id, std::abs(height),
       "Extrude " + std::to_string(modelBody->features().size() + 1),
       operation, reversed));
   if (!document_.rebuild()) {
@@ -1284,12 +1278,11 @@ void MainWindow::editExtrusionStep() {
   auto* layout = new QVBoxLayout(&dialog);
   auto* form = new QFormLayout;
   auto* distance = new QDoubleSpinBox(&dialog);
-  distance->setRange(0.01, 100000.0);
+  distance->setRange(-100000.0, 100000.0);
   distance->setDecimals(2);
   distance->setSuffix(QStringLiteral(" mm"));
-  distance->setValue(extrude->lengthMm());
-  auto* reverse = new QCheckBox(QString::fromUtf8("Обратное направление"), &dialog);
-  reverse->setChecked(extrude->reversed());
+  distance->setValue(extrude->reversed() ? -extrude->lengthMm()
+                                           : extrude->lengthMm());
   auto* operation = new QComboBox(&dialog);
   operation->addItems({QString::fromUtf8("Новое тело"), QStringLiteral("Join"),
                        QStringLiteral("Cut")});
@@ -1301,7 +1294,6 @@ void MainWindow::editExtrusionStep() {
     operation->setItemData(0, 0, Qt::UserRole - 1);
   form->addRow(QString::fromUtf8("Расстояние:"), distance);
   form->addRow(QString::fromUtf8("Операция:"), operation);
-  form->addRow(QString::fromUtf8("Направление:"), reverse);
   layout->addLayout(form);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
                                         QDialogButtonBox::Cancel, &dialog);
@@ -1311,8 +1303,8 @@ void MainWindow::editExtrusionStep() {
   if (dialog.exec() != QDialog::Accepted) return;
   const double height = distance->value();
   const Document previousDocument = document_;
-  extrude->setLengthMm(height);
-  extrude->setReversed(reverse->isChecked());
+  extrude->setLengthMm(std::abs(height));
+  extrude->setReversed(height < 0.0);
   if (extrude->operation() != ExtrudeOperation::NewBody)
     extrude->setOperation(static_cast<ExtrudeOperation>(operation->currentIndex()));
   body->markDirtyFrom(extrudeIndex);
