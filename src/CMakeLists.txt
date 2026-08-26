@@ -15,6 +15,8 @@ add_library(solidar_model
   model/ExtrudeFeature.h
   model/ExtrudeOperationDetector.cpp
   model/ExtrudeOperationDetector.h
+  model/FilletFeature.cpp
+  model/FilletFeature.h
   model/PocketFeature.cpp
   model/PocketFeature.h
   model/SketchProfileBuilder.cpp
@@ -26,6 +28,8 @@ add_library(solidar_model
   model/SketchPlacement.cpp
   model/SketchPlacement.h
   model/SolidFeature.h
+  model/TopologyReferenceResolver.cpp
+  model/TopologyReferenceResolver.h
   model/macro/MacroDefinition.h
   model/macro/MacroExecutor.cpp
   model/macro/MacroExecutor.h
@@ -39,7 +43,8 @@ add_library(solidar_model
 target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(solidar_model PUBLIC
-  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool TKMesh
+  TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool
+  TKFillet TKMesh
 )
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)

@@ -74,15 +74,6 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   root->addWidget(group(QString::fromUtf8("СОЗДАНИЕ"), creation, this));
   root->addWidget(separator(this));
 
-  auto placeholderGroup = [this](const QString& title) {
-    auto* layout = new QHBoxLayout;
-    auto* label = new QLabel(QString::fromUtf8("Инструменты появятся позже"), this);
-    label->setObjectName("modelPlaceholder");
-    label->setMinimumWidth(260);
-    label->setAlignment(Qt::AlignCenter);
-    layout->addWidget(label);
-    return group(title, layout, this);
-  };
   auto* views = new QHBoxLayout;
   views->setSpacing(3);
   const std::array<const char*, 5> viewNames{{"Fit", "ISO", "Top", "Front", "Right"}};
@@ -94,12 +85,17 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   }
   root->addWidget(group(QString::fromUtf8("ВИД"), views, this), 1);
   root->addWidget(separator(this));
-  root->addWidget(placeholderGroup(QString::fromUtf8("РАСШИРЕННЫЕ")), 1);
+  auto* fillet = commandButton({}, QString::fromUtf8("Скругление"), this);
+  auto* advanced = new QHBoxLayout;
+  advanced->addWidget(fillet);
+  root->addWidget(group(QString::fromUtf8("РАСШИРЕННЫЕ"), advanced, this), 1);
 
   connect(createSketch, &QToolButton::clicked, this,
           &ModelRibbon::createSketchRequested);
   connect(extrude, &QToolButton::clicked, this,
           &ModelRibbon::extrudeRequested);
+  connect(fillet, &QToolButton::clicked, this,
+          &ModelRibbon::filletRequested);
   connect(viewButtons[0], &QToolButton::clicked, this, &ModelRibbon::fitRequested);
   connect(viewButtons[1], &QToolButton::clicked, this, &ModelRibbon::isoRequested);
   connect(viewButtons[2], &QToolButton::clicked, this, &ModelRibbon::topRequested);

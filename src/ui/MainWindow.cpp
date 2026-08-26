@@ -2,6 +2,7 @@
 
 #include "model/ExtrudeFeature.h"
 #include "model/ExtrudeOperationDetector.h"
+#include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
 
 #include <algorithm>
@@ -726,6 +727,8 @@ void MainWindow::buildUi() {
                 QString::fromUtf8("Выберите профиль для вырезания"));
             viewport_->beginExtrusionSurfaceSelection();
           });
+  connect(modelRibbon_, &ModelRibbon::filletRequested, this,
+          &MainWindow::createFillet);
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
   connect(modelRibbon_, &ModelRibbon::topRequested, viewport_, &Viewport::viewTop);
@@ -1244,6 +1247,56 @@ void MainWindow::createPocket() {
       QString::fromUtf8("Создан карман глубиной %1 мм").arg(depth), 4000);
 }
 
+void MainWindow::createFillet() {
+  const auto edge = viewport_->selectedBodyEdge();
+  if (!edge) {
+    QMessageBox::information(this, QString::fromUtf8("Скругление"),
+                             QString::fromUtf8("Сначала выберите ребро"));
+    return;
+  }
+  Body* body = document_.findBody(edge->bodyId);
+  if (!body || !body->activeFeature() ||
+      body->activeFeature()->id() != edge->featureId) {
+    QMessageBox::warning(
+        this, QString::fromUtf8("Скругление"),
+        QString::fromUtf8("Выбранное ребро больше не соответствует модели"));
+    return;
+  }
+
+  bool accepted = false;
+  const double radius = QInputDialog::getDouble(
+      this, QString::fromUtf8("Создать скругление"),
+      QString::fromUtf8("Радиус, мм:"), 5.0, 0.01, 100000.0, 2, &accepted);
+  if (!accepted) return;
+
+  const Document previousDocument = document_;
+  body->addFeature(std::make_unique<FilletFeature>(
+      *edge, radius,
+      "Скругление " + std::to_string(body->features().size())));
+  if (!document_.rebuild()) {
+    const QString error = QString::fromStdString(
+        body->activeFeature() ? body->activeFeature()->error()
+                              : "Fillet rebuild failed");
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка скругления"), error);
+    return;
+  }
+  pushUndoAction([this, previousDocument] {
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  modelRibbon_->clearActiveTool();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  statusBar()->showMessage(
+      QString::fromUtf8("Создано скругление радиусом %1 мм").arg(radius),
+      4000);
+}
+
 void MainWindow::rebuildHistoryPanel() {
   if (!historyLayout_) return;
   while (QLayoutItem* item = historyLayout_->takeAt(0)) {
@@ -1286,6 +1339,12 @@ void MainWindow::rebuildHistoryPanel() {
             QString::fromUtf8("Карман"),
             QString::fromUtf8("Изменить глубину кармана"),
             [this] { editPocketStep(); });
+  }
+  if (const Body* body = document_.activeBody();
+      body && dynamic_cast<const FilletFeature*>(body->activeFeature())) {
+    addStep(QIcon(), QString::fromUtf8("Скругление"),
+            QString::fromUtf8("Изменить радиус скругления"),
+            [this] { editFilletStep(); });
   }
   if (historySlider_) {
     const QSignalBlocker blocker(historySlider_);
@@ -1475,6 +1534,41 @@ void MainWindow::editPocketStep() {
   rebuildHistoryPanel();
   statusBar()->showMessage(
       QString::fromUtf8("Глубина кармана изменена: %1 мм").arg(depth), 3000);
+}
+
+void MainWindow::editFilletStep() {
+  Body* body = document_.activeBody();
+  auto* fillet = body
+                     ? dynamic_cast<FilletFeature*>(body->activeFeature())
+                     : nullptr;
+  if (!fillet) return;
+  bool accepted = false;
+  const double radius = QInputDialog::getDouble(
+      this, QString::fromUtf8("Изменить скругление"),
+      QString::fromUtf8("Радиус, мм:"), fillet->radiusMm(), 0.01,
+      100000.0, 2, &accepted);
+  if (!accepted) return;
+  const Document previousDocument = document_;
+  fillet->setRadiusMm(radius);
+  if (!document_.rebuild()) {
+    const QString error = QString::fromStdString(fillet->error());
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка скругления"), error);
+    return;
+  }
+  pushUndoAction([this, previousDocument] {
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  statusBar()->showMessage(
+      QString::fromUtf8("Радиус скругления изменён: %1 мм").arg(radius),
+      3000);
 }
 
 void MainWindow::rebuildFeatureTree() {

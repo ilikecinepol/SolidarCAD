@@ -49,6 +49,7 @@ class MainWindow final : public QMainWindow {
   void updateAutomaticExtrudeOperation();
   void normalizeExtrusionDistance();
   void createPocket();
+  void createFillet();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
@@ -56,6 +57,7 @@ class MainWindow final : public QMainWindow {
   void editSketchStep(std::size_t index);
   void editExtrusionStep();
   void editPocketStep();
+  void editFilletStep();
   void exportPdf();
   void printDrawing();
   void undoLastAction();

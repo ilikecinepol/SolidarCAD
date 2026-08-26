@@ -30,6 +30,10 @@ add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
 
+add_executable(fillet_feature_tests fillet_feature_tests.cpp)
+target_link_libraries(fillet_feature_tests PRIVATE solidar_model)
+add_test(NAME fillet_feature_tests COMMAND fillet_feature_tests)
+
 # SOLIDAR TEST QT RUNTIME PATH
 # On Windows the Qt-dependent test executables need Qt DLLs at runtime.
 # Configure CTest itself so users do not need to edit PATH manually.
@@ -49,6 +53,7 @@ if(WIN32)
     sketch_regression_tests
     body_render_mesh_tests
     macro_foundation_tests
+    fillet_feature_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"
