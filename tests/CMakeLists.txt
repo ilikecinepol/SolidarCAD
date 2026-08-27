@@ -6,6 +6,24 @@ add_executable(extrude_feature_tests extrude_feature_tests.cpp)
 target_link_libraries(extrude_feature_tests PRIVATE solidar_model)
 add_test(NAME extrude_feature_tests COMMAND extrude_feature_tests)
 
+add_executable(extrude_geometry_regression_tests
+               extrude_geometry_regression_tests.cpp)
+target_link_libraries(extrude_geometry_regression_tests PRIVATE solidar_model)
+add_test(NAME extrude_geometry_regression_tests
+         COMMAND extrude_geometry_regression_tests)
+
+add_executable(extrude_boolean_regression_tests
+               extrude_boolean_regression_tests.cpp)
+target_link_libraries(extrude_boolean_regression_tests PRIVATE solidar_model)
+add_test(NAME extrude_boolean_regression_tests
+         COMMAND extrude_boolean_regression_tests)
+
+add_executable(extrude_history_regression_tests
+               extrude_history_regression_tests.cpp)
+target_link_libraries(extrude_history_regression_tests PRIVATE solidar_model)
+add_test(NAME extrude_history_regression_tests
+         COMMAND extrude_history_regression_tests)
+
 add_executable(pocket_feature_tests pocket_feature_tests.cpp)
 target_link_libraries(pocket_feature_tests PRIVATE solidar_model)
 add_test(NAME pocket_feature_tests COMMAND pocket_feature_tests)
@@ -47,6 +65,9 @@ if(WIN32)
   set_tests_properties(
     document_tests
     extrude_feature_tests
+    extrude_geometry_regression_tests
+    extrude_boolean_regression_tests
+    extrude_history_regression_tests
     pocket_feature_tests
     project_file_tests
     editor_smoke_tests

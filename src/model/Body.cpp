@@ -70,13 +70,20 @@ ShapeFeature::ShapePtr Body::resultShape() const noexcept {
 bool Body::rebuild(const RebuildContext& context) {
   ShapeFeature::ShapePtr previousShape;
   bool upstreamDirty = false;
-  for (auto& feature : features_) {
+  for (std::size_t index = 0; index < features_.size(); ++index) {
+    auto& feature = features_[index];
     upstreamDirty = upstreamDirty || feature->isDirty();
     if (upstreamDirty) feature->setDirty();
     const RebuildContext featureContext{context.document, this,
                                         previousShape.get()};
-    if (feature->isDirty() && !feature->rebuild(featureContext)) return false;
-    if (!feature->isValid()) return false;
+    if (feature->isDirty() && !feature->rebuild(featureContext)) {
+      markDirtyFrom(index + 1);
+      return false;
+    }
+    if (!feature->isValid()) {
+      markDirtyFrom(index + 1);
+      return false;
+    }
     previousShape = feature->shape();
     // Attachments to this freshly rebuilt feature must move before the next
     // feature consumes their sketches (Extrude -> face Sketch -> Pocket).
