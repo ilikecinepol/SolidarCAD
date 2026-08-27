@@ -6,6 +6,7 @@
     <file alias="settings.png">settings.png</file>
     <file alias="create-sketch.png">create-sketch.png</file>
     <file alias="extrude.png">extrude.png</file>
+    <file alias="fillet.png">fillet.png</file>
     <file alias="sketch/line.png">sketch/line.png</file>
     <file alias="sketch/rectangle.png">sketch/rectangle.png</file>
     <file alias="sketch/circle.png">sketch/circle.png</file>

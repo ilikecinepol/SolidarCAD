@@ -85,7 +85,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   }
   root->addWidget(group(QString::fromUtf8("ВИД"), views, this), 1);
   root->addWidget(separator(this));
-  auto* fillet = commandButton({}, QString::fromUtf8("Скругление"), this);
+  auto* fillet = commandButton(QStringLiteral(":/icons/fillet.png"),
+                               QString::fromUtf8("Скругление"), this);
   auto* advanced = new QHBoxLayout;
   advanced->addWidget(fillet);
   root->addWidget(group(QString::fromUtf8("РАСШИРЕННЫЕ"), advanced, this), 1);
