@@ -67,6 +67,10 @@ bool FilletToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
+  if (edges_.empty()) {
+    lifecycle_ = ToolLifecycle::Editing;
+    return false;
+  }
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
   for (const auto& edge : edges_) {

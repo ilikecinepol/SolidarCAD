@@ -27,6 +27,8 @@ class ToolParametersPanel final : public QWidget {
   void parameterChanged(double value);
   void accepted();
   void cancelled();
+  void selectionRequested();
+  void clearSelectionRequested();
 
  private:
   QLabel* title_{};
@@ -36,6 +38,8 @@ class ToolParametersPanel final : public QWidget {
   QLabel* status_{};
   QDoubleSpinBox* parameter_{};
   QPushButton* accept_{};
+  QPushButton* select_{};
+  QPushButton* clear_{};
 };
 
 }  // namespace solidar

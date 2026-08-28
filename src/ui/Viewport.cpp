@@ -594,12 +594,22 @@ void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
 
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   toolManipulator_ = manipulator;
+  angularToolManipulator_.reset();
+  update();
+}
+
+void Viewport::setAngularToolManipulator(
+    const AngularToolManipulator& manipulator) {
+  angularToolManipulator_ = manipulator;
+  toolManipulator_.reset();
   update();
 }
 
 void Viewport::clearToolManipulator() {
   toolManipulator_.reset();
+  angularToolManipulator_.reset();
   draggingToolManipulator_ = false;
+  draggingAngularToolManipulator_ = false;
   update();
 }
 
@@ -955,6 +965,24 @@ void Viewport::paintEvent(QPaintEvent*) {
       painter.drawLine(start, end);
       painter.setBrush(QColor("#0874f9"));
       painter.drawEllipse(end, 6.0, 6.0);
+    }
+    if (angularToolManipulator_) {
+      const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
+          center, size(), yaw_, pitch_, zoom_).screen;
+      const double radius = std::max(24.0, angularToolManipulator_->radiusMm * zoom_);
+      const double angle = angularToolManipulator_->angleDeg * std::numbers::pi / 180.0;
+      QRectF arc(origin.x() - radius, origin.y() - radius,
+                 radius * 2.0, radius * 2.0);
+      painter.setPen(QPen(QColor("#0874f9"), 3.0));
+      painter.drawArc(arc, 0, static_cast<int>(-angularToolManipulator_->angleDeg * 16.0));
+      painter.setPen(QPen(QColor("#ff8a00"), 2.0, Qt::DashLine));
+      painter.drawLine(origin + QPointF(-radius * 1.4, 0.0),
+                       origin + QPointF(radius * 1.4, 0.0));
+      const QPointF handle = origin + QPointF(std::cos(angle) * radius,
+                                               -std::sin(angle) * radius);
+      painter.setBrush(QColor("#0874f9"));
+      painter.setPen(Qt::NoPen);
+      painter.drawEllipse(handle, 7.0, 7.0);
     }
   } else if (solidVisible_ && solidSketch_.lines().empty() &&
              solidSketch_.circles().empty()) {
@@ -1513,6 +1541,20 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     const QPointF handle = projectBodyPoint(endWorld, center, size(), yaw_, pitch_, zoom_).screen;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingToolManipulator_ = true;
+      setCursor(Qt::SizeAllCursor);
+      return;
+    }
+  }
+  if (angularToolManipulator_) {
+    const Point3d center = bodyRenderMesh_.center();
+    const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
+        center, size(), yaw_, pitch_, zoom_).screen;
+    const double radius = std::max(24.0, angularToolManipulator_->radiusMm * zoom_);
+    const double angle = angularToolManipulator_->angleDeg * std::numbers::pi / 180.0;
+    const QPointF handle = origin + QPointF(std::cos(angle) * radius,
+                                             -std::sin(angle) * radius);
+    if (QLineF(scenePosition, handle).length() <= 18.0) {
+      draggingAngularToolManipulator_ = true;
       setCursor(Qt::SizeAllCursor);
       return;
     }
@@ -2448,6 +2490,19 @@ void Viewport::updateExtrusionHover(QPointF position) {
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
+  if (draggingAngularToolManipulator_ && angularToolManipulator_ &&
+      event->buttons().testFlag(Qt::LeftButton)) {
+    const Point3d center = bodyRenderMesh_.center();
+    const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
+        center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF delta = event->position() - cameraPan_ - origin;
+    double angle = std::atan2(-delta.y(), delta.x()) * 180.0 / std::numbers::pi;
+    if (angle <= 0.0) angle += 360.0;
+    angularToolManipulator_->angleDeg = std::clamp(angle, 0.01, 360.0);
+    emit angularToolManipulatorValueChanged(angularToolManipulator_->angleDeg);
+    update();
+    return;
+  }
   if (draggingToolManipulator_ && toolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
     const Point3d center = bodyRenderMesh_.center();
@@ -2545,6 +2600,10 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
     unsetCursor();
     event->accept();
     return;
+  }
+  if (event->button() == Qt::LeftButton && draggingAngularToolManipulator_) {
+    draggingAngularToolManipulator_ = false;
+    unsetCursor(); event->accept(); return;
   }
   if (event->button() == Qt::LeftButton && draggingBody_) {
     draggingBody_ = false;

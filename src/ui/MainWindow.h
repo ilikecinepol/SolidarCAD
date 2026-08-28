@@ -7,6 +7,7 @@
 
 #include "model/Document.h"
 #include "model/FilletToolSession.h"
+#include "model/RevolveToolSession.h"
 #include "sketch/Sketch.h"
 
 class QTreeWidget;
@@ -52,6 +53,10 @@ class MainWindow final : public QMainWindow {
   void normalizeExtrusionDistance();
   void createPocket();
   void createRevolve();
+  void updateRevolveToolPreview();
+  void acceptRevolveTool();
+  void cancelRevolveTool();
+  void rebuildRevolveAxisChoices();
   void createFillet();
   void updateFilletToolPreview();
   void acceptFilletTool();
@@ -96,6 +101,14 @@ class MainWindow final : public QMainWindow {
   QDockWidget* toolParametersDock_{nullptr};
   ToolParametersPanel* toolParametersPanel_{nullptr};
   FilletToolSession filletToolSession_;
+  RevolveToolSession revolveToolSession_;
+  QDockWidget* revolveDock_{nullptr};
+  QComboBox* revolveProfileCombo_{nullptr};
+  QComboBox* revolveAxisCombo_{nullptr};
+  QDoubleSpinBox* revolveAngleSpin_{nullptr};
+  QComboBox* revolveOperationCombo_{nullptr};
+  QCheckBox* revolveReverseCheck_{nullptr};
+  QPushButton* revolveAcceptButton_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
   QCheckBox* extrusionReverseCheck_{nullptr};

@@ -74,6 +74,7 @@ class Viewport final : public QWidget {
                            ShapeFeature::ShapePtr shape);
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
+  void setAngularToolManipulator(const AngularToolManipulator& manipulator);
   void clearToolManipulator();
   void fitAll();
   void viewTop();
@@ -105,6 +106,7 @@ class Viewport final : public QWidget {
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
   void toolManipulatorValueChanged(double valueMm);
+  void angularToolManipulatorValueChanged(double angleDeg);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -188,7 +190,9 @@ class Viewport final : public QWidget {
   bool selectedExtrusionOnBodyCap_{false};
   bool draggingExtrusionHandle_{false};
   std::optional<LinearToolManipulator> toolManipulator_;
+  std::optional<AngularToolManipulator> angularToolManipulator_;
   bool draggingToolManipulator_{false};
+  bool draggingAngularToolManipulator_{false};
   bool panningView_{false};
   QPointF cameraPan_;
   bool draggingBody_{false};

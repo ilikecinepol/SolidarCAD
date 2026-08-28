@@ -10,6 +10,7 @@
 
 #include "model/Document.h"
 #include "model/RevolveFeature.h"
+#include "model/RevolveToolSession.h"
 
 namespace {
 std::unique_ptr<solidar::RevolveFeature> feature(
@@ -23,6 +24,32 @@ std::unique_ptr<solidar::RevolveFeature> feature(
 }
 
 int main() {
+  // A tool starts incomplete, previews without changing history, synchronizes
+  // panel/manipulator values, and cancel leaves the Document untouched.
+  solidar::Document sessionDocument;
+  auto& sessionSketch = sessionDocument.addSketch("Session profile");
+  sessionSketch.geometry.addRectangle({10.0, 5.0}, {30.0, 15.0});
+  const auto featureCountBefore = sessionDocument.bodies().size();
+  solidar::RevolveToolSession session;
+  session.begin(sessionDocument, solidar::kInvalidBodyId,
+                solidar::kInvalidFeatureId);
+  assert(session.lifecycle() == solidar::ToolLifecycle::Editing);
+  assert(!session.previewShape());
+  session.setProfile(sessionSketch.id);
+  assert(session.lifecycle() == solidar::ToolLifecycle::Editing);
+  session.setAxis({solidar::AxisReferenceType::SketchHorizontalAxis,
+                   sessionSketch.id, solidar::sketch::kInvalidGeometryId});
+  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  assert(session.previewShape());
+  session.setAngleFromPanel(180.0);
+  assert(session.angleDeg() == 180.0 && session.previewShape());
+  session.setAngleFromManipulator(90.0);
+  assert(session.angleDeg() == 90.0 && session.manipulator());
+  assert(sessionDocument.bodies().size() == featureCountBefore);
+  session.cancel();
+  assert(session.lifecycle() == solidar::ToolLifecycle::Inactive);
+  assert(sessionDocument.bodies().size() == featureCountBefore);
+
   for (const double angle : {360.0, 180.0}) {
     solidar::Document document;
     auto& sketch = document.addSketch();

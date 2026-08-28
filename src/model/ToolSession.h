@@ -17,6 +17,13 @@ struct LinearToolManipulator {
   double valueMm{};
 };
 
+struct AngularToolManipulator {
+  Point3d origin{};
+  Vector3d axis{1.0, 0.0, 0.0};
+  double radiusMm{20.0};
+  double angleDeg{360.0};
+};
+
 class ToolSession {
  public:
   virtual ~ToolSession() = default;

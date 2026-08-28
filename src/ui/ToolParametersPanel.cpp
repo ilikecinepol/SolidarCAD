@@ -22,9 +22,17 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   auto* form = new QFormLayout;
   selectionCaption_ = new QLabel(this);
   selectionValue_ = new QLabel(this);
+  auto* selectionControls = new QWidget(this);
+  auto* selectionLayout = new QHBoxLayout(selectionControls);
+  selectionLayout->setContentsMargins(0, 0, 0, 0);
+  select_ = new QPushButton(QString::fromUtf8("Выбрать"), selectionControls);
+  clear_ = new QPushButton(QString::fromUtf8("Очистить"), selectionControls);
+  selectionLayout->addWidget(selectionValue_);
+  selectionLayout->addWidget(select_);
+  selectionLayout->addWidget(clear_);
   parameterCaption_ = new QLabel(this);
   parameter_ = new QDoubleSpinBox(this);
-  form->addRow(selectionCaption_, selectionValue_);
+  form->addRow(selectionCaption_, selectionControls);
   form->addRow(parameterCaption_, parameter_);
   status_ = new QLabel(this);
   status_->setWordWrap(true);
@@ -46,6 +54,10 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
           &ToolParametersPanel::parameterChanged);
   connect(accept_, &QPushButton::clicked, this, &ToolParametersPanel::accepted);
   connect(cancel, &QPushButton::clicked, this, &ToolParametersPanel::cancelled);
+  connect(select_, &QPushButton::clicked, this,
+          &ToolParametersPanel::selectionRequested);
+  connect(clear_, &QPushButton::clicked, this,
+          &ToolParametersPanel::clearSelectionRequested);
 }
 
 void ToolParametersPanel::configure(const QString& title,

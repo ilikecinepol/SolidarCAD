@@ -255,6 +255,11 @@ int main() {
   const double originalVolume = volumeOf(*originalShape);
   const std::size_t originalFeatureCount = previewBody->features().size();
   solidar::FilletToolSession session;
+  session.begin(previewBody->id(), previewBox.extrudeId, originalShape, {}, 2.0);
+  assert(session.lifecycle() == solidar::ToolLifecycle::Editing);
+  assert(!session.previewShape() && session.error().empty());
+  session.setEdges({{previewBody->id(), previewBox.extrudeId, 0}});
+  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   session.begin(previewBody->id(), previewBox.extrudeId, originalShape,
                 {{previewBody->id(), previewBox.extrudeId, 0}}, 2.0);
   assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);

@@ -167,6 +167,9 @@ bool ExtrudeFeature::rebuild(const RebuildContext& context) {
     markError(message && *message ? std::string("OCCT Extrude error: ") + message
                                   : "OCCT Extrude operation failed");
     return false;
+  } catch (const std::exception& failure) {
+    markError(std::string("Extrude error: ") + failure.what());
+    return false;
   } catch (...) {
     markError("Unexpected Extrude geometry error");
     return false;
