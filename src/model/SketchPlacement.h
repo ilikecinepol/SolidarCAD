@@ -52,6 +52,7 @@ struct EdgeReference {
   FeatureId featureId{kInvalidFeatureId};
   // Temporary until persistent topological naming is introduced.
   std::size_t edgeIndex{};
+  friend bool operator==(const EdgeReference&, const EdgeReference&) = default;
 };
 
 enum class SketchSupportType { BasePlane, Face };

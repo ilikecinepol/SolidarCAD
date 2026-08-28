@@ -20,9 +20,6 @@ class ModelRibbon final : public QWidget {
   void filletRequested();
   void fitRequested();
   void isoRequested();
-  void topRequested();
-  void frontRequested();
-  void rightRequested();
 
  private:
   QButtonGroup* toolGroup_{nullptr};

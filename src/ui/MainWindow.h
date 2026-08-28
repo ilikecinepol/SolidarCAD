@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "model/FilletToolSession.h"
 #include "sketch/Sketch.h"
 
 class QTreeWidget;
@@ -27,6 +28,7 @@ class SketchCanvas;
 class DrawingSheetView;
 class SketchRibbon;
 class ModelRibbon;
+class ToolParametersPanel;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -50,6 +52,9 @@ class MainWindow final : public QMainWindow {
   void normalizeExtrusionDistance();
   void createPocket();
   void createFillet();
+  void updateFilletToolPreview();
+  void acceptFilletTool();
+  void cancelFilletTool();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
@@ -87,6 +92,9 @@ class MainWindow final : public QMainWindow {
   QHBoxLayout* historyLayout_{nullptr};
   QSlider* historySlider_{nullptr};
   QDockWidget* extrusionDock_{nullptr};
+  QDockWidget* toolParametersDock_{nullptr};
+  ToolParametersPanel* toolParametersPanel_{nullptr};
+  FilletToolSession filletToolSession_;
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
   QCheckBox* extrusionReverseCheck_{nullptr};

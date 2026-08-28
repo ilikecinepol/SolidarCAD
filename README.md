@@ -52,6 +52,8 @@ See [docs/eskd-profile.md](docs/eskd-profile.md) for the implemented standards
 profile and its current conformance boundary.
 See [docs/modules.md](docs/modules.md) for feature ownership and module boundaries.
 
-## License
+## License and third-party components
 
-License selection is pending dependency review. MPL-2.0 is the current candidate.
+The license for SolidarCAD's own code has not been selected yet. Third-party
+components retain their respective licenses; see [DEPENDENCIES.md](DEPENDENCIES.md)
+and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

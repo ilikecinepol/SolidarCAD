@@ -36,6 +36,10 @@ add_executable(editor_smoke_tests editor_smoke_tests.cpp)
 target_link_libraries(editor_smoke_tests PRIVATE solidar_editor solidar_home Qt6::Widgets)
 add_test(NAME editor_smoke_tests COMMAND editor_smoke_tests)
 
+add_executable(model_ribbon_tests model_ribbon_tests.cpp)
+target_link_libraries(model_ribbon_tests PRIVATE solidar_editor Qt6::Widgets)
+add_test(NAME model_ribbon_tests COMMAND model_ribbon_tests)
+
 add_executable(sketch_regression_tests sketch_regression_tests.cpp)
 target_link_libraries(sketch_regression_tests PRIVATE solidar_model)
 add_test(NAME sketch_regression_tests COMMAND sketch_regression_tests)
@@ -51,6 +55,13 @@ add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
 add_executable(fillet_feature_tests fillet_feature_tests.cpp)
 target_link_libraries(fillet_feature_tests PRIVATE solidar_model)
 add_test(NAME fillet_feature_tests COMMAND fillet_feature_tests)
+
+add_test(
+  NAME compliance_artifacts_tests
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/compliance_artifacts_tests.cmake
+)
 
 # SOLIDAR TEST QT RUNTIME PATH
 # On Windows the Qt-dependent test executables need Qt DLLs at runtime.
@@ -71,6 +82,7 @@ if(WIN32)
     pocket_feature_tests
     project_file_tests
     editor_smoke_tests
+    model_ribbon_tests
     sketch_regression_tests
     body_render_mesh_tests
     macro_foundation_tests

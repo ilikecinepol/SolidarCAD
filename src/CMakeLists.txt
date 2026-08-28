@@ -17,6 +17,11 @@ add_library(solidar_model
   model/ExtrudeOperationDetector.h
   model/FilletFeature.cpp
   model/FilletFeature.h
+  model/FilletBuilder.cpp
+  model/FilletBuilder.h
+  model/FilletToolSession.cpp
+  model/FilletToolSession.h
+  model/ToolSession.h
   model/PocketFeature.cpp
   model/PocketFeature.h
   model/SketchProfileBuilder.cpp
@@ -96,6 +101,8 @@ add_library(solidar_editor
   ui/EditorFactory.h
   ui/MainWindow.cpp
   ui/MainWindow.h
+  ui/ToolParametersPanel.cpp
+  ui/ToolParametersPanel.h
 )
 target_include_directories(solidar_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_editor PUBLIC

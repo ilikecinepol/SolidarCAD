@@ -1,0 +1,69 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "SolidarCAD-0.1.0-direct-dependencies",
+  "documentNamespace": "https://solidarcad.example/sbom/0.1.0/2026-08-28",
+  "creationInfo": {
+    "created": "2026-08-28T00:00:00Z",
+    "creators": ["Tool: SolidarCAD compliance foundation"]
+  },
+  "documentDescribes": ["SPDXRef-SolidarCAD"],
+  "packages": [
+    {
+      "name": "SolidarCAD",
+      "SPDXID": "SPDXRef-SolidarCAD",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Qt",
+      "SPDXID": "SPDXRef-Qt",
+      "versionInfo": "6.11.1",
+      "downloadLocation": "https://download.qt.io/official_releases/qt/6.11/6.11.1/",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "LGPL-3.0-only",
+      "copyrightText": "Copyright The Qt Company Ltd. and other contributors",
+      "comment": "Local development profile; release pipeline must resolve the distributed Qt build and its third-party components."
+    },
+    {
+      "name": "Open CASCADE Technology",
+      "SPDXID": "SPDXRef-OCCT",
+      "versionInfo": "8.0.1",
+      "downloadLocation": "https://github.com/Open-Cascade-SAS/OCCT",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "LGPL-2.1-only WITH OCCT-exception-1.0",
+      "copyrightText": "Copyright OPEN CASCADE S.A.S. and contributors",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:vcpkg/opencascade@8.0.1"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-SolidarCAD"
+    },
+    {
+      "spdxElementId": "SPDXRef-SolidarCAD",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Qt"
+    },
+    {
+      "spdxElementId": "SPDXRef-SolidarCAD",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-OCCT"
+    }
+  ]
+}

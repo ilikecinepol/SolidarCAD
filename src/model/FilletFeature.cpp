@@ -1,8 +1,5 @@
 #include "model/FilletFeature.h"
 
-#include <BRepFilletAPI_MakeFillet.hxx>
-#include <Standard_Failure.hxx>
-#include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <cmath>
@@ -10,28 +7,46 @@
 #include <utility>
 
 #include "model/Body.h"
-#include "model/TopologyReferenceResolver.h"
+#include "model/FilletBuilder.h"
 
 namespace solidar {
 
 FilletFeature::FilletFeature(EdgeReference edge, double radiusMm,
                              std::string name)
     : ShapeFeature(name.empty() ? "Fillet" : std::move(name)),
-      edge_(edge),
+      edges_{edge},
       radiusMm_(radiusMm) {}
+
+FilletFeature::FilletFeature(std::vector<EdgeReference> edges, double radiusMm,
+                             std::string name)
+    : ShapeFeature(name.empty() ? "Fillet" : std::move(name)),
+      edges_(std::move(edges)), radiusMm_(radiusMm) {}
 
 FilletFeature::FilletFeature(FeatureId id, EdgeReference edge,
                              double radiusMm, std::string name)
-    : ShapeFeature(id, std::move(name)), edge_(edge), radiusMm_(radiusMm) {}
+    : ShapeFeature(id, std::move(name)), edges_{edge}, radiusMm_(radiusMm) {}
 
-const EdgeReference& FilletFeature::edge() const noexcept { return edge_; }
+FilletFeature::FilletFeature(FeatureId id, std::vector<EdgeReference> edges,
+                             double radiusMm, std::string name)
+    : ShapeFeature(id, std::move(name)), edges_(std::move(edges)),
+      radiusMm_(radiusMm) {}
+
+const EdgeReference& FilletFeature::edge() const noexcept {
+  static const EdgeReference empty;
+  return edges_.empty() ? empty : edges_.front();
+}
+const std::vector<EdgeReference>& FilletFeature::edges() const noexcept {
+  return edges_;
+}
 double FilletFeature::radiusMm() const noexcept { return radiusMm_; }
 
 void FilletFeature::setEdge(EdgeReference edge) noexcept {
-  if (edge_.bodyId == edge.bodyId && edge_.featureId == edge.featureId &&
-      edge_.edgeIndex == edge.edgeIndex)
-    return;
-  edge_ = edge;
+  setEdges({edge});
+}
+
+void FilletFeature::setEdges(std::vector<EdgeReference> edges) noexcept {
+  if (edges_ == edges) return;
+  edges_ = std::move(edges);
   setDirty();
 }
 
@@ -53,10 +68,22 @@ bool FilletFeature::rebuild(const RebuildContext& context) {
     markError("Fillet base shape is missing");
     return false;
   }
-  if (!context.body || edge_.bodyId != context.body->id()) {
+  if (edges_.empty()) {
+    markError("Fillet requires at least one edge");
+    return false;
+  }
+  if (!context.body) {
     markError("Fillet edge belongs to a different Body");
     return false;
   }
+  const BodyId sourceBody = edges_.front().bodyId;
+  const FeatureId sourceFeature = edges_.front().featureId;
+  for (const auto& edge : edges_)
+    if (edge.bodyId != sourceBody || edge.featureId != sourceFeature ||
+        edge.bodyId != context.body->id()) {
+      markError("Fillet edges must belong to one Body and source Feature");
+      return false;
+    }
 
   // The selected topology belongs to the result immediately preceding this
   // feature. edgeIndex remains temporary until persistent topological naming
@@ -69,50 +96,24 @@ bool FilletFeature::rebuild(const RebuildContext& context) {
       break;
     }
   if (ownIndex == 0 || ownIndex == features.size() ||
-      features[ownIndex - 1]->id() != edge_.featureId) {
+      features[ownIndex - 1]->id() != sourceFeature) {
     markError("Fillet source Feature could not be resolved");
     return false;
   }
 
-  const auto edge = resolveEdge(*context.previousShape, edge_.edgeIndex);
-  if (!edge) {
-    markError("Fillet edge could not be resolved");
+  std::vector<std::size_t> indices;
+  indices.reserve(edges_.size());
+  for (const auto& edge : edges_) indices.push_back(edge.edgeIndex);
+  std::string error;
+  auto result = buildFilletShape(*context.previousShape, indices, radiusMm_,
+                                 &error);
+  if (!result) {
+    markError(std::move(error));
     return false;
   }
-
-  try {
-    BRepFilletAPI_MakeFillet maker(*context.previousShape);
-    maker.Add(radiusMm_, *edge);
-    maker.Build();
-    if (!maker.IsDone() || maker.Shape().IsNull()) {
-      markError("Fillet could not be built with the requested radius");
-      return false;
-    }
-
-    TopoDS_Shape result = maker.Shape();
-    if (result.ShapeType() != TopAbs_SOLID) {
-      TopExp_Explorer solids(result, TopAbs_SOLID);
-      if (!solids.More()) {
-        markError("Fillet result does not contain a solid");
-        return false;
-      }
-      result = solids.Current();
-      solids.Next();
-      if (solids.More()) {
-        markError("Fillet result contains multiple solids");
-        return false;
-      }
-    }
-    setShape(std::make_shared<TopoDS_Shape>(result));
-    markValid();
-    return true;
-  } catch (const Standard_Failure&) {
-    markError("Fillet could not be built with the requested radius");
-    return false;
-  } catch (...) {
-    markError("Unexpected Fillet geometry error");
-    return false;
-  }
+  setShape(std::move(result));
+  markValid();
+  return true;
 }
 
 std::unique_ptr<Feature> FilletFeature::clone() const {

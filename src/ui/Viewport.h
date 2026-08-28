@@ -12,6 +12,7 @@
 #include "model/SolidFeature.h"
 #include "sketch/Sketch.h"
 #include "ui/BodyRenderMesh.h"
+#include "model/ToolSession.h"
 
 class QMouseEvent;
 class QPaintEvent;
@@ -67,6 +68,13 @@ class Viewport final : public QWidget {
   [[nodiscard]] std::optional<std::size_t> selectedBodyFaceIndex() const noexcept;
   [[nodiscard]] std::optional<FaceReference> selectedBodyFace() const noexcept;
   [[nodiscard]] std::optional<EdgeReference> selectedBodyEdge() const noexcept;
+  [[nodiscard]] std::vector<EdgeReference> selectedBodyEdges() const;
+  void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
+  void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
+                           ShapeFeature::ShapePtr shape);
+  void clearToolPreviewShape();
+  void setToolManipulator(const LinearToolManipulator& manipulator);
+  void clearToolManipulator();
   void fitAll();
   void viewTop();
   void viewBottom();
@@ -95,6 +103,8 @@ class Viewport final : public QWidget {
   void extrusionSurfacePicked(const QString& surfaceName);
   void extrusionPreviewLengthChanged(double lengthMm);
   void bodyMoveCommitted(QPointF previous, QPointF current);
+  void bodyEdgeSelectionChanged();
+  void toolManipulatorValueChanged(double valueMm);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -111,10 +121,15 @@ class Viewport final : public QWidget {
   [[nodiscard]] QPointF extrusionScreenOffset() const;
   void rebuildSelectedExtrusionSketch();
   void updateBodyHover(QPointF position);
+  void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
+                          bool clearSelection);
+  [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(
+      std::size_t index) const noexcept;
   enum class PickMode { None, SketchPlane, ExtrusionSurface };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
+  std::vector<BodyViewShape> bodyViewShapes_;
   struct BodyTopologyRange {
     BodyId bodyId{kInvalidBodyId};
     FeatureId featureId{kInvalidFeatureId};
@@ -147,6 +162,7 @@ class Viewport final : public QWidget {
   std::size_t hoveredBodyFaceIndex_{static_cast<std::size_t>(-1)};
   std::size_t hoveredBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};
+  std::vector<std::size_t> selectedBodyEdgeIndices_;
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
   bool selectedOrigin_{false};
@@ -171,6 +187,8 @@ class Viewport final : public QWidget {
   bool hoveredExtrusionOnBodyCap_{false};
   bool selectedExtrusionOnBodyCap_{false};
   bool draggingExtrusionHandle_{false};
+  std::optional<LinearToolManipulator> toolManipulator_;
+  bool draggingToolManipulator_{false};
   bool panningView_{false};
   QPointF cameraPan_;
   bool draggingBody_{false};

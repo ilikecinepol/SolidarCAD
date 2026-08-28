@@ -3,6 +3,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/ExtrudeOperationDetector.h"
 #include "model/FilletFeature.h"
+#include "ui/ToolParametersPanel.h"
 #include "model/PocketFeature.h"
 
 #include <algorithm>
@@ -377,6 +378,52 @@ void MainWindow::buildUi() {
   extrusionDock_->setMinimumWidth(250);
   addDockWidget(Qt::RightDockWidgetArea, extrusionDock_);
   extrusionDock_->hide();
+
+  toolParametersDock_ = new QDockWidget(QString::fromUtf8("Параметры инструмента"), this);
+  toolParametersDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  toolParametersDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  toolParametersPanel_ = new ToolParametersPanel(toolParametersDock_);
+  toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
+                                  QString::fromUtf8("Рёбра"),
+                                  QString::fromUtf8("Радиус"),
+                                  QStringLiteral(" mm"));
+  toolParametersPanel_->setParameterRange(0.01, 100000.0, 2);
+  toolParametersDock_->setWidget(toolParametersPanel_);
+  toolParametersDock_->setMinimumWidth(250);
+  addDockWidget(Qt::RightDockWidgetArea, toolParametersDock_);
+  toolParametersDock_->hide();
+  connect(toolParametersPanel_, &ToolParametersPanel::parameterChanged, this,
+          [this](double radius) {
+            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+            filletToolSession_.setRadiusFromPanel(radius);
+            updateFilletToolPreview();
+          });
+  connect(toolParametersPanel_, &ToolParametersPanel::accepted, this,
+          &MainWindow::acceptFilletTool);
+  connect(toolParametersPanel_, &ToolParametersPanel::cancelled, this,
+          &MainWindow::cancelFilletTool);
+  connect(viewport_, &Viewport::toolManipulatorValueChanged, this,
+          [this](double radius) {
+            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+            filletToolSession_.setRadiusFromManipulator(radius);
+            toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
+            updateFilletToolPreview();
+          });
+  connect(viewport_, &Viewport::bodyEdgeSelectionChanged, this, [this] {
+    if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+    filletToolSession_.setEdges(viewport_->selectedBodyEdges());
+    updateFilletToolPreview();
+  });
+  auto* acceptToolShortcut = new QShortcut(QKeySequence(Qt::Key_Return),
+                                           toolParametersDock_);
+  acceptToolShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(acceptToolShortcut, &QShortcut::activated, this,
+          &MainWindow::acceptFilletTool);
+  auto* cancelToolShortcut = new QShortcut(QKeySequence(Qt::Key_Escape),
+                                           toolParametersDock_);
+  cancelToolShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(cancelToolShortcut, &QShortcut::activated, this,
+          &MainWindow::cancelFilletTool);
   connect(extrusionLengthSpin_, &QDoubleSpinBox::valueChanged, this,
           [this](double value) {
             const double signedValue = extrusionReverseCheck_->isChecked()
@@ -731,9 +778,6 @@ void MainWindow::buildUi() {
           &MainWindow::createFillet);
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
-  connect(modelRibbon_, &ModelRibbon::topRequested, viewport_, &Viewport::viewTop);
-  connect(modelRibbon_, &ModelRibbon::frontRequested, viewport_, &Viewport::viewFront);
-  connect(modelRibbon_, &ModelRibbon::rightRequested, viewport_, &Viewport::viewRight);
   connect(viewport_, &Viewport::sketchPlanePicked, this,
           [this](const QString& plane) {
             modelRibbon_->clearActiveTool();
@@ -1248,40 +1292,101 @@ void MainWindow::createPocket() {
 }
 
 void MainWindow::createFillet() {
-  const auto edge = viewport_->selectedBodyEdge();
-  if (!edge) {
+  const auto edges = viewport_->selectedBodyEdges();
+  if (edges.empty()) {
     QMessageBox::information(this, QString::fromUtf8("Скругление"),
                              QString::fromUtf8("Сначала выберите ребро"));
     return;
   }
-  Body* body = document_.findBody(edge->bodyId);
+  Body* body = document_.findBody(edges.front().bodyId);
   if (!body || !body->activeFeature() ||
-      body->activeFeature()->id() != edge->featureId) {
+      body->activeFeature()->id() != edges.front().featureId) {
     QMessageBox::warning(
         this, QString::fromUtf8("Скругление"),
         QString::fromUtf8("Выбранное ребро больше не соответствует модели"));
     return;
   }
 
-  bool accepted = false;
-  const double radius = QInputDialog::getDouble(
-      this, QString::fromUtf8("Создать скругление"),
-      QString::fromUtf8("Радиус, мм:"), 5.0, 0.01, 100000.0, 2, &accepted);
-  if (!accepted) return;
+  for (const auto& edge : edges)
+    if (edge.bodyId != body->id() ||
+        edge.featureId != body->activeFeature()->id()) {
+      QMessageBox::warning(this, QString::fromUtf8("Скругление"),
+                           QString::fromUtf8("Рёбра должны принадлежать одному телу"));
+      return;
+    }
+  filletToolSession_.begin(body->id(), body->activeFeature()->id(),
+                           body->resultShape(), edges, 5.0);
+  toolParametersPanel_->setParameterValue(5.0);
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateFilletToolPreview();
+}
 
+void MainWindow::updateFilletToolPreview() {
+  const auto state = filletToolSession_.lifecycle();
+  if (state == ToolLifecycle::Inactive) return;
+  toolParametersPanel_->setSelectionCount(filletToolSession_.edges().size());
+  const bool valid = state == ToolLifecycle::PreviewValid;
+  toolParametersPanel_->setAcceptEnabled(valid);
+  toolParametersPanel_->setStatus(
+      valid ? QString::fromUtf8("Предпросмотр построен")
+            : QString::fromStdString(filletToolSession_.error()),
+      !valid);
+  if (valid)
+    viewport_->setToolPreviewShape(filletToolSession_.bodyId(),
+                                   filletToolSession_.sourceFeatureId(),
+                                   filletToolSession_.previewShape());
+  else
+    viewport_->clearToolPreviewShape();
+  if (const auto manipulator = filletToolSession_.manipulator())
+    viewport_->setToolManipulator(*manipulator);
+  else
+    viewport_->clearToolManipulator();
+}
+
+void MainWindow::cancelFilletTool() {
+  if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  filletToolSession_.cancel();
+  viewport_->clearToolPreviewShape();
+  viewport_->clearToolManipulator();
+  toolParametersDock_->hide();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(QString::fromUtf8("Скругление отменено"), 2000);
+}
+
+void MainWindow::acceptFilletTool() {
+  if (filletToolSession_.lifecycle() != ToolLifecycle::PreviewValid) return;
   const Document previousDocument = document_;
-  body->addFeature(std::make_unique<FilletFeature>(
-      *edge, radius,
-      "Скругление " + std::to_string(body->features().size())));
+  Body* body = document_.findBody(filletToolSession_.bodyId());
+  if (!body) return;
+  if (const auto editingId = filletToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* fillet = dynamic_cast<FilletFeature*>(body->features()[index].get());
+      if (!fillet || fillet->id() != *editingId) continue;
+      fillet->setEdges(filletToolSession_.edges());
+      fillet->setRadiusMm(filletToolSession_.radiusMm());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    body->addFeature(std::make_unique<FilletFeature>(
+        filletToolSession_.edges(), filletToolSession_.radiusMm(),
+        "Скругление " + std::to_string(body->features().size())));
+  }
   if (!document_.rebuild()) {
     const QString error = QString::fromStdString(
         body->activeFeature() ? body->activeFeature()->error()
                               : "Fillet rebuild failed");
     document_ = previousDocument;
     refreshBodyViewFromDocument();
-    QMessageBox::warning(this, QString::fromUtf8("Ошибка скругления"), error);
+    toolParametersPanel_->setStatus(error, true);
     return;
   }
+  const double radius = filletToolSession_.radiusMm();
+  filletToolSession_.cancel();
+  viewport_->clearToolPreviewShape();
+  viewport_->clearToolManipulator();
+  toolParametersDock_->hide();
   pushUndoAction([this, previousDocument] {
     document_ = previousDocument;
     refreshBodyViewFromDocument();
@@ -1293,8 +1398,7 @@ void MainWindow::createFillet() {
   rebuildFeatureTree();
   rebuildHistoryPanel();
   statusBar()->showMessage(
-      QString::fromUtf8("Создано скругление радиусом %1 мм").arg(radius),
-      4000);
+      QString::fromUtf8("Скругление применено: %1 мм").arg(radius), 3000);
 }
 
 void MainWindow::rebuildHistoryPanel() {
@@ -1542,33 +1646,22 @@ void MainWindow::editFilletStep() {
                      ? dynamic_cast<FilletFeature*>(body->activeFeature())
                      : nullptr;
   if (!fillet) return;
-  bool accepted = false;
-  const double radius = QInputDialog::getDouble(
-      this, QString::fromUtf8("Изменить скругление"),
-      QString::fromUtf8("Радиус, мм:"), fillet->radiusMm(), 0.01,
-      100000.0, 2, &accepted);
-  if (!accepted) return;
-  const Document previousDocument = document_;
-  fillet->setRadiusMm(radius);
-  if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(fillet->error());
-    document_ = previousDocument;
-    refreshBodyViewFromDocument();
-    QMessageBox::warning(this, QString::fromUtf8("Ошибка скругления"), error);
-    return;
-  }
-  pushUndoAction([this, previousDocument] {
-    document_ = previousDocument;
-    refreshBodyViewFromDocument();
-    rebuildFeatureTree();
-    rebuildHistoryPanel();
-  });
-  refreshBodyViewFromDocument();
-  rebuildFeatureTree();
-  rebuildHistoryPanel();
-  statusBar()->showMessage(
-      QString::fromUtf8("Радиус скругления изменён: %1 мм").arg(radius),
-      3000);
+  const auto& features = body->features();
+  if (features.size() < 2) return;
+  ShapeFeature::ShapePtr upstream;
+  for (std::size_t index = 1; index < features.size(); ++index)
+    if (features[index].get() == fillet) {
+      upstream = features[index - 1]->shape();
+      break;
+    }
+  if (!upstream) return;
+  filletToolSession_.begin(body->id(), fillet->edge().featureId, upstream,
+                           fillet->edges(), fillet->radiusMm(), fillet->id());
+  toolParametersPanel_->setParameterValue(fillet->radiusMm());
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateFilletToolPreview();
+  viewport_->setSelectedBodyEdges(fillet->edges());
 }
 
 void MainWindow::rebuildFeatureTree() {

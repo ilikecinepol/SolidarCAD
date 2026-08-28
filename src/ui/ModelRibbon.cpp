@@ -5,11 +5,9 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
-#include <QPushButton>
+#include <QMenu>
 #include <QToolButton>
 #include <QVBoxLayout>
-
-#include <array>
 
 namespace solidar {
 namespace {
@@ -28,16 +26,32 @@ QToolButton* commandButton(const QString& iconPath, const QString& text,
   return button;
 }
 
-QWidget* group(const QString& title, QLayout* commands, QWidget* parent) {
+QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
+               const QList<QToolButton*>& menuButtons) {
   auto* widget = new QWidget(parent);
+  widget->setObjectName("modelToolGroup");
+  widget->setProperty("groupTitle", title);
   auto* layout = new QVBoxLayout(widget);
   layout->setContentsMargins(12, 3, 12, 2);
   layout->setSpacing(2);
   layout->addLayout(commands);
-  auto* caption = new QLabel(title, widget);
-  caption->setObjectName("modelGroupCaption");
-  caption->setAlignment(Qt::AlignCenter);
-  layout->addWidget(caption);
+  auto* caption = new QToolButton(widget);
+  caption->setObjectName("modelGroupMenuButton");
+  caption->setText(title + QStringLiteral("  ▾"));
+  caption->setPopupMode(QToolButton::InstantPopup);
+  caption->setCursor(Qt::PointingHandCursor);
+  auto* menu = new QMenu(caption);
+  menu->setObjectName("modelGroupMenu");
+  for (auto* button : menuButtons) {
+    auto* action = menu->addAction(button->icon(), button->text());
+    action->setObjectName(button->objectName() + QStringLiteral("Action"));
+    action->setEnabled(button->isEnabled());
+    if (button->isEnabled())
+      QObject::connect(action, &QAction::triggered, button,
+                       [button] { button->click(); });
+  }
+  caption->setMenu(menu);
+  layout->addWidget(caption, 0, Qt::AlignCenter);
   return widget;
 }
 
@@ -61,6 +75,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
                                      QString::fromUtf8("Создать эскиз"), this);
   auto* extrude = commandButton(QStringLiteral(":/icons/extrude.png"),
                                 QString::fromUtf8("Выдавливание"), this);
+  createSketch->setObjectName("createSketchCommand");
+  extrude->setObjectName("extrudeCommand");
   createSketch->setCheckable(true);
   extrude->setCheckable(true);
   toolGroup_ = new QButtonGroup(this);
@@ -71,25 +87,33 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   creation->setSpacing(5);
   creation->addWidget(createSketch);
   creation->addWidget(extrude);
-  root->addWidget(group(QString::fromUtf8("СОЗДАНИЕ"), creation, this));
+  root->addWidget(group(QString::fromUtf8("СОЗДАНИЕ"), creation, this,
+                        {createSketch, extrude}));
+  root->addWidget(separator(this));
+
+  auto* fillet = commandButton(QStringLiteral(":/icons/fillet.png"),
+                               QString::fromUtf8("Скругление"), this);
+  fillet->setObjectName("filletCommand");
+  fillet->setCheckable(true);
+  toolGroup_->addButton(fillet);
+  auto* editing = new QHBoxLayout;
+  editing->setSpacing(5);
+  editing->addWidget(fillet);
+  root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
+                        {fillet}));
   root->addWidget(separator(this));
 
   auto* views = new QHBoxLayout;
   views->setSpacing(3);
-  const std::array<const char*, 5> viewNames{{"Fit", "ISO", "Top", "Front", "Right"}};
-  std::array<QToolButton*, 5> viewButtons{};
-  for (std::size_t index = 0; index < viewNames.size(); ++index) {
-    viewButtons[index] = commandButton({}, viewNames[index], this);
-    viewButtons[index]->setMinimumSize(58, 56);
-    views->addWidget(viewButtons[index]);
-  }
-  root->addWidget(group(QString::fromUtf8("ВИД"), views, this), 1);
-  root->addWidget(separator(this));
-  auto* fillet = commandButton(QStringLiteral(":/icons/fillet.png"),
-                               QString::fromUtf8("Скругление"), this);
-  auto* advanced = new QHBoxLayout;
-  advanced->addWidget(fillet);
-  root->addWidget(group(QString::fromUtf8("РАСШИРЕННЫЕ"), advanced, this), 1);
+  auto* fit = commandButton({}, QStringLiteral("Fit"), this);
+  auto* iso = commandButton({}, QStringLiteral("ISO"), this);
+  fit->setObjectName("fitCommand");
+  iso->setObjectName("isoCommand");
+  fit->setMinimumSize(58, 56);
+  iso->setMinimumSize(58, 56);
+  views->addWidget(fit);
+  views->addWidget(iso);
+  root->addWidget(group(QString::fromUtf8("ВИД"), views, this, {fit, iso}), 1);
 
   connect(createSketch, &QToolButton::clicked, this,
           &ModelRibbon::createSketchRequested);
@@ -97,11 +121,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::extrudeRequested);
   connect(fillet, &QToolButton::clicked, this,
           &ModelRibbon::filletRequested);
-  connect(viewButtons[0], &QToolButton::clicked, this, &ModelRibbon::fitRequested);
-  connect(viewButtons[1], &QToolButton::clicked, this, &ModelRibbon::isoRequested);
-  connect(viewButtons[2], &QToolButton::clicked, this, &ModelRibbon::topRequested);
-  connect(viewButtons[3], &QToolButton::clicked, this, &ModelRibbon::frontRequested);
-  connect(viewButtons[4], &QToolButton::clicked, this, &ModelRibbon::rightRequested);
+  connect(fit, &QToolButton::clicked, this, &ModelRibbon::fitRequested);
+  connect(iso, &QToolButton::clicked, this, &ModelRibbon::isoRequested);
 
   setStyleSheet(R"(
     QWidget#modelRibbon { background:#ffffff; border-bottom:1px solid #d8e1ef; }
@@ -110,7 +131,14 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
     QToolButton#modelCommand:hover { background:#edf5ff; border-color:#a9cbff; }
     QToolButton#modelCommand:checked { background:#dcecff; color:#0068e8;
       border:2px solid #78adf8; font-weight:600; }
-    QLabel#modelGroupCaption { color:#657a9b; font-size:10px; font-weight:600; }
+    QToolButton#modelGroupMenuButton { color:#526d98; background:transparent;
+      border:none; font-size:10px; font-weight:700; padding:2px 10px; }
+    QToolButton#modelGroupMenuButton:hover { color:#0868e8; background:#edf5ff;
+      border-radius:5px; }
+    QMenu { background:#ffffff; color:#17356e; border:1px solid #cfdbee;
+      padding:5px; }
+    QMenu::item { padding:7px 24px 7px 8px; border-radius:4px; }
+    QMenu::item:selected { background:#e8f2ff; color:#0868e8; }
     QLabel#modelPlaceholder { color:#a8b7cd; font-size:12px; }
     QFrame#modelSeparator { color:#d8e1ef; margin:4px 7px; }
   )");

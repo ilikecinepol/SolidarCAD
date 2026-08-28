@@ -3,6 +3,7 @@
 #endif
 
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <TopExp_Explorer.hxx>
@@ -14,10 +15,13 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletFeature.h"
+#include "model/FilletToolSession.h"
+#include "model/TopologyReferenceResolver.h"
 
 namespace {
 
@@ -181,4 +185,55 @@ int main() {
   assert(std::abs(volumeOf(
                       *multiBodyDocument.findBody(second.bodyId)->resultShape()) -
                   secondBefore) < 1e-7);
+
+  // One feature resolves and fillets multiple source edges.
+  solidar::Document multiEdgeDocument;
+  const BoxModel multiEdgeBox = addBox(multiEdgeDocument);
+  assert(multiEdgeDocument.rebuild());
+  auto* multiEdgeBody = multiEdgeDocument.findBody(multiEdgeBox.bodyId);
+  std::vector<solidar::EdgeReference> verticalEdges;
+  for (std::size_t index = 0; index < 32 && verticalEdges.size() < 2; ++index) {
+    const auto edge = solidar::resolveEdge(*multiEdgeBody->resultShape(), index);
+    if (!edge) break;
+    BRepAdaptor_Curve curve(*edge);
+    const gp_Pnt start = curve.Value(curve.FirstParameter());
+    const gp_Pnt end = curve.Value(curve.LastParameter());
+    if (std::abs(std::abs(end.Z() - start.Z()) - 50.0) < 1e-6)
+      verticalEdges.push_back(
+          {multiEdgeBody->id(), multiEdgeBox.extrudeId, index});
+  }
+  assert(verticalEdges.size() == 2);
+  const double multiEdgeBefore = volumeOf(*multiEdgeBody->resultShape());
+  auto feature =
+      std::make_unique<solidar::FilletFeature>(verticalEdges, 3.0, "Two edges");
+  auto* multiFillet = feature.get();
+  multiEdgeBody->addFeature(std::move(feature));
+  assert(multiEdgeDocument.rebuild());
+  assert(multiFillet->isValid() && multiFillet->edges().size() == 2);
+  assert(std::abs(volumeOf(*multiEdgeBody->resultShape()) - multiEdgeBefore) >
+         1e-3);
+
+  // Preview geometry and synchronized parameter updates do not mutate the
+  // Document or add history until the UI accepts the session.
+  solidar::Document previewDocument;
+  const BoxModel previewBox = addBox(previewDocument, 40.0, 30.0, 20.0);
+  assert(previewDocument.rebuild());
+  auto* previewBody = previewDocument.findBody(previewBox.bodyId);
+  const auto originalShape = previewBody->resultShape();
+  const double originalVolume = volumeOf(*originalShape);
+  const std::size_t originalFeatureCount = previewBody->features().size();
+  solidar::FilletToolSession session;
+  session.begin(previewBody->id(), previewBox.extrudeId, originalShape,
+                {{previewBody->id(), previewBox.extrudeId, 0}}, 2.0);
+  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  session.setRadiusFromPanel(3.0);
+  assert(session.radiusMm() == 3.0);
+  session.setRadiusFromManipulator(4.0);
+  assert(session.radiusMm() == 4.0);
+  assert(previewBody->features().size() == originalFeatureCount);
+  assert(previewBody->resultShape() == originalShape);
+  assert(std::abs(volumeOf(*previewBody->resultShape()) - originalVolume) < 1e-7);
+  session.cancel();
+  assert(session.lifecycle() == solidar::ToolLifecycle::Inactive);
+  assert(previewBody->features().size() == originalFeatureCount);
 }

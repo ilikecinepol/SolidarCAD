@@ -222,12 +222,21 @@ void Viewport::setBodyShape(ShapeFeature::ShapePtr shape, BodyId bodyId,
 }
 
 void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
+  bodyViewShapes_ = shapes;
+  rebuildBodyDisplay(shapes, true);
+}
+
+void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
+                                  bool clearSelection) {
   bodyShape_.reset();
   bodyId_ = kInvalidBodyId;
   bodyFeatureId_ = kInvalidFeatureId;
   selectedFace_ = -1;
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  if (clearSelection) {
+    selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    selectedBodyEdgeIndices_.clear();
+  }
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   bodyRenderMesh_.clear();
   bodyTopologyRanges_.clear();
@@ -270,6 +279,22 @@ void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
     box_ = {xMax - xMin, yMax - yMin, zMax - zMin};
   }
   update();
+}
+
+void Viewport::setToolPreviewShape(BodyId bodyId, FeatureId featureId,
+                                   ShapeFeature::ShapePtr shape) {
+  auto display = bodyViewShapes_;
+  for (auto& item : display)
+    if (item.bodyId == bodyId) {
+      item.shape = std::move(shape);
+      item.featureId = featureId;
+      break;
+    }
+  rebuildBodyDisplay(display, false);
+}
+
+void Viewport::clearToolPreviewShape() {
+  rebuildBodyDisplay(bodyViewShapes_, false);
 }
 
 void Viewport::setSketch(const sketch::Sketch& sketch) {
@@ -392,6 +417,7 @@ void Viewport::resetScene() {
   bodyShape_.reset();
   bodyRenderMesh_.clear();
   bodyTopologyRanges_.clear();
+  bodyViewShapes_.clear();
   bodyId_ = kInvalidBodyId;
   bodyFeatureId_ = kInvalidFeatureId;
   sketch_.clear();
@@ -411,6 +437,7 @@ void Viewport::resetScene() {
   selectedFace_ = -1;
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
@@ -531,13 +558,49 @@ std::optional<FaceReference> Viewport::selectedBodyFace() const noexcept {
 }
 
 std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
-  if (selectedBodyEdgeIndex_ == static_cast<std::size_t>(-1)) return std::nullopt;
+  if (selectedBodyEdgeIndices_.empty()) return std::nullopt;
+  return edgeReferenceForGlobalIndex(selectedBodyEdgeIndices_.front());
+}
+
+std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
+    std::size_t global) const noexcept {
   for (const auto& range : bodyTopologyRanges_)
-    if (selectedBodyEdgeIndex_ >= range.firstEdge &&
-        selectedBodyEdgeIndex_ < range.firstEdge + range.edgeCount)
+    if (global >= range.firstEdge && global < range.firstEdge + range.edgeCount)
       return EdgeReference{range.bodyId, range.featureId,
-                           selectedBodyEdgeIndex_ - range.firstEdge};
+                            global - range.firstEdge};
   return std::nullopt;
+}
+
+std::vector<EdgeReference> Viewport::selectedBodyEdges() const {
+  std::vector<EdgeReference> result;
+  for (const auto index : selectedBodyEdgeIndices_)
+    if (const auto edge = edgeReferenceForGlobalIndex(index))
+      result.push_back(*edge);
+  return result;
+}
+
+void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
+  selectedBodyEdgeIndices_.clear();
+  for (const auto& edge : edges)
+    for (const auto& range : bodyTopologyRanges_)
+      if (range.bodyId == edge.bodyId && range.featureId == edge.featureId &&
+          edge.edgeIndex < range.edgeCount)
+        selectedBodyEdgeIndices_.push_back(range.firstEdge + edge.edgeIndex);
+  selectedBodyEdgeIndex_ = selectedBodyEdgeIndices_.empty()
+                               ? static_cast<std::size_t>(-1)
+                               : selectedBodyEdgeIndices_.front();
+  update();
+}
+
+void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
+  toolManipulator_ = manipulator;
+  update();
+}
+
+void Viewport::clearToolManipulator() {
+  toolManipulator_.reset();
+  draggingToolManipulator_ = false;
+  update();
 }
 
 void Viewport::fitAll() {
@@ -855,7 +918,9 @@ void Viewport::paintEvent(QPaintEvent*) {
       painter.drawPolygon(triangle.polygon);
     }
     for (const auto& edge : bodyRenderMesh_.edges()) {
-      const bool selected = edge.edgeIndex == selectedBodyEdgeIndex_;
+      const bool selected = std::find(selectedBodyEdgeIndices_.begin(),
+                                      selectedBodyEdgeIndices_.end(),
+                                      edge.edgeIndex) != selectedBodyEdgeIndices_.end();
       const bool hovered = edge.edgeIndex == hoveredBodyEdgeIndex_;
       painter.setPen(QPen(selected ? QColor("#ff8a00")
                                   : hovered ? QColor("#00a6ff")
@@ -877,6 +942,19 @@ void Viewport::paintEvent(QPaintEvent*) {
           continue;
         painter.drawLine(a.screen, b.screen);
       }
+    }
+    if (toolManipulator_) {
+      const auto start = projectBodyPoint(toolManipulator_->origin, center, size(),
+                                          yaw_, pitch_, zoom_).screen;
+      const Point3d endWorld{
+          toolManipulator_->origin.x + toolManipulator_->direction.x * toolManipulator_->valueMm,
+          toolManipulator_->origin.y + toolManipulator_->direction.y * toolManipulator_->valueMm,
+          toolManipulator_->origin.z + toolManipulator_->direction.z * toolManipulator_->valueMm};
+      const auto end = projectBodyPoint(endWorld, center, size(), yaw_, pitch_, zoom_).screen;
+      painter.setPen(QPen(QColor("#0874f9"), 3.0));
+      painter.drawLine(start, end);
+      painter.setBrush(QColor("#0874f9"));
+      painter.drawEllipse(end, 6.0, 6.0);
     }
   } else if (solidVisible_ && solidSketch_.lines().empty() &&
              solidSketch_.circles().empty()) {
@@ -1426,6 +1504,19 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   }
   if (event->button() != Qt::LeftButton) return;
   const QPointF scenePosition = event->position() - cameraPan_;
+  if (toolManipulator_) {
+    const Point3d center = bodyRenderMesh_.center();
+    const Point3d endWorld{
+        toolManipulator_->origin.x + toolManipulator_->direction.x * toolManipulator_->valueMm,
+        toolManipulator_->origin.y + toolManipulator_->direction.y * toolManipulator_->valueMm,
+        toolManipulator_->origin.z + toolManipulator_->direction.z * toolManipulator_->valueMm};
+    const QPointF handle = projectBodyPoint(endWorld, center, size(), yaw_, pitch_, zoom_).screen;
+    if (QLineF(scenePosition, handle).length() <= 18.0) {
+      draggingToolManipulator_ = true;
+      setCursor(Qt::SizeAllCursor);
+      return;
+    }
+  }
   if (extrusionManipulatorVisible_) {
     const QPointF handle = extrusionManipulatorAnchor_ + extrusionScreenOffset();
     if (QLineF(scenePosition, handle).length() <= 18.0) {
@@ -1648,12 +1739,14 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
 
   selectedFace_ = -1;
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  const bool appendEdge = event->modifiers().testFlag(Qt::ControlModifier);
+  if (!appendEdge) {
+    selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    selectedBodyEdgeIndices_.clear();
+  }
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
-  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
@@ -1661,9 +1754,31 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   if (bodyShape_ && !bodyShape_->IsNull() && solidVisible_) {
     updateBodyHover(scenePosition);
     if (hoveredBodyEdgeIndex_ != static_cast<std::size_t>(-1)) {
-      selectedBodyEdgeIndex_ = hoveredBodyEdgeIndex_;
+      const auto clicked = edgeReferenceForGlobalIndex(hoveredBodyEdgeIndex_);
+      if (appendEdge) {
+        if (!selectedBodyEdgeIndices_.empty()) {
+          const auto first = edgeReferenceForGlobalIndex(selectedBodyEdgeIndices_.front());
+          if (first && clicked &&
+              (first->bodyId != clicked->bodyId ||
+               first->featureId != clicked->featureId))
+            selectedBodyEdgeIndices_.clear();
+        }
+        const auto found = std::find(selectedBodyEdgeIndices_.begin(),
+                                     selectedBodyEdgeIndices_.end(),
+                                     hoveredBodyEdgeIndex_);
+        if (found == selectedBodyEdgeIndices_.end())
+          selectedBodyEdgeIndices_.push_back(hoveredBodyEdgeIndex_);
+        else
+          selectedBodyEdgeIndices_.erase(found);
+      } else {
+        selectedBodyEdgeIndices_ = {hoveredBodyEdgeIndex_};
+      }
+      selectedBodyEdgeIndex_ = selectedBodyEdgeIndices_.empty()
+                                   ? static_cast<std::size_t>(-1)
+                                   : selectedBodyEdgeIndices_.front();
       emit selectionChanged(QString::fromUtf8("Тело 1 • Ребро ") +
-                            QString::number(selectedBodyEdgeIndex_ + 1));
+                            QString::number(hoveredBodyEdgeIndex_ + 1));
+      emit bodyEdgeSelectionChanged();
       update();
       return;
     }
@@ -2333,6 +2448,29 @@ void Viewport::updateExtrusionHover(QPointF position) {
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
+  if (draggingToolManipulator_ && toolManipulator_ &&
+      event->buttons().testFlag(Qt::LeftButton)) {
+    const Point3d center = bodyRenderMesh_.center();
+    const auto origin = projectBodyPoint(toolManipulator_->origin, center, size(),
+                                         yaw_, pitch_, zoom_).screen;
+    const Point3d unitWorld{
+        toolManipulator_->origin.x + toolManipulator_->direction.x,
+        toolManipulator_->origin.y + toolManipulator_->direction.y,
+        toolManipulator_->origin.z + toolManipulator_->direction.z};
+    const auto unit = projectBodyPoint(unitWorld, center, size(), yaw_, pitch_,
+                                       zoom_).screen;
+    const QPointF axis = unit - origin;
+    const double axisLengthSquared = QPointF::dotProduct(axis, axis);
+    if (axisLengthSquared > 1e-6) {
+      const double value = QPointF::dotProduct(
+                               event->position() - cameraPan_ - origin, axis) /
+                           axisLengthSquared;
+      toolManipulator_->valueMm = std::max(0.01, value);
+      emit toolManipulatorValueChanged(toolManipulator_->valueMm);
+      update();
+    }
+    return;
+  }
   if (panningView_ && event->buttons().testFlag(Qt::MiddleButton)) {
     const QPoint delta = event->position().toPoint() - lastMousePosition_;
     cameraPan_ += QPointF(delta);
@@ -2398,6 +2536,12 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
   }
   if (event->button() == Qt::LeftButton && draggingExtrusionHandle_) {
     draggingExtrusionHandle_ = false;
+    unsetCursor();
+    event->accept();
+    return;
+  }
+  if (event->button() == Qt::LeftButton && draggingToolManipulator_) {
+    draggingToolManipulator_ = false;
     unsetCursor();
     event->accept();
     return;
