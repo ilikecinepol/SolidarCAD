@@ -32,5 +32,17 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
 
+      - name: Generate build-profile SBOM
+        shell: bash
+        run: |
+          QT_VERSION="$(qmake -query QT_VERSION)"
+          python scripts/generate_sbom.py --qt-version "$QT_VERSION" --output build/solidarcad.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: solidarcad-sbom-${{ matrix.os }}
+          path: build/solidarcad.spdx.json
+
       - name: Test
         run: ctest --preset dev

@@ -12,6 +12,8 @@ set(required_files
   LICENSES/OCCT/README.md
   docs/dependency-policy.md
   sbom/README.md
+  sbom/components.json
+  scripts/generate_sbom.py
   sbom/solidarcad.spdx.json)
 
 foreach(relative_path IN LISTS required_files)
@@ -41,6 +43,26 @@ endif()
 string(JSON package_count LENGTH "${sbom}" packages)
 if(package_count LESS 3)
   message(FATAL_ERROR "SBOM must describe SolidarCAD, Qt, and OCCT")
+endif()
+
+if(WIN32)
+  find_program(PYTHON_LAUNCHER NAMES py python3 python REQUIRED)
+  get_filename_component(python_name "${PYTHON_LAUNCHER}" NAME)
+  if(python_name STREQUAL "py.exe")
+    set(python_command "${PYTHON_LAUNCHER}" -3)
+  else()
+    set(python_command "${PYTHON_LAUNCHER}")
+  endif()
+else()
+  find_program(PYTHON_LAUNCHER NAMES python3 python REQUIRED)
+  set(python_command "${PYTHON_LAUNCHER}")
+endif()
+execute_process(
+  COMMAND ${python_command} "${SOURCE_DIR}/scripts/generate_sbom.py"
+          --root "${SOURCE_DIR}" --check
+  RESULT_VARIABLE sbom_check_result)
+if(NOT sbom_check_result EQUAL 0)
+  message(FATAL_ERROR "Checked-in SBOM is stale")
 endif()
 
 foreach(required_text "Qt" "Open CASCADE" "NOASSERTION")

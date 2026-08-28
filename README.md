@@ -7,7 +7,7 @@ constrained 2D sketch → extrusion → editable feature history.
 ## Current prototype
 
 - standalone Home screen with create/open project actions
-- versioned `.solidar` project files
+- versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet history
 - independently linkable Home, Sketch, Drawing and 3D View modules
 - Qt 6 desktop shell with model tree and parameter editor
 - 2D sketch workspace with a constrained rectangular profile
@@ -15,11 +15,13 @@ constrained 2D sketch → extrusion → editable feature history.
 - shared vector renderer for preview, PDF export and physical printing
 - A4 frame, title block, visible outlines and linear dimensions
 - interactive orbit/zoom viewport
-- parametric box represented as `Sketch 1 → Extrude 1`
+- cascading parametric history with Dirty/Valid/Error states
 - platform-neutral document model with a smoke test
 
-The viewport currently renders a lightweight preview. Open CASCADE B-Rep geometry,
-selection and STEP exchange are the next backend milestone.
+The 3D workflow uses Open CASCADE B-Rep geometry for extrusion, boolean pocket,
+fillet, topology selection and body rendering. Persistent topological naming
+remains a future step; current references retain an explicit legacy-index
+fallback behind `TopologyReference`.
 
 ## Prerequisites
 
@@ -51,6 +53,8 @@ pass `-DQt6_DIR=/path/to/Qt/6.x/lib/cmake/Qt6` while configuring.
 See [docs/eskd-profile.md](docs/eskd-profile.md) for the implemented standards
 profile and its current conformance boundary.
 See [docs/modules.md](docs/modules.md) for feature ownership and module boundaries.
+See [docs/reports/2026-08-28-parametric-3d-status.md](docs/reports/2026-08-28-parametric-3d-status.md)
+for the current parametric 3D stabilization status and verification gate.
 
 ## License and third-party components
 

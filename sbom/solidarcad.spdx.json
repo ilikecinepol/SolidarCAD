@@ -2,13 +2,17 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "SolidarCAD-0.1.0-direct-dependencies",
-  "documentNamespace": "https://solidarcad.example/sbom/0.1.0/2026-08-28",
+  "name": "SolidarCAD-0.1.0-direct-build-inputs",
+  "documentNamespace": "https://solidarcad.example/sbom/0.1.0/direct-build-inputs",
   "creationInfo": {
     "created": "2026-08-28T00:00:00Z",
-    "creators": ["Tool: SolidarCAD compliance foundation"]
+    "creators": [
+      "Tool: scripts/generate_sbom.py"
+    ]
   },
-  "documentDescribes": ["SPDXRef-SolidarCAD"],
+  "documentDescribes": [
+    "SPDXRef-SolidarCAD"
+  ],
   "packages": [
     {
       "name": "SolidarCAD",
@@ -28,8 +32,7 @@
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "LGPL-3.0-only",
-      "copyrightText": "Copyright The Qt Company Ltd. and other contributors",
-      "comment": "Local development profile; release pipeline must resolve the distributed Qt build and its third-party components."
+      "copyrightText": "NOASSERTION"
     },
     {
       "name": "Open CASCADE Technology",
@@ -39,7 +42,7 @@
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "LGPL-2.1-only WITH OCCT-exception-1.0",
-      "copyrightText": "Copyright OPEN CASCADE S.A.S. and contributors",
+      "copyrightText": "NOASSERTION",
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
@@ -47,6 +50,26 @@
           "referenceLocator": "pkg:vcpkg/opencascade@8.0.1"
         }
       ]
+    },
+    {
+      "name": "vcpkg registry baseline",
+      "SPDXID": "SPDXRef-vcpkg-baseline",
+      "versionInfo": "00c5775211f45cd08b37fce0484b4cb940e422ab",
+      "downloadLocation": "https://github.com/microsoft/vcpkg/commit/00c5775211f45cd08b37fce0484b4cb940e422ab",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "CMake minimum build profile",
+      "SPDXID": "SPDXRef-CMake",
+      "versionInfo": "3.24",
+      "downloadLocation": "https://cmake.org/",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION"
     }
   ],
   "relationships": [
@@ -64,6 +87,16 @@
       "spdxElementId": "SPDXRef-SolidarCAD",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-OCCT"
+    },
+    {
+      "spdxElementId": "SPDXRef-SolidarCAD",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-vcpkg-baseline"
+    },
+    {
+      "spdxElementId": "SPDXRef-SolidarCAD",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-CMake"
     }
   ]
 }
