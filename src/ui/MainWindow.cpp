@@ -1013,11 +1013,11 @@ void MainWindow::finishSketch() {
     });
     sketchHistory_[index].geometry = sketch;
     sketchHistory_[index].support = currentSketchSupport_;
+    document_.replaceSketchGeometry(
+        sketchHistory_[index].documentSketchId, sketch);
     if (auto* modelSketch =
-            document_.findSketch(sketchHistory_[index].documentSketchId)) {
-      modelSketch->geometry = sketch;
+            document_.findSketch(sketchHistory_[index].documentSketchId))
       modelSketch->placement = currentSketchPlacement_;
-    }
     viewport_->updateSketch(index, sketch, currentSketchSupport_,
                             currentSketchPlacement_);
     if (hasExtrusion_ && extrusionSourceSketch_ == index)

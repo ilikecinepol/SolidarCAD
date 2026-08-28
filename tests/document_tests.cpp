@@ -9,8 +9,11 @@ namespace {
 
 class TestShapeFeature final : public solidar::ShapeFeature {
  public:
-  TestShapeFeature(std::string name, bool succeeds)
-      : ShapeFeature(std::move(name)), succeeds_(succeeds) {}
+  TestShapeFeature(std::string name, bool succeeds,
+                   solidar::SketchId dependsOn = solidar::kInvalidSketchId)
+      : ShapeFeature(std::move(name)),
+        succeeds_(succeeds),
+        dependsOn_(dependsOn) {}
   TestShapeFeature(solidar::FeatureId id, std::string name, bool succeeds)
       : ShapeFeature(id, std::move(name)), succeeds_(succeeds) {}
 
@@ -26,6 +29,10 @@ class TestShapeFeature final : public solidar::ShapeFeature {
   }
 
   [[nodiscard]] std::string typeName() const override { return "TestShape"; }
+  [[nodiscard]] bool dependsOnSketch(
+      solidar::SketchId sketchId) const noexcept override {
+    return dependsOn_ == sketchId;
+  }
   [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
     return std::make_unique<TestShapeFeature>(*this);
   }
@@ -34,6 +41,7 @@ class TestShapeFeature final : public solidar::ShapeFeature {
 
  private:
   bool succeeds_{true};
+  solidar::SketchId dependsOn_{solidar::kInvalidSketchId};
 };
 
 }  // namespace
@@ -92,6 +100,38 @@ int main() {
   assert(firstPtr->rebuildCount == 1);
   assert(secondPtr->rebuildCount == 2);
 
+  // Sketch edits propagate from the first dependent feature through the
+  // ordered Body history, without UI knowledge of concrete feature types.
+  solidar::Document dependencyDocument;
+  auto& dependencySketch = dependencyDocument.addSketch("Dependency");
+  const auto dependencySketchId = dependencySketch.id;
+  auto& dependencyBody = dependencyDocument.addBody("Dependency body");
+  auto dependent = std::make_unique<TestShapeFeature>(
+      "Dependent", true, dependencySketchId);
+  auto* dependentPtr = dependent.get();
+  auto downstream = std::make_unique<TestShapeFeature>("Downstream", true);
+  auto* downstreamPtr = downstream.get();
+  dependencyBody.addFeature(std::move(dependent));
+  dependencyBody.addFeature(std::move(downstream));
+  assert(dependencyDocument.recompute());
+  assert(dependentPtr->rebuildCount == 1);
+  assert(downstreamPtr->rebuildCount == 1);
+
+  solidar::sketch::Sketch replacement;
+  replacement.setRectangle(20.0, 10.0);
+  assert(dependencyDocument.replaceSketchGeometry(dependencySketchId,
+                                                   replacement));
+  assert(dependentPtr->isDirty());
+  assert(downstreamPtr->isDirty());
+  assert(dependencyDocument.recompute());
+  assert(dependentPtr->rebuildCount == 2);
+  assert(downstreamPtr->rebuildCount == 2);
+
+  assert(dependencyDocument.recomputeFrom(downstreamPtr->id()));
+  assert(dependentPtr->rebuildCount == 2);
+  assert(downstreamPtr->rebuildCount == 3);
+  assert(!dependencyDocument.recomputeFrom(solidar::kInvalidFeatureId));
+
   // Document snapshots used by the existing undo stack must deep-copy bodies.
   solidar::Document snapshot = document;
   auto* snapshotBody = snapshot.findBody(firstBodyId);
@@ -123,6 +163,7 @@ int main() {
   failingBody.addFeature(std::move(failing));
   assert(!document.rebuild());
   assert(!failingPtr->isValid());
+  assert(failingPtr->isFailed());
   assert(!failingPtr->error().empty());
 
   document.setBox({100.0, 50.0, 12.0});

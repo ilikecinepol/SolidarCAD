@@ -41,6 +41,10 @@ void PocketFeature::setDepthMm(double value) noexcept {
 }
 std::string PocketFeature::typeName() const { return "Pocket"; }
 
+bool PocketFeature::dependsOnSketch(SketchId sketchId) const noexcept {
+  return profileSketchId_ == sketchId;
+}
+
 bool PocketFeature::rebuild(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(depthMm_) || depthMm_ <= 0.0) {

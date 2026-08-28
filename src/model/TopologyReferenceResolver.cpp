@@ -18,4 +18,11 @@ std::optional<TopoDS_Edge> resolveEdge(const TopoDS_Shape& shape,
   return std::nullopt;
 }
 
+std::optional<TopoDS_Edge> resolveEdge(
+    const TopoDS_Shape& shape, const TopologyReference& reference) {
+  if (reference.kind != TopologyKind::Edge || !reference.hasValidOwner())
+    return std::nullopt;
+  return resolveEdge(shape, reference.legacyIndex);
+}
+
 }  // namespace solidar

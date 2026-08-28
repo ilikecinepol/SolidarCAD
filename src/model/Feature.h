@@ -19,6 +19,8 @@ struct RebuildContext {
 
 using FeatureId = std::uint64_t;
 inline constexpr FeatureId kInvalidFeatureId = 0;
+using SketchId = std::uint64_t;
+inline constexpr SketchId kInvalidSketchId = 0;
 
 enum class FeatureState { Dirty, Valid, Error };
 
@@ -38,10 +40,12 @@ class Feature {
   [[nodiscard]] FeatureState state() const noexcept;
   [[nodiscard]] bool isDirty() const noexcept;
   [[nodiscard]] bool isValid() const noexcept;
+  [[nodiscard]] bool isFailed() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept;
   void setDirty(bool dirty = true) noexcept;
 
   [[nodiscard]] virtual std::string typeName() const = 0;
+  [[nodiscard]] virtual bool dependsOnSketch(SketchId sketchId) const noexcept;
   virtual bool rebuild(const RebuildContext& context) = 0;
   [[nodiscard]] virtual std::unique_ptr<Feature> clone() const = 0;
 

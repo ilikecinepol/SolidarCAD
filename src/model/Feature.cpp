@@ -25,7 +25,10 @@ void Feature::setName(std::string name) { name_ = std::move(name); }
 FeatureState Feature::state() const noexcept { return state_; }
 bool Feature::isDirty() const noexcept { return state_ == FeatureState::Dirty; }
 bool Feature::isValid() const noexcept { return state_ == FeatureState::Valid; }
+bool Feature::isFailed() const noexcept { return state_ == FeatureState::Error; }
 const std::string& Feature::error() const noexcept { return error_; }
+
+bool Feature::dependsOnSketch(SketchId) const noexcept { return false; }
 
 void Feature::setDirty(bool dirty) noexcept {
   if (dirty) {

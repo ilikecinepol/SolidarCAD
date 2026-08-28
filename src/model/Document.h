@@ -10,9 +10,6 @@
 
 namespace solidar {
 
-using SketchId = std::uint64_t;
-inline constexpr SketchId kInvalidSketchId = 0;
-
 struct DocumentSketch {
   SketchId id{kInvalidSketchId};
   std::string name;
@@ -39,6 +36,8 @@ class Document final {
   [[nodiscard]] const std::vector<DocumentSketch>& sketches() const noexcept;
   [[nodiscard]] DocumentSketch* findSketch(SketchId id) noexcept;
   [[nodiscard]] const DocumentSketch* findSketch(SketchId id) const noexcept;
+  bool replaceSketchGeometry(SketchId id, sketch::Sketch geometry);
+  bool markSketchDirty(SketchId id) noexcept;
 
   Body& addBody(std::string name = {});
   Body& addBody(BodyId id, std::string name);
@@ -49,6 +48,8 @@ class Document final {
   [[nodiscard]] Body* activeBody() noexcept;
   [[nodiscard]] const Body* activeBody() const noexcept;
   [[nodiscard]] bool rebuild();
+  [[nodiscard]] bool recompute();
+  [[nodiscard]] bool recomputeFrom(FeatureId featureId);
   bool attachSketchToFace(SketchId sketchId, FaceReference reference);
   void updateSketchPlacements();
   [[nodiscard]] const BoxParameters& box() const noexcept;

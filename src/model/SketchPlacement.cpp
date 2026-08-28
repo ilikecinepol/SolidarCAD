@@ -82,4 +82,11 @@ ResolvedFacePlacement resolveFacePlacement(const TopoDS_Shape& shape,
   return {};
 }
 
+ResolvedFacePlacement resolveFacePlacement(
+    const TopoDS_Shape& shape, const TopologyReference& reference) {
+  if (reference.kind != TopologyKind::Face || !reference.hasValidOwner())
+    return {};
+  return resolveFacePlacement(shape, reference.legacyIndex);
+}
+
 }  // namespace solidar

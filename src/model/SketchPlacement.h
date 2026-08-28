@@ -3,8 +3,7 @@
 #include <cmath>
 #include <cstddef>
 
-#include "model/Feature.h"
-#include "model/Body.h"
+#include "model/TopologyReference.h"
 
 class TopoDS_Shape;
 
@@ -45,6 +44,10 @@ struct FaceReference {
   FeatureId featureId{kInvalidFeatureId};
   // Temporary until persistent topological naming is introduced.
   std::size_t faceIndex{};
+
+  [[nodiscard]] TopologyReference topology() const {
+    return {bodyId, featureId, TopologyKind::Face, faceIndex};
+  }
 };
 
 struct EdgeReference {
@@ -52,6 +55,9 @@ struct EdgeReference {
   FeatureId featureId{kInvalidFeatureId};
   // Temporary until persistent topological naming is introduced.
   std::size_t edgeIndex{};
+  [[nodiscard]] TopologyReference topology() const {
+    return {bodyId, featureId, TopologyKind::Edge, edgeIndex};
+  }
   friend bool operator==(const EdgeReference&, const EdgeReference&) = default;
 };
 
@@ -69,5 +75,7 @@ struct ResolvedFacePlacement {
 
 [[nodiscard]] ResolvedFacePlacement resolveFacePlacement(
     const TopoDS_Shape& shape, std::size_t faceIndex);
+[[nodiscard]] ResolvedFacePlacement resolveFacePlacement(
+    const TopoDS_Shape& shape, const TopologyReference& reference);
 
 }  // namespace solidar

@@ -90,6 +90,19 @@ int main() {
   assert(fillet);
   assert(fillet->edge().bodyId == box.bodyId);
   assert(fillet->edge().featureId == box.extrudeId);
+  const auto topologyReference = fillet->edge().topology();
+  assert(topologyReference.kind == solidar::TopologyKind::Edge);
+  assert(topologyReference.hasValidOwner());
+  assert(topologyReference.legacyIndex == fillet->edge().edgeIndex);
+  const auto sourceShape =
+      document.findBody(box.bodyId)->features().front()->shape();
+  assert(sourceShape);
+  assert(solidar::resolveEdge(
+      *sourceShape, topologyReference));
+  auto wrongKind = topologyReference;
+  wrongKind.kind = solidar::TopologyKind::Face;
+  assert(!solidar::resolveEdge(
+      *sourceShape, wrongKind));
   assert(document.rebuild());
   assert(fillet->isValid());
   assert(fillet->hasShape());
@@ -158,6 +171,25 @@ int main() {
   assert(oversized->error() ==
          "Fillet could not be built with the requested radius");
   assert(!oversized->hasShape());
+
+  // Repeated valid/invalid radius edits remain recoverable and never expose a
+  // stale result after OCCT rejects a radius.
+  solidar::Document stressDocument;
+  const BoxModel stressBox = addBox(stressDocument, 40.0, 30.0, 20.0);
+  assert(stressDocument.rebuild());
+  auto* stressFillet = addFillet(stressDocument, stressBox, 1.0);
+  for (const double radius : {1.0, 2.0, 4.0}) {
+    stressFillet->setRadiusMm(radius);
+    assert(stressDocument.rebuild());
+    assert(stressFillet->isValid() && stressFillet->hasShape());
+  }
+  stressFillet->setRadiusMm(1000.0);
+  assert(!stressDocument.rebuild());
+  assert(stressFillet->isFailed());
+  assert(!stressFillet->hasShape());
+  stressFillet->setRadiusMm(2.0);
+  assert(stressDocument.rebuild());
+  assert(stressFillet->isValid() && stressFillet->hasShape());
 
   solidar::Document missingBaseDocument;
   auto& emptyBody = missingBaseDocument.addBody();

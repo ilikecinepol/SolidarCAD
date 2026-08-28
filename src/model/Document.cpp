@@ -52,6 +52,29 @@ const DocumentSketch* Document::findSketch(SketchId id) const noexcept {
   return found == sketches_.end() ? nullptr : &*found;
 }
 
+bool Document::replaceSketchGeometry(SketchId id, sketch::Sketch geometry) {
+  auto* target = findSketch(id);
+  if (!target) return false;
+  target->geometry = std::move(geometry);
+  markSketchDirty(id);
+  return true;
+}
+
+bool Document::markSketchDirty(SketchId id) noexcept {
+  if (!findSketch(id)) return false;
+  bool affected = false;
+  for (auto& body : bodies_) {
+    const auto& features = body.features();
+    for (std::size_t index = 0; index < features.size(); ++index) {
+      if (!features[index]->dependsOnSketch(id)) continue;
+      body.markDirtyFrom(index);
+      affected = true;
+      break;
+    }
+  }
+  return affected;
+}
+
 Body& Document::addBody(std::string name) {
   if (name.empty()) name = "Body " + std::to_string(bodies_.size() + 1);
   bodies_.emplace_back(std::move(name));
@@ -92,6 +115,23 @@ bool Document::rebuild() {
   return true;
 }
 
+bool Document::recompute() { return rebuild(); }
+
+bool Document::recomputeFrom(FeatureId featureId) {
+  if (featureId == kInvalidFeatureId) return false;
+  bool found = false;
+  for (auto& body : bodies_) {
+    const auto& features = body.features();
+    for (std::size_t index = 0; index < features.size(); ++index) {
+      if (features[index]->id() != featureId) continue;
+      body.markDirtyFrom(index);
+      found = true;
+      break;
+    }
+  }
+  return found && recompute();
+}
+
 bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
   auto* sketch = findSketch(sketchId);
   if (!sketch) return false;
@@ -118,7 +158,7 @@ void Document::updateSketchPlacements() {
       continue;
     }
     const auto resolved =
-        resolveFacePlacement(*feature->shape(), reference.faceIndex);
+        resolveFacePlacement(*feature->shape(), reference.topology());
     sketch.supportResolved = resolved.planar;
     if (resolved.planar) sketch.placement = resolved.placement;
   }

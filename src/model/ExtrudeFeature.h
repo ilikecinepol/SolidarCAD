@@ -29,6 +29,7 @@ class ExtrudeFeature final : public ShapeFeature {
   void setReversed(bool value) noexcept;
 
   [[nodiscard]] std::string typeName() const override;
+  [[nodiscard]] bool dependsOnSketch(SketchId sketchId) const noexcept override;
   bool rebuild(const RebuildContext& context) override;
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
 

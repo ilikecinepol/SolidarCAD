@@ -35,6 +35,7 @@ add_library(solidar_model
   model/SolidFeature.h
   model/TopologyReferenceResolver.cpp
   model/TopologyReferenceResolver.h
+  model/TopologyReference.h
   model/macro/MacroDefinition.h
   model/macro/MacroExecutor.cpp
   model/macro/MacroExecutor.h

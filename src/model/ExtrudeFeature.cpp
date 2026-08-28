@@ -74,6 +74,10 @@ void ExtrudeFeature::setReversed(bool value) noexcept {
 
 std::string ExtrudeFeature::typeName() const { return "Extrude"; }
 
+bool ExtrudeFeature::dependsOnSketch(SketchId sketchId) const noexcept {
+  return profileSketchId_ == sketchId;
+}
+
 bool ExtrudeFeature::rebuild(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(lengthMm_) || lengthMm_ <= 0.0) {
