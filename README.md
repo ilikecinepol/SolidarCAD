@@ -61,3 +61,7 @@ for the current parametric 3D stabilization status and verification gate.
 The license for SolidarCAD's own code has not been selected yet. Third-party
 components retain their respective licenses; see [DEPENDENCIES.md](DEPENDENCIES.md)
 and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+# Parametric 3D features
+
+SolidarCAD supports history-based Extrude, Pocket, Fillet and Revolve features.
+The Russian UI exposes Revolve as **«Инструмент вращения»**.

@@ -6,6 +6,10 @@ add_executable(extrude_feature_tests extrude_feature_tests.cpp)
 target_link_libraries(extrude_feature_tests PRIVATE solidar_model)
 add_test(NAME extrude_feature_tests COMMAND extrude_feature_tests)
 
+add_executable(revolve_feature_tests revolve_feature_tests.cpp)
+target_link_libraries(revolve_feature_tests PRIVATE solidar_model)
+add_test(NAME revolve_feature_tests COMMAND revolve_feature_tests)
+
 add_executable(extrude_geometry_regression_tests
                extrude_geometry_regression_tests.cpp)
 target_link_libraries(extrude_geometry_regression_tests PRIVATE solidar_model)
@@ -82,6 +86,7 @@ if(WIN32)
   set_tests_properties(
     document_tests
     extrude_feature_tests
+    revolve_feature_tests
     extrude_geometry_regression_tests
     extrude_boolean_regression_tests
     extrude_history_regression_tests

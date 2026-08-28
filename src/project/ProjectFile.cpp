@@ -13,6 +13,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
+#include "model/RevolveFeature.h"
 
 namespace solidar::project {
 namespace {
@@ -272,6 +273,15 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         saved["lengthMm"] = extrude->lengthMm();
         saved["operation"] = static_cast<int>(extrude->operation());
         saved["reversed"] = extrude->reversed();
+      } else if (const auto* revolve =
+                     dynamic_cast<const RevolveFeature*>(feature.get())) {
+        saved["profileSketchId"] = static_cast<qint64>(revolve->profileSketchId());
+        saved["axisType"] = static_cast<int>(revolve->axis().type);
+        saved["axisSketchId"] = static_cast<qint64>(revolve->axis().sketchId);
+        saved["axisLineId"] = static_cast<qint64>(revolve->axis().lineId);
+        saved["angleDeg"] = revolve->angleDeg();
+        saved["operation"] = static_cast<int>(revolve->operation());
+        saved["reversed"] = revolve->reversed();
       } else if (const auto* pocket =
                      dynamic_cast<const PocketFeature*>(feature.get())) {
         saved["sketchId"] = static_cast<qint64>(pocket->profileSketchId());
@@ -376,6 +386,16 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
         body.addFeature(std::make_unique<ExtrudeFeature>(
             id, static_cast<SketchId>(saved.value("sketchId").toInteger()),
             saved.value("lengthMm").toDouble(), name,
+            static_cast<ExtrudeOperation>(saved.value("operation").toInt()),
+            saved.value("reversed").toBool()));
+      } else if (type == QStringLiteral("Revolve")) {
+        AxisReference axis{
+            static_cast<AxisReferenceType>(saved.value("axisType").toInt()),
+            static_cast<SketchId>(saved.value("axisSketchId").toInteger()),
+            static_cast<sketch::GeometryId>(saved.value("axisLineId").toInteger())};
+        body.addFeature(std::make_unique<RevolveFeature>(
+            id, static_cast<SketchId>(saved.value("profileSketchId").toInteger()),
+            axis, saved.value("angleDeg").toDouble(360.0), name,
             static_cast<ExtrudeOperation>(saved.value("operation").toInt()),
             saved.value("reversed").toBool()));
       } else if (type == QStringLiteral("Pocket")) {

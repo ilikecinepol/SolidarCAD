@@ -19,3 +19,8 @@ editor composes Sketch, Drawing and 3D View through their public headers.
 
 New feature work should stay inside its module. Cross-module data belongs in
 `solidar_model`; project serialization belongs in `solidar_project`.
+# Parametric revolve
+
+The model module supports `RevolveFeature` with horizontal/vertical sketch
+axes or a stable sketch-line id, partial/full angles, reverse direction and
+New Body/Join/Cut operations.

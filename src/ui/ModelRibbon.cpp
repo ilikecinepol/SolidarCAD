@@ -75,20 +75,26 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
                                      QString::fromUtf8("Создать эскиз"), this);
   auto* extrude = commandButton(QStringLiteral(":/icons/extrude.png"),
                                 QString::fromUtf8("Выдавливание"), this);
+  auto* revolve = commandButton(QStringLiteral(":/icons/revolve.png"),
+                                QString::fromUtf8("Инструмент вращения"), this);
   createSketch->setObjectName("createSketchCommand");
   extrude->setObjectName("extrudeCommand");
+  revolve->setObjectName("revolveCommand");
   createSketch->setCheckable(true);
   extrude->setCheckable(true);
+  revolve->setCheckable(true);
   toolGroup_ = new QButtonGroup(this);
   toolGroup_->setExclusive(true);
   toolGroup_->addButton(createSketch);
   toolGroup_->addButton(extrude);
+  toolGroup_->addButton(revolve);
   auto* creation = new QHBoxLayout;
   creation->setSpacing(5);
   creation->addWidget(createSketch);
   creation->addWidget(extrude);
+  creation->addWidget(revolve);
   root->addWidget(group(QString::fromUtf8("СОЗДАНИЕ"), creation, this,
-                        {createSketch, extrude}));
+                        {createSketch, extrude, revolve}));
   root->addWidget(separator(this));
 
   auto* fillet = commandButton(QStringLiteral(":/icons/fillet.png"),
@@ -119,6 +125,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::createSketchRequested);
   connect(extrude, &QToolButton::clicked, this,
           &ModelRibbon::extrudeRequested);
+  connect(revolve, &QToolButton::clicked, this,
+          &ModelRibbon::revolveRequested);
   connect(fillet, &QToolButton::clicked, this,
           &ModelRibbon::filletRequested);
   connect(fit, &QToolButton::clicked, this, &ModelRibbon::fitRequested);

@@ -51,6 +51,7 @@ class MainWindow final : public QMainWindow {
   void updateAutomaticExtrudeOperation();
   void normalizeExtrusionDistance();
   void createPocket();
+  void createRevolve();
   void createFillet();
   void updateFilletToolPreview();
   void acceptFilletTool();

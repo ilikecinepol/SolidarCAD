@@ -24,6 +24,8 @@ add_library(solidar_model
   model/ToolSession.h
   model/PocketFeature.cpp
   model/PocketFeature.h
+  model/RevolveFeature.cpp
+  model/RevolveFeature.h
   model/SketchProfileBuilder.cpp
   model/SketchProfileBuilder.h
   model/Feature.cpp

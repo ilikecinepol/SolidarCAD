@@ -5,6 +5,7 @@
 #include "model/FilletFeature.h"
 #include "ui/ToolParametersPanel.h"
 #include "model/PocketFeature.h"
+#include "model/RevolveFeature.h"
 
 #include <algorithm>
 #include <cmath>
@@ -781,6 +782,8 @@ void MainWindow::buildUi() {
                 QString::fromUtf8("Выберите профиль для вырезания"));
             viewport_->beginExtrusionSurfaceSelection();
           });
+  connect(modelRibbon_, &ModelRibbon::revolveRequested, this,
+          &MainWindow::createRevolve);
   connect(modelRibbon_, &ModelRibbon::filletRequested, this,
           &MainWindow::createFillet);
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
@@ -1248,6 +1251,93 @@ void MainWindow::refreshBodyViewFromDocument() {
                             sketchHistory_[index].support,
                             modelSketch->placement);
   }
+}
+
+void MainWindow::createRevolve() {
+  if (document_.sketches().empty()) {
+    QMessageBox::information(this, QString::fromUtf8("Инструмент вращения"),
+                             QString::fromUtf8("Сначала создайте замкнутый эскиз."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  QDialog dialog(this);
+  dialog.setWindowTitle(QString::fromUtf8("Инструмент вращения"));
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* form = new QFormLayout;
+  auto* profile = new QComboBox(&dialog);
+  for (const auto& item : document_.sketches())
+    profile->addItem(QString::fromStdString(item.name),
+                     QVariant::fromValue<qulonglong>(item.id));
+  auto* axis = new QComboBox(&dialog);
+  auto fillAxes = [this, profile, axis] {
+    axis->clear();
+    axis->addItem(QString::fromUtf8("Горизонтальная ось"), 0);
+    axis->addItem(QString::fromUtf8("Вертикальная ось"), 1);
+    const auto id = static_cast<SketchId>(profile->currentData().toULongLong());
+    const auto* selected = document_.findSketch(id);
+    if (!selected) return;
+    for (std::size_t i = 0; i < selected->geometry.lines().size(); ++i)
+      axis->addItem(QString::fromUtf8("Линия %1").arg(i + 1),
+                    QVariant::fromValue<qulonglong>(selected->geometry.lineId(i) + 2));
+  };
+  fillAxes();
+  connect(profile, &QComboBox::currentIndexChanged, &dialog,
+          [fillAxes](int) { fillAxes(); });
+  auto* angle = new QDoubleSpinBox(&dialog);
+  angle->setRange(0.01, 360.0); angle->setDecimals(2);
+  angle->setValue(360.0); angle->setSuffix(QString::fromUtf8(" °"));
+  auto* reversed = new QCheckBox(QString::fromUtf8("Обратить направление"), &dialog);
+  auto* operation = new QComboBox(&dialog);
+  operation->addItems({QString::fromUtf8("Новое тело"),
+                       QString::fromUtf8("Объединить"),
+                       QString::fromUtf8("Вырезать")});
+  form->addRow(QString::fromUtf8("Профиль:"), profile);
+  form->addRow(QString::fromUtf8("Ось:"), axis);
+  form->addRow(QString::fromUtf8("Угол:"), angle);
+  form->addRow(QString(), reversed);
+  form->addRow(QString::fromUtf8("Операция:"), operation);
+  layout->addLayout(form);
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                        QDialogButtonBox::Cancel, &dialog);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  layout->addWidget(buttons);
+  if (dialog.exec() != QDialog::Accepted) { modelRibbon_->clearActiveTool(); return; }
+
+  const auto sketchId = static_cast<SketchId>(profile->currentData().toULongLong());
+  const qulonglong axisValue = axis->currentData().toULongLong();
+  AxisReference reference;
+  reference.sketchId = sketchId;
+  if (axisValue == 0) reference.type = AxisReferenceType::SketchHorizontalAxis;
+  else if (axisValue == 1) reference.type = AxisReferenceType::SketchVerticalAxis;
+  else { reference.type = AxisReferenceType::SketchLine;
+         reference.lineId = static_cast<sketch::GeometryId>(axisValue - 2); }
+  const auto selectedOperation = static_cast<ExtrudeOperation>(operation->currentIndex());
+  const Document previous = document_;
+  Body* body = selectedOperation == ExtrudeOperation::NewBody
+                   ? &document_.addBody()
+                   : document_.activeBody();
+  if (!body) {
+    QMessageBox::warning(this, QString::fromUtf8("Инструмент вращения"),
+                         QString::fromUtf8("Для объединения или вырезания требуется Body."));
+    modelRibbon_->clearActiveTool(); return;
+  }
+  auto revolve = std::make_unique<RevolveFeature>(
+      sketchId, reference, angle->value(),
+      "Revolve " + std::to_string(body->features().size() + 1),
+      selectedOperation, reversed->isChecked());
+  auto* revolvePtr = revolve.get();
+  body->addFeature(std::move(revolve));
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(revolvePtr->error());
+    document_ = previous;
+    QMessageBox::warning(this, QString::fromUtf8("Инструмент вращения"), error);
+  } else {
+    pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument();
+                                      rebuildFeatureTree(); rebuildHistoryPanel(); });
+    refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+  }
+  modelRibbon_->clearActiveTool();
 }
 
 void MainWindow::createPocket() {

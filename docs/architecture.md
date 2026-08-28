@@ -34,3 +34,9 @@ Renderer
 The prototype already models a sketch/extrude history and rebuilds its preview
 when dimensions change. The next slice will replace the preview with an Open
 CASCADE `TopoDS_Shape`, while preserving the same document-facing interface.
+# Revolve feature
+
+`RevolveFeature` is a history-based `ShapeFeature`. It stores only its profile
+sketch id, stable sketch-axis reference, angle, direction and shared solid
+operation; OCCT B-Rep is rebuilt through `Document::recompute()` and is never
+serialized.
