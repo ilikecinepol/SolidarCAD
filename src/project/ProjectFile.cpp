@@ -10,11 +10,28 @@
 
 #include <utility>
 
+#include "model/ExtrudeFeature.h"
+#include "model/FilletFeature.h"
+#include "model/PocketFeature.h"
+
 namespace solidar::project {
 namespace {
 
 void setError(QString* target, const QString& value) {
   if (target) *target = value;
+}
+
+QJsonArray vector3(double x, double y, double z) { return {x, y, z}; }
+
+Vector3d readVector3(const QJsonValue& value, Vector3d fallback) {
+  const auto values = value.toArray();
+  if (values.size() != 3) return fallback;
+  return {values[0].toDouble(), values[1].toDouble(), values[2].toDouble()};
+}
+
+Point3d readPoint3(const QJsonValue& value, Point3d fallback) {
+  const auto vector = readVector3(value, {fallback.x, fallback.y, fallback.z});
+  return {vector.x, vector.y, vector.z};
 }
 
 }  // namespace
@@ -203,6 +220,197 @@ bool ProjectFile::validate(const QString& path, QString* error) {
   return load(path, &unused, error);
 }
 
+bool ProjectFile::saveDocument(const QString& path, const Document& document,
+                               QString* error) {
+  ProjectData legacy;
+  legacy.box = document.box();
+  for (const auto& item : document.sketches())
+    legacy.sketches.push_back({item.geometry, QStringLiteral("XY")});
+  if (!save(path, legacy, error)) return false;
+
+  QFile input(path);
+  if (!input.open(QIODevice::ReadOnly)) {
+    setError(error, input.errorString());
+    return false;
+  }
+  auto root = QJsonDocument::fromJson(input.readAll()).object();
+  input.close();
+  root["version"] = 2;
+
+  QJsonArray sketches;
+  for (const auto& item : document.sketches()) {
+    QJsonObject support{{"type", static_cast<int>(item.support.type)}};
+    if (item.support.type == SketchSupportType::Face) {
+      support["bodyId"] = static_cast<qint64>(item.support.face.bodyId);
+      support["featureId"] = static_cast<qint64>(item.support.face.featureId);
+      support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex);
+    }
+    sketches.append(QJsonObject{
+        {"id", static_cast<qint64>(item.id)},
+        {"name", QString::fromStdString(item.name)},
+        {"origin", vector3(item.placement.origin.x, item.placement.origin.y,
+                           item.placement.origin.z)},
+        {"xDirection", vector3(item.placement.xDirection.x,
+                               item.placement.xDirection.y,
+                               item.placement.xDirection.z)},
+        {"yDirection", vector3(item.placement.yDirection.x,
+                               item.placement.yDirection.y,
+                               item.placement.yDirection.z)},
+        {"support", support}});
+  }
+
+  QJsonArray bodies;
+  for (const auto& body : document.bodies()) {
+    QJsonArray features;
+    for (const auto& feature : body.features()) {
+      QJsonObject saved{{"id", static_cast<qint64>(feature->id())},
+                        {"name", QString::fromStdString(feature->name())},
+                        {"type", QString::fromStdString(feature->typeName())}};
+      if (const auto* extrude =
+              dynamic_cast<const ExtrudeFeature*>(feature.get())) {
+        saved["sketchId"] = static_cast<qint64>(extrude->profileSketchId());
+        saved["lengthMm"] = extrude->lengthMm();
+        saved["operation"] = static_cast<int>(extrude->operation());
+        saved["reversed"] = extrude->reversed();
+      } else if (const auto* pocket =
+                     dynamic_cast<const PocketFeature*>(feature.get())) {
+        saved["sketchId"] = static_cast<qint64>(pocket->profileSketchId());
+        saved["depthMm"] = pocket->depthMm();
+      } else if (const auto* fillet =
+                     dynamic_cast<const FilletFeature*>(feature.get())) {
+        saved["radiusMm"] = fillet->radiusMm();
+        QJsonArray edges;
+        for (const auto& edge : fillet->edges())
+          edges.append(QJsonObject{
+              {"bodyId", static_cast<qint64>(edge.bodyId)},
+              {"featureId", static_cast<qint64>(edge.featureId)},
+              {"edgeIndex", static_cast<qint64>(edge.edgeIndex)}});
+        saved["edges"] = edges;
+      } else {
+        setError(error, QString::fromUtf8("Неподдерживаемый тип фичи: ") +
+                            saved.value("type").toString());
+        return false;
+      }
+      features.append(saved);
+    }
+    bodies.append(QJsonObject{{"id", static_cast<qint64>(body.id())},
+                              {"name", QString::fromStdString(body.name())},
+                              {"features", features}});
+  }
+  root["model"] = QJsonObject{{"sketches", sketches}, {"bodies", bodies}};
+
+  QSaveFile output(path);
+  if (!output.open(QIODevice::WriteOnly)) {
+    setError(error, output.errorString());
+    return false;
+  }
+  output.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+  if (!output.commit()) {
+    setError(error, output.errorString());
+    return false;
+  }
+  return true;
+}
+
+bool ProjectFile::loadDocument(const QString& path, Document* document,
+                               QString* error) {
+  if (!document) {
+    setError(error, QString::fromUtf8("Не задан документ для загрузки."));
+    return false;
+  }
+  ProjectData legacy;
+  if (!load(path, &legacy, error)) return false;
+
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    setError(error, file.errorString());
+    return false;
+  }
+  const auto root = QJsonDocument::fromJson(file.readAll()).object();
+  if (root.value("version").toInt() != 2 || !root.contains("model")) {
+    setError(error, QString::fromUtf8(
+                        "Проект не содержит параметрическую историю v2."));
+    return false;
+  }
+
+  Document loaded;
+  loaded.setBox(legacy.box);
+  const auto model = root.value("model").toObject();
+  const auto sketchMetadata = model.value("sketches").toArray();
+  if (sketchMetadata.size() != static_cast<qsizetype>(legacy.sketches.size())) {
+    setError(error, QString::fromUtf8("Метаданные эскизов повреждены."));
+    return false;
+  }
+  for (qsizetype index = 0; index < sketchMetadata.size(); ++index) {
+    const auto saved = sketchMetadata[index].toObject();
+    auto& sketch = loaded.addSketch(
+        static_cast<SketchId>(saved.value("id").toInteger()),
+        saved.value("name").toString().toStdString(),
+        legacy.sketches[static_cast<std::size_t>(index)].geometry);
+    sketch.placement.origin = readPoint3(saved.value("origin"), {});
+    sketch.placement.xDirection =
+        readVector3(saved.value("xDirection"), {1.0, 0.0, 0.0});
+    sketch.placement.yDirection =
+        readVector3(saved.value("yDirection"), {0.0, 1.0, 0.0});
+    const auto support = saved.value("support").toObject();
+    sketch.support.type = static_cast<SketchSupportType>(
+        support.value("type").toInt(static_cast<int>(SketchSupportType::BasePlane)));
+    if (sketch.support.type == SketchSupportType::Face)
+      sketch.support.face = {
+          static_cast<BodyId>(support.value("bodyId").toInteger()),
+          static_cast<FeatureId>(support.value("featureId").toInteger()),
+          static_cast<std::size_t>(support.value("faceIndex").toInteger())};
+  }
+
+  for (const auto bodyValue : model.value("bodies").toArray()) {
+    const auto savedBody = bodyValue.toObject();
+    auto& body = loaded.addBody(
+        static_cast<BodyId>(savedBody.value("id").toInteger()),
+        savedBody.value("name").toString().toStdString());
+    for (const auto featureValue : savedBody.value("features").toArray()) {
+      const auto saved = featureValue.toObject();
+      const auto id = static_cast<FeatureId>(saved.value("id").toInteger());
+      const auto name = saved.value("name").toString().toStdString();
+      const auto type = saved.value("type").toString();
+      if (type == QStringLiteral("Extrude")) {
+        body.addFeature(std::make_unique<ExtrudeFeature>(
+            id, static_cast<SketchId>(saved.value("sketchId").toInteger()),
+            saved.value("lengthMm").toDouble(), name,
+            static_cast<ExtrudeOperation>(saved.value("operation").toInt()),
+            saved.value("reversed").toBool()));
+      } else if (type == QStringLiteral("Pocket")) {
+        body.addFeature(std::make_unique<PocketFeature>(
+            id, static_cast<SketchId>(saved.value("sketchId").toInteger()),
+            saved.value("depthMm").toDouble(), name));
+      } else if (type == QStringLiteral("Fillet")) {
+        std::vector<EdgeReference> edges;
+        for (const auto edgeValue : saved.value("edges").toArray()) {
+          const auto edge = edgeValue.toObject();
+          edges.push_back({
+              static_cast<BodyId>(edge.value("bodyId").toInteger()),
+              static_cast<FeatureId>(edge.value("featureId").toInteger()),
+              static_cast<std::size_t>(edge.value("edgeIndex").toInteger())});
+        }
+        body.addFeature(std::make_unique<FilletFeature>(
+            id, std::move(edges), saved.value("radiusMm").toDouble(), name));
+      } else {
+        setError(error, QString::fromUtf8("Неизвестный тип фичи: ") + type);
+        return false;
+      }
+    }
+  }
+  if (!loaded.recompute()) {
+    setError(error, QString::fromUtf8("Не удалось перестроить проект: ") +
+                        QString::fromStdString(
+                            loaded.activeBody() && loaded.activeBody()->activeFeature()
+                                ? loaded.activeBody()->activeFeature()->error()
+                                : std::string{}));
+    return false;
+  }
+  *document = std::move(loaded);
+  return true;
+}
+
 bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
@@ -217,8 +425,9 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
     return false;
   }
   const auto root = document.object();
+  const int version = root.value("version").toInt();
   if (root.value("format").toString() != "solidar-project" ||
-      root.value("version").toInt() != 1) {
+      (version != 1 && version != 2)) {
     setError(error, QString::fromUtf8("Неподдерживаемый формат проекта."));
     return false;
   }

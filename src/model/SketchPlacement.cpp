@@ -10,6 +10,7 @@
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
+#include <Standard_Failure.hxx>
 
 namespace solidar {
 namespace {
@@ -61,23 +62,29 @@ Vector3d SketchPlacement::normal() const noexcept {
 
 ResolvedFacePlacement resolveFacePlacement(const TopoDS_Shape& shape,
                                            std::size_t faceIndex) {
-  std::size_t index = 0;
-  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More();
-       explorer.Next(), ++index) {
-    if (index != faceIndex) continue;
-    const TopoDS_Face face = TopoDS::Face(explorer.Current());
-    BRepAdaptor_Surface surface(face, true);
-    if (surface.GetType() != GeomAbs_Plane) return {};
+  try {
+    std::size_t index = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More();
+         explorer.Next(), ++index) {
+      if (index != faceIndex) continue;
+      const TopoDS_Face face = TopoDS::Face(explorer.Current());
+      BRepAdaptor_Surface surface(face, true);
+      if (surface.GetType() != GeomAbs_Plane) return {};
 
-    const gp_Ax3 axes = surface.Plane().Position();
-    const gp_Pnt location = axes.Location();
-    gp_Dir x = axes.XDirection();
-    gp_Dir y = axes.YDirection();
-    if (face.Orientation() == TopAbs_REVERSED) y.Reverse();
-    return {{{location.X(), location.Y(), location.Z()},
-             {x.X(), x.Y(), x.Z()},
-             {y.X(), y.Y(), y.Z()}},
-            true};
+      const gp_Ax3 axes = surface.Plane().Position();
+      const gp_Pnt location = axes.Location();
+      gp_Dir x = axes.XDirection();
+      gp_Dir y = axes.YDirection();
+      if (face.Orientation() == TopAbs_REVERSED) y.Reverse();
+      return {{{location.X(), location.Y(), location.Z()},
+               {x.X(), x.Y(), x.Z()},
+               {y.X(), y.Y(), y.Z()}},
+              true};
+    }
+  } catch (const Standard_Failure&) {
+    return {};
+  } catch (...) {
+    return {};
   }
   return {};
 }

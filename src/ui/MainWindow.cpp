@@ -218,25 +218,37 @@ void MainWindow::openProject() {
 bool MainWindow::loadProject(const QString& path, QString* error) {
   project::ProjectData data;
   if (!project::ProjectFile::load(path, &data, error)) return false;
-  document_ = Document{};
-  document_.setBox(data.box);
+  Document restoredDocument;
+  QString modelError;
+  const bool hasParametricHistory = project::ProjectFile::loadDocument(
+      path, &restoredDocument, &modelError);
+  document_ = hasParametricHistory ? std::move(restoredDocument) : Document{};
+  if (!hasParametricHistory) document_.setBox(data.box);
   sketchHistory_.clear();
   viewport_->resetScene();
   viewport_->setBox(document_.box());
-  for (const auto& saved : data.sketches) {
-    auto& modelSketch = document_.addSketch("Loaded sketch");
-    modelSketch.geometry = saved.geometry;
-    modelSketch.placement = saved.support.contains(QStringLiteral("XZ"))
-                                ? SketchPlacement::xz()
-                                : saved.support.contains(QStringLiteral("YZ"))
-                                      ? SketchPlacement::yz()
-                                      : SketchPlacement::xy();
+  for (std::size_t index = 0; index < data.sketches.size(); ++index) {
+    const auto& saved = data.sketches[index];
+    DocumentSketch* modelSketch =
+        hasParametricHistory && index < document_.sketches().size()
+            ? &document_.sketches()[index]
+            : &document_.addSketch("Loaded sketch");
+    if (!hasParametricHistory) {
+      modelSketch->geometry = saved.geometry;
+      modelSketch->placement = saved.support.contains(QStringLiteral("XZ"))
+                                   ? SketchPlacement::xz()
+                                   : saved.support.contains(QStringLiteral("YZ"))
+                                         ? SketchPlacement::yz()
+                                         : SketchPlacement::xy();
+    }
     sketchHistory_.push_back(
-        {saved.geometry, saved.support, modelSketch.id});
-    viewport_->addSketch(saved.geometry, saved.support, modelSketch.placement);
+        {modelSketch->geometry, saved.support, modelSketch->id});
+    viewport_->addSketch(modelSketch->geometry, saved.support,
+                         modelSketch->placement);
   }
   sketchCount_ = sketchHistory_.size();
-  hasExtrusion_ = data.hasExtrusion;
+  hasExtrusion_ = hasParametricHistory ? !document_.bodies().empty()
+                                       : data.hasExtrusion;
   extrusionSourceSketch_ = data.extrusionSourceSketch;
   if (hasExtrusion_ && extrusionSourceSketch_ &&
       *extrusionSourceSketch_ < sketchHistory_.size()) {
@@ -245,6 +257,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
     viewport_->setSolidSupport(source.support);
   }
   viewport_->setSolidVisible(hasExtrusion_);
+  if (hasParametricHistory) refreshBodyViewFromDocument();
   historyPosition_ = static_cast<int>(sketchHistory_.size()) +
                      (hasExtrusion_ ? 1 : 0);
   editingSketchIndex_.reset();
@@ -269,13 +282,7 @@ void MainWindow::saveProject() {
       path += QStringLiteral(".solidar");
   }
   QString error;
-  project::ProjectData data;
-  data.box = document_.box();
-  data.hasExtrusion = hasExtrusion_;
-  data.extrusionSourceSketch = extrusionSourceSketch_;
-  for (const auto& entry : sketchHistory_)
-    data.sketches.push_back({entry.geometry, entry.support});
-  if (!project::ProjectFile::save(path, data, &error)) {
+  if (!project::ProjectFile::saveDocument(path, document_, &error)) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка сохранения"), error);
     return;
   }

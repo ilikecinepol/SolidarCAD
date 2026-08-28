@@ -28,6 +28,10 @@ class ProjectFile final {
                    QString* error = nullptr);
   static bool load(const QString& path, ProjectData* data,
                    QString* error = nullptr);
+  static bool saveDocument(const QString& path, const Document& document,
+                           QString* error = nullptr);
+  static bool loadDocument(const QString& path, Document* document,
+                           QString* error = nullptr);
   static bool validate(const QString& path, QString* error = nullptr);
 };
 

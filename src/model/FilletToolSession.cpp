@@ -3,6 +3,7 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Shape.hxx>
+#include <Standard_Failure.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -84,22 +85,29 @@ bool FilletToolSession::updatePreview() {
 
 std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
   if (!baseShape_ || edges_.empty()) return std::nullopt;
-  const auto edge = resolveEdge(*baseShape_, edges_.front().edgeIndex);
-  if (!edge) return std::nullopt;
-  BRepAdaptor_Curve curve(*edge);
-  const double parameter = (curve.FirstParameter() + curve.LastParameter()) * 0.5;
-  const gp_Pnt point = curve.Value(parameter);
-  // A stable radial-looking direction is sufficient for a distance handle.
-  Vector3d direction{point.X(), point.Y(), 0.0};
-  double length = std::hypot(direction.x, direction.y);
-  if (length < 1e-8) {
-    direction = {0.0, 0.0, 1.0};
-  } else {
-    direction.x /= length;
-    direction.y /= length;
+  try {
+    const auto edge = resolveEdge(*baseShape_, edges_.front().edgeIndex);
+    if (!edge) return std::nullopt;
+    BRepAdaptor_Curve curve(*edge);
+    const double parameter =
+        (curve.FirstParameter() + curve.LastParameter()) * 0.5;
+    const gp_Pnt point = curve.Value(parameter);
+    // A stable radial-looking direction is sufficient for a distance handle.
+    Vector3d direction{point.X(), point.Y(), 0.0};
+    double length = std::hypot(direction.x, direction.y);
+    if (length < 1e-8) {
+      direction = {0.0, 0.0, 1.0};
+    } else {
+      direction.x /= length;
+      direction.y /= length;
+    }
+    return LinearToolManipulator{{point.X(), point.Y(), point.Z()}, direction,
+                                 radiusMm_};
+  } catch (const Standard_Failure&) {
+    return std::nullopt;
+  } catch (...) {
+    return std::nullopt;
   }
-  return LinearToolManipulator{{point.X(), point.Y(), point.Z()}, direction,
-                               radiusMm_};
 }
 
 void FilletToolSession::cancel() noexcept {
