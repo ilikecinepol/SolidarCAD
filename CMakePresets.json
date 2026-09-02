@@ -22,13 +22,29 @@
         "CMAKE_BUILD_TYPE": "Release",
         "SOLIDAR_BUILD_TESTS": "ON"
       }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI build with vcpkg manifest dependencies",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "SOLIDAR_BUILD_TESTS": "ON",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "VCPKG_TARGET_TRIPLET": "$env{VCPKG_DEFAULT_TRIPLET}"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "release", "configurePreset": "release" },
+    { "name": "ci", "configurePreset": "ci" }
   ],
   "testPresets": [
-    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } }
+    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
+    { "name": "ci", "configurePreset": "ci", "output": { "outputOnFailure": true } }
   ]
 }

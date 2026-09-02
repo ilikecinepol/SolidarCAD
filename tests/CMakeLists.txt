@@ -1,3 +1,9 @@
+if(MSVC)
+  add_compile_options(/UNDEBUG)
+else()
+  add_compile_options(-UNDEBUG)
+endif()
+
 add_executable(document_tests document_tests.cpp)
 target_link_libraries(document_tests PRIVATE solidar_model)
 add_test(NAME document_tests COMMAND document_tests)

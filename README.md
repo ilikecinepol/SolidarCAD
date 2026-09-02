@@ -29,6 +29,7 @@ fallback behind `TopologyReference`.
 - Ninja
 - a C++20 compiler: Visual Studio 2022 on Windows or GCC 12+ on Ubuntu
 - Qt 6.5+ with Widgets, OpenGLWidgets and PrintSupport
+- Open CASCADE Technology 8.0.1 (provided reproducibly by the pinned vcpkg manifest)
 
 ## Build
 
@@ -40,6 +41,11 @@ ctest --preset dev
 
 If Qt is installed outside the default search path, set `CMAKE_PREFIX_PATH` or
 pass `-DQt6_DIR=/path/to/Qt/6.x/lib/cmake/Qt6` while configuring.
+The `dev` preset continues to use dependencies supplied by the active local
+toolchain or Qt Creator kit. CI sets `VCPKG_ROOT` and uses the `ci` preset,
+which enables manifest mode through vcpkg's CMake toolchain. CI uses the
+repository's release-only overlay triplets so vcpkg does not build an unused
+second OCCT configuration; CTest targets explicitly keep their assertions.
 
 ## Roadmap
 

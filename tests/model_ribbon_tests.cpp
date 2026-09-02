@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
 
   assert(creation->findChild<QToolButton*>("createSketchCommand"));
   assert(creation->findChild<QToolButton*>("extrudeCommand"));
+  assert(creation->findChild<QToolButton*>("revolveCommand"));
   assert(editing->findChild<QToolButton*>("filletCommand"));
   assert(!creation->findChild<QToolButton*>("filletCommand"));
 
@@ -45,7 +46,7 @@ int main(int argc, char** argv) {
     assert(command->text() != QStringLiteral("Left"));
   }
 
-  assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
+  assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
   assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 1);
   assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
   return 0;

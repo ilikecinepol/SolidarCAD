@@ -61,7 +61,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGLWidgets PrintSupport)
 # already-built minimal Extrude toolkits instead of requiring a manual
 # CMAKE_PREFIX_PATH entry.
 find_package(OpenCASCADE CONFIG QUIET)
-if(NOT OpenCASCADE_FOUND)
+if(NOT OpenCASCADE_FOUND AND WIN32)
   set(_solidar_occt_build_root
       "${CMAKE_SOURCE_DIR}/vcpkg_installed/vcpkg/blds/opencascade")
   if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -97,12 +97,14 @@ if(NOT OpenCASCADE_FOUND)
       endif()
     endforeach()
     message(STATUS "Using local OCCT Extrude toolkits: ${_solidar_occt_build_dir}")
-  else()
-    message(FATAL_ERROR
-      "OpenCASCADE was not found. Configure with the vcpkg toolchain so "
-      "vcpkg.json can install opencascade, or set OpenCASCADE_DIR to the "
-      "directory containing OpenCASCADEConfig.cmake.")
   endif()
+endif()
+
+if(NOT OpenCASCADE_FOUND)
+  message(FATAL_ERROR
+    "OpenCASCADE was not found. Configure with the vcpkg toolchain so "
+    "vcpkg.json can install opencascade, or set OpenCASCADE_DIR to the "
+    "directory containing OpenCASCADEConfig.cmake.")
 endif()
 
 add_subdirectory(src)

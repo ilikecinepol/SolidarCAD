@@ -7,8 +7,8 @@
 
 | Компонент | Версия/ограничение | Назначение | Тип связи | Лицензия | Источник и фиксация | Владелец |
 |---|---|---|---|---|---|---|
-| Qt | CMake требует >= 6.5; локальный профиль 6.11.1; CI устанавливает 6.8.x | Core, Widgets, OpenGLWidgets, PrintSupport | динамическая runtime-библиотека | LGPL-3.0-only или коммерческая лицензия в зависимости от поставки | `find_package(Qt6 6.5)`; CI передаёт фактическую версию в генератор SBOM | release owner |
-| Open CASCADE Technology | 8.0.1 в текущей локальной сборке | B-Rep, topology, boolean, fillet, mesh | динамическая runtime-библиотека | LGPL-2.1-only WITH OCCT-exception-1.0 | vcpkg port `opencascade`, baseline `00c5775211f45cd08b37fce0484b4cb940e422ab` | CAD core owner |
+| Qt | CMake требует >= 6.5; локальный профиль 6.11.1; CI устанавливает 6.8.3 | Core, Widgets, OpenGLWidgets, PrintSupport | динамическая runtime-библиотека | LGPL-3.0-only или коммерческая лицензия в зависимости от поставки | `find_package(Qt6 6.5)`; CI передаёт фактическую версию в генератор SBOM | release owner |
+| Open CASCADE Technology | 8.0.1 | B-Rep, topology, boolean, fillet, mesh | динамическая runtime-библиотека | LGPL-2.1-only WITH OCCT-exception-1.0 | manifest mode, vcpkg port `opencascade`, baseline `00c5775211f45cd08b37fce0484b4cb940e422ab` | CAD core owner |
 | vcpkg | baseline `00c5775211f45cd08b37fce0484b4cb940e422ab` | получение и фиксация OCCT | build-only | MIT | `vcpkg.json` | build owner |
 | CMake | >= 3.24 | конфигурация и сборка | build-only | BSD-3-Clause | `CMakeLists.txt` | build owner |
 | MSVC / GCC | профиль сборки | компиляция C++20 | build-only | лицензия выбранного toolchain | release metadata | build owner |
