@@ -72,7 +72,10 @@ bool Body::rebuild(const RebuildContext& context) {
   bool upstreamDirty = false;
   for (std::size_t index = 0; index < features_.size(); ++index) {
     auto& feature = features_[index];
-    upstreamDirty = upstreamDirty || feature->isDirty();
+    // Retry failed features as well. Otherwise an Error feature restored
+    // without its diagnostic is rejected below before its builder can provide
+    // a useful current error.
+    upstreamDirty = upstreamDirty || feature->isDirty() || feature->isFailed();
     if (upstreamDirty) feature->setDirty();
     const RebuildContext featureContext{context.document, this,
                                         previousShape.get()};

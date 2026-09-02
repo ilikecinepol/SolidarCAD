@@ -50,6 +50,7 @@ class Document final {
   [[nodiscard]] bool rebuild();
   [[nodiscard]] bool recompute();
   [[nodiscard]] bool recomputeFrom(FeatureId featureId);
+  [[nodiscard]] std::string rebuildError() const;
   bool attachSketchToFace(SketchId sketchId, FaceReference reference);
   void updateSketchPlacements();
   [[nodiscard]] const BoxParameters& box() const noexcept;

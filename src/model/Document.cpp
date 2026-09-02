@@ -117,6 +117,19 @@ bool Document::rebuild() {
 
 bool Document::recompute() { return rebuild(); }
 
+std::string Document::rebuildError() const {
+  for (const auto& body : bodies_)
+    for (const auto& feature : body.features())
+      if (feature->isFailed() && !feature->error().empty())
+        return feature->error();
+  for (const auto& body : bodies_)
+    for (const auto& feature : body.features())
+      if (!feature->isValid())
+        return "Body '" + body.name() + "', feature '" + feature->name() +
+               "' is invalid without a diagnostic message";
+  return "Model rebuild failed without an invalid feature";
+}
+
 bool Document::recomputeFrom(FeatureId featureId) {
   if (featureId == kInvalidFeatureId) return false;
   bool found = false;

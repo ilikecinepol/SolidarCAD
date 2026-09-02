@@ -1278,9 +1278,7 @@ void MainWindow::extrudeSketch() {
       "Extrude " + std::to_string(modelBody->features().size() + 1),
       operation, reversed));
   if (!document_.rebuild()) {
-    const std::string error = modelBody->activeFeature()
-                                  ? modelBody->activeFeature()->error()
-                                  : "Extrude rebuild failed";
+    const std::string error = document_.rebuildError();
     document_ = previousDocument;
     refreshBodyViewFromDocument();
     QMessageBox::warning(this, QString::fromUtf8("Ошибка выдавливания"),
@@ -1433,7 +1431,7 @@ void MainWindow::acceptRevolveTool() {
       "Revolve " + std::to_string(body->features().size() + 1),
       revolveToolSession_.operation(), revolveToolSession_.reversed()));
   if (!document_.recompute()) {
-    const QString error = QString::fromStdString(body->activeFeature()->error());
+    const QString error = QString::fromStdString(document_.rebuildError());
     document_ = previous; refreshBodyViewFromDocument();
     statusBar()->showMessage(error); return;
   }
@@ -1471,9 +1469,7 @@ void MainWindow::createPocket() {
       profile->id, depth,
       "Pocket " + std::to_string(body->features().size())));
   if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(
-        body->activeFeature() ? body->activeFeature()->error()
-                              : "Pocket rebuild failed");
+    const QString error = QString::fromStdString(document_.rebuildError());
     document_ = previousDocument;
     refreshBodyViewFromDocument();
     QMessageBox::warning(this, QString::fromUtf8("Ошибка кармана"), error);
@@ -1577,9 +1573,7 @@ void MainWindow::acceptFilletTool() {
         "Скругление " + std::to_string(body->features().size())));
   }
   if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(
-        body->activeFeature() ? body->activeFeature()->error()
-                              : "Fillet rebuild failed");
+    const QString error = QString::fromStdString(document_.rebuildError());
     document_ = previousDocument;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);

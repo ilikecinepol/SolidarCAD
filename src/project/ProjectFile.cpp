@@ -421,10 +421,7 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
   }
   if (!loaded.recompute()) {
     setError(error, QString::fromUtf8("Не удалось перестроить проект: ") +
-                        QString::fromStdString(
-                            loaded.activeBody() && loaded.activeBody()->activeFeature()
-                                ? loaded.activeBody()->activeFeature()->error()
-                                : std::string{}));
+                        QString::fromStdString(loaded.rebuildError()));
     return false;
   }
   *document = std::move(loaded);

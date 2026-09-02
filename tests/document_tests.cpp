@@ -39,6 +39,8 @@ class TestShapeFeature final : public solidar::ShapeFeature {
 
   int rebuildCount{0};
 
+  void failWithoutMessage() { markError({}); }
+
  private:
   bool succeeds_{true};
   solidar::SketchId dependsOn_{solidar::kInvalidSketchId};
@@ -165,6 +167,30 @@ int main() {
   assert(!failingPtr->isValid());
   assert(failingPtr->isFailed());
   assert(!failingPtr->error().empty());
+  assert(document.rebuildError() == "test rebuild failure");
+
+  // A persisted Error state without its old text must be recomputed so the
+  // concrete builder can produce a current diagnostic.
+  solidar::Document retryDocument;
+  auto& retryBody = retryDocument.addBody("Retry body");
+  auto retry = std::make_unique<TestShapeFeature>("Retry feature", false);
+  auto* retryPtr = retry.get();
+  retryPtr->failWithoutMessage();
+  retryBody.addFeature(std::move(retry));
+  assert(!retryDocument.rebuild());
+  assert(retryPtr->rebuildCount == 1);
+  assert(retryDocument.rebuildError() == "test rebuild failure");
+
+  // Regression: rebuild stops at the earlier failed Body. A later active
+  // feature is not reached and therefore has no error of its own.
+  auto& laterBody = document.addBody("Later body");
+  auto later = std::make_unique<TestShapeFeature>("Not reached", true);
+  auto* laterPtr = later.get();
+  laterBody.addFeature(std::move(later));
+  assert(!document.rebuild());
+  assert(laterPtr->isDirty());
+  assert(laterPtr->error().empty());
+  assert(document.rebuildError() == "test rebuild failure");
 
   document.setBox({100.0, 50.0, 12.0});
   assert(document.box().widthMm == 100.0);
