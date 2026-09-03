@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           QT_VERSION="$(qmake -query QT_VERSION)"
-          python scripts/generate_sbom.py --qt-version "$QT_VERSION" --occt-version "8.0.1" --output build/solidarcad.spdx.json
+          python scripts/generate_sbom.py --qt-version "$QT_VERSION" --occt-version "8.0.1" --build-profile ci --output build/solidarcad.spdx.json
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
@@ -74,3 +74,12 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --preset ci
+
+      - name: Configure Release profile
+        run: cmake --preset release
+
+      - name: Build Release profile
+        run: cmake --build --preset release
+
+      - name: Verify Release install foundation
+        run: cmake --install build/release --prefix build/stage

@@ -4,11 +4,14 @@ cmake_minimum_required(VERSION 3.24)
 # minimal OCCT toolkits may already be available in the repository-local build
 # tree even though the complete manifest package is not installed yet.  Avoid
 # rebuilding the entire OCCT port on every Qt Creator configure in that case.
+option(SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK
+       "Allow the Windows Qt Creator OCCT build-tree fallback" ON)
 set(_solidar_bootstrap_occt_root
     "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/vcpkg/blds/opencascade")
 # Never change manifest mode in an existing Qt Creator build tree. Its
 # generated toolchain records the mode selected during the first configure.
-if(DEFINED VCPKG_MANIFEST_INSTALL AND NOT VCPKG_MANIFEST_INSTALL)
+if(SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK
+   AND DEFINED VCPKG_MANIFEST_INSTALL AND NOT VCPKG_MANIFEST_INSTALL)
   set(VCPKG_MANIFEST_MODE OFF CACHE BOOL
       "Keep the build directory's original vcpkg mode" FORCE)
 endif()
@@ -19,7 +22,8 @@ else()
   set(_solidar_bootstrap_occt_lib
       "${_solidar_bootstrap_occt_root}/x64-windows-rel/win64/vc14/lib")
 endif()
-if(EXISTS "${_solidar_bootstrap_occt_lib}/TKPrim.lib"
+if(SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK
+   AND EXISTS "${_solidar_bootstrap_occt_lib}/TKPrim.lib"
    AND EXISTS "${_solidar_bootstrap_occt_lib}/TKBO.lib"
    AND EXISTS "${_solidar_bootstrap_occt_lib}/TKBool.lib"
    AND EXISTS "${_solidar_bootstrap_occt_lib}/TKFillet.lib"
@@ -52,8 +56,16 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 option(SOLIDAR_BUILD_TESTS "Build unit tests" ON)
+set(SOLIDAR_REQUIRED_QT_VERSION "" CACHE STRING
+    "Require an exact Qt version (empty accepts any supported Qt)")
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGLWidgets PrintSupport)
+if(SOLIDAR_REQUIRED_QT_VERSION
+   AND NOT Qt6_VERSION VERSION_EQUAL SOLIDAR_REQUIRED_QT_VERSION)
+  message(FATAL_ERROR
+    "This build profile requires Qt ${SOLIDAR_REQUIRED_QT_VERSION}, "
+    "but CMake found Qt ${Qt6_VERSION}.")
+endif()
 
 # Prefer a regular SDK/vcpkg package. During the first manifest bootstrap,
 # Visual Studio's bundled vcpkg keeps completed OCCT toolkits in its local
@@ -61,7 +73,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGLWidgets PrintSupport)
 # already-built minimal Extrude toolkits instead of requiring a manual
 # CMAKE_PREFIX_PATH entry.
 find_package(OpenCASCADE CONFIG QUIET)
-if(NOT OpenCASCADE_FOUND AND WIN32)
+if(NOT OpenCASCADE_FOUND AND WIN32
+   AND SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK)
   set(_solidar_occt_build_root
       "${CMAKE_SOURCE_DIR}/vcpkg_installed/vcpkg/blds/opencascade")
   if(CMAKE_BUILD_TYPE STREQUAL "Debug")

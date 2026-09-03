@@ -31,7 +31,15 @@ fallback behind `TopologyReference`.
 - Qt 6.5+ with Widgets, OpenGLWidgets and PrintSupport
 - Open CASCADE Technology 8.0.1 (provided reproducibly by the pinned vcpkg manifest)
 
-## Build
+## Build profiles
+
+### Development
+
+The `dev` profile is the flexible local workflow. It builds Debug binaries and
+all tests, accepts any Qt 6.5 or newer supplied by Qt Creator or
+`CMAKE_PREFIX_PATH`, and can use a local OCCT package or the existing Windows
+Qt Creator OCCT build-tree fallback. Qt 6.11.1 is the recommended development
+version, but is not required.
 
 ```bash
 cmake --preset dev
@@ -41,11 +49,43 @@ ctest --preset dev
 
 If Qt is installed outside the default search path, set `CMAKE_PREFIX_PATH` or
 pass `-DQt6_DIR=/path/to/Qt/6.x/lib/cmake/Qt6` while configuring.
-The `dev` preset continues to use dependencies supplied by the active local
-toolchain or Qt Creator kit. CI sets `VCPKG_ROOT` and uses the `ci` preset,
-which enables manifest mode through vcpkg's CMake toolchain. CI uses the
-repository's release-only overlay triplets so vcpkg does not build an unused
-second OCCT configuration; CTest targets explicitly keep their assertions.
+The build type may be changed locally to `RelWithDebInfo` with
+`-DCMAKE_BUILD_TYPE=RelWithDebInfo`.
+
+### CI
+
+The `ci` profile is the automated validation configuration: Release compiler
+flags, tests enabled, Qt 6.8.3, OCCT 8.0.1, and the pinned vcpkg baseline. GitHub
+Actions runs configure, build, SBOM generation/upload, and all CTest tests on
+Windows and Ubuntu. It bootstraps vcpkg and sets `VCPKG_ROOT` and the platform
+triplet before running:
+
+```bash
+cmake --preset ci
+cmake --build --preset ci
+ctest --preset ci
+```
+
+### Release
+
+The `release` profile is the official foundation for production binaries. It
+uses Release flags, disables test executables, requires manifest-mode OCCT
+8.0.1 through the pinned vcpkg toolchain, and deliberately disables the local
+OCCT build-tree fallback. It rejects Qt versions other than 6.8.3; Qt must be
+installed separately. From a clean checkout, first clone vcpkg at baseline
+`00c5775211f45cd08b37fce0484b4cb940e422ab`, bootstrap it, install Qt 6.8.3,
+then set `VCPKG_ROOT`, `VCPKG_DEFAULT_TRIPLET` (`ci-x64-windows` or
+`ci-x64-linux`), and the Qt prefix before running:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+cmake --install build/release --prefix build/stage
+```
+
+The repository provides only the install foundation (`solidar` into `bin`) at
+this stage. Runtime deployment and installer/package generation remain future
+packaging work.
 
 ## Roadmap
 

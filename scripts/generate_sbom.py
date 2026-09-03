@@ -24,7 +24,8 @@ def package(name: str, spdx_id: str, version: str, license_id: str,
     }
 
 
-def generate(root: Path, qt_version: str | None, occt_version: str | None) -> dict:
+def generate(root: Path, qt_version: str | None, occt_version: str | None,
+             build_profile: str | None = None) -> dict:
     metadata = json.loads((root / "sbom/components.json").read_text("utf-8"))
     manifest = json.loads((root / "vcpkg.json").read_text("utf-8"))
     cmake_text = (root / "CMakeLists.txt").read_text("utf-8")
@@ -55,7 +56,7 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None) -> di
     }]
     dependencies = ["SPDXRef-Qt", "SPDXRef-OCCT",
                     "SPDXRef-vcpkg-baseline", "SPDXRef-CMake"]
-    return {
+    document = {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
@@ -77,6 +78,9 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None) -> di
             "relatedSpdxElement": item,
         } for item in dependencies],
     }
+    if build_profile:
+        document["comment"] = f"SolidarCAD build profile: {build_profile}"
+    return document
 
 
 def main() -> int:
@@ -85,10 +89,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--qt-version")
     parser.add_argument("--occt-version")
+    parser.add_argument("--build-profile", choices=("dev", "ci", "release"))
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     output = args.output or args.root / "sbom/solidarcad.spdx.json"
-    rendered = json.dumps(generate(args.root, args.qt_version, args.occt_version),
+    rendered = json.dumps(generate(args.root, args.qt_version, args.occt_version,
+                                   args.build_profile),
                           ensure_ascii=False, indent=2) + "\n"
     if args.check:
         if not output.exists() or output.read_text("utf-8") != rendered:

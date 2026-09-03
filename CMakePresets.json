@@ -3,45 +3,55 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
   "configurePresets": [
     {
+      "name": "vcpkg-reproducible",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "VCPKG_TARGET_TRIPLET": "$env{VCPKG_DEFAULT_TRIPLET}",
+        "SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK": "OFF",
+        "SOLIDAR_REQUIRED_QT_VERSION": "6.8.3"
+      }
+    },
+    {
       "name": "dev",
-      "displayName": "Developer build",
+      "displayName": "Development (Debug, tests)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/dev",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SOLIDAR_BUILD_TESTS": "ON",
+        "SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK": "ON"
+      }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI (Release, pinned dependencies, tests)",
+      "inherits": "vcpkg-reproducible",
+      "binaryDir": "${sourceDir}/build/ci",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
         "SOLIDAR_BUILD_TESTS": "ON"
       }
     },
     {
       "name": "release",
-      "displayName": "Release build",
-      "generator": "Ninja",
+      "displayName": "Official Release (pinned dependencies, no tests)",
+      "inherits": "vcpkg-reproducible",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "SOLIDAR_BUILD_TESTS": "ON"
-      }
-    },
-    {
-      "name": "ci",
-      "displayName": "CI build with vcpkg manifest dependencies",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/ci",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "SOLIDAR_BUILD_TESTS": "ON",
-        "VCPKG_MANIFEST_MODE": "ON",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
-        "VCPKG_TARGET_TRIPLET": "$env{VCPKG_DEFAULT_TRIPLET}"
+        "SOLIDAR_BUILD_TESTS": "OFF"
       }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" },
-    { "name": "ci", "configurePreset": "ci" }
+    { "name": "ci", "configurePreset": "ci" },
+    { "name": "release", "configurePreset": "release" }
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
