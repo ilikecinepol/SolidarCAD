@@ -127,7 +127,7 @@ std::string Document::rebuildError() const {
       if (!feature->isValid())
         return "Body '" + body.name() + "', feature '" + feature->name() +
                "' is invalid without a diagnostic message";
-  return "Model rebuild failed without an invalid feature";
+  return {};
 }
 
 bool Document::recomputeFrom(FeatureId featureId) {

@@ -72,11 +72,53 @@ target_link_libraries(parametric_feature_chain_tests PRIVATE solidar_model)
 add_test(NAME parametric_feature_chain_tests
          COMMAND parametric_feature_chain_tests)
 
+add_executable(part_design_regression_tests
+               part_design_regression_tests.cpp)
+target_link_libraries(part_design_regression_tests
+  PRIVATE solidar_project Qt6::Core)
+add_test(NAME part_design_regression_tests
+         COMMAND part_design_regression_tests)
+
 add_test(
   NAME compliance_artifacts_tests
   COMMAND ${CMAKE_COMMAND}
     -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/compliance_artifacts_tests.cmake
+)
+
+set_tests_properties(
+  document_tests
+  extrude_feature_tests
+  revolve_feature_tests
+  pocket_feature_tests
+  body_render_mesh_tests
+  macro_foundation_tests
+  fillet_feature_tests
+  PROPERTIES LABELS "unit"
+)
+
+set_tests_properties(
+  extrude_geometry_regression_tests
+  extrude_boolean_regression_tests
+  extrude_history_regression_tests
+  project_file_tests
+  sketch_regression_tests
+  fillet_feature_tests
+  revolve_feature_tests
+  parametric_feature_chain_tests
+  part_design_regression_tests
+  PROPERTIES LABELS "regression"
+)
+
+set_tests_properties(
+  editor_smoke_tests
+  model_ribbon_tests
+  PROPERTIES LABELS "ui-smoke"
+)
+
+set_tests_properties(
+  compliance_artifacts_tests
+  PROPERTIES LABELS "compliance"
 )
 
 # SOLIDAR TEST QT RUNTIME PATH
@@ -105,6 +147,7 @@ if(WIN32)
     macro_foundation_tests
     fillet_feature_tests
     parametric_feature_chain_tests
+    part_design_regression_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"

@@ -282,6 +282,39 @@ void tangencyAndPointRelationsStayValidAfterMovement() {
          "mixed point relations must solve without dangling references");
 }
 
+void pointOnCircleSurvivesFurtherSketchEdits() {
+  Sketch sketch;
+  sketch.addCircle({0.0, 0.0}, 10.0);
+  sketch.addLine({10.0, 0.0}, {20.0, 0.0});
+  const GeometryId circleId = sketch.circleId(0);
+  const PointReference constrainedPoint{sketch.lineId(0), true};
+  Constraint pointOnCircle;
+  pointOnCircle.type = ConstraintType::PointOnCircle;
+  pointOnCircle.firstGeometry = circleId;
+  pointOnCircle.secondPoint = constrainedPoint;
+  const ConstraintId pointOnCircleId = sketch.addConstraint(pointOnCircle);
+  expect(pointOnCircleId != kInvalidConstraintId,
+         "Point-on-Circle constraint must be stored in the sketch");
+
+  // Regression: editing geometry after Point-on-Circle used to leave solver
+  // references in a crash-prone state. Exercise unrelated creation, movement,
+  // solving and constraint removal after the relation exists.
+  sketch.addRectangle({25.0, 5.0}, {45.0, 20.0});
+  sketch.addLine({0.0, 30.0}, {15.0, 37.0});
+  expect(sketch.setLineHorizontalById(sketch.lineId(5)),
+         "new line must accept Horizontal after Point-on-Circle");
+  sketch.translateCircleById(circleId, 3.0, -2.0);
+  const SolveResult result = BasicSketchSolver::solve(sketch);
+  expect(result.invalidReferences == 0,
+         "Point-on-Circle must remain a valid solver reference after edits");
+  const auto point = sketch.referencedPoint(constrainedPoint);
+  expect(point && std::isfinite(point->xMm) && std::isfinite(point->yMm),
+         "constrained point must remain finite after later sketch edits");
+  expect(sketch.removeConstraint(pointOnCircleId),
+         "Point-on-Circle must remain removable after later edits");
+  (void)BasicSketchSolver::solve(sketch);
+}
+
 void deletionStressHasNoDanglingReferenceCrash() {
   Sketch sketch;
   for (int i = 0; i < 10; ++i)
@@ -312,6 +345,7 @@ int main() {
   angleBranchesAndCompositeGeometryRemainStable();
   relationalConstraintsRespectDrivingSizesAndComposites();
   tangencyAndPointRelationsStayValidAfterMovement();
+  pointOnCircleSurvivesFurtherSketchEdits();
   deletionStressHasNoDanglingReferenceCrash();
   return EXIT_SUCCESS;
 }
