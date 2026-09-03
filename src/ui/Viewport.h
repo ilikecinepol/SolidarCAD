@@ -135,6 +135,7 @@ class Viewport final : public QWidget {
   struct BodyTopologyRange {
     BodyId bodyId{kInvalidBodyId};
     FeatureId featureId{kInvalidFeatureId};
+    ShapeFeature::ShapePtr shape;
     std::size_t firstFace{};
     std::size_t faceCount{};
     std::size_t firstEdge{};

@@ -101,6 +101,8 @@ profile and its current conformance boundary.
 See [docs/modules.md](docs/modules.md) for feature ownership and module boundaries.
 See [docs/testing.md](docs/testing.md) for CTest labels and the mandatory CAD
 regression coverage.
+See [docs/persistent-topology.md](docs/persistent-topology.md) for the v1 face
+and edge reference model, fallback rules and known limitations.
 See [docs/reports/2026-08-28-parametric-3d-status.md](docs/reports/2026-08-28-parametric-3d-status.md)
 for the current parametric 3D stabilization status and verification gate.
 

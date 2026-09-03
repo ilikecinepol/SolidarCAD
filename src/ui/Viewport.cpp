@@ -1,4 +1,5 @@
 #include "ui/Viewport.h"
+#include "model/TopologyReferenceResolver.h"
 
 #include <BRepBndLib.hxx>
 #include <BRep_Builder.hxx>
@@ -255,7 +256,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
     for (TopExp_Explorer edges(*item.shape, TopAbs_EDGE); edges.More();
          edges.Next())
       ++edgeCount;
-    bodyTopologyRanges_.push_back({item.bodyId, item.featureId,
+    bodyTopologyRanges_.push_back({item.bodyId, item.featureId, item.shape,
         firstFace, faceCount, firstEdge, edgeCount});
     firstFace += faceCount;
     firstEdge += edgeCount;
@@ -552,8 +553,8 @@ std::optional<FaceReference> Viewport::selectedBodyFace() const noexcept {
   const auto global = static_cast<std::size_t>(selectedFace_);
   for (const auto& range : bodyTopologyRanges_)
     if (global >= range.firstFace && global < range.firstFace + range.faceCount)
-      return FaceReference{range.bodyId, range.featureId,
-                           global - range.firstFace};
+      return makeFaceReference(*range.shape, range.bodyId, range.featureId,
+                               global - range.firstFace);
   return std::nullopt;
 }
 
@@ -566,8 +567,8 @@ std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
     std::size_t global) const noexcept {
   for (const auto& range : bodyTopologyRanges_)
     if (global >= range.firstEdge && global < range.firstEdge + range.edgeCount)
-      return EdgeReference{range.bodyId, range.featureId,
-                            global - range.firstEdge};
+      return makeEdgeReference(*range.shape, range.bodyId, range.featureId,
+                               global - range.firstEdge);
   return std::nullopt;
 }
 
@@ -584,8 +585,11 @@ void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
   for (const auto& edge : edges)
     for (const auto& range : bodyTopologyRanges_)
       if (range.bodyId == edge.bodyId && range.featureId == edge.featureId &&
-          edge.edgeIndex < range.edgeCount)
-        selectedBodyEdgeIndices_.push_back(range.firstEdge + edge.edgeIndex);
+          range.shape) {
+        const auto resolved = resolveEdgeReference(*range.shape, edge.topology());
+        if (resolved)
+          selectedBodyEdgeIndices_.push_back(range.firstEdge + resolved.index);
+      }
   selectedBodyEdgeIndex_ = selectedBodyEdgeIndices_.empty()
                                ? static_cast<std::size_t>(-1)
                                : selectedBodyEdgeIndices_.front();

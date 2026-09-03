@@ -1,4 +1,5 @@
 #include "model/Document.h"
+#include "model/TopologyReferenceResolver.h"
 
 #include <algorithm>
 #include <atomic>
@@ -148,6 +149,16 @@ bool Document::recomputeFrom(FeatureId featureId) {
 bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
   auto* sketch = findSketch(sketchId);
   if (!sketch) return false;
+  const Body* body = findBody(reference.bodyId);
+  if (body && !reference.signature) {
+    for (const auto& feature : body->features())
+      if (feature->id() == reference.featureId && feature->shape()) {
+        reference = makeFaceReference(*feature->shape(), reference.bodyId,
+                                      reference.featureId,
+                                      reference.faceIndex);
+        break;
+      }
+  }
   sketch->support = {SketchSupportType::Face, reference};
   updateSketchPlacements();
   return sketch->supportResolved;
@@ -156,7 +167,7 @@ bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
 void Document::updateSketchPlacements() {
   for (auto& sketch : sketches_) {
     if (sketch.support.type != SketchSupportType::Face) continue;
-    const auto& reference = sketch.support.face;
+    auto& reference = sketch.support.face;
     const Body* body = findBody(reference.bodyId);
     const ShapeFeature* feature = nullptr;
     if (body) {
@@ -170,8 +181,15 @@ void Document::updateSketchPlacements() {
       sketch.supportResolved = false;
       continue;
     }
-    const auto resolved =
-        resolveFacePlacement(*feature->shape(), reference.topology());
+    const auto resolution =
+        resolveFaceReference(*feature->shape(), reference.topology());
+    if (resolution && !reference.signature)
+      reference = makeFaceReference(*feature->shape(), reference.bodyId,
+                                    reference.featureId, resolution.index);
+    const auto resolved = resolution
+                              ? resolveFacePlacement(*feature->shape(),
+                                                     resolution.index)
+                              : ResolvedFacePlacement{};
     sketch.supportResolved = resolved.planar;
     if (resolved.planar) sketch.placement = resolved.placement;
   }

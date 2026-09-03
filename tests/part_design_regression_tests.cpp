@@ -17,6 +17,7 @@
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
+#include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
 
 namespace {
@@ -107,8 +108,11 @@ int main(int argc, char* argv[]) {
     CHECK(topFace);
     auto& pocketSketch = document.addSketch("Sketch on face");
     const auto pocketSketchId = pocketSketch.id;
-    CHECK(document.attachSketchToFace(
-        pocketSketchId, {partBodyId, extrudeId, *topFace}));
+    const auto topFaceReference = solidar::makeFaceReference(
+        *partBody.resultShape(), partBodyId, extrudeId, *topFace);
+    CHECK(topFaceReference.signature);
+    CHECK(!topFaceReference.persistentTag.empty());
+    CHECK(document.attachSketchToFace(pocketSketchId, topFaceReference));
     const auto cornerA =
         toLocal(pocketSketch.placement, {20.0, 10.0, 50.0});
     const auto cornerB =
@@ -124,9 +128,11 @@ int main(int argc, char* argv[]) {
 
     const auto edgeIndex = filletableEdge(*partBody.resultShape(), 2.0);
     CHECK(edgeIndex);
-    auto fillet = std::make_unique<solidar::FilletFeature>(
-        solidar::EdgeReference{partBodyId, pocketId, *edgeIndex}, 2.0,
-        "Fillet");
+    const auto filletEdge = solidar::makeEdgeReference(
+        *partBody.resultShape(), partBodyId, pocketId, *edgeIndex);
+    CHECK(filletEdge.signature);
+    auto fillet = std::make_unique<solidar::FilletFeature>(filletEdge, 2.0,
+                                                          "Fillet");
     auto* filletPtr = fillet.get();
     const auto filletId = filletPtr->id();
     partBody.addFeature(std::move(fillet));
@@ -256,7 +262,9 @@ int main(int argc, char* argv[]) {
           solidar::SketchSupportType::Face);
     CHECK(restoredPocketSketch->support.face.bodyId == partBodyId);
     CHECK(restoredPocketSketch->support.face.featureId == extrudeId);
-    CHECK(restoredPocketSketch->support.face.faceIndex == *topFace);
+    CHECK(restoredPocketSketch->support.face.persistentTag ==
+          topFaceReference.persistentTag);
+    CHECK(restoredPocketSketch->support.face.signature);
 
     const auto* restoredExtrude = dynamic_cast<const solidar::ExtrudeFeature*>(
         restoredPart->features()[0].get());
@@ -268,6 +276,7 @@ int main(int argc, char* argv[]) {
         restoredRevolveBody->features()[0].get());
     CHECK(restoredExtrude && restoredPocket && restoredFillet &&
           restoredRevolve);
+    CHECK(restoredFillet->edge().signature);
     CHECK(restoredExtrude->id() == extrudeId);
     CHECK(restoredPocket->id() == pocketId);
     CHECK(restoredFillet->id() == filletId);

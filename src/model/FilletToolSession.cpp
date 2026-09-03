@@ -79,7 +79,13 @@ bool FilletToolSession::updatePreview() {
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
-    indices.push_back(edge.edgeIndex);
+    const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+    if (!resolved) {
+      error_ = resolved.error;
+      lifecycle_ = ToolLifecycle::PreviewInvalid;
+      return false;
+    }
+    indices.push_back(resolved.index);
   }
   previewShape_ = buildFilletShape(*baseShape_, indices, radiusMm_, &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
@@ -90,9 +96,10 @@ bool FilletToolSession::updatePreview() {
 std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
   if (!baseShape_ || edges_.empty()) return std::nullopt;
   try {
-    const auto edge = resolveEdge(*baseShape_, edges_.front().edgeIndex);
+    const auto edge =
+        resolveEdgeReference(*baseShape_, edges_.front().topology());
     if (!edge) return std::nullopt;
-    BRepAdaptor_Curve curve(*edge);
+    BRepAdaptor_Curve curve(*edge.subshape);
     const double parameter =
         (curve.FirstParameter() + curve.LastParameter()) * 0.5;
     const gp_Pnt point = curve.Value(parameter);

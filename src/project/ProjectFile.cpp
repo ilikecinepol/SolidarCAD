@@ -35,6 +35,78 @@ Point3d readPoint3(const QJsonValue& value, Point3d fallback) {
   return {vector.x, vector.y, vector.z};
 }
 
+QJsonArray topologyPoint(TopologyPoint3d value) {
+  return {value.x, value.y, value.z};
+}
+
+TopologyPoint3d readTopologyPoint(const QJsonValue& value) {
+  const auto array = value.toArray();
+  return array.size() == 3
+             ? TopologyPoint3d{array[0].toDouble(), array[1].toDouble(),
+                               array[2].toDouble()}
+             : TopologyPoint3d{};
+}
+
+QJsonObject topologyBounds(const TopologyBounds& bounds) {
+  return {{"minimum", topologyPoint(bounds.minimum)},
+          {"maximum", topologyPoint(bounds.maximum)}};
+}
+
+TopologyBounds readTopologyBounds(const QJsonValue& value) {
+  const auto object = value.toObject();
+  return {readTopologyPoint(object.value("minimum")),
+          readTopologyPoint(object.value("maximum"))};
+}
+
+QJsonObject faceSignature(const FaceSignature& signature) {
+  return {{"surfaceType", static_cast<int>(signature.surface)},
+          {"area", signature.area},
+          {"centroid", topologyPoint(signature.centroid)},
+          {"normal", topologyPoint(signature.normal)},
+          {"bounds", topologyBounds(signature.bounds)},
+          {"radius", signature.radius},
+          {"axis", topologyPoint(signature.axis)}};
+}
+
+std::optional<FaceSignature> readFaceSignature(const QJsonValue& value) {
+  if (!value.isObject()) return std::nullopt;
+  const auto object = value.toObject();
+  FaceSignature result;
+  result.surface =
+      static_cast<SurfaceKind>(object.value("surfaceType").toInt());
+  result.area = object.value("area").toDouble();
+  result.centroid = readTopologyPoint(object.value("centroid"));
+  result.normal = readTopologyPoint(object.value("normal"));
+  result.bounds = readTopologyBounds(object.value("bounds"));
+  result.radius = object.value("radius").toDouble();
+  result.axis = readTopologyPoint(object.value("axis"));
+  return result;
+}
+
+QJsonObject edgeSignature(const EdgeSignature& signature) {
+  return {{"curveType", static_cast<int>(signature.curve)},
+          {"length", signature.length},
+          {"midpoint", topologyPoint(signature.midpoint)},
+          {"tangent", topologyPoint(signature.tangent)},
+          {"bounds", topologyBounds(signature.bounds)},
+          {"radius", signature.radius},
+          {"center", topologyPoint(signature.center)}};
+}
+
+std::optional<EdgeSignature> readEdgeSignature(const QJsonValue& value) {
+  if (!value.isObject()) return std::nullopt;
+  const auto object = value.toObject();
+  EdgeSignature result;
+  result.curve = static_cast<CurveKind>(object.value("curveType").toInt());
+  result.length = object.value("length").toDouble();
+  result.midpoint = readTopologyPoint(object.value("midpoint"));
+  result.tangent = readTopologyPoint(object.value("tangent"));
+  result.bounds = readTopologyBounds(object.value("bounds"));
+  result.radius = object.value("radius").toDouble();
+  result.center = readTopologyPoint(object.value("center"));
+  return result;
+}
+
 }  // namespace
 
 bool ProjectFile::create(const QString& path, QString* error) {
@@ -245,6 +317,11 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
       support["bodyId"] = static_cast<qint64>(item.support.face.bodyId);
       support["featureId"] = static_cast<qint64>(item.support.face.featureId);
       support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex);
+      if (!item.support.face.persistentTag.empty())
+        support["persistentTag"] =
+            QString::fromStdString(item.support.face.persistentTag);
+      if (item.support.face.signature)
+        support["signature"] = faceSignature(*item.support.face.signature);
     }
     sketches.append(QJsonObject{
         {"id", static_cast<qint64>(item.id)},
@@ -290,11 +367,18 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
                      dynamic_cast<const FilletFeature*>(feature.get())) {
         saved["radiusMm"] = fillet->radiusMm();
         QJsonArray edges;
-        for (const auto& edge : fillet->edges())
-          edges.append(QJsonObject{
+        for (const auto& edge : fillet->edges()) {
+          QJsonObject savedEdge{
               {"bodyId", static_cast<qint64>(edge.bodyId)},
               {"featureId", static_cast<qint64>(edge.featureId)},
-              {"edgeIndex", static_cast<qint64>(edge.edgeIndex)}});
+              {"edgeIndex", static_cast<qint64>(edge.edgeIndex)}};
+          if (!edge.persistentTag.empty())
+            savedEdge["persistentTag"] =
+                QString::fromStdString(edge.persistentTag);
+          if (edge.signature)
+            savedEdge["signature"] = edgeSignature(*edge.signature);
+          edges.append(savedEdge);
+        }
         saved["edges"] = edges;
       } else {
         setError(error, QString::fromUtf8("Неподдерживаемый тип фичи: ") +
@@ -365,11 +449,15 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
     const auto support = saved.value("support").toObject();
     sketch.support.type = static_cast<SketchSupportType>(
         support.value("type").toInt(static_cast<int>(SketchSupportType::BasePlane)));
-    if (sketch.support.type == SketchSupportType::Face)
+    if (sketch.support.type == SketchSupportType::Face) {
       sketch.support.face = {
           static_cast<BodyId>(support.value("bodyId").toInteger()),
           static_cast<FeatureId>(support.value("featureId").toInteger()),
           static_cast<std::size_t>(support.value("faceIndex").toInteger())};
+      sketch.support.face.persistentTag =
+          support.value("persistentTag").toString().toStdString();
+      sketch.support.face.signature = readFaceSignature(support.value("signature"));
+    }
   }
 
   for (const auto bodyValue : model.value("bodies").toArray()) {
@@ -406,10 +494,14 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
         std::vector<EdgeReference> edges;
         for (const auto edgeValue : saved.value("edges").toArray()) {
           const auto edge = edgeValue.toObject();
-          edges.push_back({
+          EdgeReference reference{
               static_cast<BodyId>(edge.value("bodyId").toInteger()),
               static_cast<FeatureId>(edge.value("featureId").toInteger()),
-              static_cast<std::size_t>(edge.value("edgeIndex").toInteger())});
+              static_cast<std::size_t>(edge.value("edgeIndex").toInteger())};
+          reference.persistentTag =
+              edge.value("persistentTag").toString().toStdString();
+          reference.signature = readEdgeSignature(edge.value("signature"));
+          edges.push_back(std::move(reference));
         }
         body.addFeature(std::make_unique<FilletFeature>(
             id, std::move(edges), saved.value("radiusMm").toDouble(), name));

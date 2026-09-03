@@ -8,6 +8,7 @@
 
 #include "model/Body.h"
 #include "model/FilletBuilder.h"
+#include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
 
@@ -103,7 +104,15 @@ bool FilletFeature::rebuild(const RebuildContext& context) {
 
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
-  for (const auto& edge : edges_) indices.push_back(edge.edgeIndex);
+  for (const auto& edge : edges_) {
+    const auto resolved =
+        resolveEdgeReference(*context.previousShape, edge.topology());
+    if (!resolved) {
+      markError(resolved.error);
+      return false;
+    }
+    indices.push_back(resolved.index);
+  }
   std::string error;
   auto result = buildFilletShape(*context.previousShape, indices, radiusMm_,
                                  &error);

@@ -919,7 +919,7 @@ void MainWindow::buildUi() {
                 return;
               }
               const auto resolved =
-                  resolveFacePlacement(*shape, faceReference->faceIndex);
+                  resolveFacePlacement(*shape, faceReference->topology());
               if (!resolved.planar) {
                 QMessageBox::information(
                     this, QString::fromUtf8("Sketch on Face"),
@@ -1696,7 +1696,7 @@ bool MainWindow::configureSketchEditContext() {
                          QStringLiteral("Sketch support face could not be resolved"));
     return false;
   }
-  const auto resolved = resolveFacePlacement(*shape, reference.faceIndex);
+  const auto resolved = resolveFacePlacement(*shape, reference.topology());
   if (!resolved.planar) {
     QMessageBox::information(
         this, QString::fromUtf8("Sketch on Face"),

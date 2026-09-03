@@ -44,9 +44,18 @@ struct FaceReference {
   FeatureId featureId{kInvalidFeatureId};
   // Temporary until persistent topological naming is introduced.
   std::size_t faceIndex{};
+  std::string persistentTag;
+  std::optional<FaceSignature> signature;
 
   [[nodiscard]] TopologyReference topology() const {
-    return {bodyId, featureId, TopologyKind::Face, faceIndex};
+    TopologyReference result;
+    result.bodyId = bodyId;
+    result.featureId = featureId;
+    result.kind = TopologyKind::Face;
+    result.legacyIndex = faceIndex;
+    result.persistentTag = persistentTag;
+    result.faceSignature = signature;
+    return result;
   }
 };
 
@@ -55,8 +64,17 @@ struct EdgeReference {
   FeatureId featureId{kInvalidFeatureId};
   // Temporary until persistent topological naming is introduced.
   std::size_t edgeIndex{};
+  std::string persistentTag;
+  std::optional<EdgeSignature> signature;
   [[nodiscard]] TopologyReference topology() const {
-    return {bodyId, featureId, TopologyKind::Edge, edgeIndex};
+    TopologyReference result;
+    result.bodyId = bodyId;
+    result.featureId = featureId;
+    result.kind = TopologyKind::Edge;
+    result.legacyIndex = edgeIndex;
+    result.persistentTag = persistentTag;
+    result.edgeSignature = signature;
+    return result;
   }
   friend bool operator==(const EdgeReference&, const EdgeReference&) = default;
 };
