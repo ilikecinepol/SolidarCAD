@@ -103,6 +103,8 @@ add_library(solidar_viewport3d
   ui/ModelRibbon.h
   ui/Viewport.cpp
   ui/Viewport.h
+  ui/ViewportPicking.cpp
+  ui/ViewportPicking.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)

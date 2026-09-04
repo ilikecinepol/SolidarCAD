@@ -8,6 +8,7 @@
 #include <cassert>
 
 #include "ui/ModelRibbon.h"
+#include "ui/Viewport.h"
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -50,5 +51,24 @@ int main(int argc, char** argv) {
   assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
   assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
   assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
+
+  solidar::Viewport viewport;
+  viewport.setSelectionFilter(solidar::SelectionFilter::Edge);
+  assert(viewport.selectionFilter() == solidar::SelectionFilter::Edge);
+  viewport.setSelectionFilter(solidar::SelectionFilter::Face);
+  assert(viewport.selectionFilter() == solidar::SelectionFilter::Face);
+  viewport.setSelectionFilter(solidar::SelectionFilter::Any);
+
+  viewport.viewTop();
+  assert(viewport.cameraYawDegrees() == 0.0F);
+  assert(viewport.cameraPitchDegrees() == 0.0F);
+  viewport.viewFront();
+  assert(viewport.cameraPitchDegrees() == -90.0F);
+  viewport.viewRight();
+  assert(viewport.cameraYawDegrees() == 90.0F);
+  assert(viewport.cameraPitchDegrees() == 90.0F);
+  viewport.viewIsometric();
+  assert(viewport.cameraYawDegrees() == -45.0F);
+  assert(viewport.cameraPitchDegrees() == 30.0F);
   return 0;
 }

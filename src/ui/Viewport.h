@@ -28,6 +28,8 @@ struct BodyViewShape {
   ShapeFeature::ShapePtr shape;
 };
 
+enum class SelectionFilter { Any, Face, Edge, Plane };
+
 class Viewport final : public QWidget {
   Q_OBJECT
 
@@ -72,6 +74,8 @@ class Viewport final : public QWidget {
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
   void setEdgeMultiSelectionMode(bool enabled) noexcept;
   [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
+  void setSelectionFilter(SelectionFilter filter) noexcept;
+  [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                            ShapeFeature::ShapePtr shape);
   void clearToolPreviewShape();
@@ -86,6 +90,8 @@ class Viewport final : public QWidget {
   void viewRight();
   void viewLeft();
   void viewIsometric();
+  [[nodiscard]] float cameraYawDegrees() const noexcept;
+  [[nodiscard]] float cameraPitchDegrees() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
@@ -169,6 +175,7 @@ class Viewport final : public QWidget {
   std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::vector<std::size_t> selectedBodyEdgeIndices_;
   bool edgeMultiSelectionMode_{false};
+  SelectionFilter selectionFilter_{SelectionFilter::Any};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
   bool selectedOrigin_{false};

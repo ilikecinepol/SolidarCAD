@@ -932,6 +932,7 @@ void MainWindow::buildUi() {
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
   connect(viewport_, &Viewport::sketchPlanePicked, this,
           [this](const QString& plane) {
+            viewport_->setSelectionFilter(SelectionFilter::Any);
             modelRibbon_->clearActiveTool();
             currentSketchSupport_ = plane;
             currentSketchFaceReference_.reset();
@@ -1556,6 +1557,7 @@ void MainWindow::createFillet() {
   filletToolSession_.begin(body->id(), body->activeFeature()->id(),
                            body->resultShape(), edges, 5.0);
   viewport_->setEdgeMultiSelectionMode(true);
+  viewport_->setSelectionFilter(SelectionFilter::Edge);
   viewport_->setSelectedBodyEdges(edges);
   toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
                                   QString::fromUtf8("Рёбра"),
@@ -1593,6 +1595,7 @@ void MainWindow::createChamfer() {
   chamferToolSession_.begin(body->id(), body->activeFeature()->id(),
                             body->resultShape(), edges, 2.0);
   viewport_->setEdgeMultiSelectionMode(true);
+  viewport_->setSelectionFilter(SelectionFilter::Edge);
   viewport_->setSelectedBodyEdges(edges);
   toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
                                   QString::fromUtf8("Рёбра"),
@@ -1637,6 +1640,7 @@ void MainWindow::cancelChamferTool() {
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectionFilter(SelectionFilter::Any);
   viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   refreshBodyViewFromDocument();
@@ -1674,6 +1678,7 @@ void MainWindow::acceptChamferTool() {
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectionFilter(SelectionFilter::Any);
   viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   pushUndoAction([this, previousDocument] {
@@ -1720,6 +1725,7 @@ void MainWindow::cancelFilletTool() {
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectionFilter(SelectionFilter::Any);
   viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   refreshBodyViewFromDocument();
@@ -1757,6 +1763,7 @@ void MainWindow::acceptFilletTool() {
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectionFilter(SelectionFilter::Any);
   viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   pushUndoAction([this, previousDocument] {
@@ -2038,6 +2045,7 @@ void MainWindow::editFilletStep() {
   filletToolSession_.begin(body->id(), fillet->edge().featureId, upstream,
                            fillet->edges(), fillet->radiusMm(), fillet->id());
   viewport_->setEdgeMultiSelectionMode(true);
+  viewport_->setSelectionFilter(SelectionFilter::Edge);
   toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
@@ -2070,6 +2078,7 @@ void MainWindow::editChamferStep() {
                             chamfer->edges(), chamfer->distanceMm(),
                             chamfer->id());
   viewport_->setEdgeMultiSelectionMode(true);
+  viewport_->setSelectionFilter(SelectionFilter::Edge);
   toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
