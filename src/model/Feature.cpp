@@ -39,6 +39,10 @@ void Feature::setDirty(bool dirty) noexcept {
   }
 }
 
+void Feature::markBlocked(std::string message) {
+  markError(std::move(message));
+}
+
 void Feature::markValid() noexcept {
   state_ = FeatureState::Valid;
   error_.clear();

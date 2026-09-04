@@ -10,6 +10,8 @@ const ShapeFeature::ShapePtr& ShapeFeature::shape() const noexcept {
 
 bool ShapeFeature::hasShape() const noexcept { return bool(shape_); }
 
+void ShapeFeature::discardResult() noexcept { clearShape(); }
+
 void ShapeFeature::setShape(ShapePtr shape) noexcept {
   shape_ = std::move(shape);
 }

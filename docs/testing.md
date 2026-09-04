@@ -32,3 +32,10 @@ ctest --preset ci -L compliance
 `part_design_regression_tests` is the critical CAD-core gate. It deliberately
 uses volumes, non-null shapes, feature states, parameters and stable model IDs
 instead of OCCT face/edge ordering or exact topology counts.
+
+`parametric_history_tests` is the scheduler-level regression gate. It verifies
+targeted dirty propagation, upstream-to-downstream evaluation, stale-result
+removal, explicit blocked diagnostics, recovery with stable feature IDs, and
+continued recompute of independent bodies. The Part Design regression test adds
+the real Sketch -> Extrude -> Sketch-on-Face -> Pocket -> Fillet -> Chamfer path,
+an independent Revolve body, and an edit after project save/load.

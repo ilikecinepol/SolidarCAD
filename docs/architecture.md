@@ -40,3 +40,24 @@ CASCADE `TopoDS_Shape`, while preserving the same document-facing interface.
 sketch id, stable sketch-axis reference, angle, direction and shared solid
 operation; OCCT B-Rep is rebuilt through `Document::recompute()` and is never
 serialized.
+
+## Parametric history 1.0
+
+Each `Body` is an ordered dependency chain. A feature stores stable IDs and
+topology references to its inputs; generated OCCT shapes are transient. Editing
+a sketch marks every dependent feature dirty, while editing a feature marks that
+feature and the following features in its body dirty. Recompute always proceeds
+from upstream to downstream and preserves the IDs of existing nodes.
+
+If a feature cannot rebuild, its stale result is discarded. Every downstream
+feature is moved to `Error`, its stale shape is also discarded, and its
+diagnostic identifies the invalid upstream feature. Other bodies still rebuild
+independently. Correcting the source retries the same nodes and restores the
+chain without recreating IDs. Face-supported sketches are repositioned after
+each rebuilt producer so Pocket and later operations consume the updated face.
+
+The persisted source of truth is the ordered feature definitions, parameters,
+stable IDs, sketch geometry, and topology references. Save/load never treats a
+cached B-Rep as authoritative. Version 1 intentionally remains linear within a
+body: feature reorder, suppression, branching history, and additional Part
+Design operation types are outside this milestone.

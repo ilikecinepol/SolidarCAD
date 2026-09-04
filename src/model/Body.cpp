@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace solidar {
@@ -70,8 +71,16 @@ ShapeFeature::ShapePtr Body::resultShape() const noexcept {
 bool Body::rebuild(const RebuildContext& context) {
   ShapeFeature::ShapePtr previousShape;
   bool upstreamDirty = false;
+  const ShapeFeature* failedUpstream = nullptr;
   for (std::size_t index = 0; index < features_.size(); ++index) {
     auto& feature = features_[index];
+    if (failedUpstream) {
+      feature->discardResult();
+      feature->markBlocked("Blocked by invalid upstream feature '" +
+                           failedUpstream->name() + "' (#" +
+                           std::to_string(failedUpstream->id()) + ")");
+      continue;
+    }
     // Retry failed features as well. Otherwise an Error feature restored
     // without its diagnostic is rejected below before its builder can provide
     // a useful current error.
@@ -80,19 +89,21 @@ bool Body::rebuild(const RebuildContext& context) {
     const RebuildContext featureContext{context.document, this,
                                         previousShape.get()};
     if (feature->isDirty() && !feature->rebuild(featureContext)) {
-      markDirtyFrom(index + 1);
-      return false;
+      feature->discardResult();
+      failedUpstream = feature.get();
+      continue;
     }
     if (!feature->isValid()) {
-      markDirtyFrom(index + 1);
-      return false;
+      feature->discardResult();
+      failedUpstream = feature.get();
+      continue;
     }
     previousShape = feature->shape();
     // Attachments to this freshly rebuilt feature must move before the next
     // feature consumes their sketches (Extrude -> face Sketch -> Pocket).
     context.document.updateSketchPlacements();
   }
-  return true;
+  return failedUpstream == nullptr;
 }
 
 void Body::markDirtyFrom(std::size_t index) noexcept {

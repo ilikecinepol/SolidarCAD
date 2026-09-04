@@ -97,6 +97,10 @@ target_link_libraries(part_design_regression_tests
 add_test(NAME part_design_regression_tests
          COMMAND part_design_regression_tests)
 
+add_executable(parametric_history_tests parametric_history_tests.cpp)
+target_link_libraries(parametric_history_tests PRIVATE solidar_model)
+add_test(NAME parametric_history_tests COMMAND parametric_history_tests)
+
 add_executable(persistent_topology_tests
                persistent_topology_tests.cpp)
 target_link_libraries(persistent_topology_tests PRIVATE solidar_model)
@@ -135,6 +139,7 @@ set_tests_properties(
   revolve_feature_tests
   parametric_feature_chain_tests
   part_design_regression_tests
+  parametric_history_tests
   persistent_topology_tests
   PROPERTIES LABELS "regression"
 )
@@ -184,6 +189,7 @@ if(WIN32)
     chamfer_feature_tests
     parametric_feature_chain_tests
     part_design_regression_tests
+    parametric_history_tests
     persistent_topology_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION

@@ -288,8 +288,8 @@ int main(int argc, char* argv[]) {
     CHECK(restored.bodies().size() == document.bodies().size());
     CHECK(restored.sketches().size() == document.sketches().size());
 
-    const auto* restoredPart = restored.findBody(partBodyId);
-    const auto* restoredRevolveBody = restored.findBody(revolveBodyId);
+    auto* restoredPart = restored.findBody(partBodyId);
+    auto* restoredRevolveBody = restored.findBody(revolveBodyId);
     CHECK(restoredPart && restoredRevolveBody);
     CHECK(restoredPart->features().size() == 4);
     CHECK(restoredRevolveBody->features().size() == 1);
@@ -338,6 +338,29 @@ int main(int argc, char* argv[]) {
         solidar::test::volumeOf(*revolveBodyPtr->resultShape()), 1e-4));
     checkAllValid(restored);
     CHECK(restored.rebuildError().empty());
+
+    // A loaded project remains editable: changing the root sketch cascades
+    // through its complete body without recreating nodes or touching the
+    // independent Revolve body.
+    const double restoredPartVolume =
+        solidar::test::volumeOf(*restoredPart->resultShape());
+    const double restoredRevolveVolume =
+        solidar::test::volumeOf(*restoredRevolveBody->resultShape());
+    solidar::sketch::Sketch loadedEdit;
+    loadedEdit.addRectangle({0.0, 0.0}, {80.0, 45.0});
+    CHECK(restored.replaceSketchGeometry(baseSketchId, loadedEdit));
+    CHECK(restored.recompute());
+    CHECK(std::abs(solidar::test::volumeOf(*restoredPart->resultShape()) -
+                   restoredPartVolume) > 1e-4);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*restoredRevolveBody->resultShape()),
+        restoredRevolveVolume, 1e-4));
+    CHECK(restoredPart->features()[0]->id() == extrudeId);
+    CHECK(restoredPart->features()[1]->id() == pocketId);
+    CHECK(restoredPart->features()[2]->id() == filletId);
+    CHECK(restoredPart->features()[3]->id() == chamferId);
+    CHECK(restoredRevolveBody->features()[0]->id() == revolveId);
+    checkAllValid(restored);
   } catch (const std::exception& error) {
     std::cerr << "part design regression failure: " << error.what() << '\n';
     return EXIT_FAILURE;

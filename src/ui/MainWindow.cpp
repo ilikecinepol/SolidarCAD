@@ -2142,12 +2142,24 @@ void MainWindow::rebuildFeatureTree() {
       bodyItem->setData(0, Qt::UserRole, 3);
       bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
       bodyItem->setCheckState(0, Qt::Checked);
-      for (const auto& feature : body.features())
-        new QTreeWidgetItem(
-            bodyItem,
-            {QString::fromStdString(feature->name().empty()
-                                        ? feature->typeName()
-                                        : feature->name())});
+      for (const auto& feature : body.features()) {
+        const QString state =
+            feature->isValid() ? QStringLiteral("Valid")
+            : feature->isDirty() ? QStringLiteral("Dirty")
+                                 : QStringLiteral("Error");
+        const QString name = QString::fromStdString(
+            feature->name().empty() ? feature->typeName() : feature->name());
+        auto* featureItem =
+            new QTreeWidgetItem(bodyItem, {name + "  [" + state + "]"});
+        featureItem->setData(
+            0, Qt::UserRole + 1,
+            QVariant::fromValue<qulonglong>(feature->id()));
+        featureItem->setToolTip(
+            0, feature->isFailed()
+                   ? QString::fromStdString(feature->error())
+                   : QString::fromUtf8("Состояние: ") + state);
+        if (feature->isFailed()) featureItem->setForeground(0, QColor("#c62828"));
+      }
     }
   }
   auto* components = new QTreeWidgetItem(project, {QString::fromUtf8("Компоненты")});
