@@ -81,7 +81,7 @@ bool FilletToolSession::updatePreview() {
     }
     const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
     if (!resolved) {
-      error_ = resolved.error;
+      error_ = "Fillet edge could not be resolved";
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }

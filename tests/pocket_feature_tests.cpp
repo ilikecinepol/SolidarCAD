@@ -151,6 +151,10 @@ int main() {
   auto& unresolvedProfile = unresolved.sketches().back();
   unresolvedProfile.support.face.faceIndex = 9999;
   unresolved.updateSketchPlacements();
+  assert(unresolvedProfile.supportResolved);
+  unresolvedProfile.support.face.persistentTag.clear();
+  unresolvedProfile.support.face.signature.reset();
+  unresolved.updateSketchPlacements();
   assert(!unresolvedProfile.supportResolved);
   unresolved.activeBody()->activeFeature()->setDirty();
   assert(!unresolved.rebuild());

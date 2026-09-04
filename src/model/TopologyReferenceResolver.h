@@ -15,7 +15,10 @@ namespace solidar {
 struct EdgeReference;
 struct FaceReference;
 
-inline constexpr double kTopologyPositionRelativeTolerance = 0.20;
+// Ordinary parametric edits can translate a supported face or stretch an edge
+// by a substantial fraction of the model diagonal.  Surface/curve kind,
+// measure and direction still constrain the candidate set before scoring.
+inline constexpr double kTopologyPositionRelativeTolerance = 0.35;
 inline constexpr double kTopologyMeasureRelativeTolerance = 0.35;
 inline constexpr double kTopologyDirectionCosineTolerance = 0.996;
 inline constexpr double kTopologyAmbiguityScoreTolerance = 0.01;

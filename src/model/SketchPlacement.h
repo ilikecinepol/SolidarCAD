@@ -42,7 +42,7 @@ struct SketchPlacement {
 struct FaceReference {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
-  // Temporary until persistent topological naming is introduced.
+  // Legacy traversal index retained for loading v2 project files.
   std::size_t faceIndex{};
   std::string persistentTag;
   std::optional<FaceSignature> signature;
@@ -62,7 +62,7 @@ struct FaceReference {
 struct EdgeReference {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
-  // Temporary until persistent topological naming is introduced.
+  // Legacy traversal index retained for loading v2 project files.
   std::size_t edgeIndex{};
   std::string persistentTag;
   std::optional<EdgeSignature> signature;

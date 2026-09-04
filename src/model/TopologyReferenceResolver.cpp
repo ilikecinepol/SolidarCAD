@@ -159,6 +159,14 @@ std::vector<FaceCandidate> faceCandidates(const TopoDS_Shape& shape) {
   for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More();
        explorer.Next(), ++index) {
     const auto face = TopoDS::Face(explorer.Current());
+    // TopExp_Explorer can encounter the same underlying subshape through
+    // multiple topology paths.  Keep the original traversal index for file
+    // compatibility, but do not let duplicate occurrences turn an otherwise
+    // unique persistent match into an ambiguity.
+    if (std::any_of(result.begin(), result.end(), [&face](const auto& item) {
+          return item.face.IsSame(face);
+        }))
+      continue;
     auto signature = signatureOf(face);
     result.push_back(
         {face, index, signature, automaticFaceTag(signature, shapeBounds)});
@@ -172,6 +180,10 @@ std::vector<EdgeCandidate> edgeCandidates(const TopoDS_Shape& shape) {
   for (TopExp_Explorer explorer(shape, TopAbs_EDGE); explorer.More();
        explorer.Next(), ++index) {
     const auto edge = TopoDS::Edge(explorer.Current());
+    if (std::any_of(result.begin(), result.end(), [&edge](const auto& item) {
+          return item.edge.IsSame(edge);
+        }))
+      continue;
     result.push_back({edge, index, signatureOf(edge)});
   }
   return result;
@@ -180,6 +192,8 @@ std::vector<EdgeCandidate> edgeCandidates(const TopoDS_Shape& shape) {
 std::optional<double> faceScore(const FaceSignature& saved,
                                 const FaceSignature& candidate,
                                 double shapeDiagonal) {
+  // Position is normalized by the current shape so translated faces remain
+  // resolvable after ordinary upstream dimension edits.
   if (saved.surface != candidate.surface) return std::nullopt;
   const double measure = relativeDifference(saved.area, candidate.area);
   const double position = distance(saved.centroid, candidate.centroid) /
@@ -318,9 +332,12 @@ FaceResolution resolveFaceReference(const TopoDS_Shape& shape,
       return resolvedFace(*matches.front().second,
                           TopologyMatchMethod::GeometricSignature);
     }
-    if (reference.legacyIndex < candidates.size())
-      return resolvedFace(candidates[reference.legacyIndex],
-                          TopologyMatchMethod::LegacyIndex);
+    const auto legacy = std::find_if(
+        candidates.begin(), candidates.end(), [&reference](const auto& item) {
+          return item.index == reference.legacyIndex;
+        });
+    if (legacy != candidates.end())
+      return resolvedFace(*legacy, TopologyMatchMethod::LegacyIndex);
     failure.error = "Topology face legacy fallback failed";
   } catch (const Standard_Failure& error) {
     failure.error = std::string("OCCT failed to resolve face: ") + error.GetMessageString();
@@ -362,9 +379,12 @@ EdgeResolution resolveEdgeReference(const TopoDS_Shape& shape,
       return resolvedEdge(*matches.front().second,
                           TopologyMatchMethod::GeometricSignature);
     }
-    if (reference.legacyIndex < candidates.size())
-      return resolvedEdge(candidates[reference.legacyIndex],
-                          TopologyMatchMethod::LegacyIndex);
+    const auto legacy = std::find_if(
+        candidates.begin(), candidates.end(), [&reference](const auto& item) {
+          return item.index == reference.legacyIndex;
+        });
+    if (legacy != candidates.end())
+      return resolvedEdge(*legacy, TopologyMatchMethod::LegacyIndex);
     failure.error = "Topology edge legacy fallback failed";
   } catch (const Standard_Failure& error) {
     failure.error = std::string("OCCT failed to resolve edge: ") + error.GetMessageString();
