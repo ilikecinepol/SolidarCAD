@@ -212,6 +212,7 @@ void Viewport::setBodyShape(ShapeFeature::ShapePtr shape, BodyId bodyId,
 }
 
 void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
+  clearToolPreviewShape();
   bodyViewShapes_ = shapes;
   rebuildBodyDisplay(shapes, true);
 }
@@ -267,6 +268,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
   if (clearSelection) {
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
+    selectedBodyEdgeReferences_.clear();
   }
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   bodyRenderMesh_.clear();
@@ -314,18 +316,21 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
 
 void Viewport::setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                                    ShapeFeature::ShapePtr shape) {
-  auto display = bodyViewShapes_;
-  for (auto& item : display)
-    if (item.bodyId == bodyId) {
-      item.shape = std::move(shape);
-      item.featureId = featureId;
-      break;
-    }
-  rebuildBodyDisplay(display, false);
+  toolPreviewShape_ = std::move(shape);
+  toolPreviewBodyId_ = bodyId;
+  toolPreviewFeatureId_ = featureId;
+  toolPreviewRenderMesh_.clear();
+  if (toolPreviewShape_ && !toolPreviewShape_->IsNull())
+    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_);
+  update();
 }
 
 void Viewport::clearToolPreviewShape() {
-  rebuildBodyDisplay(bodyViewShapes_, false);
+  toolPreviewShape_.reset();
+  toolPreviewRenderMesh_.clear();
+  toolPreviewBodyId_ = kInvalidBodyId;
+  toolPreviewFeatureId_ = kInvalidFeatureId;
+  update();
 }
 
 void Viewport::setSketch(const sketch::Sketch& sketch) {
@@ -447,6 +452,10 @@ void Viewport::setBasePlaneVisible(int plane, bool visible) {
 void Viewport::resetScene() {
   bodyShape_.reset();
   bodyRenderMesh_.clear();
+  toolPreviewShape_.reset();
+  toolPreviewRenderMesh_.clear();
+  toolPreviewBodyId_ = kInvalidBodyId;
+  toolPreviewFeatureId_ = kInvalidFeatureId;
   bodyTopologyRanges_.clear();
   bodyViewShapes_.clear();
   bodyId_ = kInvalidBodyId;
@@ -469,6 +478,7 @@ void Viewport::resetScene() {
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
@@ -592,8 +602,8 @@ std::optional<FaceReference> Viewport::selectedBodyFace() const noexcept {
 }
 
 std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
-  if (selectedBodyEdgeIndices_.empty()) return std::nullopt;
-  return edgeReferenceForGlobalIndex(selectedBodyEdgeIndices_.front());
+  if (selectedBodyEdgeReferences_.empty()) return std::nullopt;
+  return selectedBodyEdgeReferences_.front();
 }
 
 std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
@@ -606,22 +616,21 @@ std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
 }
 
 std::vector<EdgeReference> Viewport::selectedBodyEdges() const {
-  std::vector<EdgeReference> result;
-  for (const auto index : selectedBodyEdgeIndices_)
-    if (const auto edge = edgeReferenceForGlobalIndex(index))
-      result.push_back(*edge);
-  return result;
+  return selectedBodyEdgeReferences_;
 }
 
 void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
   selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
   for (const auto& edge : edges)
     for (const auto& range : bodyTopologyRanges_)
       if (range.bodyId == edge.bodyId && range.featureId == edge.featureId &&
           range.shape) {
         const auto resolved = resolveEdgeReference(*range.shape, edge.topology());
-        if (resolved)
+        if (resolved) {
           selectedBodyEdgeIndices_.push_back(range.firstEdge + resolved.index);
+          selectedBodyEdgeReferences_.push_back(edge);
+        }
       }
   selectedBodyEdgeIndex_ = selectedBodyEdgeIndices_.empty()
                                ? static_cast<std::size_t>(-1)
@@ -952,6 +961,11 @@ void Viewport::paintEvent(QPaintEvent*) {
   }
 
   if (solidVisible_ && hasParametricBody) {
+    const bool showingToolPreview = toolPreviewShape_ &&
+                                    !toolPreviewShape_->IsNull() &&
+                                    !toolPreviewRenderMesh_.triangles().empty();
+    const BodyRenderMesh& renderMesh =
+        showingToolPreview ? toolPreviewRenderMesh_ : bodyRenderMesh_;
     struct PaintedTriangle {
       QPolygonF polygon;
       double depth;
@@ -959,10 +973,10 @@ void Viewport::paintEvent(QPaintEvent*) {
       std::size_t faceIndex;
     };
     std::vector<PaintedTriangle> painted;
-    painted.reserve(bodyRenderMesh_.triangles().size());
-    const Point3d center = bodyRenderMesh_.center();
+    painted.reserve(renderMesh.triangles().size());
+    const Point3d center = renderMesh.center();
     const Vector3d light{0.25, -0.35, 0.90};
-    for (const auto& triangle : bodyRenderMesh_.triangles()) {
+    for (const auto& triangle : renderMesh.triangles()) {
       const auto a = projectBodyPoint(triangle.a, center, size(), yaw_, pitch_, zoom_);
       const auto b = projectBodyPoint(triangle.b, center, size(), yaw_, pitch_, zoom_);
       const auto c = projectBodyPoint(triangle.c, center, size(), yaw_, pitch_, zoom_);
@@ -985,11 +999,13 @@ void Viewport::paintEvent(QPaintEvent*) {
       painter.setBrush(color);
       painter.drawPolygon(triangle.polygon);
     }
-    for (const auto& edge : bodyRenderMesh_.edges()) {
-      const bool selected = std::find(selectedBodyEdgeIndices_.begin(),
-                                      selectedBodyEdgeIndices_.end(),
-                                      edge.edgeIndex) != selectedBodyEdgeIndices_.end();
-      const bool hovered = edge.edgeIndex == hoveredBodyEdgeIndex_;
+    for (const auto& edge : renderMesh.edges()) {
+      const bool selected = !showingToolPreview &&
+          std::find(selectedBodyEdgeIndices_.begin(),
+                    selectedBodyEdgeIndices_.end(), edge.edgeIndex) !=
+              selectedBodyEdgeIndices_.end();
+      const bool hovered = !showingToolPreview &&
+                           edge.edgeIndex == hoveredBodyEdgeIndex_;
       painter.setPen(QPen(selected ? QColor("#ff8a00")
                                   : hovered ? QColor("#00a6ff")
                                             : QColor("#344353"),
@@ -1001,7 +1017,7 @@ void Viewport::paintEvent(QPaintEvent*) {
                                         yaw_, pitch_, zoom_);
         const QPointF midpoint = (a.screen + b.screen) * 0.5;
         double surfaceDepth = -std::numeric_limits<double>::max();
-        for (const auto& surface : bodyRenderMesh_.triangles()) {
+        for (const auto& surface : renderMesh.triangles()) {
           const auto sa = projectBodyPoint(surface.a, center, size(), yaw_, pitch_, zoom_);
           const auto sb = projectBodyPoint(surface.b, center, size(), yaw_, pitch_, zoom_);
           const auto sc = projectBodyPoint(surface.c, center, size(), yaw_, pitch_, zoom_);
@@ -1010,9 +1026,30 @@ void Viewport::paintEvent(QPaintEvent*) {
         }
         const double segmentDepth = (a.depth + b.depth) * 0.5;
         if (!selected && !hovered &&
-            segmentDepth + bodyRenderMesh_.diagonal() * 1e-4 < surfaceDepth)
+            segmentDepth + renderMesh.diagonal() * kDepthEpsilonScale <
+                surfaceDepth)
           continue;
         painter.drawLine(a.screen, b.screen);
+      }
+    }
+    if (showingToolPreview) {
+      const Point3d sourceCenter = bodyRenderMesh_.center();
+      for (const auto& edge : bodyRenderMesh_.edges()) {
+        const bool selected = std::find(selectedBodyEdgeIndices_.begin(),
+                                        selectedBodyEdgeIndices_.end(),
+                                        edge.edgeIndex) !=
+                              selectedBodyEdgeIndices_.end();
+        const bool hovered = edge.edgeIndex == hoveredBodyEdgeIndex_;
+        if (!selected && !hovered) continue;
+        painter.setPen(QPen(selected ? QColor("#ff8a00") : QColor("#00a6ff"),
+                            selected ? 3.2 : 2.8));
+        for (std::size_t index = 1; index < edge.points.size(); ++index) {
+          const auto a = projectBodyPoint(edge.points[index - 1], sourceCenter,
+                                          size(), yaw_, pitch_, zoom_).screen;
+          const auto b = projectBodyPoint(edge.points[index], sourceCenter,
+                                          size(), yaw_, pitch_, zoom_).screen;
+          painter.drawLine(a, b);
+        }
       }
     }
     if (toolManipulator_) {
@@ -1833,6 +1870,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   if (!toggleEdge) {
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
+    selectedBodyEdgeReferences_.clear();
   }
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
@@ -1859,6 +1897,10 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       selectedBodyEdgeIndex_ = selectedBodyEdgeIndices_.empty()
                                    ? static_cast<std::size_t>(-1)
                                    : selectedBodyEdgeIndices_.front();
+      selectedBodyEdgeReferences_.clear();
+      for (const auto index : selectedBodyEdgeIndices_)
+        if (const auto edge = edgeReferenceForGlobalIndex(index))
+          selectedBodyEdgeReferences_.push_back(*edge);
       emit selectionChanged(QString::fromUtf8("Тело 1 • Ребро ") +
                             QString::number(hoveredBodyEdgeIndex_ + 1));
       emit bodyEdgeSelectionChanged();

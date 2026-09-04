@@ -139,6 +139,10 @@ class Viewport final : public QWidget {
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
+  ShapeFeature::ShapePtr toolPreviewShape_;
+  BodyRenderMesh toolPreviewRenderMesh_;
+  BodyId toolPreviewBodyId_{kInvalidBodyId};
+  FeatureId toolPreviewFeatureId_{kInvalidFeatureId};
   std::vector<BodyViewShape> bodyViewShapes_;
   struct BodyTopologyRange {
     BodyId bodyId{kInvalidBodyId};
@@ -174,6 +178,7 @@ class Viewport final : public QWidget {
   std::size_t hoveredBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::vector<std::size_t> selectedBodyEdgeIndices_;
+  std::vector<EdgeReference> selectedBodyEdgeReferences_;
   bool edgeMultiSelectionMode_{false};
   SelectionFilter selectionFilter_{SelectionFilter::Any};
   int selectedBasePlane_{-1};
