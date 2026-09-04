@@ -107,10 +107,24 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   chamfer->setObjectName("chamferCommand");
   chamfer->setCheckable(true);
   toolGroup_->addButton(chamfer);
+  auto* mirror = commandButton({}, QString::fromUtf8("Зеркало"), this);
+  auto* linearPattern =
+      commandButton({}, QString::fromUtf8("Линейный массив"), this);
+  auto* circularPattern =
+      commandButton({}, QString::fromUtf8("Круговой массив"), this);
+  mirror->setCheckable(true);
+  linearPattern->setCheckable(true);
+  circularPattern->setCheckable(true);
+  toolGroup_->addButton(mirror);
+  toolGroup_->addButton(linearPattern);
+  toolGroup_->addButton(circularPattern);
   auto* editing = new QHBoxLayout;
   editing->setSpacing(5);
   editing->addWidget(fillet);
   editing->addWidget(chamfer);
+  editing->addWidget(mirror);
+  editing->addWidget(linearPattern);
+  editing->addWidget(circularPattern);
   root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
                         {fillet, chamfer}));
   root->addWidget(separator(this));
@@ -137,6 +151,11 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::filletRequested);
   connect(chamfer, &QToolButton::clicked, this,
           &ModelRibbon::chamferRequested);
+  connect(mirror, &QToolButton::clicked, this, &ModelRibbon::mirrorRequested);
+  connect(linearPattern, &QToolButton::clicked, this,
+          &ModelRibbon::linearPatternRequested);
+  connect(circularPattern, &QToolButton::clicked, this,
+          &ModelRibbon::circularPatternRequested);
   connect(fit, &QToolButton::clicked, this, &ModelRibbon::fitRequested);
   connect(iso, &QToolButton::clicked, this, &ModelRibbon::isoRequested);
 

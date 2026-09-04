@@ -7,6 +7,9 @@
 #include "ui/ToolParametersPanel.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
+#include "model/MirrorFeature.h"
+#include "model/LinearPatternFeature.h"
+#include "model/CircularPatternFeature.h"
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +23,7 @@
 #include <QIcon>
 #include <QInputDialog>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
@@ -928,6 +932,12 @@ void MainWindow::buildUi() {
           &MainWindow::createFillet);
   connect(modelRibbon_, &ModelRibbon::chamferRequested, this,
           &MainWindow::createChamfer);
+  connect(modelRibbon_, &ModelRibbon::mirrorRequested, this,
+          &MainWindow::createMirror);
+  connect(modelRibbon_, &ModelRibbon::linearPatternRequested, this,
+          &MainWindow::createLinearPattern);
+  connect(modelRibbon_, &ModelRibbon::circularPatternRequested, this,
+          &MainWindow::createCircularPattern);
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
   connect(viewport_, &Viewport::sketchPlanePicked, this,
@@ -1052,6 +1062,12 @@ void MainWindow::buildUi() {
               viewport_->setBasePlaneVisible(kind - 10, visible);
             if (kind >= 20)
               viewport_->setSketchVisible(static_cast<std::size_t>(kind - 20), visible);
+          });
+  connect(featureTree_, &QTreeWidget::itemDoubleClicked, this,
+          [this](QTreeWidgetItem* item, int) {
+            const auto id = static_cast<FeatureId>(
+                item->data(0, Qt::UserRole + 1).toULongLong());
+            if (id != kInvalidFeatureId) editPatternFeature(id);
           });
   connect(viewport_, &Viewport::selectionChanged, this,
           [this](const QString& text) {
@@ -1578,6 +1594,125 @@ void MainWindow::createFillet() {
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
+}
+
+void MainWindow::editPatternFeature(FeatureId featureId) {
+  for (Body& body : document_.bodies()) {
+    for (std::size_t index = 0; index < body.features().size(); ++index) {
+      ShapeFeature* feature = body.features()[index].get();
+      if (feature->id() != featureId) continue;
+      const Document previous = document_;
+      bool accepted = false;
+      if (auto* mirror = dynamic_cast<MirrorFeature*>(feature)) {
+        const QStringList choices{"XY", "XZ", "YZ"};
+        const QString selected = QInputDialog::getItem(
+            this, QString::fromUtf8("Редактировать зеркало"),
+            QString::fromUtf8("Плоскость:"), choices,
+            static_cast<int>(mirror->plane()), false, &accepted);
+        if (!accepted) return;
+        mirror->setPlane(static_cast<MirrorPlane>(choices.indexOf(selected)));
+      } else if (auto* linear = dynamic_cast<LinearPatternFeature*>(feature)) {
+        const int count = QInputDialog::getInt(
+            this, QString::fromUtf8("Линейный массив"),
+            QString::fromUtf8("Количество:"), linear->count(), 2, 100, 1,
+            &accepted);
+        if (!accepted) return;
+        const double spacing = QInputDialog::getDouble(
+            this, QString::fromUtf8("Линейный массив"),
+            QString::fromUtf8("Шаг, mm:"), linear->spacingMm(), 0.01,
+            100000.0, 2, &accepted);
+        if (!accepted) return;
+        linear->setCount(count); linear->setSpacingMm(spacing);
+      } else if (auto* circular =
+                     dynamic_cast<CircularPatternFeature*>(feature)) {
+        const int count = QInputDialog::getInt(
+            this, QString::fromUtf8("Круговой массив"),
+            QString::fromUtf8("Количество:"), circular->count(), 2, 100, 1,
+            &accepted);
+        if (!accepted) return;
+        const double angle = QInputDialog::getDouble(
+            this, QString::fromUtf8("Круговой массив"),
+            QString::fromUtf8("Угол, °:"), circular->angleDeg(), 0.01, 360.0,
+            2, &accepted);
+        if (!accepted) return;
+        circular->setCount(count); circular->setAngleDeg(angle);
+      } else {
+        return;
+      }
+      body.markDirtyFrom(index);
+      if (!document_.recompute()) {
+        rebuildFeatureTree(); refreshBodyViewFromDocument();
+        statusBar()->showMessage(QString::fromStdString(document_.rebuildError()));
+        return;
+      }
+      pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
+      refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+      return;
+    }
+  }
+}
+
+void MainWindow::createMirror() {
+  Body* body = document_.activeBody();
+  if (!body || !body->activeFeature()) return;
+  const QStringList planes{QStringLiteral("XY"), QStringLiteral("XZ"),
+                           QStringLiteral("YZ")};
+  bool accepted = false;
+  const QString selected = QInputDialog::getItem(
+      this, QString::fromUtf8("ЗЕРКАЛО"), QString::fromUtf8("Плоскость:"),
+      planes, 2, false, &accepted);
+  if (!accepted) { modelRibbon_->clearActiveTool(); return; }
+  const Document previous = document_;
+  const auto plane = selected == "XY" ? MirrorPlane::XY
+                     : selected == "XZ" ? MirrorPlane::XZ : MirrorPlane::YZ;
+  body->addFeature(std::make_unique<MirrorFeature>(
+      body->activeFeature()->id(), plane,
+      "Mirror " + std::to_string(body->features().size() + 1)));
+  if (!document_.recompute()) { document_ = previous; refreshBodyViewFromDocument(); return; }
+  pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
+  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+  modelRibbon_->clearActiveTool();
+}
+
+void MainWindow::createLinearPattern() {
+  Body* body = document_.activeBody();
+  if (!body || !body->activeFeature()) return;
+  QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("ЛИНЕЙНЫЙ МАССИВ"));
+  QFormLayout form(&dialog); QComboBox axis; axis.addItems({"X", "Y", "Z"});
+  QSpinBox count; count.setRange(2, 100); count.setValue(3);
+  QDoubleSpinBox spacing; spacing.setRange(0.01, 100000); spacing.setSuffix(" mm"); spacing.setValue(30);
+  QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  form.addRow(QString::fromUtf8("Направление:"), &axis); form.addRow(QString::fromUtf8("Количество:"), &count);
+  form.addRow(QString::fromUtf8("Шаг:"), &spacing); form.addRow(&buttons);
+  connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted) { modelRibbon_->clearActiveTool(); return; }
+  const Document previous = document_;
+  const auto direction = static_cast<PrincipalAxis>(axis.currentIndex());
+  body->addFeature(std::make_unique<LinearPatternFeature>(body->activeFeature()->id(), direction, count.value(), spacing.value()));
+  if (!document_.recompute()) { document_ = previous; refreshBodyViewFromDocument(); return; }
+  pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
+  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); modelRibbon_->clearActiveTool();
+}
+
+void MainWindow::createCircularPattern() {
+  Body* body = document_.activeBody();
+  if (!body || !body->activeFeature()) return;
+  QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("КРУГОВОЙ МАССИВ"));
+  QFormLayout form(&dialog); QComboBox axis; axis.addItems({"X", "Y", "Z"}); axis.setCurrentIndex(2);
+  QSpinBox count; count.setRange(2, 100); count.setValue(4);
+  QDoubleSpinBox angle; angle.setRange(0.01, 360); angle.setSuffix(QString::fromUtf8("°")); angle.setValue(360);
+  QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  form.addRow(QString::fromUtf8("Ось:"), &axis); form.addRow(QString::fromUtf8("Количество:"), &count);
+  form.addRow(QString::fromUtf8("Угол:"), &angle); form.addRow(&buttons);
+  connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted) { modelRibbon_->clearActiveTool(); return; }
+  const Document previous = document_;
+  body->addFeature(std::make_unique<CircularPatternFeature>(body->activeFeature()->id(), static_cast<PrincipalAxis>(axis.currentIndex()), count.value(), angle.value()));
+  if (!document_.recompute()) { document_ = previous; refreshBodyViewFromDocument(); return; }
+  pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
+  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); modelRibbon_->clearActiveTool();
 }
 
 void MainWindow::createChamfer() {

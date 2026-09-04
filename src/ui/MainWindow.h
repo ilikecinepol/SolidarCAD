@@ -63,6 +63,10 @@ class MainWindow final : public QMainWindow {
   void acceptFilletTool();
   void cancelFilletTool();
   void createChamfer();
+  void createMirror();
+  void createLinearPattern();
+  void createCircularPattern();
+  void editPatternFeature(FeatureId featureId);
   void updateChamferToolPreview();
   void acceptChamferTool();
   void cancelChamferTool();

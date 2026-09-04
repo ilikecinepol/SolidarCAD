@@ -15,6 +15,9 @@
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
+#include "model/MirrorFeature.h"
+#include "model/LinearPatternFeature.h"
+#include "model/CircularPatternFeature.h"
 
 namespace solidar::project {
 namespace {
@@ -398,6 +401,22 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
           edges.append(savedEdge);
         }
         saved["edges"] = edges;
+      } else if (const auto* mirror =
+                     dynamic_cast<const MirrorFeature*>(feature.get())) {
+        saved["sourceFeatureId"] = static_cast<qint64>(mirror->sourceFeatureId());
+        saved["plane"] = static_cast<int>(mirror->plane());
+      } else if (const auto* linear =
+                     dynamic_cast<const LinearPatternFeature*>(feature.get())) {
+        saved["sourceFeatureId"] = static_cast<qint64>(linear->sourceFeatureId());
+        saved["direction"] = static_cast<int>(linear->direction());
+        saved["count"] = linear->count();
+        saved["spacingMm"] = linear->spacingMm();
+      } else if (const auto* circular =
+                     dynamic_cast<const CircularPatternFeature*>(feature.get())) {
+        saved["sourceFeatureId"] = static_cast<qint64>(circular->sourceFeatureId());
+        saved["axis"] = static_cast<int>(circular->axis());
+        saved["count"] = circular->count();
+        saved["angleDeg"] = circular->angleDeg();
       } else {
         setError(error, QString::fromUtf8("Неподдерживаемый тип фичи: ") +
                             saved.value("type").toString());
@@ -538,6 +557,22 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
         }
         body.addFeature(std::make_unique<ChamferFeature>(
             id, std::move(edges), saved.value("distanceMm").toDouble(), name));
+      } else if (type == QStringLiteral("Mirror")) {
+        body.addFeature(std::make_unique<MirrorFeature>(
+            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            static_cast<MirrorPlane>(saved.value("plane").toInt()), name));
+      } else if (type == QStringLiteral("LinearPattern")) {
+        body.addFeature(std::make_unique<LinearPatternFeature>(
+            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            static_cast<PrincipalAxis>(saved.value("direction").toInt()),
+            saved.value("count").toInt(), saved.value("spacingMm").toDouble(),
+            name));
+      } else if (type == QStringLiteral("CircularPattern")) {
+        body.addFeature(std::make_unique<CircularPatternFeature>(
+            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            static_cast<PrincipalAxis>(saved.value("axis").toInt()),
+            saved.value("count").toInt(), saved.value("angleDeg").toDouble(),
+            name));
       } else {
         setError(error, QString::fromUtf8("Неизвестный тип фичи: ") + type);
         return false;

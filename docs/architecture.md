@@ -61,3 +61,20 @@ stable IDs, sketch geometry, and topology references. Save/load never treats a
 cached B-Rep as authoritative. Version 1 intentionally remains linear within a
 body: feature reorder, suppression, branching history, and additional Part
 Design operation types are outside this milestone.
+
+## Mirror and pattern history nodes
+
+`MirrorFeature`, `LinearPatternFeature`, and `CircularPatternFeature` consume the
+immediately preceding feature identified by a stable `FeatureId`. They create
+OCCT B-Rep occurrences and return a compound containing the original and every
+generated occurrence; render meshes are never transformed as source geometry.
+Mirror v1 supports the global XY/XZ/YZ planes. Linear Pattern uses a global
+X/Y/Z direction, with `count` meaning total occurrences and positive spacing in
+millimetres. Circular Pattern uses a global X/Y/Z axis. A full 360 degree pattern
+uses `angle/count` and therefore never duplicates 360 degrees; a partial pattern
+uses `angle/(count-1)` and includes both range endpoints.
+
+The three definitions and source IDs are persisted in project format v2. They
+use the normal Body scheduler, including downstream Dirty propagation, stale
+shape removal, blocked diagnostics, recovery, and stable IDs. Arbitrary datum
+planes/axes, per-occurrence suppression, and boolean fusion are v1 limitations.

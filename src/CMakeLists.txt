@@ -27,6 +27,13 @@ add_library(solidar_model
   model/FilletBuilder.h
   model/FilletToolSession.cpp
   model/FilletToolSession.h
+  model/PatternTypes.h
+  model/MirrorFeature.cpp
+  model/MirrorFeature.h
+  model/LinearPatternFeature.cpp
+  model/LinearPatternFeature.h
+  model/CircularPatternFeature.cpp
+  model/CircularPatternFeature.h
   model/ToolSession.h
   model/PocketFeature.cpp
   model/PocketFeature.h

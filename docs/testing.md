@@ -39,3 +39,9 @@ removal, explicit blocked diagnostics, recovery with stable feature IDs, and
 continued recompute of independent bodies. The Part Design regression test adds
 the real Sketch -> Extrude -> Sketch-on-Face -> Pocket -> Fillet -> Chamfer path,
 an independent Revolve body, and an edit after project save/load.
+
+Mirror and pattern coverage is split into `mirror_feature_tests`,
+`linear_pattern_feature_tests`, `circular_pattern_feature_tests`, and
+`pattern_persistence_tests`. These verify occurrence counts, bounds/volume,
+parameter edits with stable IDs, invalid-input recovery, full versus partial
+circular distribution, upstream edits, and project-format round trips.

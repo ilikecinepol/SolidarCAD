@@ -101,6 +101,15 @@ add_executable(parametric_history_tests parametric_history_tests.cpp)
 target_link_libraries(parametric_history_tests PRIVATE solidar_model)
 add_test(NAME parametric_history_tests COMMAND parametric_history_tests)
 
+foreach(pattern_test mirror_feature_tests linear_pattern_feature_tests circular_pattern_feature_tests)
+  add_executable(${pattern_test} ${pattern_test}.cpp)
+  target_link_libraries(${pattern_test} PRIVATE solidar_model)
+  add_test(NAME ${pattern_test} COMMAND ${pattern_test})
+endforeach()
+add_executable(pattern_persistence_tests pattern_persistence_tests.cpp)
+target_link_libraries(pattern_persistence_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME pattern_persistence_tests COMMAND pattern_persistence_tests)
+
 add_executable(persistent_topology_tests
                persistent_topology_tests.cpp)
 target_link_libraries(persistent_topology_tests PRIVATE solidar_model)
@@ -141,6 +150,10 @@ set_tests_properties(
   part_design_regression_tests
   parametric_history_tests
   persistent_topology_tests
+  mirror_feature_tests
+  linear_pattern_feature_tests
+  circular_pattern_feature_tests
+  pattern_persistence_tests
   PROPERTIES LABELS "regression"
 )
 
@@ -191,6 +204,10 @@ if(WIN32)
     part_design_regression_tests
     parametric_history_tests
     persistent_topology_tests
+    mirror_feature_tests
+    linear_pattern_feature_tests
+    circular_pattern_feature_tests
+    pattern_persistence_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"
