@@ -12,6 +12,8 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -22,6 +24,14 @@
 #include "model/FilletFeature.h"
 #include "model/FilletToolSession.h"
 #include "model/TopologyReferenceResolver.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 
@@ -235,6 +245,8 @@ int main() {
   const BoxModel multiEdgeBox = addBox(multiEdgeDocument);
   assert(multiEdgeDocument.rebuild());
   auto* multiEdgeBody = multiEdgeDocument.findBody(multiEdgeBox.bodyId);
+  const auto multiEdgeSource = multiEdgeBody->resultShape();
+  CHECK(multiEdgeSource);
   std::vector<solidar::EdgeReference> verticalEdges;
   for (std::size_t index = 0; index < 32 && verticalEdges.size() < 2; ++index) {
     const auto edge = solidar::resolveEdge(*multiEdgeBody->resultShape(), index);
@@ -243,10 +255,36 @@ int main() {
     const gp_Pnt start = curve.Value(curve.FirstParameter());
     const gp_Pnt end = curve.Value(curve.LastParameter());
     if (std::abs(std::abs(end.Z() - start.Z()) - 50.0) < 1e-6)
-      verticalEdges.push_back(
-          {multiEdgeBody->id(), multiEdgeBox.extrudeId, index});
+      verticalEdges.push_back(solidar::makeEdgeReference(
+          *multiEdgeSource, multiEdgeBody->id(), multiEdgeBox.extrudeId,
+          index));
   }
-  assert(verticalEdges.size() == 2);
+  CHECK(verticalEdges.size() == 2);
+  CHECK(verticalEdges[0].signature && verticalEdges[1].signature);
+
+  solidar::FilletToolSession multiEdgeSession;
+  multiEdgeSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,
+                         multiEdgeSource, verticalEdges, 2.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewValid);
+  const auto selectedReferences = multiEdgeSession.edges();
+  multiEdgeSession.setRadiusFromPanel(3.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewValid);
+  CHECK(multiEdgeSession.edges() == selectedReferences);
+  multiEdgeSession.setRadiusFromManipulator(1.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewValid);
+  CHECK(multiEdgeSession.edges() == selectedReferences);
+  multiEdgeSession.setRadiusFromPanel(1000.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!multiEdgeSession.previewShape());
+  CHECK(multiEdgeSession.edges() == selectedReferences);
+  multiEdgeSession.setRadiusFromPanel(2.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewValid);
+  CHECK(multiEdgeSession.edges() == selectedReferences);
   const double multiEdgeBefore = volumeOf(*multiEdgeBody->resultShape());
   auto feature =
       std::make_unique<solidar::FilletFeature>(verticalEdges, 3.0, "Two edges");
@@ -256,6 +294,13 @@ int main() {
   assert(multiFillet->isValid() && multiFillet->edges().size() == 2);
   assert(std::abs(volumeOf(*multiEdgeBody->resultShape()) - multiEdgeBefore) >
          1e-3);
+
+  solidar::FilletToolSession editSession;
+  editSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,
+                    multiEdgeSource, multiFillet->edges(),
+                    multiFillet->radiusMm(), multiFillet->id());
+  CHECK(editSession.editingFeatureId() == multiFillet->id());
+  CHECK(editSession.edges() == selectedReferences);
 
   // Preview geometry and synchronized parameter updates do not mutate the
   // Document or add history until the UI accepts the session.

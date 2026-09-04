@@ -974,7 +974,10 @@ void Viewport::paintEvent(QPaintEvent*) {
     };
     std::vector<PaintedTriangle> painted;
     painted.reserve(renderMesh.triangles().size());
-    const Point3d center = renderMesh.center();
+    // Source and preview are alternative renderings of the same world-space
+    // body. Keep a common projection origin so a preview cannot visually drift
+    // away from the topology used for picking and selection overlays.
+    const Point3d center = bodyRenderMesh_.center();
     const Vector3d light{0.25, -0.35, 0.90};
     for (const auto& triangle : renderMesh.triangles()) {
       const auto a = projectBodyPoint(triangle.a, center, size(), yaw_, pitch_, zoom_);
@@ -1033,7 +1036,6 @@ void Viewport::paintEvent(QPaintEvent*) {
       }
     }
     if (showingToolPreview) {
-      const Point3d sourceCenter = bodyRenderMesh_.center();
       for (const auto& edge : bodyRenderMesh_.edges()) {
         const bool selected = std::find(selectedBodyEdgeIndices_.begin(),
                                         selectedBodyEdgeIndices_.end(),
@@ -1044,11 +1046,27 @@ void Viewport::paintEvent(QPaintEvent*) {
         painter.setPen(QPen(selected ? QColor("#ff8a00") : QColor("#00a6ff"),
                             selected ? 3.2 : 2.8));
         for (std::size_t index = 1; index < edge.points.size(); ++index) {
-          const auto a = projectBodyPoint(edge.points[index - 1], sourceCenter,
-                                          size(), yaw_, pitch_, zoom_).screen;
-          const auto b = projectBodyPoint(edge.points[index], sourceCenter,
-                                          size(), yaw_, pitch_, zoom_).screen;
-          painter.drawLine(a, b);
+          const auto a = projectBodyPoint(edge.points[index - 1], center, size(),
+                                          yaw_, pitch_, zoom_);
+          const auto b = projectBodyPoint(edge.points[index], center, size(),
+                                          yaw_, pitch_, zoom_);
+          const QPointF midpoint = (a.screen + b.screen) * 0.5;
+          double surfaceDepth = -std::numeric_limits<double>::max();
+          for (const auto& surface : renderMesh.triangles()) {
+            const auto sa = projectBodyPoint(surface.a, center, size(), yaw_,
+                                             pitch_, zoom_);
+            const auto sb = projectBodyPoint(surface.b, center, size(), yaw_,
+                                             pitch_, zoom_);
+            const auto sc = projectBodyPoint(surface.c, center, size(), yaw_,
+                                             pitch_, zoom_);
+            if (const auto depth = triangleDepthAt(midpoint, sa, sb, sc))
+              surfaceDepth = std::max(surfaceDepth, *depth);
+          }
+          const double segmentDepth = (a.depth + b.depth) * 0.5;
+          if (segmentDepth + renderMesh.diagonal() * kDepthEpsilonScale <
+              surfaceDepth)
+            continue;
+          painter.drawLine(a.screen, b.screen);
         }
       }
     }

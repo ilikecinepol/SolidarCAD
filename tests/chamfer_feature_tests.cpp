@@ -156,6 +156,32 @@ int main(int argc, char* argv[]) {
     pairSession.begin(box.bodyId, box.extrudeId, upstream, pair, 1.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.previewShape());
+    const auto pairReferences = pairSession.edges();
+    pairSession.setDistanceFromPanel(1.25);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+    CHECK(pairSession.edges() == pairReferences);
+    pairSession.setDistanceFromManipulator(0.75);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+    CHECK(pairSession.edges() == pairReferences);
+    pairSession.setDistanceFromPanel(1000.0);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+    CHECK(!pairSession.previewShape());
+    CHECK(pairSession.edges() == pairReferences);
+    pairSession.setDistanceFromPanel(1.0);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+    CHECK(pairSession.edges() == pairReferences);
+
+    // Editing an existing multi-edge feature restores its source references
+    // while the preview remains an independent session result.
+    solidar::ChamferFeature editableFeature(pair, 1.0, "Editable chamfer");
+    solidar::ChamferToolSession editSession;
+    editSession.begin(box.bodyId, box.extrudeId, upstream,
+                      editableFeature.edges(), editableFeature.distanceMm(),
+                      editableFeature.id());
+    CHECK(editSession.editingFeatureId() == editableFeature.id());
+    CHECK(editSession.edges() == editableFeature.edges());
+    editSession.setEdges(pairReferences);
+    CHECK(editSession.edges() == pairReferences);
 
     // Project v2 round-trip preserves ids, references, parameter, and rebuild.
     QTemporaryDir directory(QDir::current().filePath("chamfer-v1-XXXXXX"));
