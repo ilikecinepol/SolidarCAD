@@ -97,6 +97,18 @@ int main() {
   const auto sourceShape =
       document.findBody(box.bodyId)->features().front()->shape();
   assert(sourceShape);
+  // Viewport picking reports the raw TopExp traversal index. Every visible
+  // occurrence, including an alias of an already visited OCCT edge, must be
+  // canonicalized into a resolvable persistent reference.
+  std::size_t rawEdgeIndex = 0;
+  for (TopExp_Explorer explorer(*sourceShape, TopAbs_EDGE); explorer.More();
+       explorer.Next(), ++rawEdgeIndex) {
+    const auto picked = solidar::makeEdgeReference(
+        *sourceShape, box.bodyId, box.extrudeId, rawEdgeIndex);
+    assert(picked.signature);
+    assert(solidar::resolveEdgeReference(*sourceShape, picked.topology()));
+  }
+  assert(rawEdgeIndex > 0);
   assert(solidar::resolveEdge(
       *sourceShape, topologyReference));
   auto wrongKind = topologyReference;

@@ -266,9 +266,22 @@ FaceReference makeFaceReference(const TopoDS_Shape& shape, BodyId bodyId,
   FaceReference result{bodyId, featureId, faceIndex};
   try {
     const auto candidates = faceCandidates(shape);
-    if (faceIndex >= candidates.size()) return result;
-    result.signature = candidates[faceIndex].signature;
-    result.persistentTag = semanticTag.empty() ? candidates[faceIndex].tag
+    TopoDS_Face requested;
+    std::size_t index = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More();
+         explorer.Next(), ++index)
+      if (index == faceIndex) {
+        requested = TopoDS::Face(explorer.Current());
+        break;
+      }
+    const auto canonical = std::find_if(
+        candidates.begin(), candidates.end(), [&requested](const auto& item) {
+          return !requested.IsNull() && item.face.IsSame(requested);
+        });
+    if (canonical == candidates.end()) return result;
+    result.faceIndex = canonical->index;
+    result.signature = canonical->signature;
+    result.persistentTag = semanticTag.empty() ? canonical->tag
                                                 : std::move(semanticTag);
   } catch (...) {
   }
@@ -281,8 +294,21 @@ EdgeReference makeEdgeReference(const TopoDS_Shape& shape, BodyId bodyId,
   EdgeReference result{bodyId, featureId, edgeIndex};
   try {
     const auto candidates = edgeCandidates(shape);
-    if (edgeIndex >= candidates.size()) return result;
-    result.signature = candidates[edgeIndex].signature;
+    TopoDS_Edge requested;
+    std::size_t index = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_EDGE); explorer.More();
+         explorer.Next(), ++index)
+      if (index == edgeIndex) {
+        requested = TopoDS::Edge(explorer.Current());
+        break;
+      }
+    const auto canonical = std::find_if(
+        candidates.begin(), candidates.end(), [&requested](const auto& item) {
+          return !requested.IsNull() && item.edge.IsSame(requested);
+        });
+    if (canonical == candidates.end()) return result;
+    result.edgeIndex = canonical->index;
+    result.signature = canonical->signature;
     result.persistentTag = std::move(semanticTag);
   } catch (...) {
   }
