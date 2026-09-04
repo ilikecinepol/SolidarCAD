@@ -19,6 +19,7 @@ class ModelRibbon final : public QWidget {
   void revolveRequested();
   void pocketRequested();
   void filletRequested();
+  void chamferRequested();
   void fitRequested();
   void isoRequested();
 

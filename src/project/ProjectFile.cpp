@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "model/ExtrudeFeature.h"
+#include "model/ChamferFeature.h"
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
@@ -380,6 +381,23 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
           edges.append(savedEdge);
         }
         saved["edges"] = edges;
+      } else if (const auto* chamfer =
+                     dynamic_cast<const ChamferFeature*>(feature.get())) {
+        saved["distanceMm"] = chamfer->distanceMm();
+        QJsonArray edges;
+        for (const auto& edge : chamfer->edges()) {
+          QJsonObject savedEdge{
+              {"bodyId", static_cast<qint64>(edge.bodyId)},
+              {"featureId", static_cast<qint64>(edge.featureId)},
+              {"edgeIndex", static_cast<qint64>(edge.edgeIndex)}};
+          if (!edge.persistentTag.empty())
+            savedEdge["persistentTag"] =
+                QString::fromStdString(edge.persistentTag);
+          if (edge.signature)
+            savedEdge["signature"] = edgeSignature(*edge.signature);
+          edges.append(savedEdge);
+        }
+        saved["edges"] = edges;
       } else {
         setError(error, QString::fromUtf8("Неподдерживаемый тип фичи: ") +
                             saved.value("type").toString());
@@ -505,6 +523,21 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
         }
         body.addFeature(std::make_unique<FilletFeature>(
             id, std::move(edges), saved.value("radiusMm").toDouble(), name));
+      } else if (type == QStringLiteral("Chamfer")) {
+        std::vector<EdgeReference> edges;
+        for (const auto edgeValue : saved.value("edges").toArray()) {
+          const auto edge = edgeValue.toObject();
+          EdgeReference reference{
+              static_cast<BodyId>(edge.value("bodyId").toInteger()),
+              static_cast<FeatureId>(edge.value("featureId").toInteger()),
+              static_cast<std::size_t>(edge.value("edgeIndex").toInteger())};
+          reference.persistentTag =
+              edge.value("persistentTag").toString().toStdString();
+          reference.signature = readEdgeSignature(edge.value("signature"));
+          edges.push_back(std::move(reference));
+        }
+        body.addFeature(std::make_unique<ChamferFeature>(
+            id, std::move(edges), saved.value("distanceMm").toDouble(), name));
       } else {
         setError(error, QString::fromUtf8("Неизвестный тип фичи: ") + type);
         return false;

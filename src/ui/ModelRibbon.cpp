@@ -102,11 +102,17 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   fillet->setObjectName("filletCommand");
   fillet->setCheckable(true);
   toolGroup_->addButton(fillet);
+  auto* chamfer = commandButton(QStringLiteral(":/icons/fillet.png"),
+                                QString::fromUtf8("Фаска"), this);
+  chamfer->setObjectName("chamferCommand");
+  chamfer->setCheckable(true);
+  toolGroup_->addButton(chamfer);
   auto* editing = new QHBoxLayout;
   editing->setSpacing(5);
   editing->addWidget(fillet);
+  editing->addWidget(chamfer);
   root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
-                        {fillet}));
+                        {fillet, chamfer}));
   root->addWidget(separator(this));
 
   auto* views = new QHBoxLayout;
@@ -129,6 +135,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::revolveRequested);
   connect(fillet, &QToolButton::clicked, this,
           &ModelRibbon::filletRequested);
+  connect(chamfer, &QToolButton::clicked, this,
+          &ModelRibbon::chamferRequested);
   connect(fit, &QToolButton::clicked, this, &ModelRibbon::fitRequested);
   connect(iso, &QToolButton::clicked, this, &ModelRibbon::isoRequested);
 

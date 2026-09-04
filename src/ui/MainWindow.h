@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "model/ChamferToolSession.h"
 #include "model/FilletToolSession.h"
 #include "model/RevolveToolSession.h"
 #include "sketch/Sketch.h"
@@ -61,6 +62,10 @@ class MainWindow final : public QMainWindow {
   void updateFilletToolPreview();
   void acceptFilletTool();
   void cancelFilletTool();
+  void createChamfer();
+  void updateChamferToolPreview();
+  void acceptChamferTool();
+  void cancelChamferTool();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
@@ -69,6 +74,7 @@ class MainWindow final : public QMainWindow {
   void editExtrusionStep();
   void editPocketStep();
   void editFilletStep();
+  void editChamferStep();
   void exportPdf();
   void printDrawing();
   void undoLastAction();
@@ -101,6 +107,7 @@ class MainWindow final : public QMainWindow {
   QDockWidget* toolParametersDock_{nullptr};
   ToolParametersPanel* toolParametersPanel_{nullptr};
   FilletToolSession filletToolSession_;
+  ChamferToolSession chamferToolSession_;
   RevolveToolSession revolveToolSession_;
   QDockWidget* revolveDock_{nullptr};
   QComboBox* revolveProfileCombo_{nullptr};

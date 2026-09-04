@@ -8,10 +8,11 @@ common `TopologyReference` also reserved string fields for future persistent
 data, but resolution used only `faceIndex` or `edgeIndex`. Sketch-on-Face and
 Fillet were therefore vulnerable to a reordered OCCT face/edge traversal.
 
-All shape-producing features (Extrude, Pocket, Fillet and Revolve) expose a
+All shape-producing features (Extrude, Pocket, Fillet, Chamfer and Revolve) expose a
 B-Rep through `ShapeFeature`. Sketch-on-Face consumes a face from a source
 feature; Fillet consumes one or more edges from the immediately preceding
-feature. Project format v2 previously stored only owner IDs and legacy index.
+feature. Chamfer follows the same edge-reference contract as Fillet. Project
+format v2 previously stored only owner IDs and legacy index.
 
 ## Reference structure
 
@@ -45,7 +46,7 @@ Candidates are collected in one linear B-Rep traversal; no tessellation,
 pointer identity or whole-shape hashing is used.
 
 If a persistent signature exists but no safe match exists, the resolver does
-not silently fall back to the old index. A failed Fillet becomes Error with the
+not silently fall back to the old index. A failed Fillet or Chamfer becomes Error with the
 resolver diagnostic. An unresolved face support prevents downstream profile
 construction. Old v2 files omit signatures and therefore retain index fallback;
 after a successful runtime resolution, face supports are enriched in memory.

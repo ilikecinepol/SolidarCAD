@@ -11,6 +11,12 @@ add_library(solidar_model
   model/Body.h
   model/Document.cpp
   model/Document.h
+  model/ChamferBuilder.cpp
+  model/ChamferBuilder.h
+  model/ChamferFeature.cpp
+  model/ChamferFeature.h
+  model/ChamferToolSession.cpp
+  model/ChamferToolSession.h
   model/ExtrudeFeature.cpp
   model/ExtrudeFeature.h
   model/ExtrudeOperationDetector.cpp

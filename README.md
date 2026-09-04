@@ -7,7 +7,7 @@ constrained 2D sketch → extrusion → editable feature history.
 ## Current prototype
 
 - standalone Home screen with create/open project actions
-- versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet history
+- versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet/Chamfer history
 - independently linkable Home, Sketch, Drawing and 3D View modules
 - Qt 6 desktop shell with model tree and parameter editor
 - 2D sketch workspace with a constrained rectangular profile
@@ -19,9 +19,9 @@ constrained 2D sketch → extrusion → editable feature history.
 - platform-neutral document model with a smoke test
 
 The 3D workflow uses Open CASCADE B-Rep geometry for extrusion, boolean pocket,
-fillet, topology selection and body rendering. Persistent topological naming
-remains a future step; current references retain an explicit legacy-index
-fallback behind `TopologyReference`.
+fillet, equal-distance chamfer, topology selection and body rendering.
+Persistent face and edge references use semantic tags and geometric signatures,
+with an explicit legacy-index fallback for older v2 projects.
 
 ## Prerequisites
 
@@ -113,5 +113,5 @@ components retain their respective licenses; see [DEPENDENCIES.md](DEPENDENCIES.
 and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 # Parametric 3D features
 
-SolidarCAD supports history-based Extrude, Pocket, Fillet and Revolve features.
+SolidarCAD supports history-based Extrude, Pocket, Fillet, Chamfer and Revolve features.
 The Russian UI exposes Revolve as **«Инструмент вращения»**.

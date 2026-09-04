@@ -66,6 +66,10 @@ add_executable(fillet_feature_tests fillet_feature_tests.cpp)
 target_link_libraries(fillet_feature_tests PRIVATE solidar_model)
 add_test(NAME fillet_feature_tests COMMAND fillet_feature_tests)
 
+add_executable(chamfer_feature_tests chamfer_feature_tests.cpp)
+target_link_libraries(chamfer_feature_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME chamfer_feature_tests COMMAND chamfer_feature_tests)
+
 add_executable(parametric_feature_chain_tests
                parametric_feature_chain_tests.cpp)
 target_link_libraries(parametric_feature_chain_tests PRIVATE solidar_model)
@@ -99,6 +103,7 @@ set_tests_properties(
   body_render_mesh_tests
   macro_foundation_tests
   fillet_feature_tests
+  chamfer_feature_tests
   PROPERTIES LABELS "unit"
 )
 
@@ -109,6 +114,7 @@ set_tests_properties(
   project_file_tests
   sketch_regression_tests
   fillet_feature_tests
+  chamfer_feature_tests
   revolve_feature_tests
   parametric_feature_chain_tests
   part_design_regression_tests
@@ -155,6 +161,7 @@ if(WIN32)
     body_render_mesh_tests
     macro_foundation_tests
     fillet_feature_tests
+    chamfer_feature_tests
     parametric_feature_chain_tests
     part_design_regression_tests
     persistent_topology_tests

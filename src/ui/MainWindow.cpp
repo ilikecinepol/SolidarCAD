@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "model/ExtrudeFeature.h"
+#include "model/ChamferFeature.h"
 #include "model/ExtrudeOperationDetector.h"
 #include "model/FilletFeature.h"
 #include "ui/ToolParametersPanel.h"
@@ -486,51 +487,91 @@ void MainWindow::buildUi() {
   addDockWidget(Qt::RightDockWidgetArea, toolParametersDock_);
   toolParametersDock_->hide();
   connect(toolParametersPanel_, &ToolParametersPanel::parameterChanged, this,
-          [this](double radius) {
-            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
-            filletToolSession_.setRadiusFromPanel(radius);
-            updateFilletToolPreview();
+          [this](double value) {
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              chamferToolSession_.setDistanceFromPanel(value);
+              updateChamferToolPreview();
+            } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              filletToolSession_.setRadiusFromPanel(value);
+              updateFilletToolPreview();
+            }
           });
   connect(toolParametersPanel_, &ToolParametersPanel::accepted, this,
-          &MainWindow::acceptFilletTool);
+          [this] {
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              acceptChamferTool();
+            else
+              acceptFilletTool();
+          });
   connect(toolParametersPanel_, &ToolParametersPanel::cancelled, this,
-          &MainWindow::cancelFilletTool);
+          [this] {
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              cancelChamferTool();
+            else
+              cancelFilletTool();
+          });
   connect(toolParametersPanel_, &ToolParametersPanel::selectionRequested, this,
           [this] {
-            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive &&
+                chamferToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите одно или несколько рёбер в viewport"));
             viewport_->setFocus();
           });
   connect(toolParametersPanel_, &ToolParametersPanel::clearSelectionRequested,
           this, [this] {
-            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive &&
+                chamferToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
             viewport_->setSelectedBodyEdges({});
-            filletToolSession_.setEdges({});
-            updateFilletToolPreview();
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              chamferToolSession_.setEdges({});
+              updateChamferToolPreview();
+            } else {
+              filletToolSession_.setEdges({});
+              updateFilletToolPreview();
+            }
           });
   connect(viewport_, &Viewport::toolManipulatorValueChanged, this,
-          [this](double radius) {
-            if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
-            filletToolSession_.setRadiusFromManipulator(radius);
-            toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
-            updateFilletToolPreview();
+          [this](double value) {
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              chamferToolSession_.setDistanceFromManipulator(value);
+              toolParametersPanel_->setParameterValue(chamferToolSession_.distanceMm());
+              updateChamferToolPreview();
+            } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              filletToolSession_.setRadiusFromManipulator(value);
+              toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
+              updateFilletToolPreview();
+            }
           });
   connect(viewport_, &Viewport::bodyEdgeSelectionChanged, this, [this] {
-    if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
-    filletToolSession_.setEdges(viewport_->selectedBodyEdges());
-    updateFilletToolPreview();
+    if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+      chamferToolSession_.setEdges(viewport_->selectedBodyEdges());
+      updateChamferToolPreview();
+    } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+      filletToolSession_.setEdges(viewport_->selectedBodyEdges());
+      updateFilletToolPreview();
+    }
   });
   auto* acceptToolShortcut = new QShortcut(QKeySequence(Qt::Key_Return),
                                            toolParametersDock_);
   acceptToolShortcut->setContext(Qt::WidgetWithChildrenShortcut);
   connect(acceptToolShortcut, &QShortcut::activated, this,
-          &MainWindow::acceptFilletTool);
+          [this] {
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              acceptChamferTool();
+            else
+              acceptFilletTool();
+          });
   auto* cancelToolShortcut = new QShortcut(QKeySequence(Qt::Key_Escape),
                                            toolParametersDock_);
   cancelToolShortcut->setContext(Qt::WidgetWithChildrenShortcut);
   connect(cancelToolShortcut, &QShortcut::activated, this,
-          &MainWindow::cancelFilletTool);
+          [this] {
+            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              cancelChamferTool();
+            else
+              cancelFilletTool();
+          });
   connect(extrusionLengthSpin_, &QDoubleSpinBox::valueChanged, this,
           [this](double value) {
             const double signedValue = extrusionReverseCheck_->isChecked()
@@ -885,6 +926,8 @@ void MainWindow::buildUi() {
           &MainWindow::createRevolve);
   connect(modelRibbon_, &ModelRibbon::filletRequested, this,
           &MainWindow::createFillet);
+  connect(modelRibbon_, &ModelRibbon::chamferRequested, this,
+          &MainWindow::createChamfer);
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
   connect(viewport_, &Viewport::sketchPlanePicked, this,
@@ -1490,6 +1533,8 @@ void MainWindow::createPocket() {
 }
 
 void MainWindow::createFillet() {
+  if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+    chamferToolSession_.cancel();
   auto edges = viewport_->selectedBodyEdges();
   Body* body = edges.empty() ? document_.activeBody()
                              : document_.findBody(edges.front().bodyId);
@@ -1510,6 +1555,10 @@ void MainWindow::createFillet() {
     }
   filletToolSession_.begin(body->id(), body->activeFeature()->id(),
                            body->resultShape(), edges, 5.0);
+  toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
+                                  QString::fromUtf8("Рёбра"),
+                                  QString::fromUtf8("Радиус"),
+                                  QStringLiteral(" mm"));
   toolParametersPanel_->setParameterValue(5.0);
   toolParametersDock_->show();
   toolParametersDock_->raise();
@@ -1517,6 +1566,120 @@ void MainWindow::createFillet() {
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
+}
+
+void MainWindow::createChamfer() {
+  if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
+    filletToolSession_.cancel();
+  auto edges = viewport_->selectedBodyEdges();
+  Body* body = edges.empty() ? document_.activeBody()
+                             : document_.findBody(edges.front().bodyId);
+  if (!body || !body->activeFeature() || !body->resultShape()) {
+    QMessageBox::information(this, QString::fromUtf8("Фаска"),
+                             QString::fromUtf8("Сначала создайте тело."));
+    return;
+  }
+  if (!edges.empty() && body->activeFeature()->id() != edges.front().featureId)
+    edges.clear();
+  for (const auto& edge : edges)
+    if (edge.bodyId != body->id() ||
+        edge.featureId != body->activeFeature()->id()) {
+      QMessageBox::warning(this, QString::fromUtf8("Фаска"),
+                           QString::fromUtf8("Рёбра должны принадлежать одному телу"));
+      return;
+    }
+  chamferToolSession_.begin(body->id(), body->activeFeature()->id(),
+                            body->resultShape(), edges, 2.0);
+  toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
+                                  QString::fromUtf8("Рёбра"),
+                                  QString::fromUtf8("Размер"),
+                                  QStringLiteral(" mm"));
+  toolParametersPanel_->setParameterValue(2.0);
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateChamferToolPreview();
+  if (edges.empty())
+    statusBar()->showMessage(
+        QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
+}
+
+void MainWindow::updateChamferToolPreview() {
+  const auto state = chamferToolSession_.lifecycle();
+  if (state == ToolLifecycle::Inactive) return;
+  toolParametersPanel_->setSelectionCount(chamferToolSession_.edges().size());
+  const bool valid = state == ToolLifecycle::PreviewValid;
+  toolParametersPanel_->setAcceptEnabled(valid);
+  toolParametersPanel_->setStatus(
+      valid ? QString::fromUtf8("Предпросмотр построен")
+            : state == ToolLifecycle::Editing
+                  ? QString::fromUtf8("Выберите рёбра для фаски")
+                  : QString::fromStdString(chamferToolSession_.error()),
+      state == ToolLifecycle::PreviewInvalid);
+  if (valid)
+    viewport_->setToolPreviewShape(chamferToolSession_.bodyId(),
+                                   chamferToolSession_.sourceFeatureId(),
+                                   chamferToolSession_.previewShape());
+  else
+    viewport_->clearToolPreviewShape();
+  if (const auto manipulator = chamferToolSession_.manipulator())
+    viewport_->setToolManipulator(*manipulator);
+  else
+    viewport_->clearToolManipulator();
+}
+
+void MainWindow::cancelChamferTool() {
+  if (chamferToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  chamferToolSession_.cancel();
+  viewport_->clearToolPreviewShape();
+  viewport_->clearToolManipulator();
+  toolParametersDock_->hide();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(QString::fromUtf8("Фаска отменена"), 2000);
+}
+
+void MainWindow::acceptChamferTool() {
+  if (chamferToolSession_.lifecycle() != ToolLifecycle::PreviewValid) return;
+  const Document previousDocument = document_;
+  Body* body = document_.findBody(chamferToolSession_.bodyId());
+  if (!body) return;
+  if (const auto editingId = chamferToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* chamfer = dynamic_cast<ChamferFeature*>(body->features()[index].get());
+      if (!chamfer || chamfer->id() != *editingId) continue;
+      chamfer->setEdges(chamferToolSession_.edges());
+      chamfer->setDistanceMm(chamferToolSession_.distanceMm());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    body->addFeature(std::make_unique<ChamferFeature>(
+        chamferToolSession_.edges(), chamferToolSession_.distanceMm(),
+        "Фаска " + std::to_string(body->features().size())));
+  }
+  if (!document_.rebuild()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    toolParametersPanel_->setStatus(error, true);
+    return;
+  }
+  const double distance = chamferToolSession_.distanceMm();
+  chamferToolSession_.cancel();
+  viewport_->clearToolPreviewShape();
+  viewport_->clearToolManipulator();
+  toolParametersDock_->hide();
+  pushUndoAction([this, previousDocument] {
+    document_ = previousDocument;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  modelRibbon_->clearActiveTool();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  statusBar()->showMessage(
+      QString::fromUtf8("Фаска применена: %1 мм").arg(distance), 3000);
 }
 
 void MainWindow::updateFilletToolPreview() {
@@ -1646,6 +1809,12 @@ void MainWindow::rebuildHistoryPanel() {
     addStep(QIcon(), QString::fromUtf8("Скругление"),
             QString::fromUtf8("Изменить радиус скругления"),
             [this] { editFilletStep(); });
+  }
+  if (const Body* body = document_.activeBody();
+      body && dynamic_cast<const ChamferFeature*>(body->activeFeature())) {
+    addStep(QIcon(), QString::fromUtf8("Фаска"),
+            QString::fromUtf8("Изменить размер фаски"),
+            [this] { editChamferStep(); });
   }
   if (historySlider_) {
     const QSignalBlocker blocker(historySlider_);
@@ -1859,6 +2028,37 @@ void MainWindow::editFilletStep() {
   toolParametersDock_->raise();
   updateFilletToolPreview();
   viewport_->setSelectedBodyEdges(fillet->edges());
+}
+
+void MainWindow::editChamferStep() {
+  Body* body = document_.activeBody();
+  auto* chamfer = body
+                      ? dynamic_cast<ChamferFeature*>(body->activeFeature())
+                      : nullptr;
+  if (!chamfer) return;
+  const auto& features = body->features();
+  if (features.size() < 2) return;
+  ShapeFeature::ShapePtr upstream;
+  for (std::size_t index = 1; index < features.size(); ++index)
+    if (features[index].get() == chamfer) {
+      upstream = features[index - 1]->shape();
+      break;
+    }
+  if (!upstream) return;
+  if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
+    filletToolSession_.cancel();
+  chamferToolSession_.begin(body->id(), chamfer->edge().featureId, upstream,
+                            chamfer->edges(), chamfer->distanceMm(),
+                            chamfer->id());
+  toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
+                                  QString::fromUtf8("Рёбра"),
+                                  QString::fromUtf8("Размер"),
+                                  QStringLiteral(" mm"));
+  toolParametersPanel_->setParameterValue(chamfer->distanceMm());
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateChamferToolPreview();
+  viewport_->setSelectedBodyEdges(chamfer->edges());
 }
 
 void MainWindow::rebuildFeatureTree() {

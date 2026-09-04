@@ -11,6 +11,8 @@
 #include <string>
 
 #include "TestGeometryUtils.h"
+#include "model/ChamferBuilder.h"
+#include "model/ChamferFeature.h"
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletBuilder.h"
@@ -53,6 +55,17 @@ std::optional<std::size_t> filletableEdge(const TopoDS_Shape& shape,
     std::string error;
     if (solidar::buildFilletShape(shape, {index}, radius, &error)) return index;
     if (error == "Fillet edge could not be resolved") break;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::size_t> chamferableEdge(const TopoDS_Shape& shape,
+                                           double distance) {
+  for (std::size_t index = 0; index < 64; ++index) {
+    std::string error;
+    if (solidar::buildChamferShape(shape, {index}, distance, &error))
+      return index;
+    if (error == "Chamfer edge could not be resolved") break;
   }
   return std::nullopt;
 }
@@ -153,13 +166,27 @@ int main(int argc, char* argv[]) {
     revolveBody.addFeature(std::move(revolve));
 
     CHECK(document.recompute());
+    auto* chamferBody = document.findBody(partBodyId);
+    CHECK(chamferBody && chamferBody->resultShape());
+    const auto chamferEdgeIndex =
+        chamferableEdge(*chamferBody->resultShape(), 1.0);
+    CHECK(chamferEdgeIndex);
+    const auto chamferEdge = solidar::makeEdgeReference(
+        *chamferBody->resultShape(), partBodyId, filletId, *chamferEdgeIndex);
+    CHECK(chamferEdge.signature);
+    auto chamfer = std::make_unique<solidar::ChamferFeature>(
+        chamferEdge, 1.0, "Chamfer");
+    auto* chamferPtr = chamfer.get();
+    const auto chamferId = chamferPtr->id();
+    chamferBody->addFeature(std::move(chamfer));
+    CHECK(document.recompute());
     auto* partBodyPtr = document.findBody(partBodyId);
     auto* revolveBodyPtr = document.findBody(revolveBodyId);
     CHECK(partBodyPtr && revolveBodyPtr);
     checkAllValid(document);
     CHECK(document.bodies().size() == 2);
     CHECK(document.sketches().size() == 3);
-    CHECK(partBodyPtr->features().size() == 3);
+    CHECK(partBodyPtr->features().size() == 4);
     CHECK(revolveBodyPtr->features().size() == 1);
     CHECK(document.rebuildError().empty());
 
@@ -169,12 +196,15 @@ int main(int argc, char* argv[]) {
 
     // Root sketch edits must dirty and rebuild the complete dependent chain.
     solidar::sketch::Sketch widerProfile;
-    widerProfile.addRectangle({0.0, 0.0}, {90.0, 35.0});
+    widerProfile.addRectangle({0.0, 0.0}, {80.0, 40.0});
     CHECK(document.replaceSketchGeometry(baseSketchId, widerProfile));
     CHECK(extrudePtr->isDirty());
     CHECK(pocketPtr->isDirty());
     CHECK(filletPtr->isDirty());
-    CHECK(document.recompute());
+    CHECK(chamferPtr->isDirty());
+    if (!document.recompute())
+      throw TestFailure("dependent Chamfer recompute failed: " +
+                        document.rebuildError());
     checkAllValid(document);
     CHECK(std::abs(solidar::test::volumeOf(*partBodyPtr->resultShape()) -
                    partVolume) > 1e-4);
@@ -182,6 +212,7 @@ int main(int argc, char* argv[]) {
     CHECK(extrudePtr->id() == extrudeId);
     CHECK(pocketPtr->id() == pocketId);
     CHECK(filletPtr->id() == filletId);
+    CHECK(chamferPtr->id() == chamferId);
 
     // Editing every supported 3D parameter must change real B-Rep geometry.
     partVolume = solidar::test::volumeOf(*partBodyPtr->resultShape());
@@ -205,6 +236,14 @@ int main(int argc, char* argv[]) {
     CHECK(filletPtr->isDirty());
     CHECK(document.recompute());
     CHECK(filletPtr->isValid());
+    CHECK(std::abs(solidar::test::volumeOf(*partBodyPtr->resultShape()) -
+                   partVolume) > 1e-4);
+
+    partVolume = solidar::test::volumeOf(*partBodyPtr->resultShape());
+    chamferPtr->setDistanceMm(0.75);
+    CHECK(chamferPtr->isDirty());
+    CHECK(document.recompute());
+    CHECK(chamferPtr->isValid());
     CHECK(std::abs(solidar::test::volumeOf(*partBodyPtr->resultShape()) -
                    partVolume) > 1e-4);
 
@@ -252,7 +291,7 @@ int main(int argc, char* argv[]) {
     const auto* restoredPart = restored.findBody(partBodyId);
     const auto* restoredRevolveBody = restored.findBody(revolveBodyId);
     CHECK(restoredPart && restoredRevolveBody);
-    CHECK(restoredPart->features().size() == 3);
+    CHECK(restoredPart->features().size() == 4);
     CHECK(restoredRevolveBody->features().size() == 1);
     CHECK(restored.findSketch(baseSketchId));
     const auto* restoredPocketSketch = restored.findSketch(pocketSketchId);
@@ -272,18 +311,24 @@ int main(int argc, char* argv[]) {
         restoredPart->features()[1].get());
     const auto* restoredFillet = dynamic_cast<const solidar::FilletFeature*>(
         restoredPart->features()[2].get());
+    const auto* restoredChamfer = dynamic_cast<const solidar::ChamferFeature*>(
+        restoredPart->features()[3].get());
     const auto* restoredRevolve = dynamic_cast<const solidar::RevolveFeature*>(
         restoredRevolveBody->features()[0].get());
     CHECK(restoredExtrude && restoredPocket && restoredFillet &&
+          restoredChamfer &&
           restoredRevolve);
     CHECK(restoredFillet->edge().signature);
+    CHECK(restoredChamfer->edge().signature);
     CHECK(restoredExtrude->id() == extrudeId);
     CHECK(restoredPocket->id() == pocketId);
     CHECK(restoredFillet->id() == filletId);
+    CHECK(restoredChamfer->id() == chamferId);
     CHECK(restoredRevolve->id() == revolveId);
     CHECK(solidar::test::near(restoredExtrude->lengthMm(), 60.0));
     CHECK(solidar::test::near(restoredPocket->depthMm(), 20.0));
     CHECK(solidar::test::near(restoredFillet->radiusMm(), 2.0));
+    CHECK(solidar::test::near(restoredChamfer->distanceMm(), 0.75));
     CHECK(solidar::test::near(restoredRevolve->angleDeg(), 180.0));
     CHECK(solidar::test::near(
         solidar::test::volumeOf(*restoredPart->resultShape()),
