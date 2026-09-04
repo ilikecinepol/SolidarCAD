@@ -1534,7 +1534,7 @@ void MainWindow::createPocket() {
 
 void MainWindow::createFillet() {
   if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
-    chamferToolSession_.cancel();
+    cancelChamferTool();
   auto edges = viewport_->selectedBodyEdges();
   Body* body = edges.empty() ? document_.activeBody()
                              : document_.findBody(edges.front().bodyId);
@@ -1555,6 +1555,8 @@ void MainWindow::createFillet() {
     }
   filletToolSession_.begin(body->id(), body->activeFeature()->id(),
                            body->resultShape(), edges, 5.0);
+  viewport_->setEdgeMultiSelectionMode(true);
+  viewport_->setSelectedBodyEdges(edges);
   toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
@@ -1570,7 +1572,7 @@ void MainWindow::createFillet() {
 
 void MainWindow::createChamfer() {
   if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
-    filletToolSession_.cancel();
+    cancelFilletTool();
   auto edges = viewport_->selectedBodyEdges();
   Body* body = edges.empty() ? document_.activeBody()
                              : document_.findBody(edges.front().bodyId);
@@ -1590,6 +1592,8 @@ void MainWindow::createChamfer() {
     }
   chamferToolSession_.begin(body->id(), body->activeFeature()->id(),
                             body->resultShape(), edges, 2.0);
+  viewport_->setEdgeMultiSelectionMode(true);
+  viewport_->setSelectedBodyEdges(edges);
   toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
@@ -1632,6 +1636,8 @@ void MainWindow::cancelChamferTool() {
   chamferToolSession_.cancel();
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
+  viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   refreshBodyViewFromDocument();
   statusBar()->showMessage(QString::fromUtf8("Фаска отменена"), 2000);
@@ -1667,6 +1673,8 @@ void MainWindow::acceptChamferTool() {
   chamferToolSession_.cancel();
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
+  viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   pushUndoAction([this, previousDocument] {
     document_ = previousDocument;
@@ -1711,6 +1719,8 @@ void MainWindow::cancelFilletTool() {
   filletToolSession_.cancel();
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
+  viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   refreshBodyViewFromDocument();
   statusBar()->showMessage(QString::fromUtf8("Скругление отменено"), 2000);
@@ -1746,6 +1756,8 @@ void MainWindow::acceptFilletTool() {
   filletToolSession_.cancel();
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
+  viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   pushUndoAction([this, previousDocument] {
     document_ = previousDocument;
@@ -2021,8 +2033,15 @@ void MainWindow::editFilletStep() {
       break;
     }
   if (!upstream) return;
+  if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+    cancelChamferTool();
   filletToolSession_.begin(body->id(), fillet->edge().featureId, upstream,
                            fillet->edges(), fillet->radiusMm(), fillet->id());
+  viewport_->setEdgeMultiSelectionMode(true);
+  toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
+                                  QString::fromUtf8("Рёбра"),
+                                  QString::fromUtf8("Радиус"),
+                                  QStringLiteral(" mm"));
   toolParametersPanel_->setParameterValue(fillet->radiusMm());
   toolParametersDock_->show();
   toolParametersDock_->raise();
@@ -2046,10 +2065,11 @@ void MainWindow::editChamferStep() {
     }
   if (!upstream) return;
   if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
-    filletToolSession_.cancel();
+    cancelFilletTool();
   chamferToolSession_.begin(body->id(), chamfer->edge().featureId, upstream,
                             chamfer->edges(), chamfer->distanceMm(),
                             chamfer->id());
+  viewport_->setEdgeMultiSelectionMode(true);
   toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),

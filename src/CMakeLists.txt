@@ -98,6 +98,7 @@ solidar_warnings(solidar_drawing_ui)
 add_library(solidar_viewport3d
   ui/BodyRenderMesh.cpp
   ui/BodyRenderMesh.h
+  ui/EdgeSelectionState.h
   ui/ModelRibbon.cpp
   ui/ModelRibbon.h
   ui/Viewport.cpp

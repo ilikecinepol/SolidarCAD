@@ -58,6 +58,10 @@ add_executable(body_render_mesh_tests body_render_mesh_tests.cpp)
 target_link_libraries(body_render_mesh_tests PRIVATE solidar_viewport3d)
 add_test(NAME body_render_mesh_tests COMMAND body_render_mesh_tests)
 
+add_executable(edge_selection_state_tests edge_selection_state_tests.cpp)
+target_link_libraries(edge_selection_state_tests PRIVATE solidar_viewport3d)
+add_test(NAME edge_selection_state_tests COMMAND edge_selection_state_tests)
+
 add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
@@ -101,6 +105,7 @@ set_tests_properties(
   revolve_feature_tests
   pocket_feature_tests
   body_render_mesh_tests
+  edge_selection_state_tests
   macro_foundation_tests
   fillet_feature_tests
   chamfer_feature_tests

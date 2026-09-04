@@ -1,4 +1,6 @@
 #include "ui/Viewport.h"
+
+#include "ui/EdgeSelectionState.h"
 #include "model/TopologyReferenceResolver.h"
 
 #include <BRepBndLib.hxx>
@@ -635,6 +637,14 @@ void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
                                ? static_cast<std::size_t>(-1)
                                : selectedBodyEdgeIndices_.front();
   update();
+}
+
+void Viewport::setEdgeMultiSelectionMode(bool enabled) noexcept {
+  edgeMultiSelectionMode_ = enabled;
+}
+
+bool Viewport::edgeMultiSelectionMode() const noexcept {
+  return edgeMultiSelectionMode_;
 }
 
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
@@ -1811,8 +1821,9 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
 
   selectedFace_ = -1;
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  const bool appendEdge = event->modifiers().testFlag(Qt::ControlModifier);
-  if (!appendEdge) {
+  const bool toggleEdge = edgeMultiSelectionMode_ ||
+                          event->modifiers().testFlag(Qt::ControlModifier);
+  if (!toggleEdge) {
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
   }
@@ -1827,7 +1838,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     updateBodyHover(scenePosition);
     if (hoveredBodyEdgeIndex_ != static_cast<std::size_t>(-1)) {
       const auto clicked = edgeReferenceForGlobalIndex(hoveredBodyEdgeIndex_);
-      if (appendEdge) {
+      if (toggleEdge) {
         if (!selectedBodyEdgeIndices_.empty()) {
           const auto first = edgeReferenceForGlobalIndex(selectedBodyEdgeIndices_.front());
           if (first && clicked &&
@@ -1835,16 +1846,9 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
                first->featureId != clicked->featureId))
             selectedBodyEdgeIndices_.clear();
         }
-        const auto found = std::find(selectedBodyEdgeIndices_.begin(),
-                                     selectedBodyEdgeIndices_.end(),
-                                     hoveredBodyEdgeIndex_);
-        if (found == selectedBodyEdgeIndices_.end())
-          selectedBodyEdgeIndices_.push_back(hoveredBodyEdgeIndex_);
-        else
-          selectedBodyEdgeIndices_.erase(found);
-      } else {
-        selectedBodyEdgeIndices_ = {hoveredBodyEdgeIndex_};
       }
+      updateEdgeSelection(selectedBodyEdgeIndices_, hoveredBodyEdgeIndex_,
+                          toggleEdge);
       selectedBodyEdgeIndex_ = selectedBodyEdgeIndices_.empty()
                                    ? static_cast<std::size_t>(-1)
                                    : selectedBodyEdgeIndices_.front();

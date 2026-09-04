@@ -70,6 +70,8 @@ class Viewport final : public QWidget {
   [[nodiscard]] std::optional<EdgeReference> selectedBodyEdge() const noexcept;
   [[nodiscard]] std::vector<EdgeReference> selectedBodyEdges() const;
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
+  void setEdgeMultiSelectionMode(bool enabled) noexcept;
+  [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                            ShapeFeature::ShapePtr shape);
   void clearToolPreviewShape();
@@ -166,6 +168,7 @@ class Viewport final : public QWidget {
   std::size_t hoveredBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::vector<std::size_t> selectedBodyEdgeIndices_;
+  bool edgeMultiSelectionMode_{false};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
   bool selectedOrigin_{false};
