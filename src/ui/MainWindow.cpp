@@ -1140,6 +1140,8 @@ void MainWindow::updateFromSketch(double widthMm, double heightMm) {
 
 void MainWindow::finishSketch() {
   const auto& sketch = sketchCanvas_->sketch();
+  QString completionMessage =
+      QString::fromUtf8("Эскиз завершён — модель перестроена");
   if (sketch.lines().empty() && sketch.circles().empty()) {
     workspaceStack_->setCurrentWidget(viewport_);
     statusBar()->showMessage(
@@ -1161,6 +1163,7 @@ void MainWindow::finishSketch() {
                                        : SketchPlacement::xy());
       if (hasExtrusion_ && extrusionSourceSketch_ == index)
         viewport_->setSolidSketch(previous.geometry);
+      refreshBodyViewFromDocument();
       rebuildFeatureTree();
       rebuildHistoryPanel();
     });
@@ -1171,12 +1174,18 @@ void MainWindow::finishSketch() {
     if (auto* modelSketch =
             document_.findSketch(sketchHistory_[index].documentSketchId))
       modelSketch->placement = currentSketchPlacement_;
+    const bool recomputeSucceeded = document_.recompute();
+    refreshBodyViewFromDocument();
     viewport_->updateSketch(index, sketch, currentSketchSupport_,
                             currentSketchPlacement_);
     if (hasExtrusion_ && extrusionSourceSketch_ == index)
       viewport_->setSolidSketch(sketch);
-    statusBar()->showMessage(
-        QString::fromUtf8("Эскиз %1 обновлён").arg(index + 1), 3000);
+    if (!recomputeSucceeded) {
+      completionMessage =
+          QString::fromUtf8(
+              "Эскиз обновлён, перестроение модели завершилось с ошибкой: %1")
+              .arg(QString::fromStdString(document_.rebuildError()));
+    }
   } else {
     const std::size_t index = sketchHistory_.size();
     const Document previousDocument = document_;
@@ -1214,8 +1223,7 @@ void MainWindow::finishSketch() {
   rebuildFeatureTree();
   rebuildHistoryPanel();
   workspaceStack_->setCurrentWidget(viewport_);
-  statusBar()->showMessage(
-      QString::fromUtf8("Эскиз завершён — модель перестроена"), 3000);
+  statusBar()->showMessage(completionMessage, 5000);
 }
 
 void MainWindow::normalizeExtrusionDistance() {
