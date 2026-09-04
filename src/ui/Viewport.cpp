@@ -227,6 +227,47 @@ void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
   rebuildBodyDisplay(shapes, true);
 }
 
+namespace {
+
+void drawToolArrow(QPainter& painter, QPointF start, QPointF tip,
+                   const QColor& color) {
+  QLineF direction(start, tip);
+  if (direction.length() < 1.0)
+    direction.setP2(direction.p1() + QPointF(0.0, -1.0));
+  const QPointF unit =
+      (direction.p2() - direction.p1()) / direction.length();
+  const QPointF perpendicular(-unit.y(), unit.x());
+
+  painter.setRenderHint(QPainter::Antialiasing);
+  painter.setPen(QPen(color, 4.0, Qt::SolidLine, Qt::RoundCap));
+  painter.drawLine(start, tip);
+  painter.setBrush(color);
+  painter.drawPolygon(QPolygonF{tip,
+                                tip - unit * 15.0 + perpendicular * 8.0,
+                                tip - unit * 15.0 - perpendicular * 8.0});
+  painter.setBrush(QColor("#ffffff"));
+  painter.setPen(QPen(color, 3.0));
+  painter.drawEllipse(tip, 7.0, 7.0);
+}
+
+void drawToolArrowHead(QPainter& painter, QPointF preceding, QPointF tip,
+                       const QColor& color) {
+  QLineF tangent(preceding, tip);
+  if (tangent.length() < 1.0) return;
+  const QPointF unit = (tip - preceding) / tangent.length();
+  const QPointF perpendicular(-unit.y(), unit.x());
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(color);
+  painter.drawPolygon(QPolygonF{tip,
+                                tip - unit * 15.0 + perpendicular * 8.0,
+                                tip - unit * 15.0 - perpendicular * 8.0});
+  painter.setBrush(QColor("#ffffff"));
+  painter.setPen(QPen(color, 3.0));
+  painter.drawEllipse(tip, 7.0, 7.0);
+}
+
+}  // namespace
+
 void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
                                   bool clearSelection) {
   bodyShape_.reset();
@@ -965,10 +1006,7 @@ void Viewport::paintEvent(QPaintEvent*) {
           toolManipulator_->origin.y + toolManipulator_->direction.y * toolManipulator_->valueMm,
           toolManipulator_->origin.z + toolManipulator_->direction.z * toolManipulator_->valueMm};
       const auto end = projectBodyPoint(endWorld, center, size(), yaw_, pitch_, zoom_).screen;
-      painter.setPen(QPen(QColor("#0874f9"), 3.0));
-      painter.drawLine(start, end);
-      painter.setBrush(QColor("#0874f9"));
-      painter.drawEllipse(end, 6.0, 6.0);
+      drawToolArrow(painter, start, end, QColor("#0874f9"));
     }
     if (angularToolManipulator_) {
       const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
@@ -984,9 +1022,11 @@ void Viewport::paintEvent(QPaintEvent*) {
                        origin + QPointF(radius * 1.4, 0.0));
       const QPointF handle = origin + QPointF(std::cos(angle) * radius,
                                                -std::sin(angle) * radius);
-      painter.setBrush(QColor("#0874f9"));
-      painter.setPen(Qt::NoPen);
-      painter.drawEllipse(handle, 7.0, 7.0);
+      const double previousAngle = angle - 0.18;
+      const QPointF preceding =
+          origin + QPointF(std::cos(previousAngle) * radius,
+                           -std::sin(previousAngle) * radius);
+      drawToolArrowHead(painter, preceding, handle, QColor("#0874f9"));
     }
   } else if (solidVisible_ && solidSketch_.lines().empty() &&
              solidSketch_.circles().empty()) {
@@ -1391,21 +1431,7 @@ void Viewport::paintEvent(QPaintEvent*) {
         }
       }
     }
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(previewEdge, 4.0, Qt::SolidLine, Qt::RoundCap));
-    painter.drawLine(extrusionManipulatorAnchor_, tip);
-    QLineF direction(extrusionManipulatorAnchor_, tip);
-    if (direction.length() < 1.0) direction.setP2(direction.p1() + QPointF(0.0, -1.0));
-    const QPointF unit = (direction.p2() - direction.p1()) / direction.length();
-    const QPointF perpendicular(-unit.y(), unit.x());
-    QPolygonF arrowHead;
-    arrowHead << tip << tip - unit * 15.0 + perpendicular * 8.0
-              << tip - unit * 15.0 - perpendicular * 8.0;
-    painter.setBrush(previewEdge);
-    painter.drawPolygon(arrowHead);
-    painter.setBrush(QColor("#ffffff"));
-    painter.setPen(QPen(previewEdge, 3.0));
-    painter.drawEllipse(tip, 7.0, 7.0);
+    drawToolArrow(painter, extrusionManipulatorAnchor_, tip, previewEdge);
   }
 
   if (originVisible_) {
