@@ -62,6 +62,7 @@ class Viewport final : public QWidget {
   void resetScene();
   void beginSketchPlaneSelection();
   void beginExtrusionSurfaceSelection();
+  void beginRevolveAxisSelection(std::size_t sketchIndex);
   void showExtrusionManipulator(double lengthMm);
   void hideExtrusionManipulator();
   void setExtrusionPreviewLength(double lengthMm);
@@ -115,6 +116,9 @@ class Viewport final : public QWidget {
   void bodyEdgeSelectionChanged();
   void toolManipulatorValueChanged(double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
+  // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
+  // values >= 3 encode a sketch line id plus three.
+  void revolveAxisPicked(qulonglong axisToken);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -135,7 +139,7 @@ class Viewport final : public QWidget {
                           bool clearSelection);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(
       std::size_t index) const noexcept;
-  enum class PickMode { None, SketchPlane, ExtrusionSurface };
+  enum class PickMode { None, SketchPlane, ExtrusionSurface, RevolveAxis };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
@@ -197,7 +201,9 @@ class Viewport final : public QWidget {
   QString hoveredExtrusionSurface_;
   std::size_t hoveredExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
+  std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
+  QDoubleSpinBox* angularValueEditor_{nullptr};
   QPointF extrusionManipulatorAnchor_;
   double extrusionPreviewLengthMm_{25.0};
   bool extrusionManipulatorVisible_{false};

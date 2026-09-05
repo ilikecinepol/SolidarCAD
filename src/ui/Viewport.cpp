@@ -155,6 +155,15 @@ Viewport::Viewport(QWidget* parent) : QWidget(parent) {
   extrusionLengthEditor_->hide();
   connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
           &Viewport::setExtrusionPreviewLength);
+  angularValueEditor_ = new QDoubleSpinBox(this);
+  angularValueEditor_->setRange(0.01, 360.0);
+  angularValueEditor_->setDecimals(2);
+  angularValueEditor_->setSuffix(QString::fromUtf8(" °"));
+  angularValueEditor_->setFixedSize(118, 40);
+  angularValueEditor_->setStyleSheet(extrusionLengthEditor_->styleSheet());
+  angularValueEditor_->hide();
+  connect(angularValueEditor_, &QDoubleSpinBox::valueChanged, this,
+          &Viewport::angularToolManipulatorValueChanged);
 }
 
 void Viewport::setBox(BoxParameters parameters) {
@@ -606,6 +615,13 @@ std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
   return selectedBodyEdgeReferences_.front();
 }
 
+void Viewport::beginRevolveAxisSelection(std::size_t sketchIndex) {
+  pickMode_ = PickMode::RevolveAxis;
+  revolveAxisSketchIndex_ = sketchIndex;
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
 std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
     std::size_t global) const noexcept {
   for (const auto& range : bodyTopologyRanges_)
@@ -667,12 +683,27 @@ void Viewport::setAngularToolManipulator(
     const AngularToolManipulator& manipulator) {
   angularToolManipulator_ = manipulator;
   toolManipulator_.reset();
+  {
+    const QSignalBlocker blocker(angularValueEditor_);
+    angularValueEditor_->setValue(manipulator.angleDeg);
+  }
+  const QPointF origin = projectBodyPoint(
+      manipulator.origin, bodyRenderMesh_.center(), size(), yaw_, pitch_, zoom_).screen;
+  const double radius = std::max(24.0, manipulator.radiusMm * zoom_);
+  angularValueEditor_->move(
+      std::clamp(static_cast<int>(origin.x() + radius + 12), 4,
+                 std::max(4, width() - angularValueEditor_->width() - 4)),
+      std::clamp(static_cast<int>(origin.y() - 20), 4,
+                 std::max(4, height() - angularValueEditor_->height() - 4)));
+  angularValueEditor_->show();
+  angularValueEditor_->raise();
   update();
 }
 
 void Viewport::clearToolManipulator() {
   toolManipulator_.reset();
   angularToolManipulator_.reset();
+  angularValueEditor_->hide();
   draggingToolManipulator_ = false;
   draggingAngularToolManipulator_ = false;
   update();
@@ -1382,6 +1413,20 @@ void Viewport::paintEvent(QPaintEvent*) {
     }
   }
 
+  if (pickMode_ == PickMode::RevolveAxis &&
+      revolveAxisSketchIndex_ < displaySketches_.size()) {
+    const auto& placement = displaySketches_[revolveAxisSketchIndex_].placement;
+    const Point3d center = bodyRenderMesh_.center();
+    const auto screenPoint = [&](double x, double y) {
+      return projectBodyPoint(placement.toWorld(x, y), center, size(), yaw_, pitch_, zoom_).screen;
+    };
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor("#ef7d00"), 2.4, Qt::DashLine));
+    painter.drawLine(screenPoint(-1000.0, 0.0), screenPoint(1000.0, 0.0));
+    painter.setPen(QPen(QColor("#e34850"), 2.4, Qt::DashLine));
+    painter.drawLine(screenPoint(0.0, -1000.0), screenPoint(0.0, 1000.0));
+  }
+
   if ((pickMode_ == PickMode::ExtrusionSurface ||
        pickMode_ == PickMode::SketchPlane) &&
       !extrusionHoverPolygon_.isEmpty()) {
@@ -1644,6 +1689,44 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingToolManipulator_ = true;
       setCursor(Qt::SizeAllCursor);
+      return;
+    }
+  }
+  if (pickMode_ == PickMode::RevolveAxis &&
+      revolveAxisSketchIndex_ < displaySketches_.size()) {
+    const auto& candidate = displaySketches_[revolveAxisSketchIndex_];
+    const Point3d center = bodyRenderMesh_.center();
+    double bestDistance = 12.0;
+    qulonglong bestToken = 0;
+    const auto considerSegment = [&](const Point3d& aWorld,
+                                     const Point3d& bWorld,
+                                     qulonglong token) {
+      const QPointF a = projectBodyPoint(aWorld, center, size(), yaw_, pitch_, zoom_).screen;
+      const QPointF b = projectBodyPoint(bWorld, center, size(), yaw_, pitch_, zoom_).screen;
+      const QPointF ab = b - a;
+      const double length2 = QPointF::dotProduct(ab, ab);
+      const double t = length2 > 1e-9 ? std::clamp(
+          QPointF::dotProduct(scenePosition - a, ab) / length2, 0.0, 1.0) : 0.0;
+      const double distance = QLineF(scenePosition, a + ab * t).length();
+      if (distance < bestDistance) { bestDistance = distance; bestToken = token; }
+    };
+
+    // The sketch reference axes are valid Revolve axes too.  A generous world
+    // span keeps them directly pickable independently of the current zoom.
+    considerSegment(candidate.placement.toWorld(-1000.0, 0.0),
+                    candidate.placement.toWorld(1000.0, 0.0), 1);
+    considerSegment(candidate.placement.toWorld(0.0, -1000.0),
+                    candidate.placement.toWorld(0.0, 1000.0), 2);
+    for (std::size_t i = 0; i < candidate.geometry.lines().size(); ++i) {
+      const auto& line = candidate.geometry.lines()[i];
+      const auto aWorld = candidate.placement.toWorld(line.start.xMm, line.start.yMm);
+      const auto bWorld = candidate.placement.toWorld(line.end.xMm, line.end.yMm);
+      considerSegment(aWorld, bWorld,
+                      static_cast<qulonglong>(candidate.geometry.lineId(i)) + 3);
+    }
+    if (bestToken != 0) {
+      pickMode_ = PickMode::None;
+      emit revolveAxisPicked(bestToken);
       return;
     }
   }
@@ -2626,6 +2709,10 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     double angle = std::atan2(-delta.y(), delta.x()) * 180.0 / std::numbers::pi;
     if (angle <= 0.0) angle += 360.0;
     angularToolManipulator_->angleDeg = std::clamp(angle, 0.01, 360.0);
+    {
+      const QSignalBlocker blocker(angularValueEditor_);
+      angularValueEditor_->setValue(angularToolManipulator_->angleDeg);
+    }
     emit angularToolManipulatorValueChanged(angularToolManipulator_->angleDeg);
     update();
     return;

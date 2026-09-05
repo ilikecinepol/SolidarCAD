@@ -1008,6 +1008,21 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::extrusionSurfacePicked, this,
           [this](const QString& surface) {
+            if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              const std::size_t index = viewport_->extrusionCandidateSketchIndex();
+              if (index >= sketchHistory_.size()) return;
+              const SketchId id = sketchHistory_[index].documentSketchId;
+              revolveToolSession_.setProfile(id);
+              {
+                const QSignalBlocker blocker(revolveProfileCombo_);
+                revolveProfileCombo_->setCurrentIndex(
+                    revolveProfileCombo_->findData(QVariant::fromValue<qulonglong>(id)));
+              }
+              rebuildRevolveAxisChoices();
+              viewport_->beginRevolveAxisSelection(index);
+              statusBar()->showMessage(QString::fromUtf8("Выберите прямую ось во viewport"));
+              return;
+            }
             selectedExtrusionSurface_ = surface;
             statusBar()->showMessage(QString::fromUtf8("Поверхность: ") + surface);
             extrusionLengthSpin_->setValue(document_.box().heightMm);
@@ -1062,6 +1077,28 @@ void MainWindow::buildUi() {
               viewport_->setBasePlaneVisible(kind - 10, visible);
             if (kind >= 20)
               viewport_->setSketchVisible(static_cast<std::size_t>(kind - 20), visible);
+          });
+  connect(viewport_, &Viewport::revolveAxisPicked, this,
+          [this](qulonglong axisToken) {
+            if (revolveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+            AxisReference axis;
+            axis.sketchId = revolveToolSession_.profileSketchId();
+            if (axisToken == 1) {
+              axis.type = AxisReferenceType::SketchHorizontalAxis;
+            } else if (axisToken == 2) {
+              axis.type = AxisReferenceType::SketchVerticalAxis;
+            } else {
+              axis.type = AxisReferenceType::SketchLine;
+              axis.lineId = static_cast<sketch::GeometryId>(axisToken - 3);
+            }
+            revolveToolSession_.setAxis(axis);
+            const int comboIndex = revolveAxisCombo_->findData(axisToken);
+            if (comboIndex >= 0) {
+              const QSignalBlocker blocker(revolveAxisCombo_);
+              revolveAxisCombo_->setCurrentIndex(comboIndex);
+            }
+            updateRevolveToolPreview();
+            statusBar()->showMessage(QString::fromUtf8("Задайте угол дугой или полем у манипулятора"));
           });
   connect(featureTree_, &QTreeWidget::itemDoubleClicked, this,
           [this](QTreeWidgetItem* item, int) {
@@ -1440,9 +1477,10 @@ void MainWindow::createRevolve() {
   revolveToolSession_.setOperation(ExtrudeOperation::NewBody);
   revolveReverseCheck_->setChecked(false);
   revolveDock_->show(); revolveDock_->raise();
+  viewport_->beginExtrusionSurfaceSelection();
   updateRevolveToolPreview();
   statusBar()->showMessage(
-      QString::fromUtf8("Выберите профиль и ось в правой панели"));
+      QString::fromUtf8("Выберите профиль мышью во viewport"));
 }
 
 void MainWindow::rebuildRevolveAxisChoices() {
