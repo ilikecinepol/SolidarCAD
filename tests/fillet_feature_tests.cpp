@@ -313,7 +313,9 @@ int main() {
   const std::size_t originalFeatureCount = previewBody->features().size();
   solidar::FilletToolSession session;
   session.begin(previewBody->id(), previewBox.extrudeId, originalShape, {}, 2.0);
-  assert(session.lifecycle() == solidar::ToolLifecycle::Editing);
+  assert(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
+  assert(session.selectionStage() ==
+         solidar::ToolSelectionStage::SelectingInput);
   assert(!session.previewShape() && session.error().empty());
   session.setEdges({{previewBody->id(), previewBox.extrudeId, 0}});
   assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);

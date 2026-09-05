@@ -51,7 +51,23 @@ const std::vector<EdgeReference>& ChamferToolSession::edges() const noexcept {
   return edges_;
 }
 double ChamferToolSession::distanceMm() const noexcept { return distanceMm_; }
-ToolLifecycle ChamferToolSession::lifecycle() const noexcept { return lifecycle_; }
+ToolLifecycle ChamferToolSession::lifecycle() const noexcept {
+  return lifecycle_;
+}
+ToolSelectionStage ChamferToolSession::selectionStage() const noexcept {
+  if (lifecycle_ == ToolLifecycle::Inactive) return ToolSelectionStage::None;
+  return edges_.empty() ? ToolSelectionStage::SelectingInput
+                        : ToolSelectionStage::EditingParameters;
+}
+std::optional<SelectionRequirement> ChamferToolSession::selectionRequirement() const {
+  if (!edges_.empty()) return std::nullopt;
+  return SelectionRequirement{SelectionType::Edge, "Select edges", 1,
+                              static_cast<std::size_t>(-1), true};
+}
+std::vector<ToolParameterDescriptor> ChamferToolSession::parameters() const {
+  return {{"distance", "Distance", ToolParameterType::Distance, distanceMm_,
+           0.01, 100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
+}
 std::shared_ptr<const TopoDS_Shape> ChamferToolSession::previewShape() const {
   return previewShape_;
 }
@@ -66,7 +82,7 @@ bool ChamferToolSession::updatePreview() {
     return false;
   }
   if (edges_.empty()) {
-    lifecycle_ = ToolLifecycle::Editing;
+    lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
   std::vector<std::size_t> indices;

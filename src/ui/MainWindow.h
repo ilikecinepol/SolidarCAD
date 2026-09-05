@@ -9,6 +9,7 @@
 #include "model/ChamferToolSession.h"
 #include "model/FilletToolSession.h"
 #include "model/RevolveToolSession.h"
+#include "ui/tools/PartDesignToolController.h"
 #include "sketch/Sketch.h"
 
 class QTreeWidget;
@@ -113,6 +114,7 @@ class MainWindow final : public QMainWindow {
   FilletToolSession filletToolSession_;
   ChamferToolSession chamferToolSession_;
   RevolveToolSession revolveToolSession_;
+  PartDesignToolController partDesignTools_;
   QDockWidget* revolveDock_{nullptr};
   QComboBox* revolveProfileCombo_{nullptr};
   QComboBox* revolveAxisCombo_{nullptr};

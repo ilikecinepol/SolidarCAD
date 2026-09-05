@@ -2,6 +2,7 @@
 
 #include "ui/EdgeSelectionState.h"
 #include "ui/ViewportPicking.h"
+#include "ui/tools/ToolParameterHud.h"
 #include "model/TopologyReferenceResolver.h"
 
 #include <BRepBndLib.hxx>
@@ -155,15 +156,15 @@ Viewport::Viewport(QWidget* parent) : QWidget(parent) {
   extrusionLengthEditor_->hide();
   connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
           &Viewport::setExtrusionPreviewLength);
-  angularValueEditor_ = new QDoubleSpinBox(this);
-  angularValueEditor_->setRange(0.01, 360.0);
-  angularValueEditor_->setDecimals(2);
-  angularValueEditor_->setSuffix(QString::fromUtf8(" °"));
-  angularValueEditor_->setFixedSize(118, 40);
-  angularValueEditor_->setStyleSheet(extrusionLengthEditor_->styleSheet());
-  angularValueEditor_->hide();
-  connect(angularValueEditor_, &QDoubleSpinBox::valueChanged, this,
-          &Viewport::angularToolManipulatorValueChanged);
+  toolParameterHud_ = new ToolParameterHud(this);
+  toolParameterHud_->hide();
+  connect(toolParameterHud_, &ToolParameterHud::valueChanged, this,
+          [this](const QString& id, double value) {
+            if (id == QStringLiteral("angle"))
+              emit angularToolManipulatorValueChanged(value);
+            else if (id == QStringLiteral("distance"))
+              emit toolManipulatorValueChanged(value);
+          });
 }
 
 void Viewport::setBox(BoxParameters parameters) {
@@ -676,6 +677,27 @@ SelectionFilter Viewport::selectionFilter() const noexcept {
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   toolManipulator_ = manipulator;
   angularToolManipulator_.reset();
+  if (toolHudParameterId_ != "distance") {
+    toolParameterHud_->setParameters({
+        {"distance", "Distance", ToolParameterType::Distance,
+         manipulator.valueMm, 0.01, 100000.0, 0.1, "mm", true,
+         ToolManipulatorType::Linear}});
+    toolHudParameterId_ = "distance";
+  } else {
+    toolParameterHud_->setValue("distance", manipulator.valueMm);
+  }
+  const QPointF tip = projectBodyPoint(
+      {manipulator.origin.x + manipulator.direction.x * manipulator.valueMm,
+       manipulator.origin.y + manipulator.direction.y * manipulator.valueMm,
+       manipulator.origin.z + manipulator.direction.z * manipulator.valueMm},
+      bodyRenderMesh_.center(), size(), yaw_, pitch_, zoom_).screen;
+  toolParameterHud_->move(
+      std::clamp(static_cast<int>(tip.x() + 12), 4,
+                 std::max(4, width() - toolParameterHud_->width() - 4)),
+      std::clamp(static_cast<int>(tip.y() - 20), 4,
+                 std::max(4, height() - toolParameterHud_->height() - 4)));
+  toolParameterHud_->show();
+  toolParameterHud_->raise();
   update();
 }
 
@@ -683,27 +705,32 @@ void Viewport::setAngularToolManipulator(
     const AngularToolManipulator& manipulator) {
   angularToolManipulator_ = manipulator;
   toolManipulator_.reset();
-  {
-    const QSignalBlocker blocker(angularValueEditor_);
-    angularValueEditor_->setValue(manipulator.angleDeg);
+  if (toolHudParameterId_ != "angle") {
+    toolParameterHud_->setParameters({
+        {"angle", "Angle", ToolParameterType::Angle, manipulator.angleDeg,
+         0.01, 360.0, 1.0, "°", true, ToolManipulatorType::Angular}});
+    toolHudParameterId_ = "angle";
+  } else {
+    toolParameterHud_->setValue("angle", manipulator.angleDeg);
   }
   const QPointF origin = projectBodyPoint(
       manipulator.origin, bodyRenderMesh_.center(), size(), yaw_, pitch_, zoom_).screen;
   const double radius = std::max(24.0, manipulator.radiusMm * zoom_);
-  angularValueEditor_->move(
+  toolParameterHud_->move(
       std::clamp(static_cast<int>(origin.x() + radius + 12), 4,
-                 std::max(4, width() - angularValueEditor_->width() - 4)),
+                 std::max(4, width() - toolParameterHud_->width() - 4)),
       std::clamp(static_cast<int>(origin.y() - 20), 4,
-                 std::max(4, height() - angularValueEditor_->height() - 4)));
-  angularValueEditor_->show();
-  angularValueEditor_->raise();
+                 std::max(4, height() - toolParameterHud_->height() - 4)));
+  toolParameterHud_->show();
+  toolParameterHud_->raise();
   update();
 }
 
 void Viewport::clearToolManipulator() {
   toolManipulator_.reset();
   angularToolManipulator_.reset();
-  angularValueEditor_->hide();
+  toolParameterHud_->hide();
+  toolHudParameterId_.clear();
   draggingToolManipulator_ = false;
   draggingAngularToolManipulator_ = false;
   update();
@@ -1421,6 +1448,18 @@ void Viewport::paintEvent(QPaintEvent*) {
       return projectBodyPoint(placement.toWorld(x, y), center, size(), yaw_, pitch_, zoom_).screen;
     };
     painter.setBrush(Qt::NoBrush);
+    const auto globalScreenPoint = [&](double x, double y, double z) {
+      return projectBodyPoint({x, y, z}, center, size(), yaw_, pitch_, zoom_).screen;
+    };
+    painter.setPen(QPen(QColor("#e34850"), 3.0));
+    painter.drawLine(globalScreenPoint(-1000.0, 0.0, 0.0),
+                     globalScreenPoint(1000.0, 0.0, 0.0));
+    painter.setPen(QPen(QColor("#36a269"), 3.0));
+    painter.drawLine(globalScreenPoint(0.0, -1000.0, 0.0),
+                     globalScreenPoint(0.0, 1000.0, 0.0));
+    painter.setPen(QPen(QColor("#2474d2"), 3.0));
+    painter.drawLine(globalScreenPoint(0.0, 0.0, -1000.0),
+                     globalScreenPoint(0.0, 0.0, 1000.0));
     painter.setPen(QPen(QColor("#ef7d00"), 2.4, Qt::DashLine));
     painter.drawLine(screenPoint(-1000.0, 0.0), screenPoint(1000.0, 0.0));
     painter.setPen(QPen(QColor("#e34850"), 2.4, Qt::DashLine));
@@ -1710,6 +1749,13 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       const double distance = QLineF(scenePosition, a + ab * t).length();
       if (distance < bestDistance) { bestDistance = distance; bestToken = token; }
     };
+
+    considerSegment({-1000.0, 0.0, 0.0}, {1000.0, 0.0, 0.0},
+                    kGlobalXAxisToken);
+    considerSegment({0.0, -1000.0, 0.0}, {0.0, 1000.0, 0.0},
+                    kGlobalYAxisToken);
+    considerSegment({0.0, 0.0, -1000.0}, {0.0, 0.0, 1000.0},
+                    kGlobalZAxisToken);
 
     // The sketch reference axes are valid Revolve axes too.  A generous world
     // span keeps them directly pickable independently of the current zoom.
@@ -2710,8 +2756,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     if (angle <= 0.0) angle += 360.0;
     angularToolManipulator_->angleDeg = std::clamp(angle, 0.01, 360.0);
     {
-      const QSignalBlocker blocker(angularValueEditor_);
-      angularValueEditor_->setValue(angularToolManipulator_->angleDeg);
+      toolParameterHud_->setValue("angle", angularToolManipulator_->angleDeg);
     }
     emit angularToolManipulatorValueChanged(angularToolManipulator_->angleDeg);
     update();

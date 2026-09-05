@@ -53,7 +53,23 @@ const std::vector<EdgeReference>& FilletToolSession::edges() const noexcept {
   return edges_;
 }
 double FilletToolSession::radiusMm() const noexcept { return radiusMm_; }
-ToolLifecycle FilletToolSession::lifecycle() const noexcept { return lifecycle_; }
+ToolLifecycle FilletToolSession::lifecycle() const noexcept {
+  return lifecycle_;
+}
+ToolSelectionStage FilletToolSession::selectionStage() const noexcept {
+  if (lifecycle_ == ToolLifecycle::Inactive) return ToolSelectionStage::None;
+  return edges_.empty() ? ToolSelectionStage::SelectingInput
+                        : ToolSelectionStage::EditingParameters;
+}
+std::optional<SelectionRequirement> FilletToolSession::selectionRequirement() const {
+  if (!edges_.empty()) return std::nullopt;
+  return SelectionRequirement{SelectionType::Edge, "Select edges", 1,
+                              static_cast<std::size_t>(-1), true};
+}
+std::vector<ToolParameterDescriptor> FilletToolSession::parameters() const {
+  return {{"radius", "Radius", ToolParameterType::Distance, radiusMm_, 0.01,
+           100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
+}
 std::shared_ptr<const TopoDS_Shape> FilletToolSession::previewShape() const {
   return previewShape_;
 }
@@ -68,7 +84,7 @@ bool FilletToolSession::updatePreview() {
     return false;
   }
   if (edges_.empty()) {
-    lifecycle_ = ToolLifecycle::Editing;
+    lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
   std::vector<std::size_t> indices;

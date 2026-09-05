@@ -414,8 +414,20 @@ void MainWindow::buildUi() {
                                     QString::fromUtf8("Вырезать")});
   revolveReverseCheck_ = new QCheckBox(
       QString::fromUtf8("Обратить направление"), revolvePanel);
-  revolveForm->addRow(QString::fromUtf8("Профиль:"), revolveProfileCombo_);
-  revolveForm->addRow(QString::fromUtf8("Ось:"), revolveAxisCombo_);
+  auto* profileRow = new QWidget(revolvePanel);
+  auto* profileRowLayout = new QHBoxLayout(profileRow);
+  profileRowLayout->setContentsMargins(0, 0, 0, 0);
+  auto* reselectProfile = new QPushButton(QString::fromUtf8("Выбрать заново"), profileRow);
+  profileRowLayout->addWidget(revolveProfileCombo_);
+  profileRowLayout->addWidget(reselectProfile);
+  auto* axisRow = new QWidget(revolvePanel);
+  auto* axisRowLayout = new QHBoxLayout(axisRow);
+  axisRowLayout->setContentsMargins(0, 0, 0, 0);
+  auto* reselectAxis = new QPushButton(QString::fromUtf8("Выбрать заново"), axisRow);
+  axisRowLayout->addWidget(revolveAxisCombo_);
+  axisRowLayout->addWidget(reselectAxis);
+  revolveForm->addRow(QString::fromUtf8("Профиль:"), profileRow);
+  revolveForm->addRow(QString::fromUtf8("Ось:"), axisRow);
   revolveForm->addRow(QString::fromUtf8("Угол:"), revolveAngleSpin_);
   revolveForm->addRow(QString::fromUtf8("Операция:"), revolveOperationCombo_);
   revolveForm->addRow(QString(), revolveReverseCheck_);
@@ -448,12 +460,24 @@ void MainWindow::buildUi() {
               revolveToolSession_.clearAxis(); updateRevolveToolPreview(); return;
             }
             AxisReference reference;
-            reference.sketchId = revolveToolSession_.profileSketchId();
             const qulonglong value = revolveAxisCombo_->currentData().toULongLong();
-            if (value == 1) reference.type = AxisReferenceType::SketchHorizontalAxis;
-            else if (value == 2) reference.type = AxisReferenceType::SketchVerticalAxis;
-            else { reference.type = AxisReferenceType::SketchLine;
-                   reference.lineId = static_cast<sketch::GeometryId>(value - 3); }
+            if (value == Viewport::kGlobalXAxisToken)
+              reference.type = AxisReferenceType::GlobalX;
+            else if (value == Viewport::kGlobalYAxisToken)
+              reference.type = AxisReferenceType::GlobalY;
+            else if (value == Viewport::kGlobalZAxisToken)
+              reference.type = AxisReferenceType::GlobalZ;
+            else {
+              reference.sketchId = revolveToolSession_.profileSketchId();
+              if (value == 1)
+                reference.type = AxisReferenceType::SketchHorizontalAxis;
+              else if (value == 2)
+                reference.type = AxisReferenceType::SketchVerticalAxis;
+              else {
+                reference.type = AxisReferenceType::SketchLine;
+                reference.lineId = static_cast<sketch::GeometryId>(value - 3);
+              }
+            }
             revolveToolSession_.setAxis(reference); updateRevolveToolPreview();
           });
   connect(revolveAngleSpin_, &QDoubleSpinBox::valueChanged, this,
@@ -469,6 +493,25 @@ void MainWindow::buildUi() {
           &MainWindow::acceptRevolveTool);
   connect(cancelRevolve, &QPushButton::clicked, this,
           &MainWindow::cancelRevolveTool);
+  connect(reselectProfile, &QPushButton::clicked, this, [this] {
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingInput);
+    viewport_->beginExtrusionSurfaceSelection();
+    viewport_->setFocus();
+    statusBar()->showMessage(QString::fromUtf8("1/3 Выберите новый профиль"));
+  });
+  connect(reselectAxis, &QPushButton::clicked, this, [this] {
+    if (revolveToolSession_.profileSketchId() == kInvalidSketchId) return;
+    const auto found = std::find_if(
+        sketchHistory_.begin(), sketchHistory_.end(), [this](const auto& entry) {
+          return entry.documentSketchId == revolveToolSession_.profileSketchId();
+        });
+    if (found == sketchHistory_.end()) return;
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingReference);
+    viewport_->beginRevolveAxisSelection(
+        static_cast<std::size_t>(std::distance(sketchHistory_.begin(), found)));
+    viewport_->setFocus();
+    statusBar()->showMessage(QString::fromUtf8("2/3 Выберите новую ось"));
+  });
   connect(viewport_, &Viewport::angularToolManipulatorValueChanged, this,
           [this](double angle) {
             if (revolveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
@@ -1013,6 +1056,7 @@ void MainWindow::buildUi() {
               if (index >= sketchHistory_.size()) return;
               const SketchId id = sketchHistory_[index].documentSketchId;
               revolveToolSession_.setProfile(id);
+              partDesignTools_.finishReselection();
               {
                 const QSignalBlocker blocker(revolveProfileCombo_);
                 revolveProfileCombo_->setCurrentIndex(
@@ -1082,16 +1126,25 @@ void MainWindow::buildUi() {
           [this](qulonglong axisToken) {
             if (revolveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
             AxisReference axis;
-            axis.sketchId = revolveToolSession_.profileSketchId();
-            if (axisToken == 1) {
+            if (axisToken == Viewport::kGlobalXAxisToken) {
+              axis.type = AxisReferenceType::GlobalX;
+            } else if (axisToken == Viewport::kGlobalYAxisToken) {
+              axis.type = AxisReferenceType::GlobalY;
+            } else if (axisToken == Viewport::kGlobalZAxisToken) {
+              axis.type = AxisReferenceType::GlobalZ;
+            } else if (axisToken == 1) {
+              axis.sketchId = revolveToolSession_.profileSketchId();
               axis.type = AxisReferenceType::SketchHorizontalAxis;
             } else if (axisToken == 2) {
+              axis.sketchId = revolveToolSession_.profileSketchId();
               axis.type = AxisReferenceType::SketchVerticalAxis;
             } else {
+              axis.sketchId = revolveToolSession_.profileSketchId();
               axis.type = AxisReferenceType::SketchLine;
               axis.lineId = static_cast<sketch::GeometryId>(axisToken - 3);
             }
             revolveToolSession_.setAxis(axis);
+            partDesignTools_.finishReselection();
             const int comboIndex = revolveAxisCombo_->findData(axisToken);
             if (comboIndex >= 0) {
               const QSignalBlocker blocker(revolveAxisCombo_);
@@ -1100,6 +1153,15 @@ void MainWindow::buildUi() {
             updateRevolveToolPreview();
             statusBar()->showMessage(QString::fromUtf8("Задайте угол дугой или полем у манипулятора"));
           });
+  partDesignTools_.registerTool(
+      PartDesignToolKind::Revolve,
+      {&revolveToolSession_, [this] { cancelRevolveTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::Fillet,
+      {&filletToolSession_, [this] { cancelFilletTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::Chamfer,
+      {&chamferToolSession_, [this] { cancelChamferTool(); }, {}});
   connect(featureTree_, &QTreeWidget::itemDoubleClicked, this,
           [this](QTreeWidgetItem* item, int) {
             const auto id = static_cast<FeatureId>(
@@ -1109,6 +1171,12 @@ void MainWindow::buildUi() {
   connect(viewport_, &Viewport::selectionChanged, this,
           [this](const QString& text) {
             if (text == QStringLiteral("__cancel_tools__")) {
+              if (partDesignTools_.handleEscape()) {
+                updateRevolveToolPreview();
+                statusBar()->showMessage(
+                    QString::fromUtf8("Повторный выбор отменён"), 2000);
+                return;
+              }
               selectedExtrusionSurface_.clear();
               if (extrusionDock_) extrusionDock_->hide();
               modelRibbon_->clearActiveTool();
@@ -1456,6 +1524,7 @@ void MainWindow::refreshBodyViewFromDocument() {
 }
 
 void MainWindow::createRevolve() {
+  partDesignTools_.activate(PartDesignToolKind::Revolve);
   Body* body = document_.activeBody();
   revolveToolSession_.begin(document_, body ? body->id() : kInvalidBodyId,
                             body && body->activeFeature()
@@ -1490,6 +1559,12 @@ void MainWindow::rebuildRevolveAxisChoices() {
   revolveAxisCombo_->clear();
   revolveAxisCombo_->addItem(QString::fromUtf8("Выбрать ось"), 0);
   if (sketchId == kInvalidSketchId) return;
+  revolveAxisCombo_->addItem(QStringLiteral("Global X"),
+                             QVariant::fromValue<qulonglong>(Viewport::kGlobalXAxisToken));
+  revolveAxisCombo_->addItem(QStringLiteral("Global Y"),
+                             QVariant::fromValue<qulonglong>(Viewport::kGlobalYAxisToken));
+  revolveAxisCombo_->addItem(QStringLiteral("Global Z"),
+                             QVariant::fromValue<qulonglong>(Viewport::kGlobalZAxisToken));
   revolveAxisCombo_->addItem(QString::fromUtf8("Горизонтальная ось"), 1);
   revolveAxisCombo_->addItem(QString::fromUtf8("Вертикальная ось"), 2);
   const auto* sketch = document_.findSketch(sketchId);
@@ -1518,6 +1593,7 @@ void MainWindow::updateRevolveToolPreview() {
 
 void MainWindow::cancelRevolveTool() {
   revolveToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Revolve);
   viewport_->clearToolPreviewShape(); viewport_->clearToolManipulator();
   revolveDock_->hide(); modelRibbon_->clearActiveTool();
   refreshBodyViewFromDocument();
@@ -1528,20 +1604,38 @@ void MainWindow::acceptRevolveTool() {
   if (revolveToolSession_.lifecycle() != ToolLifecycle::PreviewValid ||
       !revolveToolSession_.axis()) return;
   const Document previous = document_;
-  Body* body = revolveToolSession_.operation() == ExtrudeOperation::NewBody
-                   ? &document_.addBody() : document_.activeBody();
+  Body* body = revolveToolSession_.editingFeatureId()
+                   ? document_.findBody(revolveToolSession_.bodyId())
+                   : revolveToolSession_.operation() == ExtrudeOperation::NewBody
+                         ? &document_.addBody()
+                         : document_.activeBody();
   if (!body) return;
-  body->addFeature(std::make_unique<RevolveFeature>(
-      revolveToolSession_.profileSketchId(), *revolveToolSession_.axis(),
-      revolveToolSession_.angleDeg(),
-      "Revolve " + std::to_string(body->features().size() + 1),
-      revolveToolSession_.operation(), revolveToolSession_.reversed()));
+  if (const auto editingId = revolveToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* feature = dynamic_cast<RevolveFeature*>(body->features()[index].get());
+      if (!feature || feature->id() != *editingId) continue;
+      feature->setProfileSketchId(revolveToolSession_.profileSketchId());
+      feature->setAxis(*revolveToolSession_.axis());
+      feature->setAngleDeg(revolveToolSession_.angleDeg());
+      feature->setOperation(revolveToolSession_.operation());
+      feature->setReversed(revolveToolSession_.reversed());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    body->addFeature(std::make_unique<RevolveFeature>(
+        revolveToolSession_.profileSketchId(), *revolveToolSession_.axis(),
+        revolveToolSession_.angleDeg(),
+        "Revolve " + std::to_string(body->features().size() + 1),
+        revolveToolSession_.operation(), revolveToolSession_.reversed()));
+  }
   if (!document_.recompute()) {
     const QString error = QString::fromStdString(document_.rebuildError());
     document_ = previous; refreshBodyViewFromDocument();
     statusBar()->showMessage(error); return;
   }
   revolveToolSession_.cancel(); viewport_->clearToolPreviewShape();
+  partDesignTools_.deactivate(PartDesignToolKind::Revolve);
   viewport_->clearToolManipulator(); revolveDock_->hide();
   pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument();
                                     rebuildFeatureTree(); rebuildHistoryPanel(); });
@@ -1596,6 +1690,7 @@ void MainWindow::createPocket() {
 }
 
 void MainWindow::createFillet() {
+  partDesignTools_.activate(PartDesignToolKind::Fillet);
   if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelChamferTool();
   auto edges = viewport_->selectedBodyEdges();
@@ -1639,6 +1734,56 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
     for (std::size_t index = 0; index < body.features().size(); ++index) {
       ShapeFeature* feature = body.features()[index].get();
       if (feature->id() != featureId) continue;
+      if (auto* revolve = dynamic_cast<RevolveFeature*>(feature)) {
+        partDesignTools_.activate(PartDesignToolKind::Revolve);
+        ShapeFeature::ShapePtr upstream = index == 0
+                                             ? ShapeFeature::ShapePtr{}
+                                             : body.features()[index - 1]->shape();
+        const FeatureId sourceId = index == 0
+                                       ? kInvalidFeatureId
+                                       : body.features()[index - 1]->id();
+        revolveToolSession_.begin(document_, body.id(), sourceId, upstream,
+                                  revolve->id());
+        revolveToolSession_.setProfile(revolve->profileSketchId());
+        revolveToolSession_.setAxis(revolve->axis());
+        revolveToolSession_.setAngleFromPanel(revolve->angleDeg());
+        revolveToolSession_.setOperation(revolve->operation());
+        revolveToolSession_.setReversed(revolve->reversed());
+        {
+          const QSignalBlocker profileBlocker(revolveProfileCombo_);
+          const QSignalBlocker angleBlocker(revolveAngleSpin_);
+          const QSignalBlocker operationBlocker(revolveOperationCombo_);
+          const QSignalBlocker reverseBlocker(revolveReverseCheck_);
+          revolveProfileCombo_->setCurrentIndex(revolveProfileCombo_->findData(
+              QVariant::fromValue<qulonglong>(revolve->profileSketchId())));
+          revolveAngleSpin_->setValue(revolve->angleDeg());
+          revolveOperationCombo_->setCurrentIndex(
+              static_cast<int>(revolve->operation()));
+          revolveReverseCheck_->setChecked(revolve->reversed());
+        }
+        rebuildRevolveAxisChoices();
+        qulonglong axisToken = 0;
+        switch (revolve->axis().type) {
+          case AxisReferenceType::GlobalX: axisToken = Viewport::kGlobalXAxisToken; break;
+          case AxisReferenceType::GlobalY: axisToken = Viewport::kGlobalYAxisToken; break;
+          case AxisReferenceType::GlobalZ: axisToken = Viewport::kGlobalZAxisToken; break;
+          case AxisReferenceType::SketchHorizontalAxis: axisToken = 1; break;
+          case AxisReferenceType::SketchVerticalAxis: axisToken = 2; break;
+          case AxisReferenceType::SketchLine:
+            axisToken = static_cast<qulonglong>(revolve->axis().lineId) + 3;
+            break;
+        }
+        {
+          const QSignalBlocker axisBlocker(revolveAxisCombo_);
+          revolveAxisCombo_->setCurrentIndex(revolveAxisCombo_->findData(axisToken));
+        }
+        updateRevolveToolPreview();
+        revolveDock_->show();
+        revolveDock_->raise();
+        statusBar()->showMessage(QString::fromUtf8(
+            "Редактирование вращения: измените угол или выберите ось"));
+        return;
+      }
       const Document previous = document_;
       bool accepted = false;
       if (auto* mirror = dynamic_cast<MirrorFeature*>(feature)) {
@@ -1754,6 +1899,7 @@ void MainWindow::createCircularPattern() {
 }
 
 void MainWindow::createChamfer() {
+  partDesignTools_.activate(PartDesignToolKind::Chamfer);
   if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelFilletTool();
   auto edges = viewport_->selectedBodyEdges();
@@ -1799,7 +1945,7 @@ void MainWindow::updateChamferToolPreview() {
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
       valid ? QString::fromUtf8("Предпросмотр построен")
-            : state == ToolLifecycle::Editing
+            : state == ToolLifecycle::SelectingInput
                   ? QString::fromUtf8("Выберите рёбра для фаски")
                   : QString::fromStdString(chamferToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
@@ -1818,6 +1964,7 @@ void MainWindow::updateChamferToolPreview() {
 void MainWindow::cancelChamferTool() {
   if (chamferToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
   chamferToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Chamfer);
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
@@ -1856,6 +2003,7 @@ void MainWindow::acceptChamferTool() {
   }
   const double distance = chamferToolSession_.distanceMm();
   chamferToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Chamfer);
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
@@ -1884,7 +2032,7 @@ void MainWindow::updateFilletToolPreview() {
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
       valid ? QString::fromUtf8("Предпросмотр построен")
-            : state == ToolLifecycle::Editing
+            : state == ToolLifecycle::SelectingInput
                   ? QString::fromUtf8("Выберите рёбра для скругления")
                   : QString::fromStdString(filletToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
@@ -1903,6 +2051,7 @@ void MainWindow::updateFilletToolPreview() {
 void MainWindow::cancelFilletTool() {
   if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
   filletToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Fillet);
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
@@ -1941,6 +2090,7 @@ void MainWindow::acceptFilletTool() {
   }
   const double radius = filletToolSession_.radiusMm();
   filletToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Fillet);
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
   viewport_->setEdgeMultiSelectionMode(false);
@@ -2221,6 +2371,7 @@ void MainWindow::editFilletStep() {
       break;
     }
   if (!upstream) return;
+  partDesignTools_.activate(PartDesignToolKind::Fillet);
   if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelChamferTool();
   filletToolSession_.begin(body->id(), fillet->edge().featureId, upstream,
@@ -2253,6 +2404,7 @@ void MainWindow::editChamferStep() {
       break;
     }
   if (!upstream) return;
+  partDesignTools_.activate(PartDesignToolKind::Chamfer);
   if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelFilletTool();
   chamferToolSession_.begin(body->id(), chamfer->edge().featureId, upstream,

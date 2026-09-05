@@ -7,6 +7,7 @@
 #include <QWidget>
 #include <vector>
 #include <optional>
+#include <string>
 
 #include "model/Document.h"
 #include "model/SolidFeature.h"
@@ -22,6 +23,8 @@ class QDoubleSpinBox;
 
 namespace solidar {
 
+class ToolParameterHud;
+
 struct BodyViewShape {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
@@ -34,6 +37,9 @@ class Viewport final : public QWidget {
   Q_OBJECT
 
  public:
+  static constexpr qulonglong kGlobalXAxisToken = 0xfffffffffffffff0ULL;
+  static constexpr qulonglong kGlobalYAxisToken = 0xfffffffffffffff1ULL;
+  static constexpr qulonglong kGlobalZAxisToken = 0xfffffffffffffff2ULL;
   explicit Viewport(QWidget* parent = nullptr);
   void setBox(BoxParameters parameters);
   void setBodyShape(ShapeFeature::ShapePtr shape,
@@ -203,7 +209,8 @@ class Viewport final : public QWidget {
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
-  QDoubleSpinBox* angularValueEditor_{nullptr};
+  ToolParameterHud* toolParameterHud_{nullptr};
+  std::string toolHudParameterId_;
   QPointF extrusionManipulatorAnchor_;
   double extrusionPreviewLengthMm_{25.0};
   bool extrusionManipulatorVisible_{false};

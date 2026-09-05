@@ -33,10 +33,12 @@ int main() {
   solidar::RevolveToolSession session;
   session.begin(sessionDocument, solidar::kInvalidBodyId,
                 solidar::kInvalidFeatureId);
-  assert(session.lifecycle() == solidar::ToolLifecycle::Editing);
+  assert(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
+  assert(session.selectionRequirement()->type == solidar::SelectionType::Sketch);
   assert(!session.previewShape());
   session.setProfile(sessionSketch.id);
-  assert(session.lifecycle() == solidar::ToolLifecycle::Editing);
+  assert(session.lifecycle() == solidar::ToolLifecycle::SelectingReference);
+  assert(session.selectionRequirement()->type == solidar::SelectionType::Axis);
   session.setAxis({solidar::AxisReferenceType::SketchHorizontalAxis,
                    sessionSketch.id, solidar::sketch::kInvalidGeometryId});
   assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
@@ -45,6 +47,7 @@ int main() {
   assert(session.angleDeg() == 180.0 && session.previewShape());
   session.setAngleFromManipulator(90.0);
   assert(session.angleDeg() == 90.0 && session.manipulator());
+  assert(std::get<double>(session.parameters().front().value) == 90.0);
   assert(sessionDocument.bodies().size() == featureCountBefore);
   session.cancel();
   assert(session.lifecycle() == solidar::ToolLifecycle::Inactive);
@@ -108,6 +111,36 @@ int main() {
   lineBody.addFeature(feature(lineProfile.id,
       solidar::AxisReferenceType::SketchLine, 360.0, false, axisLineId));
   assert(lineAxis.recompute());
+
+  // Any persistent straight Sketch line can replace the axis without losing
+  // the other authoritative session parameters.
+  lineProfile.geometry.addLine({0.0, -20.0}, {40.0, -20.0});
+  const auto secondAxisLineId = lineProfile.geometry.lineId(
+      lineProfile.geometry.lines().size() - 1);
+  lineProfile.geometry.setElementDashed(
+      lineProfile.geometry.lines().back().elementId, true);
+  solidar::RevolveToolSession arbitraryAxisSession;
+  arbitraryAxisSession.begin(lineAxis, lineBody.id(),
+                             lineBody.activeFeature()->id());
+  arbitraryAxisSession.setProfile(lineProfile.id);
+  arbitraryAxisSession.setAxis({solidar::AxisReferenceType::SketchLine,
+                                lineProfile.id, axisLineId});
+  arbitraryAxisSession.setAngleFromPanel(135.0);
+  arbitraryAxisSession.setOperation(solidar::ExtrudeOperation::NewBody);
+  arbitraryAxisSession.setAxis({solidar::AxisReferenceType::SketchLine,
+                                lineProfile.id, secondAxisLineId});
+  assert(arbitraryAxisSession.axis()->lineId == secondAxisLineId);
+  assert(arbitraryAxisSession.profileSketchId() == lineProfile.id);
+  assert(arbitraryAxisSession.angleDeg() == 135.0);
+  assert(arbitraryAxisSession.operation() == solidar::ExtrudeOperation::NewBody);
+
+  solidar::Document globalAxis;
+  auto& globalProfile = globalAxis.addSketch();
+  globalProfile.geometry.addRectangle({10.0, 5.0}, {30.0, 15.0});
+  auto& globalBody = globalAxis.addBody();
+  globalBody.addFeature(feature(globalProfile.id,
+                                solidar::AxisReferenceType::GlobalX));
+  assert(globalAxis.recompute());
 
   solidar::Document invalid;
   auto& invalidBody = invalid.addBody();

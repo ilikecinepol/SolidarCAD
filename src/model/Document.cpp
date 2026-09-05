@@ -111,10 +111,9 @@ const Body* Document::activeBody() const noexcept {
 
 bool Document::rebuild() {
   const RebuildContext context{*this};
-  bool valid = true;
   for (auto& body : bodies_)
-    if (!body.rebuild(context)) valid = false;
-  return valid;
+    if (!body.rebuild(context)) return false;
+  return true;
 }
 
 bool Document::recompute() { return rebuild(); }

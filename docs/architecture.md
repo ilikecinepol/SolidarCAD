@@ -84,3 +84,37 @@ selection is mapped to its owning solid, affected solids are rebuilt in
 isolation, and the container is reconstructed with every unaffected occurrence.
 Fillet and Chamfer therefore preserve Pattern compounds instead of rejecting or
 silently truncating multi-solid results.
+
+## Universal Part Design tool framework
+
+Part Design interaction is defined by `PartDesignToolDefinition` and executed
+through one `PartDesignToolController`. The controller enforces that at most one
+tool is active and routes Escape either to the current nested re-selection or
+to cancellation of the complete tool. Persistent and preview data live in a
+`ToolSession`; a dock, combo box, manipulator, or HUD is never authoritative.
+
+The common lifecycle is `Inactive`, `SelectingInput`, `SelectingReference`,
+`EditingParameters`, `PreviewValid`, and `PreviewInvalid`. Selection is declared
+with `SelectionRequirement` (`Sketch`, `SketchLine`, `Edge`, `Face`, `Axis`,
+`Plane`, `Body`, or `Feature`). Parameters are declared with
+`ToolParameterDescriptor`; `ToolParameterHud` renders all HUD-editable numeric
+parameters, keeps Enter separate from Apply, uses normal Tab/Shift+Tab traversal,
+and consumes the first Escape to restore the last committed field value.
+
+The standard registry contains Extrude, Pocket, Revolve, Fillet, Chamfer,
+Mirror, Linear Pattern, and Circular Pattern. Revolve, Fillet, and Chamfer use
+the common runtime controller and session parameter contracts; the registry is
+the mandatory migration boundary for the remaining legacy command bodies.
+
+To add a Part Design tool:
+
+1. implement `FooFeature` and `FooToolSession`;
+2. add its selection requirements and parameter descriptors to the registry;
+3. expose its manipulator and build temporary preview geometry in the session;
+4. register commit/cancel bindings with `PartDesignToolController`;
+5. bind the generic HUD and parameters panel to session parameters;
+6. commit the feature only on Apply and reuse the same session with an
+   `editingFeatureId` for history editing.
+
+New tools must use this template. They must not introduce a new dialog-driven
+selection/preview/Apply pipeline in `MainWindow`.

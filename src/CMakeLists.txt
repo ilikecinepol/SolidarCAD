@@ -35,6 +35,8 @@ add_library(solidar_model
   model/CircularPatternFeature.cpp
   model/CircularPatternFeature.h
   model/ToolSession.h
+  model/PartDesignToolFramework.h
+  model/PartDesignToolFramework.cpp
   model/PocketFeature.cpp
   model/PocketFeature.h
   model/RevolveFeature.cpp
@@ -114,6 +116,8 @@ add_library(solidar_viewport3d
   ui/Viewport.h
   ui/ViewportPicking.cpp
   ui/ViewportPicking.h
+  ui/tools/ToolParameterHud.cpp
+  ui/tools/ToolParameterHud.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)
@@ -126,6 +130,8 @@ add_library(solidar_editor
   ui/MainWindow.h
   ui/ToolParametersPanel.cpp
   ui/ToolParametersPanel.h
+  ui/tools/PartDesignToolController.cpp
+  ui/tools/PartDesignToolController.h
 )
 target_include_directories(solidar_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_editor PUBLIC

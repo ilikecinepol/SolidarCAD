@@ -56,8 +56,27 @@ std::optional<SolidEdgeSelection> mapEdgesToOwningSolids(
 std::shared_ptr<TopoDS_Shape> rebuildSolidContainer(
     const std::vector<TopoDS_Shape>& solids) {
   if (solids.empty()) return {};
-  if (solids.size() == 1)
-    return std::make_shared<TopoDS_Shape>(solids.front());
+  if (solids.size() == 1) {
+    const auto& result = solids.front();
+    if (result.ShapeType() == TopAbs_SOLID)
+      return std::make_shared<TopoDS_Shape>(result);
+
+    // Some OCCT builders wrap a single result solid in a compound. Keep the
+    // feature's public shape stable as a solid while preserving genuine
+    // multi-solid results below.
+    std::optional<TopoDS_Shape> onlySolid;
+    for (TopExp_Explorer explorer(result, TopAbs_SOLID); explorer.More();
+         explorer.Next()) {
+      if (!onlySolid) {
+        onlySolid = explorer.Current();
+      } else if (!onlySolid->IsSame(explorer.Current())) {
+        onlySolid.reset();
+        break;
+      }
+    }
+    if (onlySolid) return std::make_shared<TopoDS_Shape>(*onlySolid);
+    return std::make_shared<TopoDS_Shape>(result);
+  }
   BRep_Builder builder;
   TopoDS_Compound compound;
   builder.MakeCompound(compound);

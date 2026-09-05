@@ -22,6 +22,18 @@ namespace solidar {
 namespace {
 bool resolveAxis(const Document& document, const AxisReference& reference,
                  gp_Ax1* result, std::string* error) {
+  if (reference.type == AxisReferenceType::GlobalX ||
+      reference.type == AxisReferenceType::GlobalY ||
+      reference.type == AxisReferenceType::GlobalZ) {
+    const Vector3d direction = reference.type == AxisReferenceType::GlobalX
+                                   ? Vector3d{1.0, 0.0, 0.0}
+                                   : reference.type == AxisReferenceType::GlobalY
+                                         ? Vector3d{0.0, 1.0, 0.0}
+                                         : Vector3d{0.0, 0.0, 1.0};
+    *result = gp_Ax1(gp_Pnt(0.0, 0.0, 0.0),
+                     gp_Dir(direction.x, direction.y, direction.z));
+    return true;
+  }
   const auto* sketch = document.findSketch(reference.sketchId);
   if (!sketch) { *error = "Revolve axis sketch was not found"; return false; }
   const auto& placement = sketch->placement;
