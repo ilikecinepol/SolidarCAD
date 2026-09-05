@@ -78,3 +78,9 @@ The three definitions and source IDs are persisted in project format v2. They
 use the normal Body scheduler, including downstream Dirty propagation, stale
 shape removal, blocked diagnostics, recovery, and stable IDs. Arbitrary datum
 planes/axes, per-occurrence suppression, and boolean fusion are v1 limitations.
+
+Multi-solid downstream modifiers use `ShapeContainerUtils`: global edge
+selection is mapped to its owning solid, affected solids are rebuilt in
+isolation, and the container is reconstructed with every unaffected occurrence.
+Fillet and Chamfer therefore preserve Pattern compounds instead of rejecting or
+silently truncating multi-solid results.

@@ -109,6 +109,9 @@ endforeach()
 add_executable(pattern_persistence_tests pattern_persistence_tests.cpp)
 target_link_libraries(pattern_persistence_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME pattern_persistence_tests COMMAND pattern_persistence_tests)
+add_executable(multi_solid_edge_feature_tests multi_solid_edge_feature_tests.cpp)
+target_link_libraries(multi_solid_edge_feature_tests PRIVATE solidar_model)
+add_test(NAME multi_solid_edge_feature_tests COMMAND multi_solid_edge_feature_tests)
 
 add_executable(persistent_topology_tests
                persistent_topology_tests.cpp)
@@ -154,6 +157,7 @@ set_tests_properties(
   linear_pattern_feature_tests
   circular_pattern_feature_tests
   pattern_persistence_tests
+  multi_solid_edge_feature_tests
   PROPERTIES LABELS "regression"
 )
 
@@ -208,6 +212,7 @@ if(WIN32)
     linear_pattern_feature_tests
     circular_pattern_feature_tests
     pattern_persistence_tests
+    multi_solid_edge_feature_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"

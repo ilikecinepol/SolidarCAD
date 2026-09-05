@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "model/TopologyReferenceResolver.h"
+#include "model/ShapeContainerUtils.h"
 
 namespace solidar {
 
@@ -25,24 +26,25 @@ std::shared_ptr<TopoDS_Shape> buildChamferShape(
     return fail("Chamfer distance must be a finite positive value");
   if (edgeIndices.empty()) return fail("Chamfer requires at least one edge");
   try {
-    BRepFilletAPI_MakeChamfer maker(baseShape);
-    for (const std::size_t edgeIndex : edgeIndices) {
-      const auto edge = resolveEdge(baseShape, edgeIndex);
-      if (!edge) return fail("Chamfer edge could not be resolved");
-      maker.Add(distanceMm, *edge);
+    std::string mappingError;
+    auto selection = mapEdgesToOwningSolids(baseShape, edgeIndices, &mappingError);
+    if (!selection) return fail("Chamfer " + mappingError);
+    for (std::size_t solidIndex = 0; solidIndex < selection->solids.size();
+         ++solidIndex) {
+      const auto& indices = selection->localEdgeIndices[solidIndex];
+      if (indices.empty()) continue;
+      BRepFilletAPI_MakeChamfer maker(selection->solids[solidIndex]);
+      for (const auto edgeIndex : indices) {
+        const auto edge = resolveEdge(selection->solids[solidIndex], edgeIndex);
+        if (!edge) return fail("Chamfer edge could not be resolved in owning solid");
+        maker.Add(distanceMm, *edge);
+      }
+      maker.Build();
+      if (!maker.IsDone() || maker.Shape().IsNull())
+        return fail("Chamfer could not be built with the requested distance");
+      selection->solids[solidIndex] = maker.Shape();
     }
-    maker.Build();
-    if (!maker.IsDone() || maker.Shape().IsNull())
-      return fail("Chamfer could not be built with the requested distance");
-    TopoDS_Shape result = maker.Shape();
-    if (result.ShapeType() != TopAbs_SOLID) {
-      TopExp_Explorer solids(result, TopAbs_SOLID);
-      if (!solids.More()) return fail("Chamfer result does not contain a solid");
-      result = solids.Current();
-      solids.Next();
-      if (solids.More()) return fail("Chamfer result contains multiple solids");
-    }
-    return std::make_shared<TopoDS_Shape>(result);
+    return rebuildSolidContainer(selection->solids);
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();
     return fail(message && *message

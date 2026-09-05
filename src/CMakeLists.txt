@@ -47,6 +47,8 @@ add_library(solidar_model
   model/Feature.h
   model/ShapeFeature.cpp
   model/ShapeFeature.h
+  model/ShapeContainerUtils.cpp
+  model/ShapeContainerUtils.h
   model/SketchPlacement.cpp
   model/SketchPlacement.h
   model/SolidFeature.h

@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "model/TopologyReferenceResolver.h"
+#include "model/ShapeContainerUtils.h"
 
 namespace solidar {
 
@@ -24,24 +25,25 @@ std::shared_ptr<TopoDS_Shape> buildFilletShape(
     return fail("Fillet radius must be a finite positive value");
   if (edgeIndices.empty()) return fail("Fillet requires at least one edge");
   try {
-    BRepFilletAPI_MakeFillet maker(baseShape);
-    for (const std::size_t edgeIndex : edgeIndices) {
-      const auto edge = resolveEdge(baseShape, edgeIndex);
-      if (!edge) return fail("Fillet edge could not be resolved");
-      maker.Add(radiusMm, *edge);
+    std::string mappingError;
+    auto selection = mapEdgesToOwningSolids(baseShape, edgeIndices, &mappingError);
+    if (!selection) return fail("Fillet " + mappingError);
+    for (std::size_t solidIndex = 0; solidIndex < selection->solids.size();
+         ++solidIndex) {
+      const auto& indices = selection->localEdgeIndices[solidIndex];
+      if (indices.empty()) continue;
+      BRepFilletAPI_MakeFillet maker(selection->solids[solidIndex]);
+      for (const auto edgeIndex : indices) {
+        const auto edge = resolveEdge(selection->solids[solidIndex], edgeIndex);
+        if (!edge) return fail("Fillet edge could not be resolved in owning solid");
+        maker.Add(radiusMm, *edge);
+      }
+      maker.Build();
+      if (!maker.IsDone() || maker.Shape().IsNull())
+        return fail("Fillet could not be built with the requested radius");
+      selection->solids[solidIndex] = maker.Shape();
     }
-    maker.Build();
-    if (!maker.IsDone() || maker.Shape().IsNull())
-      return fail("Fillet could not be built with the requested radius");
-    TopoDS_Shape result = maker.Shape();
-    if (result.ShapeType() != TopAbs_SOLID) {
-      TopExp_Explorer solids(result, TopAbs_SOLID);
-      if (!solids.More()) return fail("Fillet result does not contain a solid");
-      result = solids.Current();
-      solids.Next();
-      if (solids.More()) return fail("Fillet result contains multiple solids");
-    }
-    return std::make_shared<TopoDS_Shape>(result);
+    return rebuildSolidContainer(selection->solids);
   } catch (const Standard_Failure&) {
     return fail("Fillet could not be built with the requested radius");
   } catch (...) {
