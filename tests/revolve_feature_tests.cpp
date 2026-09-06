@@ -142,6 +142,24 @@ int main() {
                                 solidar::AxisReferenceType::GlobalX));
   assert(globalAxis.recompute());
 
+  // Every global datum axis is selectable by the same session workflow.
+  // Global Z is intentionally checked at the interaction level: revolving a
+  // profile lying in XY about its normal is geometrically degenerate, but the
+  // reference and manipulator must still remain available to the user.
+  for (const auto axisType : {solidar::AxisReferenceType::GlobalX,
+                              solidar::AxisReferenceType::GlobalY,
+                              solidar::AxisReferenceType::GlobalZ}) {
+    solidar::RevolveToolSession globalAxisSession;
+    globalAxisSession.begin(globalAxis, globalBody.id(),
+                            solidar::kInvalidFeatureId);
+    globalAxisSession.setProfile(globalProfile.id);
+    globalAxisSession.setAxis({axisType, solidar::kInvalidSketchId,
+                               solidar::sketch::kInvalidGeometryId});
+    assert(globalAxisSession.axis());
+    assert(globalAxisSession.axis()->type == axisType);
+    assert(globalAxisSession.manipulator());
+  }
+
   solidar::Document invalid;
   auto& invalidBody = invalid.addBody();
   invalidBody.addFeature(feature(9999,

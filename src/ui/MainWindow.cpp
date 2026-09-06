@@ -1382,20 +1382,29 @@ void MainWindow::extrudeSketch() {
   const bool fromBodyFace = selectedExtrusionSurface_.startsWith(
       QString::fromUtf8("Грань тела"));
   const auto& pickedSketch = viewport_->extrusionCandidateSketch();
-  // Keep an owned snapshot. Rebuild/viewport refresh mutates several Sketch
-  // caches and must not invalidate the profile while the operation is using it.
-  const sketch::Sketch sketch =
-      fromBodyFace
-          ? viewport_->solidSketch()
-          : (pickedSketch.lines().empty() && pickedSketch.circles().empty()
-                 ? sketchCanvas_->sketch()
-                 : pickedSketch);
-  if (!fromBodyFace && sketch.lines().empty() && sketch.circles().empty()) {
+  const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
+  const std::size_t sourceIndex =
+      pickedIndex != static_cast<std::size_t>(-1)
+          ? pickedIndex
+          : sketchCount_ > 0 ? sketchCount_ - 1
+                             : static_cast<std::size_t>(-1);
+  DocumentSketch* modelSketch =
+      sourceIndex < sketchHistory_.size()
+          ? document_.findSketch(sketchHistory_[sourceIndex].documentSketchId)
+          : nullptr;
+  // Parametric creation is driven by the selected DocumentSketch. Viewport
+  // caches are presentation-only and may still contain an earlier extrusion.
+  const sketch::Sketch sketch = modelSketch
+      ? modelSketch->geometry
+      : (pickedSketch.lines().empty() && pickedSketch.circles().empty()
+             ? sketchCanvas_->sketch()
+             : pickedSketch);
+  if (sketch.lines().empty() && sketch.circles().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
     return;
   }
-  if (!fromBodyFace && !sketch.lines().empty() && !sketch.isClosed()) {
+  if (!sketch.lines().empty() && !sketch.isClosed()) {
     QMessageBox::warning(this, QString::fromUtf8("Контур не замкнут"),
                          QString::fromUtf8("Соедините конечные точки линий замкнутого контура."));
     return;
@@ -1424,24 +1433,12 @@ void MainWindow::extrudeSketch() {
   const auto previousSource = extrusionSourceSketch_;
   const sketch::Sketch previousSolidSketch = viewport_->solidSketch();
   const QString previousSolidSupport = viewport_->solidSupport();
-  const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
-  const std::size_t sourceIndex =
-      pickedIndex != static_cast<std::size_t>(-1)
-          ? pickedIndex
-          : sketchCount_ > 0 ? sketchCount_ - 1
-                             : static_cast<std::size_t>(-1);
-  DocumentSketch* modelSketch =
-      sourceIndex < sketchHistory_.size()
-          ? document_.findSketch(sketchHistory_[sourceIndex].documentSketchId)
-          : nullptr;
   if (!modelSketch) {
     modelSketch = &document_.addSketch(
         kInvalidSketchId,
         "Extrude profile " + std::to_string(document_.sketches().size() + 1),
         sketch);
     modelSketch->placement = currentSketchPlacement_;
-  } else {
-    modelSketch->geometry = sketch;
   }
   Body* modelBody = operation == ExtrudeOperation::NewBody
                         ? &document_.addBody()

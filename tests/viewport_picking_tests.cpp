@@ -35,5 +35,22 @@ int main() {
   CHECK(std::abs(hit.distance - 3.0) < 1e-9);
 
   CHECK(!solidar::triangleDepthAt({90.0, 90.0}, frontA, frontB, frontC));
+
+  const QPointF angularOrigin{100.0, 100.0};
+  const QPointF angularU{140.0, 100.0};
+  const QPointF angularV{100.0, 120.0};
+  CHECK(std::abs(solidar::angularValueFromProjectedBasis(
+                     angularV, angularOrigin, angularU, angularV) -
+                 90.0) < 1e-9);
+  CHECK(std::abs(solidar::angularValueFromProjectedBasis(
+                     {60.0, 100.0}, angularOrigin, angularU, angularV) -
+                 180.0) < 1e-9);
+  CHECK(std::abs(solidar::angularValueFromProjectedBasis(
+                     angularU, angularOrigin, angularU, angularV) -
+                 360.0) < 1e-9);
+  CHECK(solidar::angularValueFromProjectedBasis(
+            {140.0, 99.99}, angularOrigin, angularU, angularV) > 359.0);
+  CHECK(solidar::angularValueFromProjectedBasis(
+            {140.0, 100.01}, angularOrigin, angularU, angularV) < 1.0);
   return EXIT_SUCCESS;
 }

@@ -72,6 +72,11 @@ add_executable(viewport_picking_tests viewport_picking_tests.cpp)
 target_link_libraries(viewport_picking_tests PRIVATE solidar_viewport3d)
 add_test(NAME viewport_picking_tests COMMAND viewport_picking_tests)
 
+add_executable(viewport_manipulator_tests viewport_manipulator_tests.cpp)
+target_link_libraries(viewport_manipulator_tests
+                      PRIVATE solidar_viewport3d Qt6::Widgets)
+add_test(NAME viewport_manipulator_tests COMMAND viewport_manipulator_tests)
+
 add_executable(viewport_preview_selection_tests
                viewport_preview_selection_tests.cpp)
 target_link_libraries(viewport_preview_selection_tests PRIVATE solidar_viewport3d)
@@ -102,6 +107,13 @@ target_link_libraries(part_design_regression_tests
   PRIVATE solidar_project Qt6::Core)
 add_test(NAME part_design_regression_tests
          COMMAND part_design_regression_tests)
+
+add_executable(downstream_feature_preservation_tests
+               downstream_feature_preservation_tests.cpp)
+target_link_libraries(downstream_feature_preservation_tests
+  PRIVATE solidar_project Qt6::Core)
+add_test(NAME downstream_feature_preservation_tests
+         COMMAND downstream_feature_preservation_tests)
 
 add_executable(parametric_history_tests parametric_history_tests.cpp)
 target_link_libraries(parametric_history_tests PRIVATE solidar_model)
@@ -140,6 +152,7 @@ set_tests_properties(
   body_render_mesh_tests
   edge_selection_state_tests
   viewport_picking_tests
+  viewport_manipulator_tests
   viewport_preview_selection_tests
   macro_foundation_tests
   fillet_feature_tests
@@ -158,6 +171,7 @@ set_tests_properties(
   revolve_feature_tests
   parametric_feature_chain_tests
   part_design_regression_tests
+  downstream_feature_preservation_tests
   parametric_history_tests
   persistent_topology_tests
   mirror_feature_tests
@@ -208,12 +222,14 @@ if(WIN32)
     body_render_mesh_tests
     edge_selection_state_tests
     viewport_picking_tests
+    viewport_manipulator_tests
     viewport_preview_selection_tests
     macro_foundation_tests
     fillet_feature_tests
     chamfer_feature_tests
     parametric_feature_chain_tests
     part_design_regression_tests
+    downstream_feature_preservation_tests
     parametric_history_tests
     persistent_topology_tests
     mirror_feature_tests

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace solidar {
 
@@ -37,6 +38,23 @@ SegmentHit closestSegmentHit(QPointF point, const ProjectedPoint& a,
   const QPointF closest = a.screen + segment * parameter;
   return {QLineF(point, closest).length(), parameter,
           a.depth + (b.depth - a.depth) * parameter};
+}
+
+double angularValueFromProjectedBasis(QPointF cursor, QPointF origin,
+                                      QPointF uPoint, QPointF vPoint) {
+  const QPointF u = uPoint - origin;
+  const QPointF v = vPoint - origin;
+  const QPointF delta = cursor - origin;
+  const double determinant = u.x() * v.y() - u.y() * v.x();
+  if (std::abs(determinant) < 1e-9) return 360.0;
+  const double uCoordinate =
+      (delta.x() * v.y() - delta.y() * v.x()) / determinant;
+  const double vCoordinate =
+      (u.x() * delta.y() - u.y() * delta.x()) / determinant;
+  double angle = std::atan2(vCoordinate, uCoordinate) * 180.0 /
+                 std::numbers::pi;
+  if (angle <= 0.0) angle += 360.0;
+  return std::clamp(angle, 0.01, 360.0);
 }
 
 }  // namespace solidar

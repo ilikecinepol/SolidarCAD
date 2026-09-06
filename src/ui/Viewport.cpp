@@ -33,6 +33,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <numbers>
 
 namespace solidar {
@@ -61,6 +62,34 @@ ProjectedPoint projectBodyPoint(Point3d point, Point3d center, const QSize& size
   const double scale = std::min(size.width(), size.height()) * 0.008 * zoom;
   return {{size.width() * 0.5 + x1 * scale,
            size.height() * 0.52 + y2 * scale}, depth};
+}
+
+Vector3d cross(Vector3d a, Vector3d b) {
+  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
+          a.x * b.y - a.y * b.x};
+}
+
+Vector3d normalized(Vector3d value) {
+  const double length =
+      std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+  if (length < 1e-12) return {0.0, 0.0, 1.0};
+  return {value.x / length, value.y / length, value.z / length};
+}
+
+std::pair<Vector3d, Vector3d> angularBasis(Vector3d axis) {
+  axis = normalized(axis);
+  const Vector3d reference =
+      std::abs(axis.z) < 0.85 ? Vector3d{0.0, 0.0, 1.0}
+                              : Vector3d{0.0, 1.0, 0.0};
+  const Vector3d u = normalized(cross(axis, reference));
+  return {u, normalized(cross(axis, u))};
+}
+
+Point3d offsetPoint(Point3d origin, Vector3d u, double uScale,
+                    Vector3d v = {}, double vScale = 0.0) {
+  return {origin.x + u.x * uScale + v.x * vScale,
+          origin.y + u.y * uScale + v.y * vScale,
+          origin.z + u.z * uScale + v.z * vScale};
 }
 
 QPointF project(Point3 point, const QSize& size, float yaw, float pitch,
@@ -686,11 +715,11 @@ void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   } else {
     toolParameterHud_->setValue("distance", manipulator.valueMm);
   }
-  const QPointF tip = projectBodyPoint(
+  const QPointF tip = cameraPan_ + projectBodyPoint(
       {manipulator.origin.x + manipulator.direction.x * manipulator.valueMm,
        manipulator.origin.y + manipulator.direction.y * manipulator.valueMm,
        manipulator.origin.z + manipulator.direction.z * manipulator.valueMm},
-      bodyRenderMesh_.center(), size(), yaw_, pitch_, zoom_).screen;
+      manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
   toolParameterHud_->move(
       std::clamp(static_cast<int>(tip.x() + 12), 4,
                  std::max(4, width() - toolParameterHud_->width() - 4)),
@@ -713,13 +742,17 @@ void Viewport::setAngularToolManipulator(
   } else {
     toolParameterHud_->setValue("angle", manipulator.angleDeg);
   }
-  const QPointF origin = projectBodyPoint(
-      manipulator.origin, bodyRenderMesh_.center(), size(), yaw_, pitch_, zoom_).screen;
-  const double radius = std::max(24.0, manipulator.radiusMm * zoom_);
+  const auto [u, v] = angularBasis(manipulator.axis);
+  const double angle = manipulator.angleDeg * std::numbers::pi / 180.0;
+  const Point3d handleWorld = offsetPoint(
+      manipulator.origin, u, manipulator.radiusMm * std::cos(angle), v,
+      manipulator.radiusMm * std::sin(angle));
+  const QPointF handle = cameraPan_ + projectBodyPoint(
+      handleWorld, manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
   toolParameterHud_->move(
-      std::clamp(static_cast<int>(origin.x() + radius + 12), 4,
+      std::clamp(static_cast<int>(handle.x() + 12), 4,
                  std::max(4, width() - toolParameterHud_->width() - 4)),
-      std::clamp(static_cast<int>(origin.y() - 20), 4,
+      std::clamp(static_cast<int>(handle.y() - 20), 4,
                  std::max(4, height() - toolParameterHud_->height() - 4)));
   toolParameterHud_->show();
   toolParameterHud_->raise();
@@ -975,6 +1008,9 @@ void Viewport::paintEvent(QPaintEvent*) {
 
   refreshSelectedExtrusionPolygon();
   const bool hasParametricBody = bodyShape_ && !bodyShape_->IsNull();
+  const bool hasToolPreview = toolPreviewShape_ &&
+                              !toolPreviewShape_->IsNull() &&
+                              !toolPreviewRenderMesh_.triangles().empty();
 
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
@@ -1018,10 +1054,8 @@ void Viewport::paintEvent(QPaintEvent*) {
                      plane == 0 ? "XY" : plane == 1 ? "XZ" : "YZ");
   }
 
-  if (solidVisible_ && hasParametricBody) {
-    const bool showingToolPreview = toolPreviewShape_ &&
-                                    !toolPreviewShape_->IsNull() &&
-                                    !toolPreviewRenderMesh_.triangles().empty();
+  if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
+    const bool showingToolPreview = hasToolPreview;
     const BodyRenderMesh& renderMesh =
         showingToolPreview ? toolPreviewRenderMesh_ : bodyRenderMesh_;
     struct PaintedTriangle {
@@ -1128,36 +1162,6 @@ void Viewport::paintEvent(QPaintEvent*) {
         }
       }
     }
-    if (toolManipulator_) {
-      const auto start = projectBodyPoint(toolManipulator_->origin, center, size(),
-                                          yaw_, pitch_, zoom_).screen;
-      const Point3d endWorld{
-          toolManipulator_->origin.x + toolManipulator_->direction.x * toolManipulator_->valueMm,
-          toolManipulator_->origin.y + toolManipulator_->direction.y * toolManipulator_->valueMm,
-          toolManipulator_->origin.z + toolManipulator_->direction.z * toolManipulator_->valueMm};
-      const auto end = projectBodyPoint(endWorld, center, size(), yaw_, pitch_, zoom_).screen;
-      drawToolArrow(painter, start, end, QColor("#0874f9"));
-    }
-    if (angularToolManipulator_) {
-      const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
-          center, size(), yaw_, pitch_, zoom_).screen;
-      const double radius = std::max(24.0, angularToolManipulator_->radiusMm * zoom_);
-      const double angle = angularToolManipulator_->angleDeg * std::numbers::pi / 180.0;
-      QRectF arc(origin.x() - radius, origin.y() - radius,
-                 radius * 2.0, radius * 2.0);
-      painter.setPen(QPen(QColor("#0874f9"), 3.0));
-      painter.drawArc(arc, 0, static_cast<int>(-angularToolManipulator_->angleDeg * 16.0));
-      painter.setPen(QPen(QColor("#ff8a00"), 2.0, Qt::DashLine));
-      painter.drawLine(origin + QPointF(-radius * 1.4, 0.0),
-                       origin + QPointF(radius * 1.4, 0.0));
-      const QPointF handle = origin + QPointF(std::cos(angle) * radius,
-                                               -std::sin(angle) * radius);
-      const double previousAngle = angle - 0.18;
-      const QPointF preceding =
-          origin + QPointF(std::cos(previousAngle) * radius,
-                           -std::sin(previousAngle) * radius);
-      drawToolArrowHead(painter, preceding, handle, QColor("#0874f9"));
-    }
   } else if (solidVisible_ && solidSketch_.lines().empty() &&
              solidSketch_.circles().empty()) {
     for (std::size_t faceIndex = 0; faceIndex < faces.size(); ++faceIndex) {
@@ -1172,6 +1176,77 @@ void Viewport::paintEvent(QPaintEvent*) {
                           static_cast<int>(faceIndex) == selectedFace_ ? 3.0
                                                                        : 1.4));
       painter.drawPolygon(polygon);
+    }
+  }
+
+  // Tool presentation belongs to the active session, not to body rendering.
+  // In particular, a New Body Revolve has a valid preview/manipulator before
+  // the Document contains any parametric Body.
+  if (toolManipulator_) {
+    const Point3d center = toolManipulator_->origin;
+    const auto start = projectBodyPoint(toolManipulator_->origin, center, size(),
+                                        yaw_, pitch_, zoom_).screen;
+    const Point3d endWorld = offsetPoint(
+        toolManipulator_->origin, toolManipulator_->direction,
+        toolManipulator_->valueMm);
+    const auto end = projectBodyPoint(endWorld, center, size(), yaw_, pitch_,
+                                      zoom_).screen;
+    drawToolArrow(painter, start, end, QColor("#0874f9"));
+    if (toolParameterHud_ && toolParameterHud_->isVisible()) {
+      const QPointF hud = end + cameraPan_ + QPointF(12.0, -20.0);
+      toolParameterHud_->move(
+          std::clamp(static_cast<int>(hud.x()), 4,
+                     std::max(4, width() - toolParameterHud_->width() - 4)),
+          std::clamp(static_cast<int>(hud.y()), 4,
+                     std::max(4, height() - toolParameterHud_->height() - 4)));
+    }
+  }
+  if (angularToolManipulator_) {
+    const auto& manipulator = *angularToolManipulator_;
+    const auto [u, v] = angularBasis(manipulator.axis);
+    const Point3d center = manipulator.origin;
+    const QPointF origin = projectBodyPoint(manipulator.origin, center, size(),
+                                            yaw_, pitch_, zoom_).screen;
+    const Vector3d axis = normalized(manipulator.axis);
+    const QPointF axisStart = projectBodyPoint(
+        offsetPoint(manipulator.origin, axis, -manipulator.radiusMm * 1.4),
+        center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF axisEnd = projectBodyPoint(
+        offsetPoint(manipulator.origin, axis, manipulator.radiusMm * 1.4),
+        center, size(), yaw_, pitch_, zoom_).screen;
+    painter.setPen(QPen(QColor("#ff8a00"), 2.4, Qt::DashLine));
+    painter.drawLine(axisStart, axisEnd);
+
+    const double endRadians =
+        manipulator.angleDeg * std::numbers::pi / 180.0;
+    const int segmentCount = std::max(12, static_cast<int>(
+        std::ceil(manipulator.angleDeg / 5.0)));
+    QPolygonF arc;
+    arc.reserve(segmentCount + 1);
+    for (int index = 0; index <= segmentCount; ++index) {
+      const double t = endRadians * index / segmentCount;
+      arc << projectBodyPoint(
+                 offsetPoint(manipulator.origin, u,
+                             manipulator.radiusMm * std::cos(t), v,
+                             manipulator.radiusMm * std::sin(t)),
+                 center, size(), yaw_, pitch_, zoom_)
+                 .screen;
+    }
+    painter.setPen(QPen(QColor("#0874f9"), 3.0));
+    painter.drawPolyline(arc);
+    if (arc.size() >= 2)
+      drawToolArrowHead(painter, arc[arc.size() - 2], arc.back(),
+                        QColor("#0874f9"));
+    painter.setBrush(QColor("#ffffff"));
+    painter.setPen(QPen(QColor("#0874f9"), 2.4));
+    painter.drawEllipse(arc.back(), 5.5, 5.5);
+    if (toolParameterHud_ && toolParameterHud_->isVisible()) {
+      const QPointF hud = arc.back() + cameraPan_ + QPointF(12.0, -20.0);
+      toolParameterHud_->move(
+          std::clamp(static_cast<int>(hud.x()), 4,
+                     std::max(4, width() - toolParameterHud_->width() - 4)),
+          std::clamp(static_cast<int>(hud.y()), 4,
+                     std::max(4, height() - toolParameterHud_->height() - 4)));
     }
   }
 
@@ -1777,13 +1852,14 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     }
   }
   if (angularToolManipulator_) {
-    const Point3d center = bodyRenderMesh_.center();
-    const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
-        center, size(), yaw_, pitch_, zoom_).screen;
-    const double radius = std::max(24.0, angularToolManipulator_->radiusMm * zoom_);
-    const double angle = angularToolManipulator_->angleDeg * std::numbers::pi / 180.0;
-    const QPointF handle = origin + QPointF(std::cos(angle) * radius,
-                                             -std::sin(angle) * radius);
+    const auto& manipulator = *angularToolManipulator_;
+    const auto [u, v] = angularBasis(manipulator.axis);
+    const double angle = manipulator.angleDeg * std::numbers::pi / 180.0;
+    const QPointF handle = projectBodyPoint(
+        offsetPoint(manipulator.origin, u,
+                    manipulator.radiusMm * std::cos(angle), v,
+                    manipulator.radiusMm * std::sin(angle)),
+        manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingAngularToolManipulator_ = true;
       setCursor(Qt::SizeAllCursor);
@@ -2748,13 +2824,18 @@ void Viewport::updateExtrusionHover(QPointF position) {
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
   if (draggingAngularToolManipulator_ && angularToolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
-    const Point3d center = bodyRenderMesh_.center();
-    const QPointF origin = projectBodyPoint(angularToolManipulator_->origin,
-        center, size(), yaw_, pitch_, zoom_).screen;
-    const QPointF delta = event->position() - cameraPan_ - origin;
-    double angle = std::atan2(-delta.y(), delta.x()) * 180.0 / std::numbers::pi;
-    if (angle <= 0.0) angle += 360.0;
-    angularToolManipulator_->angleDeg = std::clamp(angle, 0.01, 360.0);
+    const auto [u, v] = angularBasis(angularToolManipulator_->axis);
+    const Point3d originWorld = angularToolManipulator_->origin;
+    const QPointF origin = projectBodyPoint(originWorld, originWorld, size(),
+                                            yaw_, pitch_, zoom_).screen;
+    const QPointF uPoint = projectBodyPoint(
+        offsetPoint(originWorld, u, angularToolManipulator_->radiusMm),
+        originWorld, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF vPoint = projectBodyPoint(
+        offsetPoint(originWorld, v, angularToolManipulator_->radiusMm),
+        originWorld, size(), yaw_, pitch_, zoom_).screen;
+    angularToolManipulator_->angleDeg = angularValueFromProjectedBasis(
+        event->position() - cameraPan_, origin, uPoint, vPoint);
     {
       toolParameterHud_->setValue("angle", angularToolManipulator_->angleDeg);
     }

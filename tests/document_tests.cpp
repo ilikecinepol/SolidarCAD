@@ -181,14 +181,15 @@ int main() {
   assert(retryPtr->rebuildCount == 1);
   assert(retryDocument.rebuildError() == "test rebuild failure");
 
-  // Regression: rebuild stops at the earlier failed Body. A later active
-  // feature is not reached and therefore has no error of its own.
+  // A failed Body must not prevent independent Bodies from recomputing.
   auto& laterBody = document.addBody("Later body");
   auto later = std::make_unique<TestShapeFeature>("Not reached", true);
   auto* laterPtr = later.get();
   laterBody.addFeature(std::move(later));
   assert(!document.rebuild());
-  assert(laterPtr->isDirty());
+  assert(!laterPtr->isDirty());
+  assert(laterPtr->isValid());
+  assert(laterPtr->rebuildCount == 1);
   assert(laterPtr->error().empty());
   assert(document.rebuildError() == "test rebuild failure");
 
