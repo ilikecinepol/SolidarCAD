@@ -11,6 +11,7 @@
 #include "ui/Viewport.h"
 #include "ui/ToolParametersPanel.h"
 #include "ui/PartDesignToolHelp.h"
+#include "ui/PartDesignHistory.h"
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -56,6 +57,32 @@ int main(int argc, char** argv) {
     assert(!command->accessibleDescription().isEmpty());
   }
   assert(documentedCommands == 12);
+  const std::initializer_list<solidar::PartDesignToolKind> historyKinds{
+      solidar::PartDesignToolKind::Extrude,
+      solidar::PartDesignToolKind::Pocket,
+      solidar::PartDesignToolKind::Revolve,
+      solidar::PartDesignToolKind::Fillet,
+      solidar::PartDesignToolKind::Chamfer,
+      solidar::PartDesignToolKind::Mirror,
+      solidar::PartDesignToolKind::LinearPattern,
+      solidar::PartDesignToolKind::CircularPattern,
+      solidar::PartDesignToolKind::Shell,
+      solidar::PartDesignToolKind::Draft};
+  for (const auto kind : historyKinds)
+    assert(!solidar::partDesignToolIcon(kind).isNull());
+  assert(!solidar::modelCommandIcon(QStringLiteral("createSketch")).isNull());
+  solidar::HistoryStep compactStep;
+  compactStep.title = QString::fromUtf8("Фаска 1");
+  compactStep.tooltip = QString::fromUtf8("Фаска 1\nРазмер: 2 мм");
+  compactStep.icon = solidar::partDesignToolIcon(
+      solidar::PartDesignToolKind::Chamfer);
+  QToolButton compactButton;
+  solidar::configureHistoryButton(compactButton, compactStep, true);
+  assert(compactButton.text().isEmpty());
+  assert(compactButton.toolButtonStyle() == Qt::ToolButtonIconOnly);
+  assert(compactButton.width() <= 32 && compactButton.height() <= 32);
+  assert(compactButton.iconSize().width() >= 14);
+  assert(!compactButton.toolTip().isEmpty() && compactButton.isChecked());
 
   assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
   assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 7);

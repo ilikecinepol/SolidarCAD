@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QStringList>
+#include <QIcon>
 
 #include "model/PartDesignToolFramework.h"
 
@@ -22,5 +23,7 @@ struct PartDesignToolHelp {
     const QString& commandId) noexcept;
 [[nodiscard]] QString partDesignToolStepHint(PartDesignToolKind kind,
                                              ToolSelectionStage stage);
+[[nodiscard]] QIcon partDesignToolIcon(PartDesignToolKind kind);
+[[nodiscard]] QIcon modelCommandIcon(const QString& commandId);
 
 }  // namespace solidar

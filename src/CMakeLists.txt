@@ -126,6 +126,8 @@ add_library(solidar_viewport3d
   ui/ModelRibbon.h
   ui/PartDesignToolHelp.cpp
   ui/PartDesignToolHelp.h
+  ui/PartDesignHistory.cpp
+  ui/PartDesignHistory.h
   ui/Viewport.cpp
   ui/Viewport.h
   ui/ViewportPicking.cpp

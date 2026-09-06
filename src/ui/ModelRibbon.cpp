@@ -13,8 +13,7 @@
 namespace solidar {
 namespace {
 
-QToolButton* commandButton(const QString& iconPath, const QString& commandId,
-                           QWidget* parent) {
+QToolButton* commandButton(const QString& commandId, QWidget* parent) {
   auto* button = new QToolButton(parent);
   const auto* help = modelCommandHelp(commandId);
   Q_ASSERT(help);
@@ -23,7 +22,7 @@ QToolButton* commandButton(const QString& iconPath, const QString& commandId,
   button->setAccessibleName(help->title);
   button->setAccessibleDescription(help->detailedDescription);
   button->setProperty("helpId", commandId);
-  button->setIcon(QIcon(iconPath));
+  button->setIcon(modelCommandIcon(commandId));
   button->setIconSize(QSize(42, 42));
   button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
   button->setObjectName("modelCommand");
@@ -78,12 +77,9 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   root->setContentsMargins(18, 6, 18, 6);
   root->setSpacing(8);
 
-  auto* createSketch = commandButton(QStringLiteral(":/icons/create-sketch.png"),
-                                     QStringLiteral("createSketch"), this);
-  auto* extrude = commandButton(QStringLiteral(":/icons/extrude.png"),
-                                QStringLiteral("extrude"), this);
-  auto* revolve = commandButton(QStringLiteral(":/icons/revolve.png"),
-                                QStringLiteral("revolve"), this);
+  auto* createSketch = commandButton(QStringLiteral("createSketch"), this);
+  auto* extrude = commandButton(QStringLiteral("extrude"), this);
+  auto* revolve = commandButton(QStringLiteral("revolve"), this);
   createSketch->setObjectName("createSketchCommand");
   extrude->setObjectName("extrudeCommand");
   revolve->setObjectName("revolveCommand");
@@ -104,29 +100,27 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
                         {createSketch, extrude, revolve}));
   root->addWidget(separator(this));
 
-  auto* fillet = commandButton(QStringLiteral(":/icons/fillet.png"),
-                               QStringLiteral("fillet"), this);
+  auto* fillet = commandButton(QStringLiteral("fillet"), this);
   fillet->setObjectName("filletCommand");
   fillet->setCheckable(true);
   toolGroup_->addButton(fillet);
-  auto* chamfer = commandButton(QStringLiteral(":/icons/fillet.png"),
-                                QStringLiteral("chamfer"), this);
+  auto* chamfer = commandButton(QStringLiteral("chamfer"), this);
   chamfer->setObjectName("chamferCommand");
   chamfer->setCheckable(true);
   toolGroup_->addButton(chamfer);
-  auto* shell = commandButton({}, QStringLiteral("shell"), this);
-  auto* draft = commandButton({}, QStringLiteral("draft"), this);
+  auto* shell = commandButton(QStringLiteral("shell"), this);
+  auto* draft = commandButton(QStringLiteral("draft"), this);
   shell->setObjectName("shellCommand");
   draft->setObjectName("draftCommand");
   shell->setCheckable(true);
   draft->setCheckable(true);
   toolGroup_->addButton(shell);
   toolGroup_->addButton(draft);
-  auto* mirror = commandButton({}, QStringLiteral("mirror"), this);
+  auto* mirror = commandButton(QStringLiteral("mirror"), this);
   auto* linearPattern =
-      commandButton({}, QStringLiteral("linearPattern"), this);
+      commandButton(QStringLiteral("linearPattern"), this);
   auto* circularPattern =
-      commandButton({}, QStringLiteral("circularPattern"), this);
+      commandButton(QStringLiteral("circularPattern"), this);
   mirror->setObjectName("mirrorCommand");
   linearPattern->setObjectName("linearPatternCommand");
   circularPattern->setObjectName("circularPatternCommand");
@@ -152,8 +146,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
 
   auto* views = new QHBoxLayout;
   views->setSpacing(3);
-  auto* fit = commandButton({}, QStringLiteral("fit"), this);
-  auto* iso = commandButton({}, QStringLiteral("iso"), this);
+  auto* fit = commandButton(QStringLiteral("fit"), this);
+  auto* iso = commandButton(QStringLiteral("iso"), this);
   fit->setObjectName("fitCommand");
   iso->setObjectName("isoCommand");
   fit->setMinimumSize(58, 56);

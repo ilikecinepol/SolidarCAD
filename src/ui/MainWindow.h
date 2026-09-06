@@ -12,6 +12,7 @@
 #include "model/ShellToolSession.h"
 #include "model/DraftToolSession.h"
 #include "ui/tools/PartDesignToolController.h"
+#include "ui/PartDesignHistory.h"
 #include "sketch/Sketch.h"
 
 class QTreeWidget;
@@ -25,6 +26,7 @@ class QPushButton;
 class QComboBox;
 class QCheckBox;
 class QLabel;
+class QScrollArea;
 class QTreeWidget;
 
 namespace solidar {
@@ -87,10 +89,12 @@ class MainWindow final : public QMainWindow {
   void rebuildHistoryPanel();
   void applyHistoryPosition(int position);
   void editSketchStep(std::size_t index);
-  void editExtrusionStep();
-  void editPocketStep();
-  void editFilletStep();
-  void editChamferStep();
+  void editSketchById(SketchId sketchId);
+  void editHistoryFeature(BodyId bodyId, FeatureId featureId);
+  void editExtrusionStep(BodyId bodyId, FeatureId featureId);
+  void editPocketStep(BodyId bodyId, FeatureId featureId);
+  void editFilletStep(BodyId bodyId, FeatureId featureId);
+  void editChamferStep(BodyId bodyId, FeatureId featureId);
   void exportPdf();
   void printDrawing();
   void undoLastAction();
@@ -118,7 +122,9 @@ class MainWindow final : public QMainWindow {
   QAction* undoAction_{nullptr};
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
+  QScrollArea* historyScroll_{nullptr};
   QSlider* historySlider_{nullptr};
+  std::vector<HistoryStep> historySteps_;
   QDockWidget* extrusionDock_{nullptr};
   QDockWidget* toolParametersDock_{nullptr};
   ToolParametersPanel* toolParametersPanel_{nullptr};

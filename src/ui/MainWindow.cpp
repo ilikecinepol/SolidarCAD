@@ -8,6 +8,7 @@
 #include "model/DraftFeature.h"
 #include "ui/ToolParametersPanel.h"
 #include "ui/PartDesignToolHelp.h"
+#include "ui/PartDesignHistory.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/MirrorFeature.h"
@@ -1306,17 +1307,17 @@ void MainWindow::buildUi() {
   auto* historyHostLayout = new QVBoxLayout(historyHost);
   historyHostLayout->setContentsMargins(8, 2, 8, 3);
   historyHostLayout->setSpacing(1);
-  auto* historyScroll = new QScrollArea(historyDock);
-  historyScroll->setWidgetResizable(true);
-  historyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-  historyScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  historyScroll->setFrameShape(QFrame::NoFrame);
-  historyContent_ = new QWidget(historyScroll);
+  historyScroll_ = new QScrollArea(historyDock);
+  historyScroll_->setWidgetResizable(true);
+  historyScroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  historyScroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  historyScroll_->setFrameShape(QFrame::NoFrame);
+  historyContent_ = new QWidget(historyScroll_);
   historyLayout_ = new QHBoxLayout(historyContent_);
   historyLayout_->setContentsMargins(12, 7, 12, 7);
   historyLayout_->setSpacing(8);
   historyLayout_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-  historyScroll->setWidget(historyContent_);
+  historyScroll_->setWidget(historyContent_);
   historySlider_ = new QSlider(Qt::Horizontal, historyHost);
   historySlider_->setRange(0, 0);
   historySlider_->setSingleStep(1);
@@ -1333,7 +1334,7 @@ void MainWindow::buildUi() {
       "border:2px solid #1671e8;border-radius:6px;}");
   connect(historySlider_, &QSlider::valueChanged, this,
           &MainWindow::applyHistoryPosition);
-  historyHostLayout->addWidget(historyScroll, 1);
+  historyHostLayout->addWidget(historyScroll_, 1);
   historyHostLayout->addWidget(historySlider_);
   historyDock->setWidget(historyHost);
   addDockWidget(Qt::BottomDockWidgetArea, historyDock);
@@ -1972,7 +1973,7 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
       }
       body.markDirtyFrom(index);
       if (!document_.recompute()) {
-        rebuildFeatureTree(); refreshBodyViewFromDocument();
+        rebuildFeatureTree(); refreshBodyViewFromDocument(); rebuildHistoryPanel();
         statusBar()->showMessage(QString::fromStdString(document_.rebuildError()));
         return;
       }
@@ -2473,83 +2474,73 @@ void MainWindow::acceptFilletTool() {
 
 void MainWindow::rebuildHistoryPanel() {
   if (!historyLayout_) return;
+  const int previousCount = static_cast<int>(historySteps_.size());
+  const bool wasAtEnd = historyPosition_ >= previousCount;
   while (QLayoutItem* item = historyLayout_->takeAt(0)) {
     delete item->widget();
     delete item;
   }
-  auto addStep = [this](const QIcon& icon, const QString& title,
-                        const QString& tooltip, auto action) {
+  historySteps_.clear();
+  historySteps_ = buildPartDesignHistory(document_, document_.activeBody());
+  if (wasAtEnd) historyPosition_ = static_cast<int>(historySteps_.size());
+  auto addStep = [this](const HistoryStep& step, int position) {
     auto* button = new QToolButton(historyContent_);
-    button->setIcon(icon);
-    button->setIconSize(QSize(6, 6));
-    button->setText(title);
-    button->setToolTip(tooltip);
-    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    button->setFixedSize(74, 28);
-    button->setCursor(Qt::PointingHandCursor);
-    button->setStyleSheet(
-        "QToolButton{background:#fff;border:1px solid #cfdaea;border-radius:8px;"
-        "color:#173f7d;padding:2px;font-size:11px;}"
-        "QToolButton:hover{background:#e8f2ff;border:2px solid #6fa8f7;}"
-        "QToolButton:pressed{background:#d7e9ff;}");
-    connect(button, &QToolButton::clicked, this, action);
+    configureHistoryButton(*button, step, position == historyPosition_);
+    button->setProperty("bodyId", QVariant::fromValue<qulonglong>(step.bodyId));
+    button->setProperty("featureId", QVariant::fromValue<qulonglong>(step.featureId));
+    button->setProperty("sketchId", QVariant::fromValue<qulonglong>(step.sketchId));
+    connect(button, &QToolButton::clicked, this, [this, step] {
+      if (step.sketchId != kInvalidSketchId) editSketchById(step.sketchId);
+      else editHistoryFeature(step.bodyId, step.featureId);
+    });
     historyLayout_->addWidget(button);
   };
-  for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
-    addStep(QIcon(QStringLiteral(":/icons/create-sketch.png")),
-            QString::fromUtf8("Эскиз %1").arg(index + 1),
-            QString::fromUtf8("Вернуться к эскизу и изменить его"),
-            [this, index] { editSketchStep(index); });
-  }
-  if (hasExtrusion_) {
-    addStep(QIcon(QStringLiteral(":/icons/extrude.png")),
-            QString::fromUtf8("Выдавливание"),
-            QString::fromUtf8("Изменить глубину выдавливания"),
-            [this] { editExtrusionStep(); });
-  }
-  if (const Body* body = document_.activeBody();
-      body && dynamic_cast<const PocketFeature*>(body->activeFeature())) {
-    addStep(QIcon(QStringLiteral(":/icons/extrude.png")),
-            QString::fromUtf8("Карман"),
-            QString::fromUtf8("Изменить глубину кармана"),
-            [this] { editPocketStep(); });
-  }
-  if (const Body* body = document_.activeBody();
-      body && dynamic_cast<const FilletFeature*>(body->activeFeature())) {
-    addStep(QIcon(), QString::fromUtf8("Скругление"),
-            QString::fromUtf8("Изменить радиус скругления"),
-            [this] { editFilletStep(); });
-  }
-  if (const Body* body = document_.activeBody();
-      body && dynamic_cast<const ChamferFeature*>(body->activeFeature())) {
-    addStep(QIcon(), QString::fromUtf8("Фаска"),
-            QString::fromUtf8("Изменить размер фаски"),
-            [this] { editChamferStep(); });
-  }
+  for (std::size_t index = 0; index < historySteps_.size(); ++index)
+    addStep(historySteps_[index], static_cast<int>(index + 1));
+  historyContent_->setMinimumWidth(
+      std::max(1, static_cast<int>(historySteps_.size())) * 36 + 24);
   if (historySlider_) {
     const QSignalBlocker blocker(historySlider_);
-    const int lastPosition = static_cast<int>(sketchHistory_.size()) +
-                             (hasExtrusion_ ? 1 : 0);
+    const int lastPosition = static_cast<int>(historySteps_.size());
     historySlider_->setRange(0, lastPosition);
-    historySlider_->setFixedWidth(std::max(40, lastPosition * 82));
     historyPosition_ = std::clamp(historyPosition_, 0, lastPosition);
     historySlider_->setValue(historyPosition_);
   }
+  if (historyScroll_ && historyLayout_->count() > 0)
+    historyScroll_->ensureWidgetVisible(
+        historyLayout_->itemAt(historyLayout_->count() - 1)->widget());
 }
 
 void MainWindow::applyHistoryPosition(int position) {
-  const int lastPosition = static_cast<int>(sketchHistory_.size()) +
-                           (hasExtrusion_ ? 1 : 0);
+  const int lastPosition = static_cast<int>(historySteps_.size());
   historyPosition_ = std::clamp(position, 0, lastPosition);
-  const std::size_t activeSketches = std::min<std::size_t>(
-      static_cast<std::size_t>(historyPosition_), sketchHistory_.size());
-  const bool solidActive = hasExtrusion_ &&
-                           historyPosition_ > static_cast<int>(sketchHistory_.size());
-  viewport_->setSolidVisible(solidActive);
-  for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
-    const bool consumedBySolid = solidActive && extrusionSourceSketch_ == index;
-    viewport_->setSketchVisible(index, index < activeSketches && !consumedBySolid);
+  if (historyPosition_ == lastPosition) {
+    refreshBodyViewFromDocument();
+  } else {
+    std::vector<BodyViewShape> shapes;
+    for (const Body& body : document_.bodies()) {
+      if (const Body* active = document_.activeBody(); active && body.id() == active->id())
+        continue;
+      if (auto shape = body.resultShape())
+        shapes.push_back({body.id(), body.activeFeature()->id(), std::move(shape)});
+    }
+    if (historyPosition_ > 0) {
+      const HistoryStep& step = historySteps_[historyPosition_ - 1];
+      if (step.shape)
+        shapes.push_back({step.bodyId, step.featureId, step.shape});
+    }
+    viewport_->setBodyShapes(std::move(shapes));
+    viewport_->setSolidVisible(historyPosition_ > 0);
   }
+  for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
+    const bool selectedSketch = historyPosition_ > 0 &&
+        historySteps_[historyPosition_ - 1].sketchId ==
+            sketchHistory_[index].documentSketchId;
+    viewport_->setSketchVisible(index, selectedSketch);
+  }
+  const auto buttons = historyContent_->findChildren<QToolButton*>("historyStep");
+  for (int index = 0; index < buttons.size(); ++index)
+    buttons[index]->setChecked(index + 1 == historyPosition_);
   rebuildFeatureTree();
   statusBar()->showMessage(
       historyPosition_ == lastPosition
@@ -2614,15 +2605,36 @@ void MainWindow::editSketchStep(std::size_t index) {
           .arg(index + 1));
 }
 
-void MainWindow::editExtrusionStep() {
-  if (!hasExtrusion_) return;
-  Body* body = document_.activeBody();
+void MainWindow::editSketchById(SketchId sketchId) {
+  const auto found = std::find_if(
+      sketchHistory_.begin(), sketchHistory_.end(), [sketchId](const auto& entry) {
+        return entry.documentSketchId == sketchId;
+      });
+  if (found != sketchHistory_.end())
+    editSketchStep(static_cast<std::size_t>(
+        std::distance(sketchHistory_.begin(), found)));
+}
+
+void MainWindow::editHistoryFeature(BodyId bodyId, FeatureId featureId) {
+  Body* body = document_.findBody(bodyId);
+  if (!body) return;
+  ShapeFeature* feature = findHistoryFeature(document_, bodyId, featureId);
+  if (dynamic_cast<ExtrudeFeature*>(feature)) editExtrusionStep(bodyId, featureId);
+  else if (dynamic_cast<PocketFeature*>(feature)) editPocketStep(bodyId, featureId);
+  else if (dynamic_cast<FilletFeature*>(feature)) editFilletStep(bodyId, featureId);
+  else if (dynamic_cast<ChamferFeature*>(feature)) editChamferStep(bodyId, featureId);
+  else if (feature) editPatternFeature(featureId);
+}
+
+void MainWindow::editExtrusionStep(BodyId bodyId, FeatureId featureId) {
+  Body* body = document_.findBody(bodyId);
   ExtrudeFeature* extrude = nullptr;
   std::size_t extrudeIndex = 0;
   if (body)
-    for (std::size_t index = body->features().size(); index-- > 0;)
+    for (std::size_t index = 0; index < body->features().size(); ++index)
       if (auto* candidate =
-              dynamic_cast<ExtrudeFeature*>(body->features()[index].get())) {
+              dynamic_cast<ExtrudeFeature*>(body->features()[index].get());
+          candidate && candidate->id() == featureId) {
         extrude = candidate;
         extrudeIndex = index;
         break;
@@ -2678,15 +2690,20 @@ void MainWindow::editExtrusionStep() {
     rebuildHistoryPanel();
   });
   refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
   statusBar()->showMessage(
       QString::fromUtf8("Выдавливание изменено: %1 мм").arg(height), 3000);
 }
 
-void MainWindow::editPocketStep() {
-  Body* body = document_.activeBody();
-  auto* pocket = body
-                     ? dynamic_cast<PocketFeature*>(body->activeFeature())
-                     : nullptr;
+void MainWindow::editPocketStep(BodyId bodyId, FeatureId featureId) {
+  Body* body = document_.findBody(bodyId);
+  PocketFeature* pocket = nullptr;
+  if (body)
+    for (const auto& candidate : body->features())
+      if (candidate->id() == featureId) {
+        pocket = dynamic_cast<PocketFeature*>(candidate.get()); break;
+      }
   if (!pocket) return;
   bool accepted = false;
   const double depth = QInputDialog::getDouble(
@@ -2716,11 +2733,14 @@ void MainWindow::editPocketStep() {
       QString::fromUtf8("Глубина кармана изменена: %1 мм").arg(depth), 3000);
 }
 
-void MainWindow::editFilletStep() {
-  Body* body = document_.activeBody();
-  auto* fillet = body
-                     ? dynamic_cast<FilletFeature*>(body->activeFeature())
-                     : nullptr;
+void MainWindow::editFilletStep(BodyId bodyId, FeatureId featureId) {
+  Body* body = document_.findBody(bodyId);
+  FilletFeature* fillet = nullptr;
+  if (body)
+    for (const auto& candidate : body->features())
+      if (candidate->id() == featureId) {
+        fillet = dynamic_cast<FilletFeature*>(candidate.get()); break;
+      }
   if (!fillet) return;
   const auto& features = body->features();
   if (features.size() < 2) return;
@@ -2749,11 +2769,14 @@ void MainWindow::editFilletStep() {
   viewport_->setSelectedBodyEdges(fillet->edges());
 }
 
-void MainWindow::editChamferStep() {
-  Body* body = document_.activeBody();
-  auto* chamfer = body
-                      ? dynamic_cast<ChamferFeature*>(body->activeFeature())
-                      : nullptr;
+void MainWindow::editChamferStep(BodyId bodyId, FeatureId featureId) {
+  Body* body = document_.findBody(bodyId);
+  ChamferFeature* chamfer = nullptr;
+  if (body)
+    for (const auto& candidate : body->features())
+      if (candidate->id() == featureId) {
+        chamfer = dynamic_cast<ChamferFeature*>(candidate.get()); break;
+      }
   if (!chamfer) return;
   const auto& features = body->features();
   if (features.size() < 2) return;

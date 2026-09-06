@@ -56,6 +56,11 @@ add_executable(model_ribbon_tests model_ribbon_tests.cpp)
 target_link_libraries(model_ribbon_tests PRIVATE solidar_editor Qt6::Widgets)
 add_test(NAME model_ribbon_tests COMMAND model_ribbon_tests)
 
+add_executable(part_design_history_ui_tests part_design_history_ui_tests.cpp)
+target_link_libraries(part_design_history_ui_tests
+  PRIVATE solidar_editor solidar_project Qt6::Widgets)
+add_test(NAME part_design_history_ui_tests COMMAND part_design_history_ui_tests)
+
 add_executable(sketch_regression_tests sketch_regression_tests.cpp)
 target_link_libraries(sketch_regression_tests PRIVATE solidar_model)
 add_test(NAME sketch_regression_tests COMMAND sketch_regression_tests)
@@ -198,6 +203,7 @@ set_property(TEST persistent_topology_tests
 set_tests_properties(
   editor_smoke_tests
   model_ribbon_tests
+  part_design_history_ui_tests
   PROPERTIES LABELS "ui-smoke"
 )
 
@@ -228,6 +234,7 @@ if(WIN32)
     project_file_tests
     editor_smoke_tests
     model_ribbon_tests
+    part_design_history_ui_tests
     sketch_regression_tests
     body_render_mesh_tests
     edge_selection_state_tests
