@@ -38,8 +38,10 @@ struct RenderEdge {
 // out of this cache, so mouse movement never invokes OCCT meshing.
 class BodyRenderMesh final {
  public:
-  void rebuild(const TopoDS_Shape& shape,
-               ViewportMeshQuality quality = ViewportMeshQuality::Normal);
+  // Preserve the original ABI for incrementally linked UI targets while the
+  // explicit overload carries the selectable viewport quality.
+  void rebuild(const TopoDS_Shape& shape);
+  void rebuild(const TopoDS_Shape& shape, ViewportMeshQuality quality);
   void clear() noexcept;
 
   [[nodiscard]] const std::vector<RenderTriangle>& triangles() const noexcept;

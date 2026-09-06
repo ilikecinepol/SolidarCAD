@@ -47,6 +47,10 @@ Vector3d normal(Point3d a, Point3d b, Point3d c, bool reversed) {
 
 }  // namespace
 
+void BodyRenderMesh::rebuild(const TopoDS_Shape& shape) {
+  rebuild(shape, ViewportMeshQuality::Normal);
+}
+
 void BodyRenderMesh::rebuild(const TopoDS_Shape& shape,
                              ViewportMeshQuality quality) {
   const auto started = std::chrono::steady_clock::now();
