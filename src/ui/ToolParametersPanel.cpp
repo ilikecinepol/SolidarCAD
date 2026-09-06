@@ -1,4 +1,5 @@
 #include "ui/ToolParametersPanel.h"
+#include "ui/PartDesignToolHelp.h"
 
 #include <QDoubleSpinBox>
 #include <QCheckBox>
@@ -20,6 +21,10 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   titleFont.setBold(true);
   titleFont.setPointSize(titleFont.pointSize() + 2);
   title_->setFont(titleFont);
+  description_ = new QLabel(this);
+  description_->setObjectName("toolDescription");
+  description_->setWordWrap(true);
+  description_->setStyleSheet(QStringLiteral("color:#607493;"));
   auto* form = new QFormLayout;
   selectionCaption_ = new QLabel(this);
   selectionValue_ = new QLabel(this);
@@ -50,6 +55,7 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   buttons->addWidget(cancel);
   buttons->addWidget(accept_);
   layout->addWidget(title_);
+  layout->addWidget(description_);
   layout->addLayout(form);
   layout->addWidget(status_);
   layout->addStretch();
@@ -76,6 +82,13 @@ void ToolParametersPanel::configure(const QString& title,
   parameter_->setSuffix(suffix);
   option_->hide();
 }
+void ToolParametersPanel::configure(const PartDesignToolHelp& help,
+                                    const QString& selectionName,
+                                    const QString& parameterName,
+                                    const QString& suffix) {
+  configure(help.title.toUpper(), selectionName, parameterName, suffix);
+  setDescription(help.shortDescription);
+}
 void ToolParametersPanel::setSelectionCount(std::size_t count) {
   selectionValue_->setText(QString::fromUtf8("%1 выбрано").arg(count));
 }
@@ -96,6 +109,13 @@ void ToolParametersPanel::setStatus(const QString& text, bool error) {
 }
 void ToolParametersPanel::setAcceptEnabled(bool enabled) {
   accept_->setEnabled(enabled);
+}
+void ToolParametersPanel::setDescription(const QString& text) {
+  description_->setText(text);
+}
+QString ToolParametersPanel::titleText() const { return title_->text(); }
+QString ToolParametersPanel::descriptionText() const {
+  return description_->text();
 }
 void ToolParametersPanel::configureOption(const QString& text, bool checked) {
   const QSignalBlocker blocker(option_);

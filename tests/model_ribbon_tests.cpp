@@ -9,6 +9,8 @@
 
 #include "ui/ModelRibbon.h"
 #include "ui/Viewport.h"
+#include "ui/ToolParametersPanel.h"
+#include "ui/PartDesignToolHelp.h"
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -39,6 +41,7 @@ int main(int argc, char** argv) {
   assert(!creation->findChild<QToolButton*>("filletCommand"));
 
   const auto commands = ribbon.findChildren<QToolButton*>();
+  int documentedCommands = 0;
   for (const auto* command : commands) {
     assert(command->text() != QStringLiteral("Top"));
     assert(command->text() != QStringLiteral("Front"));
@@ -46,11 +49,27 @@ int main(int argc, char** argv) {
     assert(command->text() != QStringLiteral("Bottom"));
     assert(command->text() != QStringLiteral("Back"));
     assert(command->text() != QStringLiteral("Left"));
+    if (!command->property("helpId").isValid()) continue;
+    ++documentedCommands;
+    assert(!command->toolTip().isEmpty());
+    assert(!command->accessibleName().isEmpty());
+    assert(!command->accessibleDescription().isEmpty());
   }
+  assert(documentedCommands == 12);
 
   assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
-  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
+  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 7);
   assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
+
+  solidar::ToolParametersPanel panel;
+  const auto* shellHelp = solidar::partDesignToolHelp(
+      solidar::PartDesignToolKind::Shell);
+  panel.configure(*shellHelp, QString::fromUtf8("Грани"),
+                  QString::fromUtf8("Толщина"), QStringLiteral(" mm"));
+  assert(panel.titleText() == shellHelp->title.toUpper());
+  assert(panel.descriptionText() == shellHelp->shortDescription);
+  panel.setStatus(QString::fromUtf8("Тестовая ошибка"), true);
+  assert(panel.descriptionText() == shellHelp->shortDescription);
 
   solidar::Viewport viewport;
   viewport.setSelectionFilter(solidar::SelectionFilter::Edge);

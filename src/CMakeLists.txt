@@ -124,6 +124,8 @@ add_library(solidar_viewport3d
   ui/EdgeSelectionState.h
   ui/ModelRibbon.cpp
   ui/ModelRibbon.h
+  ui/PartDesignToolHelp.cpp
+  ui/PartDesignToolHelp.h
   ui/Viewport.cpp
   ui/Viewport.h
   ui/ViewportPicking.cpp

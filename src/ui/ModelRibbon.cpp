@@ -1,4 +1,5 @@
 #include "ui/ModelRibbon.h"
+#include "ui/PartDesignToolHelp.h"
 
 #include <QFrame>
 #include <QButtonGroup>
@@ -12,10 +13,16 @@
 namespace solidar {
 namespace {
 
-QToolButton* commandButton(const QString& iconPath, const QString& text,
+QToolButton* commandButton(const QString& iconPath, const QString& commandId,
                            QWidget* parent) {
   auto* button = new QToolButton(parent);
-  button->setText(text);
+  const auto* help = modelCommandHelp(commandId);
+  Q_ASSERT(help);
+  button->setText(help->title);
+  button->setToolTip(help->detailedDescription);
+  button->setAccessibleName(help->title);
+  button->setAccessibleDescription(help->detailedDescription);
+  button->setProperty("helpId", commandId);
   button->setIcon(QIcon(iconPath));
   button->setIconSize(QSize(42, 42));
   button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
@@ -72,11 +79,11 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   root->setSpacing(8);
 
   auto* createSketch = commandButton(QStringLiteral(":/icons/create-sketch.png"),
-                                     QString::fromUtf8("Создать эскиз"), this);
+                                     QStringLiteral("createSketch"), this);
   auto* extrude = commandButton(QStringLiteral(":/icons/extrude.png"),
-                                QString::fromUtf8("Выдавливание"), this);
+                                QStringLiteral("extrude"), this);
   auto* revolve = commandButton(QStringLiteral(":/icons/revolve.png"),
-                                QString::fromUtf8("Инструмент вращения"), this);
+                                QStringLiteral("revolve"), this);
   createSketch->setObjectName("createSketchCommand");
   extrude->setObjectName("extrudeCommand");
   revolve->setObjectName("revolveCommand");
@@ -98,26 +105,31 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   root->addWidget(separator(this));
 
   auto* fillet = commandButton(QStringLiteral(":/icons/fillet.png"),
-                               QString::fromUtf8("Скругление"), this);
+                               QStringLiteral("fillet"), this);
   fillet->setObjectName("filletCommand");
   fillet->setCheckable(true);
   toolGroup_->addButton(fillet);
   auto* chamfer = commandButton(QStringLiteral(":/icons/fillet.png"),
-                                QString::fromUtf8("Фаска"), this);
+                                QStringLiteral("chamfer"), this);
   chamfer->setObjectName("chamferCommand");
   chamfer->setCheckable(true);
   toolGroup_->addButton(chamfer);
-  auto* shell = commandButton({}, QString::fromUtf8("Оболочка"), this);
-  auto* draft = commandButton({}, QString::fromUtf8("Уклон"), this);
+  auto* shell = commandButton({}, QStringLiteral("shell"), this);
+  auto* draft = commandButton({}, QStringLiteral("draft"), this);
+  shell->setObjectName("shellCommand");
+  draft->setObjectName("draftCommand");
   shell->setCheckable(true);
   draft->setCheckable(true);
   toolGroup_->addButton(shell);
   toolGroup_->addButton(draft);
-  auto* mirror = commandButton({}, QString::fromUtf8("Зеркало"), this);
+  auto* mirror = commandButton({}, QStringLiteral("mirror"), this);
   auto* linearPattern =
-      commandButton({}, QString::fromUtf8("Линейный массив"), this);
+      commandButton({}, QStringLiteral("linearPattern"), this);
   auto* circularPattern =
-      commandButton({}, QString::fromUtf8("Круговой массив"), this);
+      commandButton({}, QStringLiteral("circularPattern"), this);
+  mirror->setObjectName("mirrorCommand");
+  linearPattern->setObjectName("linearPatternCommand");
+  circularPattern->setObjectName("circularPatternCommand");
   mirror->setCheckable(true);
   linearPattern->setCheckable(true);
   circularPattern->setCheckable(true);
@@ -134,13 +146,14 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   editing->addWidget(linearPattern);
   editing->addWidget(circularPattern);
   root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
-                        {fillet, chamfer}));
+                        {fillet, chamfer, shell, draft, mirror, linearPattern,
+                         circularPattern}));
   root->addWidget(separator(this));
 
   auto* views = new QHBoxLayout;
   views->setSpacing(3);
-  auto* fit = commandButton({}, QStringLiteral("Fit"), this);
-  auto* iso = commandButton({}, QStringLiteral("ISO"), this);
+  auto* fit = commandButton({}, QStringLiteral("fit"), this);
+  auto* iso = commandButton({}, QStringLiteral("iso"), this);
   fit->setObjectName("fitCommand");
   iso->setObjectName("isoCommand");
   fit->setMinimumSize(58, 56);

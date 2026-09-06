@@ -7,6 +7,7 @@
 #include "model/ShellFeature.h"
 #include "model/DraftFeature.h"
 #include "ui/ToolParametersPanel.h"
+#include "ui/PartDesignToolHelp.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/MirrorFeature.h"
@@ -354,6 +355,11 @@ void MainWindow::buildUi() {
   auto* extrusionPanelLayout = new QVBoxLayout(extrusionPanel);
   extrusionPanelLayout->setContentsMargins(16, 14, 16, 14);
   extrusionPanelLayout->setSpacing(12);
+  const auto* extrudeHelp = partDesignToolHelp(PartDesignToolKind::Extrude);
+  auto* extrusionDescription = new QLabel(extrudeHelp->shortDescription,
+                                          extrusionPanel);
+  extrusionDescription->setWordWrap(true);
+  extrusionDescription->setStyleSheet("color:#607493;");
   auto* extrusionHint = new QLabel(QString::fromUtf8(
       "Потяните синюю стрелку в 3D-виде или введите точное значение."),
       extrusionPanel);
@@ -385,6 +391,7 @@ void MainWindow::buildUi() {
       "padding:8px 14px;font-weight:600;} QPushButton:hover{background:#0665dc;}");
   extrusionButtons->addWidget(cancelExtrusion);
   extrusionButtons->addWidget(acceptExtrusion);
+  extrusionPanelLayout->addWidget(extrusionDescription);
   extrusionPanelLayout->addWidget(extrusionHint);
   extrusionPanelLayout->addLayout(extrusionForm);
   extrusionPanelLayout->addStretch();
@@ -394,14 +401,22 @@ void MainWindow::buildUi() {
   addDockWidget(Qt::RightDockWidgetArea, extrusionDock_);
   extrusionDock_->hide();
 
-  revolveDock_ = new QDockWidget(QString::fromUtf8("Инструмент вращения"), this);
+  revolveDock_ = new QDockWidget(QString::fromUtf8("Вращение"), this);
   revolveDock_->setAllowedAreas(Qt::RightDockWidgetArea);
   revolveDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
   auto* revolvePanel = new QWidget(revolveDock_);
   auto* revolveLayout = new QVBoxLayout(revolvePanel);
-  auto* revolveTitle = new QLabel(QString::fromUtf8("ИНСТРУМЕНТ ВРАЩЕНИЯ"), revolvePanel);
+  const auto* revolveHelp = partDesignToolHelp(PartDesignToolKind::Revolve);
+  auto* revolveTitle = new QLabel(revolveHelp->title.toUpper(), revolvePanel);
   QFont revolveTitleFont = revolveTitle->font();
   revolveTitleFont.setBold(true); revolveTitle->setFont(revolveTitleFont);
+  auto* revolveDescription = new QLabel(revolveHelp->shortDescription,
+                                        revolvePanel);
+  revolveDescription->setWordWrap(true);
+  revolveDescription->setStyleSheet("color:#607493;");
+  revolveStepHint_ = new QLabel(revolveHelp->selectionHint, revolvePanel);
+  revolveStepHint_->setObjectName("revolveStepHint");
+  revolveStepHint_->setWordWrap(true);
   auto* revolveForm = new QFormLayout;
   revolveProfileCombo_ = new QComboBox(revolvePanel);
   revolveAxisCombo_ = new QComboBox(revolvePanel);
@@ -440,7 +455,9 @@ void MainWindow::buildUi() {
   revolveButtons->addWidget(cancelRevolve);
   revolveButtons->addWidget(revolveAcceptButton_);
   revolveLayout->addWidget(revolveTitle);
+  revolveLayout->addWidget(revolveDescription);
   revolveLayout->addLayout(revolveForm);
+  revolveLayout->addWidget(revolveStepHint_);
   revolveLayout->addStretch();
   revolveLayout->addLayout(revolveButtons);
   revolveDock_->setWidget(revolvePanel);
@@ -526,7 +543,7 @@ void MainWindow::buildUi() {
   toolParametersDock_->setAllowedAreas(Qt::RightDockWidgetArea);
   toolParametersDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
   toolParametersPanel_ = new ToolParametersPanel(toolParametersDock_);
-  toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Fillet),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
@@ -1664,8 +1681,19 @@ void MainWindow::updateRevolveToolPreview() {
     viewport_->setAngularToolManipulator(*manipulator);
   else
     viewport_->clearToolManipulator();
-  if (revolveToolSession_.lifecycle() == ToolLifecycle::PreviewInvalid)
+  if (revolveToolSession_.lifecycle() == ToolLifecycle::PreviewInvalid) {
+    revolveStepHint_->setText(QString::fromStdString(revolveToolSession_.error()));
+    revolveStepHint_->setStyleSheet(QStringLiteral("color:#c62828;"));
     statusBar()->showMessage(QString::fromStdString(revolveToolSession_.error()));
+  } else {
+    const QString hint = valid
+        ? partDesignToolStepHint(PartDesignToolKind::Revolve,
+                                 ToolSelectionStage::EditingParameters)
+        : partDesignToolStepHint(PartDesignToolKind::Revolve,
+                                 revolveToolSession_.selectionStage());
+    revolveStepHint_->setText(QString::fromUtf8("Сейчас: ") + hint);
+    revolveStepHint_->setStyleSheet(QStringLiteral("color:#607493;"));
+  }
 }
 
 void MainWindow::cancelRevolveTool() {
@@ -1793,7 +1821,7 @@ void MainWindow::createFillet() {
   viewport_->setEdgeMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Edge);
   viewport_->setSelectedBodyEdges(edges);
-  toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Fillet),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
@@ -1871,7 +1899,7 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         viewport_->setFaceMultiSelectionMode(true);
         viewport_->setSelectionFilter(SelectionFilter::Face);
         viewport_->setSelectedBodyFaces(shell->removedFaces());
-        toolParametersPanel_->configure(QString::fromUtf8("ОБОЛОЧКА"),
+        toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Shell),
             QString::fromUtf8("Удаляемые грани"), QString::fromUtf8("Толщина"),
             QStringLiteral(" mm"));
         toolParametersPanel_->setParameterRange(0.01, 100000.0, 2);
@@ -1893,7 +1921,7 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         viewport_->setFaceMultiSelectionMode(true);
         viewport_->setSelectionFilter(SelectionFilter::Face);
         viewport_->setSelectedBodyFaces(draft->draftedFaces());
-        toolParametersPanel_->configure(QString::fromUtf8("УКЛОН"),
+        toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Draft),
             QString::fromUtf8("Грани"), QString::fromUtf8("Угол"),
             QString::fromUtf8("°"));
         toolParametersPanel_->setParameterRange(0.01, 89.0, 2);
@@ -2044,7 +2072,7 @@ void MainWindow::createChamfer() {
   viewport_->setEdgeMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Edge);
   viewport_->setSelectedBodyEdges(edges);
-  toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Chamfer),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
                                   QStringLiteral(" mm"));
@@ -2070,7 +2098,7 @@ void MainWindow::createShell() {
   viewport_->setFaceMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Face);
   viewport_->setSelectedBodyFaces(faces);
-  toolParametersPanel_->configure(QString::fromUtf8("ОБОЛОЧКА"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Shell),
                                   QString::fromUtf8("Удаляемые грани"),
                                   QString::fromUtf8("Толщина"),
                                   QStringLiteral(" mm"));
@@ -2091,7 +2119,8 @@ void MainWindow::updateShellToolPreview() {
   toolParametersPanel_->setStatus(
       valid ? QString::fromUtf8("Предпросмотр построен")
             : state == ToolLifecycle::SelectingInput
-                  ? QString::fromUtf8("Выберите открываемые грани")
+                  ? partDesignToolStepHint(PartDesignToolKind::Shell,
+                                           ToolSelectionStage::SelectingInput)
                   : QString::fromStdString(shellToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
   if (valid)
@@ -2174,7 +2203,7 @@ void MainWindow::createDraft() {
   viewport_->setFaceMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Face);
   viewport_->setSelectedBodyFaces(faces);
-  toolParametersPanel_->configure(QString::fromUtf8("УКЛОН"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Draft),
                                   QString::fromUtf8("Грани"),
                                   QString::fromUtf8("Угол"),
                                   QString::fromUtf8("°"));
@@ -2195,7 +2224,8 @@ void MainWindow::updateDraftToolPreview() {
   toolParametersPanel_->setStatus(
       valid ? QString::fromUtf8("Предпросмотр построен · плоскость XY · направление Z")
             : state == ToolLifecycle::SelectingInput
-                  ? QString::fromUtf8("Выберите грани для уклона")
+                  ? partDesignToolStepHint(PartDesignToolKind::Draft,
+                                           ToolSelectionStage::SelectingInput)
                   : QString::fromStdString(draftToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
   if (valid)
@@ -2274,7 +2304,8 @@ void MainWindow::updateChamferToolPreview() {
   toolParametersPanel_->setStatus(
       valid ? QString::fromUtf8("Предпросмотр построен")
             : state == ToolLifecycle::SelectingInput
-                  ? QString::fromUtf8("Выберите рёбра для фаски")
+                  ? partDesignToolStepHint(PartDesignToolKind::Chamfer,
+                                           ToolSelectionStage::SelectingInput)
                   : QString::fromStdString(chamferToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
   if (valid)
@@ -2361,7 +2392,8 @@ void MainWindow::updateFilletToolPreview() {
   toolParametersPanel_->setStatus(
       valid ? QString::fromUtf8("Предпросмотр построен")
             : state == ToolLifecycle::SelectingInput
-                  ? QString::fromUtf8("Выберите рёбра для скругления")
+                  ? partDesignToolStepHint(PartDesignToolKind::Fillet,
+                                           ToolSelectionStage::SelectingInput)
                   : QString::fromStdString(filletToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
   if (valid)
@@ -2706,7 +2738,7 @@ void MainWindow::editFilletStep() {
                            fillet->edges(), fillet->radiusMm(), fillet->id());
   viewport_->setEdgeMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Edge);
-  toolParametersPanel_->configure(QString::fromUtf8("СКРУГЛЕНИЕ"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Fillet),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
@@ -2740,7 +2772,7 @@ void MainWindow::editChamferStep() {
                             chamfer->id());
   viewport_->setEdgeMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Edge);
-  toolParametersPanel_->configure(QString::fromUtf8("ФАСКА"),
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Chamfer),
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
                                   QStringLiteral(" mm"));

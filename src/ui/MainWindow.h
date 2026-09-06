@@ -24,6 +24,7 @@ class QDoubleSpinBox;
 class QPushButton;
 class QComboBox;
 class QCheckBox;
+class QLabel;
 class QTreeWidget;
 
 namespace solidar {
@@ -134,6 +135,7 @@ class MainWindow final : public QMainWindow {
   QComboBox* revolveOperationCombo_{nullptr};
   QCheckBox* revolveReverseCheck_{nullptr};
   QPushButton* revolveAcceptButton_{nullptr};
+  QLabel* revolveStepHint_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
   QCheckBox* extrusionReverseCheck_{nullptr};

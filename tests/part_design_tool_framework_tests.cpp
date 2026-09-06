@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "ui/tools/PartDesignToolController.h"
+#include "ui/PartDesignToolHelp.h"
 
 namespace {
 #define CHECK(condition)                                                        \
@@ -35,11 +36,20 @@ class FakeSession final : public solidar::ToolSession {
 
 int main() {
   const auto& definitions = solidar::standardPartDesignToolDefinitions();
-  CHECK(definitions.size() == 8);
+  CHECK(definitions.size() == 10);
   for (const auto& definition : definitions) {
     CHECK(definition.kind != solidar::PartDesignToolKind::None);
     CHECK(!definition.selections.empty());
+    const auto* help = solidar::partDesignToolHelp(definition.kind);
+    CHECK(help != nullptr);
+    CHECK(!help->title.isEmpty());
+    CHECK(!help->detailedDescription.isEmpty());
   }
+  CHECK(solidar::partDesignToolStepHint(
+            solidar::PartDesignToolKind::Revolve,
+            solidar::ToolSelectionStage::SelectingInput) ==
+        solidar::partDesignToolHelp(
+            solidar::PartDesignToolKind::Revolve)->selectionHint);
   solidar::PartDesignToolController controller;
   FakeSession revolve;
   FakeSession fillet;
