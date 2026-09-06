@@ -13,6 +13,7 @@
 #include "model/SolidFeature.h"
 #include "sketch/Sketch.h"
 #include "ui/BodyRenderMesh.h"
+#include "ui/ManipulatorLayout.h"
 #include "ui/ViewportRenderer.h"
 #include "model/ToolSession.h"
 

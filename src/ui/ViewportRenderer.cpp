@@ -1,4 +1,5 @@
 #include "ui/ViewportRenderer.h"
+#include "ui/ViewportCamera.h"
 
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -53,9 +54,11 @@ const char* surfaceFragmentShader = R"(
   out vec4 color;
   void main() {
     vec3 n = normalize(vNormal);
-    vec3 light = normalize(vec3(0.28, -0.42, 0.86));
-    float diffuse = max(dot(n, light), 0.0);
-    float specular = pow(max(dot(reflect(-light, n), vec3(0, 0, 1)), 0.0), 28.0);
+    vec3 key = normalize(vec3(0.28, -0.42, 0.86));
+    vec3 fill = normalize(vec3(-0.55, 0.30, 0.48));
+    float diffuse = max(dot(n, key), 0.0);
+    float fillDiffuse = max(dot(n, fill), 0.0);
+    float specular = pow(max(dot(reflect(-key, n), vec3(0, 0, 1)), 0.0), 32.0);
     vec3 base = uPreview ? vec3(0.73, 0.82, 0.92) : vec3(0.72, 0.77, 0.83);
     bool selected = false;
     for (int i = 0; i < uSelectedCount; ++i)
@@ -63,7 +66,8 @@ const char* surfaceFragmentShader = R"(
     if (selected) base = mix(base, vec3(0.10, 0.43, 0.94), 0.58);
     else if (vFaceIndex == uHoveredFace)
       base = mix(base, vec3(0.25, 0.65, 1.0), 0.38);
-    color = vec4(base * (0.48 + 0.45 * diffuse) + vec3(0.16 * specular), 1.0);
+    color = vec4(base * (0.46 + 0.38 * diffuse + 0.16 * fillDiffuse) +
+                 vec3(0.10 * specular), 1.0);
   })";
 
 const char* edgeVertexShader = R"(
@@ -233,33 +237,9 @@ bool ViewportRenderer::upload(GpuMesh& gpu, const BodyRenderMesh& mesh) {
 QMatrix4x4 ViewportRenderer::projectionMatrix(
     const QSize& size, float yawDeg, float pitchDeg, float zoom, QPointF pan,
     double depthExtent, Point3d center) {
-  const double w = std::max(1, size.width());
-  const double h = std::max(1, size.height());
-  const double scale = std::min(w, h) * 0.008 * zoom;
-  const double yaw = yawDeg * std::numbers::pi / 180.0;
-  const double pitch = pitchDeg * std::numbers::pi / 180.0;
-  const double cy = std::cos(yaw), sy = std::sin(yaw);
-  const double cp = std::cos(pitch), sp = std::sin(pitch);
-  const double sx = 2.0 * scale / w;
-  const double syScreen = -2.0 * scale / h;
-  const double dz = std::max(1.0, depthExtent);
-  QMatrix4x4 m;
-  m.fill(0.0F);
-  m(0, 0) = static_cast<float>(sx * cy);
-  m(0, 1) = static_cast<float>(-sx * sy);
-  m(0, 3) = static_cast<float>(2.0 * pan.x() / w);
-  m(1, 0) = static_cast<float>(syScreen * sy * cp);
-  m(1, 1) = static_cast<float>(syScreen * cy * cp);
-  m(1, 2) = static_cast<float>(-syScreen * sp);
-  m(1, 3) = static_cast<float>(-0.04 - 2.0 * pan.y() / h);
-  m(2, 0) = static_cast<float>(-sy * sp / dz);
-  m(2, 1) = static_cast<float>(-cy * sp / dz);
-  m(2, 2) = static_cast<float>(-cp / dz);
-  const double centerDepth =
-      (center.x * sy + center.y * cy) * sp + center.z * cp;
-  m(2, 3) = static_cast<float>(centerDepth / dz);
-  m(3, 3) = 1.0F;
-  return m;
+  return ViewportCameraState{yawDeg, pitchDeg, zoom, pan, size, 1.0F, center,
+                             depthExtent}
+      .worldToClip();
 }
 
 void ViewportRenderer::drawSurfaces(
@@ -325,16 +305,29 @@ void ViewportRenderer::render(
   if (!initialized_ && !initialize()) return;
   upload(*source_, source);
   if (preview) upload(*preview_, *preview);
-  const BodyRenderMesh& visible = preview ? *preview : source;
   GpuMesh& gpu = preview ? *preview_ : *source_;
+  const auto depthRange = ViewportDepthRange::combined(
+      source.center(), source.diagonal(),
+      preview ? preview->center() : source.center(),
+      preview ? preview->diagonal() : source.diagonal(), preview != nullptr);
   const auto matrix = projectionMatrix(logicalSize, yawDeg, pitchDeg, zoom, pan,
-                                       std::max(visible.diagonal(), 1.0),
-                                       source.center());
+                                       depthRange.extent, depthRange.center);
   auto* gl = QOpenGLContext::currentContext()->functions();
+  const int pixelWidth = std::max(1, static_cast<int>(logicalSize.width() * dpr));
+  const int pixelHeight = std::max(1, static_cast<int>(logicalSize.height() * dpr));
+  gl->glViewport(0, 0, pixelWidth, pixelHeight);
   gl->glEnable(GL_DEPTH_TEST);
   gl->glDepthFunc(GL_LEQUAL);
-  gl->glEnable(GL_MULTISAMPLE);
+  gl->glDepthMask(GL_TRUE);
+  gl->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  gl->glDisable(GL_CULL_FACE);
+  gl->glDisable(GL_SCISSOR_TEST);
+  gl->glDisable(GL_STENCIL_TEST);
   gl->glDisable(GL_BLEND);
+  if (QOpenGLContext::currentContext()->format().samples() > 0)
+    gl->glEnable(GL_MULTISAMPLE);
+  else
+    gl->glDisable(GL_MULTISAMPLE);
   gl->glClearDepthf(1.0F);
   gl->glClear(GL_DEPTH_BUFFER_BIT);
   if (mode != ViewportDisplayMode::Wireframe) {
@@ -356,6 +349,11 @@ void ViewportRenderer::render(
            (!selectedEdges.empty() || hoveredEdge != std::size_t(-1)))
     drawEdges(*source_, matrix, selectedEdges, hoveredEdge, false, dpr);
   gl->glLineWidth(1.0F);
+  gl->glDisable(GL_POLYGON_OFFSET_FILL);
+  gl->glDisable(GL_DEPTH_TEST);
+  gl->glDisable(GL_MULTISAMPLE);
+  gl->glDepthMask(GL_TRUE);
+  gl->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }
 
 }  // namespace solidar

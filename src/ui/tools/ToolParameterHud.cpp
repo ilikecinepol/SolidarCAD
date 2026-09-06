@@ -42,7 +42,9 @@ void ToolParameterHud::setParameters(
     editor->setObjectName(QString::fromStdString(parameter.id));
     editor->setRange(parameter.minimum, parameter.maximum);
     editor->setSingleStep(parameter.step);
-    editor->setDecimals(parameter.type == ToolParameterType::Integer ? 0 : 2);
+    editor->setDecimals(parameter.type == ToolParameterType::Integer
+                            ? 0
+                            : parameter.type == ToolParameterType::Angle ? 1 : 2);
     editor->setSuffix(parameter.unit.empty()
                           ? QString{}
                           : QStringLiteral(" ") + QString::fromStdString(parameter.unit));

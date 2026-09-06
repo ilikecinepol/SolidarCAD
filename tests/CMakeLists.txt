@@ -86,6 +86,10 @@ add_executable(viewport_renderer_tests viewport_renderer_tests.cpp)
 target_link_libraries(viewport_renderer_tests PRIVATE solidar_viewport3d)
 add_test(NAME viewport_renderer_tests COMMAND viewport_renderer_tests)
 
+add_executable(viewport_ux_polish_tests viewport_ux_polish_tests.cpp)
+target_link_libraries(viewport_ux_polish_tests PRIVATE solidar_viewport3d)
+add_test(NAME viewport_ux_polish_tests COMMAND viewport_ux_polish_tests)
+
 add_executable(edge_selection_state_tests edge_selection_state_tests.cpp)
 target_link_libraries(edge_selection_state_tests PRIVATE solidar_viewport3d)
 add_test(NAME edge_selection_state_tests COMMAND edge_selection_state_tests)
@@ -185,6 +189,7 @@ set_tests_properties(
   body_render_mesh_tests
   body_render_mesh_normals_tests
   viewport_renderer_tests
+  viewport_ux_polish_tests
   edge_selection_state_tests
   viewport_picking_tests
   viewport_manipulator_tests
@@ -203,6 +208,7 @@ set_tests_properties(
   sketch_regression_tests
   body_render_mesh_normals_tests
   viewport_renderer_tests
+  viewport_ux_polish_tests
   fillet_feature_tests
   chamfer_feature_tests
   revolve_feature_tests
@@ -272,6 +278,7 @@ if(WIN32)
     body_render_mesh_tests
     body_render_mesh_normals_tests
     viewport_renderer_tests
+    viewport_ux_polish_tests
     edge_selection_state_tests
     viewport_picking_tests
     viewport_manipulator_tests

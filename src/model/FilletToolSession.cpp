@@ -9,6 +9,7 @@
 #include <cmath>
 
 #include "model/FilletBuilder.h"
+#include "model/EdgeManipulatorGeometry.h"
 #include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
@@ -115,21 +116,10 @@ std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
     const auto edge =
         resolveEdgeReference(*baseShape_, edges_.front().topology());
     if (!edge) return std::nullopt;
-    BRepAdaptor_Curve curve(*edge.subshape);
-    const double parameter =
-        (curve.FirstParameter() + curve.LastParameter()) * 0.5;
-    const gp_Pnt point = curve.Value(parameter);
-    // A stable radial-looking direction is sufficient for a distance handle.
-    Vector3d direction{point.X(), point.Y(), 0.0};
-    double length = std::hypot(direction.x, direction.y);
-    if (length < 1e-8) {
-      direction = {0.0, 0.0, 1.0};
-    } else {
-      direction.x /= length;
-      direction.y /= length;
-    }
-    return LinearToolManipulator{{point.X(), point.Y(), point.Z()}, direction,
-                                 radiusMm_};
+    const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
+    if (!geometry) return std::nullopt;
+    return LinearToolManipulator{geometry->midpoint,
+                                 geometry->outwardDirection, radiusMm_};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {

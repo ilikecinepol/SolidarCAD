@@ -68,3 +68,28 @@ Before release, perform the manual GPU gate on both Windows and Ubuntu:
 - orbit, zoom, pan, resize, Fit, ISO, timeline scrub, delete, and Undo;
 - verify HUD alignment at 100%, 125%, 150%, and 200% display scaling;
 - compare Normal and High quality and confirm no remesh during camera movement.
+
+## Viewport & Tool UX Polish manual recipe
+
+Use a real GPU context at 100%, 125%, 150%, and 200% display scaling. Run each
+scene in Shaded, Shaded with Edges, and Wireframe, orbiting through two complete
+turns and pitching from -85 to +85 degrees while a preview is active:
+
+1. Rectangle Sketch -> Extrude -> Fillet two edges -> Chamfer other edges ->
+   Sketch-on-Face -> Extrude -> Shell.
+2. Closed Sketch -> Revolve; drag through 30, 90, 180, and 360 degrees.
+3. Extrude -> Linear Pattern -> Circular Pattern -> Mirror.
+
+For Extrude, Pocket, Revolve, Fillet, Chamfer, Mirror, Linear Pattern, Circular
+Pattern, Shell, and Draft verify mouse selection, hover, retained input
+highlight, preview material, visible handle/HUD, panel synchronisation, numeric
+Enter, HUD Escape, tool Cancel, Tab traversal, Apply, edit-existing, orbit and
+zoom. No handle may be hidden by the opaque body or orientation cube. Invalid
+input must leave the tool recoverable and must never display a broken mesh.
+
+The automated `viewport_ux_polish_tests` gate covers camera matrix agreement,
+combined source/preview depth safety across representative yaw/pitch extremes,
+DPI-independent logical layout, body and overlay avoidance, visual sign
+selection, expanded angular radius, and translation-invariant local edge
+directions. Pixel-perfect rendering and driver-specific flicker remain manual
+GPU checks.
