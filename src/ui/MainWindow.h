@@ -9,6 +9,8 @@
 #include "model/ChamferToolSession.h"
 #include "model/FilletToolSession.h"
 #include "model/RevolveToolSession.h"
+#include "model/ShellToolSession.h"
+#include "model/DraftToolSession.h"
 #include "ui/tools/PartDesignToolController.h"
 #include "sketch/Sketch.h"
 
@@ -71,6 +73,14 @@ class MainWindow final : public QMainWindow {
   void updateChamferToolPreview();
   void acceptChamferTool();
   void cancelChamferTool();
+  void createShell();
+  void updateShellToolPreview();
+  void acceptShellTool();
+  void cancelShellTool();
+  void createDraft();
+  void updateDraftToolPreview();
+  void acceptDraftTool();
+  void cancelDraftTool();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
@@ -113,6 +123,8 @@ class MainWindow final : public QMainWindow {
   ToolParametersPanel* toolParametersPanel_{nullptr};
   FilletToolSession filletToolSession_;
   ChamferToolSession chamferToolSession_;
+  ShellToolSession shellToolSession_;
+  DraftToolSession draftToolSession_;
   RevolveToolSession revolveToolSession_;
   PartDesignToolController partDesignTools_;
   QDockWidget* revolveDock_{nullptr};

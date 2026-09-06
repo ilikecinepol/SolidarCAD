@@ -19,7 +19,9 @@ enum class PartDesignToolKind {
   Chamfer,
   Mirror,
   LinearPattern,
-  CircularPattern
+  CircularPattern,
+  Shell,
+  Draft
 };
 
 enum class SelectionType {

@@ -22,6 +22,8 @@ ctest --preset ci -L compliance
 | Pocket | `pocket_feature_tests`, `parametric_feature_chain_tests` | Yes | Added parameter editing inside the unified workflow. |
 | Fillet | `fillet_feature_tests`, `parametric_feature_chain_tests` | Mostly | Added unified workflow, OCCT Error-to-recovery and round-trip checks. |
 | Chamfer | `chamfer_feature_tests`, `part_design_regression_tests` | Yes | Covers one/multiple edges, live preview, parameter edits, topology resolution, Error-to-recovery and v2 round-trip. |
+| Shell | `shell_feature_tests` | Yes | Covers persistent removed faces, inside/outside thickness, live linear manipulator, invalid-thickness recovery, stable FeatureId and save/load rebuild. |
+| Draft | `draft_feature_tests` | Yes | Covers persistent drafted faces, neutral plane and pull direction, angle/reversal, live angular manipulator, Error-to-recovery and save/load rebuild. |
 | Revolve | `revolve_feature_tests` | Mostly | Added a second Body to the unified workflow, parameter editing and round-trip checks. |
 | Cascading recompute | `document_tests`, `parametric_feature_chain_tests` | Partial | Added real B-Rep change, state and ID invariants across the complete Part Design body. |
 | Project save/load and v1 compatibility | `project_file_tests` | Partial | Existing v1 loading remains; the E2E persists and rebuilds Extrude/Pocket/Fillet/Chamfer/Revolve history. |

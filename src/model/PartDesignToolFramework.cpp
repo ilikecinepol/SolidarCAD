@@ -48,7 +48,22 @@ standardPartDesignToolDefinitions() {
        {distance("spacing", "Spacing"), count()}},
       {PartDesignToolKind::CircularPattern,
        {one(SelectionType::Feature, "Select source"),
-        one(SelectionType::Axis, "Select axis")}, {angle(), count()}}};
+        one(SelectionType::Axis, "Select axis")}, {angle(), count()}},
+      {PartDesignToolKind::Shell,
+         {{SelectionType::Face, "Select faces to remove", 1,
+           std::numeric_limits<std::size_t>::max(), true}},
+         {distance("thickness", "Thickness"),
+          {"outside", "Direction", ToolParameterType::Boolean, false, 0.0,
+           1.0, 1.0, {}, false, ToolManipulatorType::None}}},
+      {PartDesignToolKind::Draft,
+         {{SelectionType::Face, "Select faces", 1,
+           std::numeric_limits<std::size_t>::max(), true},
+          one(SelectionType::Plane, "Select neutral plane"),
+          one(SelectionType::Axis, "Select pull direction")},
+         {{"angle", "Angle", ToolParameterType::Angle, 5.0, 0.01, 89.0,
+          0.5, "deg", true, ToolManipulatorType::Angular},
+          {"reversed", "Reverse", ToolParameterType::Boolean, false, 0.0,
+           1.0, 1.0, {}, false, ToolManipulatorType::None}}}};
   return definitions;
 }
 

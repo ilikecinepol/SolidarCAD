@@ -76,6 +76,10 @@ class Viewport final : public QWidget {
   [[nodiscard]] QString selectedFaceName() const;
   [[nodiscard]] std::optional<std::size_t> selectedBodyFaceIndex() const noexcept;
   [[nodiscard]] std::optional<FaceReference> selectedBodyFace() const noexcept;
+  [[nodiscard]] std::vector<FaceReference> selectedBodyFaces() const;
+  void setSelectedBodyFaces(const std::vector<FaceReference>& faces);
+  void setFaceMultiSelectionMode(bool enabled) noexcept;
+  [[nodiscard]] bool faceMultiSelectionMode() const noexcept;
   [[nodiscard]] std::optional<EdgeReference> selectedBodyEdge() const noexcept;
   [[nodiscard]] std::vector<EdgeReference> selectedBodyEdges() const;
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
@@ -120,6 +124,7 @@ class Viewport final : public QWidget {
   void extrusionPreviewLengthChanged(double lengthMm);
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
+  void bodyFaceSelectionChanged();
   void toolManipulatorValueChanged(double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
@@ -144,6 +149,8 @@ class Viewport final : public QWidget {
   void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
                           bool clearSelection);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(
+      std::size_t index) const noexcept;
+  [[nodiscard]] std::optional<FaceReference> faceReferenceForGlobalIndex(
       std::size_t index) const noexcept;
   enum class PickMode { None, SketchPlane, ExtrusionSurface, RevolveAxis };
   BoxParameters box_;
@@ -184,6 +191,9 @@ class Viewport final : public QWidget {
   bool basePlanesVisible_[3]{false, false, false};
   PickMode pickMode_{PickMode::None};
   int selectedFace_{-1};
+  std::vector<std::size_t> selectedBodyFaceIndices_;
+  std::vector<FaceReference> selectedBodyFaceReferences_;
+  bool faceMultiSelectionMode_{false};
   std::size_t hoveredBodyFaceIndex_{static_cast<std::size_t>(-1)};
   std::size_t hoveredBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};

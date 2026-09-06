@@ -57,6 +57,7 @@ struct FaceReference {
     result.faceSignature = signature;
     return result;
   }
+  friend bool operator==(const FaceReference&, const FaceReference&) = default;
 };
 
 struct EdgeReference {

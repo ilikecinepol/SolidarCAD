@@ -107,6 +107,12 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   chamfer->setObjectName("chamferCommand");
   chamfer->setCheckable(true);
   toolGroup_->addButton(chamfer);
+  auto* shell = commandButton({}, QString::fromUtf8("Оболочка"), this);
+  auto* draft = commandButton({}, QString::fromUtf8("Уклон"), this);
+  shell->setCheckable(true);
+  draft->setCheckable(true);
+  toolGroup_->addButton(shell);
+  toolGroup_->addButton(draft);
   auto* mirror = commandButton({}, QString::fromUtf8("Зеркало"), this);
   auto* linearPattern =
       commandButton({}, QString::fromUtf8("Линейный массив"), this);
@@ -122,6 +128,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   editing->setSpacing(5);
   editing->addWidget(fillet);
   editing->addWidget(chamfer);
+  editing->addWidget(shell);
+  editing->addWidget(draft);
   editing->addWidget(mirror);
   editing->addWidget(linearPattern);
   editing->addWidget(circularPattern);
@@ -151,6 +159,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::filletRequested);
   connect(chamfer, &QToolButton::clicked, this,
           &ModelRibbon::chamferRequested);
+  connect(shell, &QToolButton::clicked, this, &ModelRibbon::shellRequested);
+  connect(draft, &QToolButton::clicked, this, &ModelRibbon::draftRequested);
   connect(mirror, &QToolButton::clicked, this, &ModelRibbon::mirrorRequested);
   connect(linearPattern, &QToolButton::clicked, this,
           &ModelRibbon::linearPatternRequested);

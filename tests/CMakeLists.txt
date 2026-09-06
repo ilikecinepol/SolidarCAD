@@ -115,6 +115,14 @@ target_link_libraries(downstream_feature_preservation_tests
 add_test(NAME downstream_feature_preservation_tests
          COMMAND downstream_feature_preservation_tests)
 
+add_executable(shell_feature_tests shell_feature_tests.cpp)
+target_link_libraries(shell_feature_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME shell_feature_tests COMMAND shell_feature_tests)
+
+add_executable(draft_feature_tests draft_feature_tests.cpp)
+target_link_libraries(draft_feature_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME draft_feature_tests COMMAND draft_feature_tests)
+
 add_executable(parametric_history_tests parametric_history_tests.cpp)
 target_link_libraries(parametric_history_tests PRIVATE solidar_model)
 add_test(NAME parametric_history_tests COMMAND parametric_history_tests)
@@ -172,6 +180,8 @@ set_tests_properties(
   parametric_feature_chain_tests
   part_design_regression_tests
   downstream_feature_preservation_tests
+  shell_feature_tests
+  draft_feature_tests
   parametric_history_tests
   persistent_topology_tests
   mirror_feature_tests
@@ -230,6 +240,8 @@ if(WIN32)
     parametric_feature_chain_tests
     part_design_regression_tests
     downstream_feature_preservation_tests
+    shell_feature_tests
+    draft_feature_tests
     parametric_history_tests
     persistent_topology_tests
     mirror_feature_tests

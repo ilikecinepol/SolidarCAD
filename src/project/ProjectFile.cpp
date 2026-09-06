@@ -18,6 +18,8 @@
 #include "model/MirrorFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/CircularPatternFeature.h"
+#include "model/DraftFeature.h"
+#include "model/ShellFeature.h"
 
 namespace solidar::project {
 namespace {
@@ -108,6 +110,27 @@ std::optional<EdgeSignature> readEdgeSignature(const QJsonValue& value) {
   result.bounds = readTopologyBounds(object.value("bounds"));
   result.radius = object.value("radius").toDouble();
   result.center = readTopologyPoint(object.value("center"));
+  return result;
+}
+
+QJsonObject savedFaceReference(const FaceReference& face) {
+  QJsonObject result{{"bodyId", static_cast<qint64>(face.bodyId)},
+                     {"featureId", static_cast<qint64>(face.featureId)},
+                     {"faceIndex", static_cast<qint64>(face.faceIndex)}};
+  if (!face.persistentTag.empty())
+    result["persistentTag"] = QString::fromStdString(face.persistentTag);
+  if (face.signature) result["signature"] = faceSignature(*face.signature);
+  return result;
+}
+
+FaceReference loadedFaceReference(const QJsonValue& value) {
+  const auto saved = value.toObject();
+  FaceReference result{
+      static_cast<BodyId>(saved.value("bodyId").toInteger()),
+      static_cast<FeatureId>(saved.value("featureId").toInteger()),
+      static_cast<std::size_t>(saved.value("faceIndex").toInteger())};
+  result.persistentTag = saved.value("persistentTag").toString().toStdString();
+  result.signature = readFaceSignature(saved.value("signature"));
   return result;
 }
 
@@ -417,6 +440,30 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         saved["axis"] = static_cast<int>(circular->axis());
         saved["count"] = circular->count();
         saved["angleDeg"] = circular->angleDeg();
+      } else if (const auto* shell =
+                     dynamic_cast<const ShellFeature*>(feature.get())) {
+        saved["sourceFeatureId"] = static_cast<qint64>(shell->sourceFeatureId());
+        saved["thicknessMm"] = shell->thicknessMm();
+        saved["outside"] = shell->outside();
+        QJsonArray faces;
+        for (const auto& face : shell->removedFaces())
+          faces.append(savedFaceReference(face));
+        saved["removedFaces"] = faces;
+      } else if (const auto* draft =
+                     dynamic_cast<const DraftFeature*>(feature.get())) {
+        saved["sourceFeatureId"] = static_cast<qint64>(draft->sourceFeatureId());
+        saved["angleDeg"] = draft->angleDeg();
+        saved["reversed"] = draft->reversed();
+        saved["neutralPlaneType"] = static_cast<int>(draft->neutralPlane().type);
+        if (draft->neutralPlane().face)
+          saved["neutralPlaneFace"] = savedFaceReference(*draft->neutralPlane().face);
+        saved["pullDirectionType"] = static_cast<int>(draft->pullDirection().type);
+        saved["pullDirectionSketchId"] = static_cast<qint64>(draft->pullDirection().sketchId);
+        saved["pullDirectionLineId"] = static_cast<qint64>(draft->pullDirection().lineId);
+        QJsonArray faces;
+        for (const auto& face : draft->draftedFaces())
+          faces.append(savedFaceReference(face));
+        saved["draftedFaces"] = faces;
       } else {
         setError(error, QString::fromUtf8("Неподдерживаемый тип фичи: ") +
                             saved.value("type").toString());
@@ -573,6 +620,31 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
             static_cast<PrincipalAxis>(saved.value("axis").toInt()),
             saved.value("count").toInt(), saved.value("angleDeg").toDouble(),
             name));
+      } else if (type == QStringLiteral("Shell")) {
+        std::vector<FaceReference> faces;
+        for (const auto& value : saved.value("removedFaces").toArray())
+          faces.push_back(loadedFaceReference(value));
+        body.addFeature(std::make_unique<ShellFeature>(
+            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            std::move(faces), saved.value("thicknessMm").toDouble(2.0),
+            saved.value("outside").toBool(), name));
+      } else if (type == QStringLiteral("Draft")) {
+        std::vector<FaceReference> faces;
+        for (const auto& value : saved.value("draftedFaces").toArray())
+          faces.push_back(loadedFaceReference(value));
+        PlaneReference plane{static_cast<NeutralPlaneType>(
+            saved.value("neutralPlaneType").toInt())};
+        if (saved.contains("neutralPlaneFace"))
+          plane.face = loadedFaceReference(saved.value("neutralPlaneFace"));
+        AxisReference direction{
+            static_cast<AxisReferenceType>(saved.value("pullDirectionType").toInt()),
+            static_cast<SketchId>(saved.value("pullDirectionSketchId").toInteger()),
+            static_cast<sketch::GeometryId>(saved.value("pullDirectionLineId").toInteger())};
+        body.addFeature(std::make_unique<DraftFeature>(
+            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            std::move(faces), std::move(plane), direction,
+            saved.value("angleDeg").toDouble(5.0),
+            saved.value("reversed").toBool(), name));
       } else {
         setError(error, QString::fromUtf8("Неизвестный тип фичи: ") + type);
         return false;

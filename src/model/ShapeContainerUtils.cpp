@@ -53,6 +53,57 @@ std::optional<SolidEdgeSelection> mapEdgesToOwningSolids(
   return result;
 }
 
+std::optional<SolidFaceSelection> mapFacesToOwningSolids(
+    const TopoDS_Shape& shape, const std::vector<std::size_t>& globalIndices,
+    std::string* error) {
+  SolidFaceSelection result;
+  for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More();
+       explorer.Next()) {
+    const auto solid = explorer.Current();
+    if (std::none_of(result.solids.begin(), result.solids.end(),
+                     [&solid](const auto& item) { return item.IsSame(solid); }))
+      result.solids.push_back(solid);
+  }
+  if (result.solids.empty()) {
+    if (error) *error = "Shape does not contain a solid";
+    return std::nullopt;
+  }
+  result.localFaceIndices.resize(result.solids.size());
+  for (const auto globalIndex : globalIndices) {
+    std::size_t current = 0;
+    std::optional<TopoDS_Shape> selected;
+    for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More();
+         faces.Next(), ++current)
+      if (current == globalIndex) {
+        selected = faces.Current();
+        break;
+      }
+    if (!selected) {
+      if (error) *error = "Selected face could not be resolved";
+      return std::nullopt;
+    }
+    bool owned = false;
+    for (std::size_t solidIndex = 0; solidIndex < result.solids.size();
+         ++solidIndex) {
+      std::size_t localIndex = 0;
+      for (TopExp_Explorer faces(result.solids[solidIndex], TopAbs_FACE);
+           faces.More(); faces.Next(), ++localIndex) {
+        if (faces.Current().IsSame(*selected)) {
+          result.localFaceIndices[solidIndex].push_back(localIndex);
+          owned = true;
+          break;
+        }
+      }
+      if (owned) break;
+    }
+    if (!owned) {
+      if (error) *error = "Selected face owning solid could not be resolved";
+      return std::nullopt;
+    }
+  }
+  return result;
+}
+
 std::shared_ptr<TopoDS_Shape> rebuildSolidContainer(
     const std::vector<TopoDS_Shape>& solids) {
   if (solids.empty()) return {};

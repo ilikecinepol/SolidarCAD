@@ -302,9 +302,11 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
   bodyShape_.reset();
   bodyId_ = kInvalidBodyId;
   bodyFeatureId_ = kInvalidFeatureId;
-  selectedFace_ = -1;
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   if (clearSelection) {
+    selectedFace_ = -1;
+    selectedBodyFaceIndices_.clear();
+    selectedBodyFaceReferences_.clear();
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
     selectedBodyEdgeReferences_.clear();
@@ -514,6 +516,8 @@ void Viewport::resetScene() {
   solidVisible_ = false;
   sketchVisible_ = true;
   selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndices_.clear();
@@ -525,6 +529,7 @@ void Viewport::resetScene() {
   pickMode_ = PickMode::None;
   selectionFilter_ = SelectionFilter::Any;
   edgeMultiSelectionMode_ = false;
+  faceMultiSelectionMode_ = false;
   offsetX_ = 0.0F;
   offsetY_ = 0.0F;
   cameraPan_ = {};
@@ -631,13 +636,50 @@ std::optional<std::size_t> Viewport::selectedBodyFaceIndex() const noexcept {
 }
 
 std::optional<FaceReference> Viewport::selectedBodyFace() const noexcept {
+  if (!selectedBodyFaceReferences_.empty())
+    return selectedBodyFaceReferences_.front();
   if (selectedFace_ < 0) return std::nullopt;
-  const auto global = static_cast<std::size_t>(selectedFace_);
+  return faceReferenceForGlobalIndex(static_cast<std::size_t>(selectedFace_));
+}
+
+std::optional<FaceReference> Viewport::faceReferenceForGlobalIndex(
+    std::size_t global) const noexcept {
   for (const auto& range : bodyTopologyRanges_)
     if (global >= range.firstFace && global < range.firstFace + range.faceCount)
       return makeFaceReference(*range.shape, range.bodyId, range.featureId,
                                global - range.firstFace);
   return std::nullopt;
+}
+
+std::vector<FaceReference> Viewport::selectedBodyFaces() const {
+  return selectedBodyFaceReferences_;
+}
+
+void Viewport::setSelectedBodyFaces(const std::vector<FaceReference>& faces) {
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  for (const auto& face : faces)
+    for (const auto& range : bodyTopologyRanges_)
+      if (range.bodyId == face.bodyId && range.featureId == face.featureId &&
+          range.shape) {
+        const auto resolved = resolveFaceReference(*range.shape, face.topology());
+        if (resolved) {
+          selectedBodyFaceIndices_.push_back(range.firstFace + resolved.index);
+          selectedBodyFaceReferences_.push_back(face);
+        }
+      }
+  selectedFace_ = selectedBodyFaceIndices_.empty()
+                      ? -1
+                      : static_cast<int>(selectedBodyFaceIndices_.front());
+  update();
+}
+
+void Viewport::setFaceMultiSelectionMode(bool enabled) noexcept {
+  faceMultiSelectionMode_ = enabled;
+}
+
+bool Viewport::faceMultiSelectionMode() const noexcept {
+  return faceMultiSelectionMode_;
 }
 
 std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
@@ -1086,7 +1128,12 @@ void Viewport::paintEvent(QPaintEvent*) {
     painter.setPen(Qt::NoPen);
     for (const auto& triangle : painted) {
       QColor color(205, 214, 224);
-      if (triangle.faceIndex == static_cast<std::size_t>(selectedFace_))
+      const bool faceSelected =
+          std::find(selectedBodyFaceIndices_.begin(),
+                    selectedBodyFaceIndices_.end(), triangle.faceIndex) !=
+          selectedBodyFaceIndices_.end();
+      if (faceSelected ||
+          triangle.faceIndex == static_cast<std::size_t>(selectedFace_))
         color = QColor(54, 132, 245);
       else if (triangle.faceIndex == hoveredBodyFaceIndex_)
         color = QColor(126, 181, 247);
@@ -2086,7 +2133,13 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
 
   if (pickMode_ != PickMode::None) return;
 
-  selectedFace_ = -1;
+  const bool toggleFace = faceMultiSelectionMode_ ||
+                          event->modifiers().testFlag(Qt::ControlModifier);
+  if (!toggleFace) {
+    selectedFace_ = -1;
+    selectedBodyFaceIndices_.clear();
+    selectedBodyFaceReferences_.clear();
+  }
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   const bool toggleEdge = edgeMultiSelectionMode_ ||
                           event->modifiers().testFlag(Qt::ControlModifier);
@@ -2131,9 +2184,26 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       return;
     }
     if (hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1)) {
-      selectedFace_ = static_cast<int>(hoveredBodyFaceIndex_);
+      const auto clicked = faceReferenceForGlobalIndex(hoveredBodyFaceIndex_);
+      if (toggleFace && !selectedBodyFaceIndices_.empty()) {
+        const auto first = faceReferenceForGlobalIndex(selectedBodyFaceIndices_.front());
+        if (first && clicked &&
+            (first->bodyId != clicked->bodyId ||
+             first->featureId != clicked->featureId))
+          selectedBodyFaceIndices_.clear();
+      }
+      updateEdgeSelection(selectedBodyFaceIndices_, hoveredBodyFaceIndex_,
+                          toggleFace);
+      selectedFace_ = selectedBodyFaceIndices_.empty()
+                          ? -1
+                          : static_cast<int>(selectedBodyFaceIndices_.front());
+      selectedBodyFaceReferences_.clear();
+      for (const auto index : selectedBodyFaceIndices_)
+        if (const auto face = faceReferenceForGlobalIndex(index))
+          selectedBodyFaceReferences_.push_back(*face);
       emit selectionChanged(QString::fromUtf8("Тело 1 • Грань ") +
-                            QString::number(selectedFace_ + 1));
+                            QString::number(hoveredBodyFaceIndex_ + 1));
+      emit bodyFaceSelectionChanged();
       update();
       return;
     }

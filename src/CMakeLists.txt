@@ -11,6 +11,12 @@ add_library(solidar_model
   model/Body.h
   model/Document.cpp
   model/Document.h
+  model/DraftBuilder.cpp
+  model/DraftBuilder.h
+  model/DraftFeature.cpp
+  model/DraftFeature.h
+  model/DraftToolSession.cpp
+  model/DraftToolSession.h
   model/ChamferBuilder.cpp
   model/ChamferBuilder.h
   model/ChamferFeature.cpp
@@ -51,6 +57,12 @@ add_library(solidar_model
   model/ShapeFeature.h
   model/ShapeContainerUtils.cpp
   model/ShapeContainerUtils.h
+  model/ShellBuilder.cpp
+  model/ShellBuilder.h
+  model/ShellFeature.cpp
+  model/ShellFeature.h
+  model/ShellToolSession.cpp
+  model/ShellToolSession.h
   model/SketchPlacement.cpp
   model/SketchPlacement.h
   model/SolidFeature.h
@@ -71,7 +83,7 @@ target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(solidar_model PUBLIC
   TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool
-  TKFillet TKMesh
+  TKFillet TKMesh TKOffset
 )
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)

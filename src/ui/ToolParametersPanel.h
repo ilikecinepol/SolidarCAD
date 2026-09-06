@@ -5,6 +5,7 @@
 class QLabel;
 class QDoubleSpinBox;
 class QPushButton;
+class QCheckBox;
 
 namespace solidar {
 
@@ -22,6 +23,8 @@ class ToolParametersPanel final : public QWidget {
   [[nodiscard]] double parameterValue() const;
   void setStatus(const QString& text, bool error = false);
   void setAcceptEnabled(bool enabled);
+  void configureOption(const QString& text, bool checked);
+  void setOptionChecked(bool checked);
 
  signals:
   void parameterChanged(double value);
@@ -29,6 +32,7 @@ class ToolParametersPanel final : public QWidget {
   void cancelled();
   void selectionRequested();
   void clearSelectionRequested();
+  void optionChanged(bool checked);
 
  private:
   QLabel* title_{};
@@ -40,6 +44,7 @@ class ToolParametersPanel final : public QWidget {
   QPushButton* accept_{};
   QPushButton* select_{};
   QPushButton* clear_{};
+  QCheckBox* option_{};
 };
 
 }  // namespace solidar

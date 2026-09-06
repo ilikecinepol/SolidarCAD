@@ -102,9 +102,19 @@ parameters, keeps Enter separate from Apply, uses normal Tab/Shift+Tab traversal
 and consumes the first Escape to restore the last committed field value.
 
 The standard registry contains Extrude, Pocket, Revolve, Fillet, Chamfer,
-Mirror, Linear Pattern, and Circular Pattern. Revolve, Fillet, and Chamfer use
+Shell, Draft, Mirror, Linear Pattern, and Circular Pattern. Revolve, Fillet,
+Chamfer, Shell, and Draft use
 the common runtime controller and session parameter contracts; the registry is
 the mandatory migration boundary for the remaining legacy command bodies.
+
+Shell stores persistent references to the faces removed from the immediately
+preceding feature, thickness, and the inside/outside mode. Draft stores the
+drafted faces, neutral plane, pull direction, angle, and reversal. Both use
+OCCT only while rebuilding or previewing; generated B-Rep is never serialized.
+Selections are resolved again after upstream recompute. Compound inputs keep
+untouched solids. Shell v1 deliberately requires all removed faces to belong
+to one solid; selecting faces from several solids produces a recoverable tool
+error.
 
 To add a Part Design tool:
 
