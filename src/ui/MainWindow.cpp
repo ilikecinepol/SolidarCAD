@@ -1087,6 +1087,14 @@ void MainWindow::buildUi() {
           &MainWindow::createCircularPattern);
   connect(modelRibbon_, &ModelRibbon::fitRequested, viewport_, &Viewport::fitAll);
   connect(modelRibbon_, &ModelRibbon::isoRequested, viewport_, &Viewport::viewIsometric);
+  connect(modelRibbon_, &ModelRibbon::displayModeRequested, viewport_,
+          [this](int mode) {
+            viewport_->setDisplayMode(static_cast<ViewportDisplayMode>(mode));
+          });
+  connect(modelRibbon_, &ModelRibbon::meshQualityRequested, viewport_,
+          [this](int quality) {
+            viewport_->setMeshQuality(static_cast<ViewportMeshQuality>(quality));
+          });
   connect(viewport_, &Viewport::sketchPlanePicked, this,
           [this](const QString& plane) {
             viewport_->setSelectionFilter(SelectionFilter::Any);

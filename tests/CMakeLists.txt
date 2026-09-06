@@ -78,6 +78,14 @@ add_executable(body_render_mesh_tests body_render_mesh_tests.cpp)
 target_link_libraries(body_render_mesh_tests PRIVATE solidar_viewport3d)
 add_test(NAME body_render_mesh_tests COMMAND body_render_mesh_tests)
 
+add_executable(body_render_mesh_normals_tests body_render_mesh_normals_tests.cpp)
+target_link_libraries(body_render_mesh_normals_tests PRIVATE solidar_viewport3d)
+add_test(NAME body_render_mesh_normals_tests COMMAND body_render_mesh_normals_tests)
+
+add_executable(viewport_renderer_tests viewport_renderer_tests.cpp)
+target_link_libraries(viewport_renderer_tests PRIVATE solidar_viewport3d)
+add_test(NAME viewport_renderer_tests COMMAND viewport_renderer_tests)
+
 add_executable(edge_selection_state_tests edge_selection_state_tests.cpp)
 target_link_libraries(edge_selection_state_tests PRIVATE solidar_viewport3d)
 add_test(NAME edge_selection_state_tests COMMAND edge_selection_state_tests)
@@ -175,6 +183,8 @@ set_tests_properties(
   part_design_tool_framework_tests
   pocket_feature_tests
   body_render_mesh_tests
+  body_render_mesh_normals_tests
+  viewport_renderer_tests
   edge_selection_state_tests
   viewport_picking_tests
   viewport_manipulator_tests
@@ -191,6 +201,8 @@ set_tests_properties(
   extrude_history_regression_tests
   project_file_tests
   sketch_regression_tests
+  body_render_mesh_normals_tests
+  viewport_renderer_tests
   fillet_feature_tests
   chamfer_feature_tests
   revolve_feature_tests
@@ -258,6 +270,8 @@ if(WIN32)
     historical_preview_tests
     sketch_regression_tests
     body_render_mesh_tests
+    body_render_mesh_normals_tests
+    viewport_renderer_tests
     edge_selection_state_tests
     viewport_picking_tests
     viewport_manipulator_tests

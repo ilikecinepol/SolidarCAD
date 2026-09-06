@@ -134,11 +134,14 @@ add_library(solidar_viewport3d
   ui/Viewport.h
   ui/ViewportPicking.cpp
   ui/ViewportPicking.h
+  ui/ViewportRenderer.cpp
+  ui/ViewportRenderer.h
   ui/tools/ToolParameterHud.cpp
   ui/tools/ToolParameterHud.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)
+target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets
+  Qt6::OpenGL Qt6::OpenGLWidgets)
 solidar_warnings(solidar_viewport3d)
 
 add_library(solidar_editor

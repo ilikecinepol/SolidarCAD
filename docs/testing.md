@@ -47,3 +47,24 @@ Mirror and pattern coverage is split into `mirror_feature_tests`,
 `pattern_persistence_tests`. These verify occurrence counts, bounds/volume,
 parameter edits with stable IDs, invalid-input recovery, full versus partial
 circular distribution, upstream edits, and project-format round trips.
+
+## Viewport Rendering 2.0 gate
+
+Headless CI covers render-mesh generation, planar and curved per-vertex
+normals, sharp face boundaries, reversed-face orientation, Normal/High chord
+error and edge sampling, persistent-reference independence, and camera matrix
+agreement. Existing viewport picking and preview-selection tests remain part of
+the mandatory regression suite. A real OpenGL context is intentionally not a
+hard CI dependency because availability differs between Windows and Ubuntu
+runners.
+
+Before release, perform the manual GPU gate on both Windows and Ubuntu:
+
+- inspect Box, Cylinder, Fillet, Chamfer, Shell, and Extrude -> Chamfer -> Shell;
+- verify Shaded, Shaded with Edges, and Wireframe modes;
+- hover/select faces and edges in every mode and verify no rear edges leak;
+- exercise Extrude, Revolve, Fillet, Chamfer, Shell, and Draft previews and
+  manipulators, including changing an existing preview parameter;
+- orbit, zoom, pan, resize, Fit, ISO, timeline scrub, delete, and Undo;
+- verify HUD alignment at 100%, 125%, 150%, and 200% display scaling;
+- compare Normal and High quality and confirm no remesh during camera movement.

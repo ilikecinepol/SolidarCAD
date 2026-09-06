@@ -26,6 +26,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QSignalBlocker>
+#include <QSurfaceFormat>
 #include <QTransform>
 #include <QWheelEvent>
 
@@ -167,7 +168,14 @@ bool isFrontFacing(const QPolygonF& polygon) {
 
 }  // namespace
 
-Viewport::Viewport(QWidget* parent) : QWidget(parent) {
+Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
+  QSurfaceFormat format;
+  format.setRenderableType(QSurfaceFormat::OpenGL);
+  format.setVersion(3, 3);
+  format.setProfile(QSurfaceFormat::CoreProfile);
+  format.setDepthBufferSize(24);
+  format.setSamples(4);
+  setFormat(format);
   setMinimumSize(480, 320);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
@@ -256,6 +264,35 @@ void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
   rebuildBodyDisplay(shapes, true);
 }
 
+Viewport::~Viewport() {
+  if (context()) {
+    makeCurrent();
+    renderer_.release();
+    doneCurrent();
+  }
+}
+
+void Viewport::initializeGL() { renderer_.initialize(); }
+
+void Viewport::setDisplayMode(ViewportDisplayMode mode) {
+  if (displayMode_ == mode) return;
+  displayMode_ = mode;
+  update();
+}
+
+void Viewport::setMeshQuality(ViewportMeshQuality quality) {
+  if (meshQuality_ == quality) return;
+  meshQuality_ = quality;
+  rebuildBodyDisplay(bodyViewShapes_, false);
+  toolPreviewRenderMesh_.clear();
+  if (toolPreviewShape_ && !toolPreviewShape_->IsNull())
+    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
+  update();
+}
+
+ViewportDisplayMode Viewport::displayMode() const noexcept { return displayMode_; }
+ViewportMeshQuality Viewport::meshQuality() const noexcept { return meshQuality_; }
+
 namespace {
 
 void drawToolArrow(QPainter& painter, QPointF start, QPointF tip,
@@ -340,7 +377,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
   if (!bodyTopologyRanges_.empty())
     bodyShape_ = std::make_shared<TopoDS_Shape>(compound);
   if (bodyShape_ && !bodyShape_->IsNull()) {
-    bodyRenderMesh_.rebuild(*bodyShape_);
+    bodyRenderMesh_.rebuild(*bodyShape_, meshQuality_);
     Bnd_Box bounds;
     BRepBndLib::Add(*bodyShape_, bounds);
     double xMin = 0.0;
@@ -362,7 +399,7 @@ void Viewport::setToolPreviewShape(BodyId bodyId, FeatureId featureId,
   toolPreviewFeatureId_ = featureId;
   toolPreviewRenderMesh_.clear();
   if (toolPreviewShape_ && !toolPreviewShape_->IsNull())
-    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_);
+    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
   update();
 }
 
@@ -1033,7 +1070,7 @@ void Viewport::refreshSelectedExtrusionPolygon() {
   }
 }
 
-void Viewport::paintEvent(QPaintEvent*) {
+void Viewport::paintGL() {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
   painter.fillRect(rect(), QColor(246, 249, 252));
@@ -1097,6 +1134,25 @@ void Viewport::paintEvent(QPaintEvent*) {
   }
 
   if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
+    painter.beginNativePainting();
+    renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
+                     size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
+                     zoom_, cameraPan_, displayMode_, selectedBodyFaceIndices_,
+                     hoveredBodyFaceIndex_, selectedBodyEdgeIndices_,
+                     hoveredBodyEdgeIndex_);
+    painter.endNativePainting();
+    if (!renderer_.error().isEmpty()) {
+      painter.setPen(QColor("#b42318"));
+      painter.drawText(rect().adjusted(24, 24, -24, -24),
+                       Qt::AlignLeft | Qt::AlignTop,
+                       tr("Не удалось инициализировать 3D-ускорение OpenGL.\n%1")
+                           .arg(renderer_.error()));
+    }
+  }
+
+  // Intentionally isolated emergency reference implementation. It is never
+  // executed in production; the OpenGL renderer above is the only body path.
+  if (false && ((solidVisible_ && hasParametricBody) || hasToolPreview)) {
     const bool showingToolPreview = hasToolPreview;
     const BodyRenderMesh& renderMesh =
         showingToolPreview ? toolPreviewRenderMesh_ : bodyRenderMesh_;

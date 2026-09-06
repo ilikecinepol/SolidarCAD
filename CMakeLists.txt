@@ -60,7 +60,7 @@ option(SOLIDAR_BUILD_TESTS "Build unit tests" ON)
 set(SOLIDAR_REQUIRED_QT_VERSION "" CACHE STRING
     "Require an exact Qt version (empty accepts any supported Qt)")
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGLWidgets PrintSupport)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets PrintSupport)
 if(SOLIDAR_REQUIRED_QT_VERSION
    AND NOT Qt6_VERSION VERSION_EQUAL SOLIDAR_REQUIRED_QT_VERSION)
   message(FATAL_ERROR

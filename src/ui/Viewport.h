@@ -4,7 +4,7 @@
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QString>
-#include <QWidget>
+#include <QOpenGLWidget>
 #include <vector>
 #include <optional>
 #include <string>
@@ -13,6 +13,7 @@
 #include "model/SolidFeature.h"
 #include "sketch/Sketch.h"
 #include "ui/BodyRenderMesh.h"
+#include "ui/ViewportRenderer.h"
 #include "model/ToolSession.h"
 
 class QMouseEvent;
@@ -33,7 +34,7 @@ struct BodyViewShape {
 
 enum class SelectionFilter { Any, Face, Edge, Plane };
 
-class Viewport final : public QWidget {
+class Viewport final : public QOpenGLWidget {
   Q_OBJECT
 
  public:
@@ -41,6 +42,7 @@ class Viewport final : public QWidget {
   static constexpr qulonglong kGlobalYAxisToken = 0xfffffffffffffff1ULL;
   static constexpr qulonglong kGlobalZAxisToken = 0xfffffffffffffff2ULL;
   explicit Viewport(QWidget* parent = nullptr);
+  ~Viewport() override;
   void setBox(BoxParameters parameters);
   void setBodyShape(ShapeFeature::ShapePtr shape,
                     BodyId bodyId = kInvalidBodyId,
@@ -92,6 +94,8 @@ class Viewport final : public QWidget {
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
+  [[nodiscard]] const std::optional<AngularToolManipulator>&
+  angularToolManipulator() const noexcept { return angularToolManipulator_; }
   void clearToolManipulator();
   void fitAll();
   void viewTop();
@@ -101,6 +105,10 @@ class Viewport final : public QWidget {
   void viewRight();
   void viewLeft();
   void viewIsometric();
+  void setDisplayMode(ViewportDisplayMode mode);
+  void setMeshQuality(ViewportMeshQuality quality);
+  [[nodiscard]] ViewportDisplayMode displayMode() const noexcept;
+  [[nodiscard]] ViewportMeshQuality meshQuality() const noexcept;
   [[nodiscard]] float cameraYawDegrees() const noexcept;
   [[nodiscard]] float cameraPitchDegrees() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
@@ -132,7 +140,8 @@ class Viewport final : public QWidget {
   void revolveAxisPicked(qulonglong axisToken);
 
  protected:
-  void paintEvent(QPaintEvent* event) override;
+  void initializeGL() override;
+  void paintGL() override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
@@ -158,6 +167,9 @@ class Viewport final : public QWidget {
   BodyRenderMesh bodyRenderMesh_;
   ShapeFeature::ShapePtr toolPreviewShape_;
   BodyRenderMesh toolPreviewRenderMesh_;
+  ViewportRenderer renderer_;
+  ViewportDisplayMode displayMode_{ViewportDisplayMode::ShadedWithEdges};
+  ViewportMeshQuality meshQuality_{ViewportMeshQuality::Normal};
   BodyId toolPreviewBodyId_{kInvalidBodyId};
   FeatureId toolPreviewFeatureId_{kInvalidFeatureId};
   std::vector<BodyViewShape> bodyViewShapes_;
