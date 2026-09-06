@@ -60,6 +60,15 @@ add_executable(part_design_history_ui_tests part_design_history_ui_tests.cpp)
 target_link_libraries(part_design_history_ui_tests
   PRIVATE solidar_editor solidar_project Qt6::Widgets)
 add_test(NAME part_design_history_ui_tests COMMAND part_design_history_ui_tests)
+add_executable(feature_removal_tests feature_removal_tests.cpp)
+target_link_libraries(feature_removal_tests PRIVATE solidar_model)
+add_test(NAME feature_removal_tests COMMAND feature_removal_tests)
+add_executable(history_timeline_geometry_tests history_timeline_geometry_tests.cpp)
+target_link_libraries(history_timeline_geometry_tests PRIVATE solidar_viewport3d)
+add_test(NAME history_timeline_geometry_tests COMMAND history_timeline_geometry_tests)
+add_executable(historical_preview_tests historical_preview_tests.cpp)
+target_link_libraries(historical_preview_tests PRIVATE solidar_viewport3d)
+add_test(NAME historical_preview_tests COMMAND historical_preview_tests)
 
 add_executable(sketch_regression_tests sketch_regression_tests.cpp)
 target_link_libraries(sketch_regression_tests PRIVATE solidar_model)
@@ -123,6 +132,9 @@ add_test(NAME downstream_feature_preservation_tests
 add_executable(shell_feature_tests shell_feature_tests.cpp)
 target_link_libraries(shell_feature_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME shell_feature_tests COMMAND shell_feature_tests)
+add_executable(shell_complex_topology_tests shell_complex_topology_tests.cpp)
+target_link_libraries(shell_complex_topology_tests PRIVATE solidar_model)
+add_test(NAME shell_complex_topology_tests COMMAND shell_complex_topology_tests)
 
 add_executable(draft_feature_tests draft_feature_tests.cpp)
 target_link_libraries(draft_feature_tests PRIVATE solidar_project Qt6::Core)
@@ -186,6 +198,7 @@ set_tests_properties(
   part_design_regression_tests
   downstream_feature_preservation_tests
   shell_feature_tests
+  shell_complex_topology_tests
   draft_feature_tests
   parametric_history_tests
   persistent_topology_tests
@@ -199,13 +212,18 @@ set_tests_properties(
 
 set_property(TEST persistent_topology_tests
              PROPERTY LABELS "regression;topology")
-
 set_tests_properties(
   editor_smoke_tests
   model_ribbon_tests
   part_design_history_ui_tests
+  feature_removal_tests
+  history_timeline_geometry_tests
+  historical_preview_tests
   PROPERTIES LABELS "ui-smoke"
 )
+
+set_property(TEST historical_preview_tests
+             PROPERTY LABELS "regression;ui-smoke")
 
 set_tests_properties(
   compliance_artifacts_tests
@@ -235,6 +253,9 @@ if(WIN32)
     editor_smoke_tests
     model_ribbon_tests
     part_design_history_ui_tests
+    feature_removal_tests
+    history_timeline_geometry_tests
+    historical_preview_tests
     sketch_regression_tests
     body_render_mesh_tests
     edge_selection_state_tests
@@ -248,6 +269,7 @@ if(WIN32)
     part_design_regression_tests
     downstream_feature_preservation_tests
     shell_feature_tests
+    shell_complex_topology_tests
     draft_feature_tests
     parametric_history_tests
     persistent_topology_tests

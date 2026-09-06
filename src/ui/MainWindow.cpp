@@ -9,6 +9,7 @@
 #include "ui/ToolParametersPanel.h"
 #include "ui/PartDesignToolHelp.h"
 #include "ui/PartDesignHistory.h"
+#include "ui/HistoryTimelineWidget.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/MirrorFeature.h"
@@ -52,7 +53,6 @@
 #include <QSignalBlocker>
 #include <QScrollArea>
 #include <QShortcut>
-#include <QSlider>
 #include <QToolButton>
 #include <QTimer>
 #include <QVariant>
@@ -1023,6 +1023,10 @@ void MainWindow::buildUi() {
   ribbonStack_->addWidget(drawingRibbonPlaceholder);
   connect(modelRibbon_, &ModelRibbon::createSketchRequested, this,
           [this] {
+            if (!ensureHistoryAtEnd()) {
+              modelRibbon_->clearActiveTool();
+              return;
+            }
             editingSketchIndex_.reset();
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите базовую плоскость или грань тела"));
@@ -1035,6 +1039,10 @@ void MainWindow::buildUi() {
           });
   connect(modelRibbon_, &ModelRibbon::extrudeRequested, this,
           [this] {
+            if (!ensureHistoryAtEnd()) {
+              modelRibbon_->clearActiveTool();
+              return;
+            }
             extrudeOperationManuallyChanged_ = false;
             extrusionReverseCheck_->setChecked(false);
             const QSignalBlocker blocker(extrusionOperationCombo_);
@@ -1045,6 +1053,10 @@ void MainWindow::buildUi() {
           });
   connect(modelRibbon_, &ModelRibbon::pocketRequested, this,
           [this] {
+            if (!ensureHistoryAtEnd()) {
+              modelRibbon_->clearActiveTool();
+              return;
+            }
             if (!document_.activeBody()) {
               QMessageBox::information(this, QString::fromUtf8("Вырезать"),
                   QString::fromUtf8("Сначала создайте Body."));
@@ -1312,30 +1324,13 @@ void MainWindow::buildUi() {
   historyScroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   historyScroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   historyScroll_->setFrameShape(QFrame::NoFrame);
-  historyContent_ = new QWidget(historyScroll_);
-  historyLayout_ = new QHBoxLayout(historyContent_);
-  historyLayout_->setContentsMargins(12, 7, 12, 7);
-  historyLayout_->setSpacing(8);
-  historyLayout_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  historyTimeline_ = new HistoryTimelineWidget(historyScroll_);
+  historyContent_ = historyTimeline_;
+  historyLayout_ = historyTimeline_->stepLayout();
   historyScroll_->setWidget(historyContent_);
-  historySlider_ = new QSlider(Qt::Horizontal, historyHost);
-  historySlider_->setRange(0, 0);
-  historySlider_->setSingleStep(1);
-  historySlider_->setPageStep(1);
-  historySlider_->setTickPosition(QSlider::TicksBelow);
-  historySlider_->setTickInterval(1);
-  historySlider_->setFixedHeight(20);
-  historySlider_->setToolTip(QString::fromUtf8(
-      "Переместите маркер, чтобы откатить историю"));
-  historySlider_->setStyleSheet(
-      "QSlider::groove:horizontal{height:3px;background:#c8d5e8;border-radius:1px;}"
-      "QSlider::sub-page:horizontal{background:#1671e8;}"
-      "QSlider::handle:horizontal{width:12px;margin:-5px 0;background:#fff;"
-      "border:2px solid #1671e8;border-radius:6px;}");
-  connect(historySlider_, &QSlider::valueChanged, this,
+  connect(historyTimeline_, &HistoryTimelineWidget::positionChanged, this,
           &MainWindow::applyHistoryPosition);
   historyHostLayout->addWidget(historyScroll_, 1);
-  historyHostLayout->addWidget(historySlider_);
   historyDock->setWidget(historyHost);
   addDockWidget(Qt::BottomDockWidgetArea, historyDock);
   rebuildHistoryPanel();
@@ -1477,6 +1472,7 @@ void MainWindow::updateAutomaticExtrudeOperation() {
 }
 
 void MainWindow::extrudeSketch() {
+  if (!ensureHistoryAtEnd()) return;
   const bool fromBodyFace = selectedExtrusionSurface_.startsWith(
       QString::fromUtf8("Грань тела"));
   const auto& pickedSketch = viewport_->extrusionCandidateSketch();
@@ -1619,6 +1615,7 @@ void MainWindow::refreshBodyViewFromDocument() {
 }
 
 void MainWindow::createRevolve() {
+  if (!ensureHistoryAtEnd()) return;
   partDesignTools_.activate(PartDesignToolKind::Revolve);
   Body* body = document_.activeBody();
   revolveToolSession_.begin(document_, body ? body->id() : kInvalidBodyId,
@@ -1750,6 +1747,7 @@ void MainWindow::acceptRevolveTool() {
 }
 
 void MainWindow::createPocket() {
+  if (!ensureHistoryAtEnd()) return;
   Body* body = document_.activeBody();
   if (!body || !body->resultShape() || sketchHistory_.empty()) {
     QMessageBox::information(this, QString::fromUtf8("Карман"),
@@ -1796,6 +1794,7 @@ void MainWindow::createPocket() {
 }
 
 void MainWindow::createFillet() {
+  if (!ensureHistoryAtEnd()) return;
   partDesignTools_.activate(PartDesignToolKind::Fillet);
   if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelChamferTool();
@@ -1985,6 +1984,7 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
 }
 
 void MainWindow::createMirror() {
+  if (!ensureHistoryAtEnd()) return;
   Body* body = document_.activeBody();
   if (!body || !body->activeFeature()) return;
   const QStringList planes{QStringLiteral("XY"), QStringLiteral("XZ"),
@@ -2007,6 +2007,7 @@ void MainWindow::createMirror() {
 }
 
 void MainWindow::createLinearPattern() {
+  if (!ensureHistoryAtEnd()) return;
   Body* body = document_.activeBody();
   if (!body || !body->activeFeature()) return;
   QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("ЛИНЕЙНЫЙ МАССИВ"));
@@ -2028,6 +2029,7 @@ void MainWindow::createLinearPattern() {
 }
 
 void MainWindow::createCircularPattern() {
+  if (!ensureHistoryAtEnd()) return;
   Body* body = document_.activeBody();
   if (!body || !body->activeFeature()) return;
   QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("КРУГОВОЙ МАССИВ"));
@@ -2048,6 +2050,7 @@ void MainWindow::createCircularPattern() {
 }
 
 void MainWindow::createChamfer() {
+  if (!ensureHistoryAtEnd()) return;
   partDesignTools_.activate(PartDesignToolKind::Chamfer);
   if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelFilletTool();
@@ -2087,6 +2090,7 @@ void MainWindow::createChamfer() {
 }
 
 void MainWindow::createShell() {
+  if (!ensureHistoryAtEnd()) return;
   partDesignTools_.activate(PartDesignToolKind::Shell);
   auto faces = viewport_->selectedBodyFaces();
   Body* body = faces.empty() ? document_.activeBody()
@@ -2188,6 +2192,7 @@ void MainWindow::acceptShellTool() {
 }
 
 void MainWindow::createDraft() {
+  if (!ensureHistoryAtEnd()) return;
   partDesignTools_.activate(PartDesignToolKind::Draft);
   auto faces = viewport_->selectedBodyFaces();
   Body* body = faces.empty() ? document_.activeBody()
@@ -2493,27 +2498,116 @@ void MainWindow::rebuildHistoryPanel() {
       if (step.sketchId != kInvalidSketchId) editSketchById(step.sketchId);
       else editHistoryFeature(step.bodyId, step.featureId);
     });
+    button->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(button, &QToolButton::customContextMenuRequested, this,
+            [this, button, step](const QPoint& point) {
+      QMenu menu(button);
+      QAction* edit = menu.addAction(QString::fromUtf8("Редактировать"));
+      QAction* remove = menu.addAction(QString::fromUtf8("Удалить"));
+      QAction* chosen = menu.exec(button->mapToGlobal(point));
+      if (chosen == edit) {
+        if (step.sketchId != kInvalidSketchId) editSketchById(step.sketchId);
+        else editHistoryFeature(step.bodyId, step.featureId);
+      } else if (chosen == remove) {
+        removeHistoryStep(step);
+      }
+    });
     historyLayout_->addWidget(button);
   };
   for (std::size_t index = 0; index < historySteps_.size(); ++index)
     addStep(historySteps_[index], static_cast<int>(index + 1));
-  historyContent_->setMinimumWidth(
-      std::max(1, static_cast<int>(historySteps_.size())) * 36 + 24);
-  if (historySlider_) {
-    const QSignalBlocker blocker(historySlider_);
+  if (historyTimeline_) {
+    const QSignalBlocker blocker(historyTimeline_);
     const int lastPosition = static_cast<int>(historySteps_.size());
-    historySlider_->setRange(0, lastPosition);
+    historyTimeline_->setStepCount(lastPosition);
     historyPosition_ = std::clamp(historyPosition_, 0, lastPosition);
-    historySlider_->setValue(historyPosition_);
+    historyTimeline_->setPosition(historyPosition_);
   }
   if (historyScroll_ && historyLayout_->count() > 0)
     historyScroll_->ensureWidgetVisible(
         historyLayout_->itemAt(historyLayout_->count() - 1)->widget());
 }
 
+bool MainWindow::ensureHistoryAtEnd() {
+  if (historyPosition_ >= static_cast<int>(historySteps_.size())) return true;
+  statusBar()->showMessage(QString::fromUtf8(
+      "Вернитесь к последнему шагу истории, чтобы добавить новую операцию."),
+      4000);
+  return false;
+}
+
+void MainWindow::removeHistoryStep(const HistoryStep& step) {
+  const FeatureRemovalPlan plan = step.sketchId != kInvalidSketchId
+      ? document_.planSketchRemoval(step.sketchId)
+      : document_.planFeatureRemoval(step.bodyId, step.featureId);
+  if (plan.empty()) return;
+  QStringList dependents;
+  for (const auto& candidate : historySteps_) {
+    if (candidate.featureId != step.featureId &&
+        std::find(plan.featureIds.begin(), plan.featureIds.end(),
+                  candidate.featureId) != plan.featureIds.end())
+      dependents << QString::fromUtf8("• ") + candidate.title;
+    if (candidate.sketchId != step.sketchId &&
+        std::find(plan.sketchIds.begin(), plan.sketchIds.end(),
+                  candidate.sketchId) != plan.sketchIds.end())
+      dependents << QString::fromUtf8("• ") + candidate.title;
+  }
+  QString message = QString::fromUtf8("Удалить «%1»?").arg(step.title);
+  if (!dependents.isEmpty())
+    message += QString::fromUtf8("\n\nОт этой операции зависят:\n") +
+               dependents.join(QLatin1Char('\n')) +
+               QString::fromUtf8("\n\nОни также будут удалены.");
+  QMessageBox box(QMessageBox::Warning, QString::fromUtf8("Удаление операции"),
+                  message, QMessageBox::Yes | QMessageBox::Cancel, this);
+  box.button(QMessageBox::Yes)->setText(QString::fromUtf8("Удалить"));
+  box.button(QMessageBox::Cancel)->setText(QString::fromUtf8("Отмена"));
+  if (box.exec() != QMessageBox::Yes) return;
+
+  const Document previous = document_;
+  const auto previousSketchHistory = sketchHistory_;
+  std::string error;
+  const bool removed = step.sketchId != kInvalidSketchId
+      ? document_.removeSketchCascade(step.sketchId, &error)
+      : document_.removeFeatureCascade(step.bodyId, step.featureId, &error);
+  const bool recomputed = removed && document_.recompute();
+  const std::string rebuildError = recomputed ? std::string{} : document_.rebuildError();
+  if (!recomputed) {
+    document_ = previous;
+    QMessageBox::warning(this, QString::fromUtf8("Ошибка удаления"),
+                         QString::fromStdString(
+                             error.empty() ? rebuildError : error));
+    return;
+  }
+  for (std::size_t index = sketchHistory_.size(); index-- > 0;)
+    if (!document_.findSketch(sketchHistory_[index].documentSketchId)) {
+      viewport_->removeSketch(index);
+      sketchHistory_.erase(sketchHistory_.begin() +
+                           static_cast<std::ptrdiff_t>(index));
+    }
+  pushUndoAction([this, previous, previousSketchHistory] {
+    for (std::size_t index = sketchHistory_.size(); index-- > 0;)
+      viewport_->removeSketch(index);
+    document_ = previous;
+    sketchHistory_ = previousSketchHistory;
+    for (const auto& entry : sketchHistory_) {
+      const auto* sketch = document_.findSketch(entry.documentSketchId);
+      viewport_->addSketch(entry.geometry, entry.support,
+                           sketch ? sketch->placement : SketchPlacement::xy());
+    }
+    refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+  });
+  partDesignTools_.cancelActive();
+  viewport_->clearToolPreviewShape(); viewport_->clearToolManipulator();
+  viewport_->setSelectedBodyEdges({}); viewport_->setSelectedBodyFaces({});
+  toolParametersDock_->hide(); revolveDock_->hide();
+  historyPosition_ = 1000000;
+  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+}
+
 void MainWindow::applyHistoryPosition(int position) {
   const int lastPosition = static_cast<int>(historySteps_.size());
   historyPosition_ = std::clamp(position, 0, lastPosition);
+  if (historyTimeline_) historyTimeline_->setPosition(historyPosition_);
   if (historyPosition_ == lastPosition) {
     refreshBodyViewFromDocument();
   } else {

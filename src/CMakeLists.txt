@@ -128,6 +128,8 @@ add_library(solidar_viewport3d
   ui/PartDesignToolHelp.h
   ui/PartDesignHistory.cpp
   ui/PartDesignHistory.h
+  ui/HistoryTimelineWidget.cpp
+  ui/HistoryTimelineWidget.h
   ui/Viewport.cpp
   ui/Viewport.h
   ui/ViewportPicking.cpp

@@ -110,6 +110,18 @@ void Body::markDirtyFrom(std::size_t index) noexcept {
   for (; index < features_.size(); ++index) features_[index]->setDirty();
 }
 
+std::optional<std::size_t> Body::featureIndex(FeatureId id) const noexcept {
+  for (std::size_t index = 0; index < features_.size(); ++index)
+    if (features_[index]->id() == id) return index;
+  return std::nullopt;
+}
+
+void Body::eraseFeaturesFrom(std::size_t index) {
+  if (index >= features_.size()) return;
+  features_.erase(features_.begin() + static_cast<std::ptrdiff_t>(index),
+                  features_.end());
+}
+
 BodyId Body::nextId() noexcept {
   return g_nextBodyId.fetch_add(1, std::memory_order_relaxed);
 }

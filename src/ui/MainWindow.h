@@ -19,7 +19,6 @@ class QTreeWidget;
 class QStackedWidget;
 class QAction;
 class QHBoxLayout;
-class QSlider;
 class QDockWidget;
 class QDoubleSpinBox;
 class QPushButton;
@@ -37,6 +36,7 @@ class DrawingSheetView;
 class SketchRibbon;
 class ModelRibbon;
 class ToolParametersPanel;
+class HistoryTimelineWidget;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -91,6 +91,8 @@ class MainWindow final : public QMainWindow {
   void editSketchStep(std::size_t index);
   void editSketchById(SketchId sketchId);
   void editHistoryFeature(BodyId bodyId, FeatureId featureId);
+  void removeHistoryStep(const HistoryStep& step);
+  bool ensureHistoryAtEnd();
   void editExtrusionStep(BodyId bodyId, FeatureId featureId);
   void editPocketStep(BodyId bodyId, FeatureId featureId);
   void editFilletStep(BodyId bodyId, FeatureId featureId);
@@ -123,7 +125,7 @@ class MainWindow final : public QMainWindow {
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
   QScrollArea* historyScroll_{nullptr};
-  QSlider* historySlider_{nullptr};
+  HistoryTimelineWidget* historyTimeline_{nullptr};
   std::vector<HistoryStep> historySteps_;
   QDockWidget* extrusionDock_{nullptr};
   QDockWidget* toolParametersDock_{nullptr};
