@@ -116,6 +116,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
   [[nodiscard]] bool extrusionCandidateOnBodyCap() const noexcept;
+  [[nodiscard]] std::optional<SketchPlacement> extrusionFacePlacement() const noexcept;
   void commitAdditiveExtrusion(const sketch::Sketch& sketch,
                                const QString& supportName,
                                double startMm, double lengthMm);
@@ -231,6 +232,10 @@ class Viewport final : public QOpenGLWidget {
   QString hoveredExtrusionSurface_;
   std::size_t hoveredExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
+  SketchPlacement hoveredExtrusionPlacement_{};
+  bool hasHoveredExtrusionPlacement_{false};
+  SketchPlacement selectedExtrusionPlacement_{};
+  bool hasSelectedExtrusionPlacement_{false};
   std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
   ToolParameterHud* toolParameterHud_{nullptr};

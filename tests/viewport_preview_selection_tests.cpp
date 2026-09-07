@@ -215,6 +215,10 @@ int main(int argc, char** argv) {
     CHECK(body.extrusionCandidateSketchIndex() ==
           static_cast<std::size_t>(-1));
     CHECK(!body.extrusionCandidateOnBodyCap());
+    // The picked face resolves to a launch-side placement and its outline
+    // becomes the bare-face extrusion profile (extruded along the face normal).
+    CHECK(body.extrusionFacePlacement().has_value());
+    CHECK(!body.extrusionCandidateSketch().lines().empty());
     body.beginExtrusionSurfaceSelection();
     mouse(body, QEvent::MouseButtonPress, outside,
           Qt::LeftButton, Qt::LeftButton);

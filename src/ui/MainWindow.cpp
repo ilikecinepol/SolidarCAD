@@ -1485,22 +1485,31 @@ void MainWindow::extrudeSketch() {
       QString::fromUtf8("Грань тела"));
   const auto& pickedSketch = viewport_->extrusionCandidateSketch();
   const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
+  const auto facePlacement = viewport_->extrusionFacePlacement();
+  // A bare body-face pick (no sketch contour under the cursor) extrudes the
+  // face's own outline along the resolved face normal. Its profile lives on
+  // that face and must not reuse an unrelated history sketch or its plane.
+  const bool bareFacePick = fromBodyFace &&
+                            pickedIndex == static_cast<std::size_t>(-1) &&
+                            facePlacement.has_value();
   const std::size_t sourceIndex =
       pickedIndex != static_cast<std::size_t>(-1)
           ? pickedIndex
-          : sketchCount_ > 0 ? sketchCount_ - 1
-                             : static_cast<std::size_t>(-1);
+          : !bareFacePick && sketchCount_ > 0 ? sketchCount_ - 1
+                                              : static_cast<std::size_t>(-1);
   DocumentSketch* modelSketch =
       sourceIndex < sketchHistory_.size()
           ? document_.findSketch(sketchHistory_[sourceIndex].documentSketchId)
           : nullptr;
   // Parametric creation is driven by the selected DocumentSketch. Viewport
   // caches are presentation-only and may still contain an earlier extrusion.
-  const sketch::Sketch sketch = modelSketch
-      ? modelSketch->geometry
-      : (pickedSketch.lines().empty() && pickedSketch.circles().empty()
-             ? sketchCanvas_->sketch()
-             : pickedSketch);
+  const sketch::Sketch sketch = bareFacePick
+      ? pickedSketch
+      : (modelSketch
+             ? modelSketch->geometry
+             : (pickedSketch.lines().empty() && pickedSketch.circles().empty()
+                    ? sketchCanvas_->sketch()
+                    : pickedSketch));
   if (sketch.lines().empty() && sketch.circles().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
@@ -1540,7 +1549,8 @@ void MainWindow::extrudeSketch() {
         kInvalidSketchId,
         "Extrude profile " + std::to_string(document_.sketches().size() + 1),
         sketch);
-    modelSketch->placement = currentSketchPlacement_;
+    modelSketch->placement =
+        bareFacePick ? *facePlacement : currentSketchPlacement_;
   }
   Body* modelBody = operation == ExtrudeOperation::NewBody
                         ? &document_.addBody()

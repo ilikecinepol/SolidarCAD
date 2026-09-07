@@ -621,6 +621,7 @@ void Viewport::beginExtrusionSurfaceSelection() {
   selectedExtrusionSupport_.clear();
   selectedExtrusionBodyFace_ = false;
   selectedExtrusionOnBodyCap_ = false;
+  hasSelectedExtrusionPlacement_ = false;
   selectedFace_ = -1;
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
@@ -665,15 +666,21 @@ void Viewport::setExtrusionPreviewLength(double lengthMm) {
 }
 
 QPointF Viewport::extrusionScreenOffset(double lengthMm) const {
-  const QString support = selectedExtrusionSupport_.isEmpty()
-                              ? solidSupportName_
-                              : selectedExtrusionSupport_;
-  Point3 normal = supportNormal(support);
+  Point3 normal;
   if (selectedExtrusionSketchIndex_ < displaySketches_.size()) {
     const auto direction =
         displaySketches_[selectedExtrusionSketchIndex_].placement.normal();
     normal = {static_cast<float>(direction.x), static_cast<float>(direction.y),
               static_cast<float>(direction.z)};
+  } else if (hasSelectedExtrusionPlacement_) {
+    const auto direction = selectedExtrusionPlacement_.normal();
+    normal = {static_cast<float>(direction.x), static_cast<float>(direction.y),
+              static_cast<float>(direction.z)};
+  } else {
+    const QString support = selectedExtrusionSupport_.isEmpty()
+                                ? solidSupportName_
+                                : selectedExtrusionSupport_;
+    normal = supportNormal(support);
   }
   const QPointF origin = project({0.0F, 0.0F, 0.0F}, size(), yaw_, pitch_, zoom_);
   const Point3 end3 = translated({0.0F, 0.0F, 0.0F}, normal,
@@ -927,6 +934,12 @@ std::size_t Viewport::extrusionCandidateSketchIndex() const noexcept {
 
 bool Viewport::extrusionCandidateOnBodyCap() const noexcept {
   return selectedExtrusionOnBodyCap_;
+}
+
+std::optional<SketchPlacement> Viewport::extrusionFacePlacement() const noexcept {
+  return hasSelectedExtrusionPlacement_
+             ? std::optional<SketchPlacement>(selectedExtrusionPlacement_)
+             : std::nullopt;
 }
 
 const sketch::Sketch& Viewport::solidSketch() const noexcept {
@@ -2089,6 +2102,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     selectedExtrusionSupport_ = hoveredExtrusionSupport_;
     selectedExtrusionSketchIndex_ = hoveredExtrusionSketchIndex_;
     selectedExtrusionOnBodyCap_ = hoveredExtrusionOnBodyCap_;
+    selectedExtrusionPlacement_ = hoveredExtrusionPlacement_;
+    hasSelectedExtrusionPlacement_ = hasHoveredExtrusionPlacement_;
     selectedExtrusionBodyFace_ = hoveredExtrusionSurface_.startsWith(
         QString::fromUtf8("Грань тела"));
     rebuildSelectedExtrusionSketch();
@@ -2421,10 +2436,48 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
 
 void Viewport::rebuildSelectedExtrusionSketch() {
   selectedExtrusionSketch_.clear();
-  // A real B-Rep face carries no legacy support-name plane. Its selected
-  // region is the body's own planar profile, so reuse that cached profile
-  // rather than mis-projecting screen polygons onto an unrelated plane.
+  // A real B-Rep face carries no legacy support-name plane. The picked region
+  // is the face's own outline, so reproject the selected screen boundary back
+  // onto the resolved face placement rather than mis-projecting it onto an
+  // unrelated plane or reusing a stale cached profile.
   if (selectedExtrusionBodyFace_ && bodyShape_ && !bodyShape_->IsNull()) {
+    if (hasSelectedExtrusionPlacement_) {
+      const SketchPlacement& placement = selectedExtrusionPlacement_;
+      const Point3d center = bodyRenderMesh_.center();
+      const auto projectExtrusionPoint = [&](sketch::Point point) {
+        const auto world = placement.toWorld(point.xMm, point.yMm);
+        return projectBodyPoint(world, center, size(), yaw_, pitch_, zoom_).screen;
+      };
+      const QPointF origin = projectExtrusionPoint({0, 0});
+      const QPointF u = projectExtrusionPoint({1, 0}) - origin;
+      const QPointF v = projectExtrusionPoint({0, 1}) - origin;
+      const double determinant = u.x() * v.y() - u.y() * v.x();
+      if (std::abs(determinant) >= 1e-9) {
+        for (const auto& path : selectedExtrusionPaths_) {
+          for (const auto& boundary : path.toSubpathPolygons()) {
+            std::vector<sketch::Point> points;
+            points.reserve(static_cast<std::size_t>(boundary.size()));
+            for (const QPointF& screenPoint : boundary) {
+              const QPointF delta = screenPoint - origin;
+              points.push_back({
+                  (delta.x() * v.y() - delta.y() * v.x()) / determinant,
+                  (u.x() * delta.y() - u.y() * delta.x()) / determinant});
+            }
+            if (points.size() > 1 &&
+                QLineF(boundary.front(), boundary.back()).length() < 0.01)
+              points.pop_back();
+            for (std::size_t index = 0; index < points.size(); ++index)
+              selectedExtrusionSketch_.addLine(
+                  points[index], points[(index + 1) % points.size()]);
+          }
+        }
+        if (!selectedExtrusionSketch_.lines().empty() ||
+            !selectedExtrusionSketch_.circles().empty())
+          return;
+      }
+    }
+    // Fall back to the cached profile when a face placement could not be
+    // resolved (for example a curved face that has no planar basis yet).
     selectedExtrusionSketch_ = solidSketch_;
     return;
   }
@@ -2680,6 +2733,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
   hoveredExtrusionSurface_.clear();
   hoveredExtrusionOnBodyCap_ = false;
   hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  hasHoveredExtrusionPlacement_ = false;
 
   // Resolve one real sketch before splitting regions. Screen overlap does not
   // imply coplanarity, and the parametric feature references one DocumentSketch.
@@ -2926,6 +2980,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
 }
 
 void Viewport::pickFallbackBodyFace(QPointF position) {
+  hasHoveredExtrusionPlacement_ = false;
   // A real parametric body offers its actual B-Rep faces as extrusion sources.
   // Resolve the frontmost mesh face under the cursor (the same depth rule the
   // face hover uses) instead of reconstructing a legacy wireframe box.
@@ -2945,6 +3000,9 @@ void Viewport::pickFallbackBodyFace(QPointF position) {
       }
     }
     if (faceIndex == static_cast<std::size_t>(-1)) return;
+    const auto resolved = resolveFacePlacement(*bodyShape_, faceIndex);
+    hasHoveredExtrusionPlacement_ = resolved.planar;
+    hoveredExtrusionPlacement_ = resolved.placement;
     QPainterPath facePath;
     for (const auto& triangle : bodyRenderMesh_.triangles()) {
       if (triangle.faceIndex != faceIndex) continue;
