@@ -47,3 +47,49 @@ Mirror and pattern coverage is split into `mirror_feature_tests`,
 `pattern_persistence_tests`. These verify occurrence counts, bounds/volume,
 parameter edits with stable IDs, invalid-input recovery, full versus partial
 circular distribution, upstream edits, and project-format round trips.
+
+## Viewport Rendering 2.0 gate
+
+Headless CI covers render-mesh generation, planar and curved per-vertex
+normals, sharp face boundaries, reversed-face orientation, Normal/High chord
+error and edge sampling, persistent-reference independence, and camera matrix
+agreement. Existing viewport picking and preview-selection tests remain part of
+the mandatory regression suite. A real OpenGL context is intentionally not a
+hard CI dependency because availability differs between Windows and Ubuntu
+runners.
+
+Before release, perform the manual GPU gate on both Windows and Ubuntu:
+
+- inspect Box, Cylinder, Fillet, Chamfer, Shell, and Extrude -> Chamfer -> Shell;
+- verify Shaded, Shaded with Edges, and Wireframe modes;
+- hover/select faces and edges in every mode and verify no rear edges leak;
+- exercise Extrude, Revolve, Fillet, Chamfer, Shell, and Draft previews and
+  manipulators, including changing an existing preview parameter;
+- orbit, zoom, pan, resize, Fit, ISO, timeline scrub, delete, and Undo;
+- verify HUD alignment at 100%, 125%, 150%, and 200% display scaling;
+- compare Normal and High quality and confirm no remesh during camera movement.
+
+## Viewport & Tool UX Polish manual recipe
+
+Use a real GPU context at 100%, 125%, 150%, and 200% display scaling. Run each
+scene in Shaded, Shaded with Edges, and Wireframe, orbiting through two complete
+turns and pitching from -85 to +85 degrees while a preview is active:
+
+1. Rectangle Sketch -> Extrude -> Fillet two edges -> Chamfer other edges ->
+   Sketch-on-Face -> Extrude -> Shell.
+2. Closed Sketch -> Revolve; drag through 30, 90, 180, and 360 degrees.
+3. Extrude -> Linear Pattern -> Circular Pattern -> Mirror.
+
+For Extrude, Pocket, Revolve, Fillet, Chamfer, Mirror, Linear Pattern, Circular
+Pattern, Shell, and Draft verify mouse selection, hover, retained input
+highlight, preview material, visible handle/HUD, panel synchronisation, numeric
+Enter, HUD Escape, tool Cancel, Tab traversal, Apply, edit-existing, orbit and
+zoom. No handle may be hidden by the opaque body or orientation cube. Invalid
+input must leave the tool recoverable and must never display a broken mesh.
+
+The automated `viewport_ux_polish_tests` gate covers camera matrix agreement,
+combined source/preview depth safety across representative yaw/pitch extremes,
+DPI-independent logical layout, body and overlay avoidance, visual sign
+selection, expanded angular radius, and translation-invariant local edge
+directions. Pixel-perfect rendering and driver-specific flicker remain manual
+GPU checks.

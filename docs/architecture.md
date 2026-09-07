@@ -128,3 +128,29 @@ To add a Part Design tool:
 
 New tools must use this template. They must not introduce a new dialog-driven
 selection/preview/Apply pipeline in `MainWindow`.
+
+## Viewport Rendering Architecture
+
+The CAD model remains authoritative and the viewport consumes immutable
+world-space display data:
+
+```text
+OCCT B-Rep
+  -> scale-aware tessellation cache (BodyRenderMesh)
+  -> separate source/preview GPU meshes (VAO + VBO + EBO)
+  -> depth-tested smooth surface pass
+  -> topological B-Rep edge pass
+  -> CPU picking plus Qt selection/tool/HUD overlays
+```
+
+`BodyRenderMesh` owns per-face vertices and OCCT-computed per-node normals.
+Vertices are deliberately not welded between topological faces, preserving
+sharp CAD boundaries. Its revision changes only when the shape or display
+quality is rebuilt. Camera orbit, zoom, pan, resize, hover, and selection only
+update matrices or shader uniforms; they never invoke OCCT meshing.
+
+`ViewportRenderer` owns OpenGL resources and shaders. Source and temporary tool
+preview have independent caches, while picking continues to resolve references
+against the source B-Rep. `Viewport` retains camera interaction, CPU picking,
+reference geometry, manipulators, and QWidget HUD placement. `MainWindow` only
+forwards display-mode and quality choices and contains no OpenGL details.

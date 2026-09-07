@@ -1,6 +1,8 @@
 #include "ui/Viewport.h"
 
 #include "ui/EdgeSelectionState.h"
+#include "ui/ManipulatorLayout.h"
+#include "ui/ViewportCamera.h"
 #include "ui/ViewportPicking.h"
 #include "ui/tools/ToolParameterHud.h"
 #include "model/TopologyReferenceResolver.h"
@@ -26,6 +28,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QSignalBlocker>
+#include <QSurfaceFormat>
 #include <QTransform>
 #include <QWheelEvent>
 
@@ -49,19 +52,25 @@ ProjectedPoint projectBodyPoint(Point3d point, Point3d center, const QSize& size
                                 float yaw, float pitch, float zoom) {
   // Keep the solid in the same world-space projection as sketches and
   // construction geometry. Fit All supplies the screen-space centering.
-  (void)center;
-  const double x = point.x;
-  const double y = point.y;
-  const double z = point.z;
-  const double yr = yaw * std::numbers::pi / 180.0;
-  const double pr = pitch * std::numbers::pi / 180.0;
-  const double x1 = x * std::cos(yr) - y * std::sin(yr);
-  const double y1 = x * std::sin(yr) + y * std::cos(yr);
-  const double y2 = y1 * std::cos(pr) - z * std::sin(pr);
-  const double depth = y1 * std::sin(pr) + z * std::cos(pr);
-  const double scale = std::min(size.width(), size.height()) * 0.008 * zoom;
-  return {{size.width() * 0.5 + x1 * scale,
-           size.height() * 0.52 + y2 * scale}, depth};
+  ViewportCameraState camera{yaw, pitch, zoom, {}, size, 1.0F, center, 1.0};
+  return {camera.worldToScreen(point), camera.cameraDepth(point)};
+}
+
+QRectF projectedBodyBounds(const BodyRenderMesh& mesh, const QSize& size,
+                           float yaw, float pitch, float zoom) {
+  QRectF bounds;
+  bool first = true;
+  for (const auto& vertex : mesh.vertices()) {
+    const QPointF screen = projectBodyPoint(vertex.position, mesh.center(), size,
+                                            yaw, pitch, zoom).screen;
+    if (first) {
+      bounds = QRectF(screen, QSizeF());
+      first = false;
+    } else {
+      bounds |= QRectF(screen, QSizeF());
+    }
+  }
+  return bounds;
 }
 
 Vector3d cross(Vector3d a, Vector3d b) {
@@ -167,7 +176,14 @@ bool isFrontFacing(const QPolygonF& polygon) {
 
 }  // namespace
 
-Viewport::Viewport(QWidget* parent) : QWidget(parent) {
+Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
+  QSurfaceFormat format;
+  format.setRenderableType(QSurfaceFormat::OpenGL);
+  format.setVersion(3, 3);
+  format.setProfile(QSurfaceFormat::CoreProfile);
+  format.setDepthBufferSize(24);
+  format.setSamples(4);
+  setFormat(format);
   setMinimumSize(480, 320);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
@@ -256,10 +272,40 @@ void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
   rebuildBodyDisplay(shapes, true);
 }
 
+Viewport::~Viewport() {
+  if (context()) {
+    makeCurrent();
+    renderer_.release();
+    doneCurrent();
+  }
+}
+
+void Viewport::initializeGL() { renderer_.initialize(); }
+
+void Viewport::setDisplayMode(ViewportDisplayMode mode) {
+  if (displayMode_ == mode) return;
+  displayMode_ = mode;
+  update();
+}
+
+void Viewport::setMeshQuality(ViewportMeshQuality quality) {
+  if (meshQuality_ == quality) return;
+  meshQuality_ = quality;
+  rebuildBodyDisplay(bodyViewShapes_, false);
+  toolPreviewRenderMesh_.clear();
+  if (toolPreviewShape_ && !toolPreviewShape_->IsNull())
+    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
+  update();
+}
+
+ViewportDisplayMode Viewport::displayMode() const noexcept { return displayMode_; }
+ViewportMeshQuality Viewport::meshQuality() const noexcept { return meshQuality_; }
+
 namespace {
 
 void drawToolArrow(QPainter& painter, QPointF start, QPointF tip,
                    const QColor& color) {
+  const ManipulatorStyle style;
   QLineF direction(start, tip);
   if (direction.length() < 1.0)
     direction.setP2(direction.p1() + QPointF(0.0, -1.0));
@@ -268,15 +314,17 @@ void drawToolArrow(QPainter& painter, QPointF start, QPointF tip,
   const QPointF perpendicular(-unit.y(), unit.x());
 
   painter.setRenderHint(QPainter::Antialiasing);
-  painter.setPen(QPen(color, 4.0, Qt::SolidLine, Qt::RoundCap));
+  painter.setPen(QPen(color, style.shaftWidth, Qt::SolidLine, Qt::RoundCap));
   painter.drawLine(start, tip);
   painter.setBrush(color);
   painter.drawPolygon(QPolygonF{tip,
-                                tip - unit * 15.0 + perpendicular * 8.0,
-                                tip - unit * 15.0 - perpendicular * 8.0});
+                                tip - unit * style.arrowHeadLength +
+                                    perpendicular * style.arrowHeadWidth,
+                                tip - unit * style.arrowHeadLength -
+                                    perpendicular * style.arrowHeadWidth});
   painter.setBrush(QColor("#ffffff"));
   painter.setPen(QPen(color, 3.0));
-  painter.drawEllipse(tip, 7.0, 7.0);
+  painter.drawEllipse(tip, style.handleRadius, style.handleRadius);
 }
 
 void drawToolArrowHead(QPainter& painter, QPointF preceding, QPointF tip,
@@ -340,7 +388,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
   if (!bodyTopologyRanges_.empty())
     bodyShape_ = std::make_shared<TopoDS_Shape>(compound);
   if (bodyShape_ && !bodyShape_->IsNull()) {
-    bodyRenderMesh_.rebuild(*bodyShape_);
+    bodyRenderMesh_.rebuild(*bodyShape_, meshQuality_);
     Bnd_Box bounds;
     BRepBndLib::Add(*bodyShape_, bounds);
     double xMin = 0.0;
@@ -362,7 +410,7 @@ void Viewport::setToolPreviewShape(BodyId bodyId, FeatureId featureId,
   toolPreviewFeatureId_ = featureId;
   toolPreviewRenderMesh_.clear();
   if (toolPreviewShape_ && !toolPreviewShape_->IsNull())
-    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_);
+    toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
   update();
 }
 
@@ -1033,7 +1081,7 @@ void Viewport::refreshSelectedExtrusionPolygon() {
   }
 }
 
-void Viewport::paintEvent(QPaintEvent*) {
+void Viewport::paintGL() {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
   painter.fillRect(rect(), QColor(246, 249, 252));
@@ -1097,6 +1145,25 @@ void Viewport::paintEvent(QPaintEvent*) {
   }
 
   if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
+    painter.beginNativePainting();
+    renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
+                     size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
+                     zoom_, cameraPan_, displayMode_, selectedBodyFaceIndices_,
+                     hoveredBodyFaceIndex_, selectedBodyEdgeIndices_,
+                     hoveredBodyEdgeIndex_);
+    painter.endNativePainting();
+    if (!renderer_.error().isEmpty()) {
+      painter.setPen(QColor("#b42318"));
+      painter.drawText(rect().adjusted(24, 24, -24, -24),
+                       Qt::AlignLeft | Qt::AlignTop,
+                       tr("Не удалось инициализировать 3D-ускорение OpenGL.\n%1")
+                           .arg(renderer_.error()));
+    }
+  }
+
+  // Intentionally isolated emergency reference implementation. It is never
+  // executed in production; the OpenGL renderer above is the only body path.
+  if (false && ((solidVisible_ && hasParametricBody) || hasToolPreview)) {
     const bool showingToolPreview = hasToolPreview;
     const BodyRenderMesh& renderMesh =
         showingToolPreview ? toolPreviewRenderMesh_ : bodyRenderMesh_;
@@ -1236,16 +1303,20 @@ void Viewport::paintEvent(QPaintEvent*) {
     const Point3d endWorld = offsetPoint(
         toolManipulator_->origin, toolManipulator_->direction,
         toolManipulator_->valueMm);
-    const auto end = projectBodyPoint(endWorld, center, size(), yaw_, pitch_,
-                                      zoom_).screen;
-    drawToolArrow(painter, start, end, QColor("#0874f9"));
+    const auto semanticEnd = projectBodyPoint(endWorld, center, size(), yaw_,
+                                              pitch_, zoom_).screen;
+    const QRectF bodyBounds = hasToolPreview
+        ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
+        : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
+    const auto layout = computeManipulatorLayout({
+        start, semanticEnd - start, QLineF(start, semanticEnd).length(),
+        bodyBounds, QRectF(QPointF(-cameraPan_.x(), -cameraPan_.y()), size()),
+        toolParameterHud_ ? toolParameterHud_->size() : QSizeF(132, 40),
+        {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(),
+                116.0, 116.0)}});
+    drawToolArrow(painter, layout.anchor, layout.handle, QColor("#0874f9"));
     if (toolParameterHud_ && toolParameterHud_->isVisible()) {
-      const QPointF hud = end + cameraPan_ + QPointF(12.0, -20.0);
-      toolParameterHud_->move(
-          std::clamp(static_cast<int>(hud.x()), 4,
-                     std::max(4, width() - toolParameterHud_->width() - 4)),
-          std::clamp(static_cast<int>(hud.y()), 4,
-                     std::max(4, height() - toolParameterHud_->height() - 4)));
+      toolParameterHud_->move((layout.hudTopLeft + cameraPan_).toPoint());
     }
   }
   if (angularToolManipulator_) {
@@ -1264,6 +1335,18 @@ void Viewport::paintEvent(QPaintEvent*) {
     painter.setPen(QPen(QColor("#ff8a00"), 2.4, Qt::DashLine));
     painter.drawLine(axisStart, axisEnd);
 
+    const QPointF requestedRadiusPoint = projectBodyPoint(
+        offsetPoint(manipulator.origin, u, manipulator.radiusMm), center, size(),
+        yaw_, pitch_, zoom_).screen;
+    const QRectF bodyBounds = hasToolPreview
+        ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
+        : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
+    const double requestedPx = QLineF(origin, requestedRadiusPoint).length();
+    const double safePx = safeAngularManipulatorRadius(origin, requestedPx,
+                                                        bodyBounds);
+    const double visualRadiusMm = requestedPx > 1e-6
+        ? manipulator.radiusMm * safePx / requestedPx
+        : manipulator.radiusMm;
     const double endRadians =
         manipulator.angleDeg * std::numbers::pi / 180.0;
     const int segmentCount = std::max(12, static_cast<int>(
@@ -1274,8 +1357,8 @@ void Viewport::paintEvent(QPaintEvent*) {
       const double t = endRadians * index / segmentCount;
       arc << projectBodyPoint(
                  offsetPoint(manipulator.origin, u,
-                             manipulator.radiusMm * std::cos(t), v,
-                             manipulator.radiusMm * std::sin(t)),
+                             visualRadiusMm * std::cos(t), v,
+                             visualRadiusMm * std::sin(t)),
                  center, size(), yaw_, pitch_, zoom_)
                  .screen;
     }
@@ -1841,12 +1924,26 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   if (event->button() != Qt::LeftButton) return;
   const QPointF scenePosition = event->position() - cameraPan_;
   if (toolManipulator_) {
-    const Point3d center = bodyRenderMesh_.center();
+    const Point3d center = toolManipulator_->origin;
+    const QPointF start = projectBodyPoint(toolManipulator_->origin, center,
+                                           size(), yaw_, pitch_, zoom_).screen;
     const Point3d endWorld{
         toolManipulator_->origin.x + toolManipulator_->direction.x * toolManipulator_->valueMm,
         toolManipulator_->origin.y + toolManipulator_->direction.y * toolManipulator_->valueMm,
         toolManipulator_->origin.z + toolManipulator_->direction.z * toolManipulator_->valueMm};
-    const QPointF handle = projectBodyPoint(endWorld, center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF semanticEnd = projectBodyPoint(endWorld, center, size(), yaw_,
+                                                 pitch_, zoom_).screen;
+    const bool hasToolPreview = toolPreviewShape_ && !toolPreviewShape_->IsNull();
+    const QRectF bodyBounds = hasToolPreview
+        ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
+        : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
+    const auto layout = computeManipulatorLayout({
+        start, semanticEnd - start, QLineF(start, semanticEnd).length(),
+        bodyBounds, QRectF(QPointF(-cameraPan_.x(), -cameraPan_.y()), size()),
+        toolParameterHud_ ? toolParameterHud_->size() : QSizeF(132, 40),
+        {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(),
+                116.0, 116.0)}});
+    const QPointF handle = layout.handle;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingToolManipulator_ = true;
       setCursor(Qt::SizeAllCursor);
@@ -2898,11 +2995,24 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     const Point3d originWorld = angularToolManipulator_->origin;
     const QPointF origin = projectBodyPoint(originWorld, originWorld, size(),
                                             yaw_, pitch_, zoom_).screen;
-    const QPointF uPoint = projectBodyPoint(
+    const QPointF requestedRadiusPoint = projectBodyPoint(
         offsetPoint(originWorld, u, angularToolManipulator_->radiusMm),
         originWorld, size(), yaw_, pitch_, zoom_).screen;
+    const bool hasToolPreview = toolPreviewShape_ && !toolPreviewShape_->IsNull();
+    const QRectF bodyBounds = hasToolPreview
+        ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
+        : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
+    const double requestedPx = QLineF(origin, requestedRadiusPoint).length();
+    const double safePx = safeAngularManipulatorRadius(origin, requestedPx,
+                                                        bodyBounds);
+    const double visualRadiusMm = requestedPx > 1e-6
+        ? angularToolManipulator_->radiusMm * safePx / requestedPx
+        : angularToolManipulator_->radiusMm;
+    const QPointF uPoint = projectBodyPoint(
+        offsetPoint(originWorld, u, visualRadiusMm),
+        originWorld, size(), yaw_, pitch_, zoom_).screen;
     const QPointF vPoint = projectBodyPoint(
-        offsetPoint(originWorld, v, angularToolManipulator_->radiusMm),
+        offsetPoint(originWorld, v, visualRadiusMm),
         originWorld, size(), yaw_, pitch_, zoom_).screen;
     angularToolManipulator_->angleDeg = angularValueFromProjectedBasis(
         event->position() - cameraPan_, origin, uPoint, vPoint);
@@ -2927,9 +3037,26 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     const QPointF axis = unit - origin;
     const double axisLengthSquared = QPointF::dotProduct(axis, axis);
     if (axisLengthSquared > 1e-6) {
-      const double value = QPointF::dotProduct(
+      double value = QPointF::dotProduct(
                                event->position() - cameraPan_ - origin, axis) /
                            axisLengthSquared;
+      const Point3d semanticEndWorld = offsetPoint(
+          toolManipulator_->origin, toolManipulator_->direction,
+          toolManipulator_->valueMm);
+      const QPointF semanticEnd = projectBodyPoint(
+          semanticEndWorld, toolManipulator_->origin, size(), yaw_, pitch_,
+          zoom_).screen;
+      const bool hasToolPreview = toolPreviewShape_ && !toolPreviewShape_->IsNull();
+      const QRectF bodyBounds = hasToolPreview
+          ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
+          : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
+      const auto layout = computeManipulatorLayout({
+          origin, semanticEnd - origin, QLineF(origin, semanticEnd).length(),
+          bodyBounds, QRectF(QPointF(-cameraPan_.x(), -cameraPan_.y()), size()),
+          toolParameterHud_ ? toolParameterHud_->size() : QSizeF(132, 40),
+          {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(),
+                  116.0, 116.0)}});
+      value *= layout.visualSign;
       toolManipulator_->valueMm = std::max(0.01, value);
       emit toolManipulatorValueChanged(toolManipulator_->valueMm);
       update();

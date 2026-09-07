@@ -27,6 +27,8 @@ class ModelRibbon final : public QWidget {
   void circularPatternRequested();
   void fitRequested();
   void isoRequested();
+  void displayModeRequested(int mode);
+  void meshQualityRequested(int quality);
 
  private:
   QButtonGroup* toolGroup_{nullptr};

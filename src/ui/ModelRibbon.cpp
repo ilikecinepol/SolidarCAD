@@ -148,12 +148,54 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   views->setSpacing(3);
   auto* fit = commandButton(QStringLiteral("fit"), this);
   auto* iso = commandButton(QStringLiteral("iso"), this);
+  auto* displayMode = new QToolButton(this);
+  displayMode->setObjectName("displayModeCommand");
+  displayMode->setText(QString::fromUtf8("Затенённый\nс рёбрами"));
+  displayMode->setToolTip(QString::fromUtf8("Режим отображения тела"));
+  displayMode->setPopupMode(QToolButton::InstantPopup);
+  displayMode->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  displayMode->setMinimumSize(104, 56);
+  auto* displayMenu = new QMenu(displayMode);
+  const auto addDisplayMode = [&](const QString& text, int mode) {
+    auto* action = displayMenu->addAction(text);
+    connect(action, &QAction::triggered, this,
+            [this, displayMode, text, mode] {
+              displayMode->setText(text);
+              emit displayModeRequested(mode);
+            });
+  };
+  addDisplayMode(QString::fromUtf8("Затенённый"), 0);
+  addDisplayMode(QString::fromUtf8("Затенённый с рёбрами"), 1);
+  addDisplayMode(QString::fromUtf8("Каркас"), 2);
+  displayMode->setMenu(displayMenu);
+
+  auto* quality = new QToolButton(this);
+  quality->setObjectName("meshQualityCommand");
+  quality->setText(QString::fromUtf8("Качество:\nОбычное"));
+  quality->setToolTip(QString::fromUtf8("Качество сетки отображения"));
+  quality->setPopupMode(QToolButton::InstantPopup);
+  quality->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  quality->setMinimumSize(92, 56);
+  auto* qualityMenu = new QMenu(quality);
+  auto* normalQuality = qualityMenu->addAction(QString::fromUtf8("Обычное"));
+  auto* highQuality = qualityMenu->addAction(QString::fromUtf8("Высокое"));
+  connect(normalQuality, &QAction::triggered, this, [this, quality] {
+    quality->setText(QString::fromUtf8("Качество:\nОбычное"));
+    emit meshQualityRequested(0);
+  });
+  connect(highQuality, &QAction::triggered, this, [this, quality] {
+    quality->setText(QString::fromUtf8("Качество:\nВысокое"));
+    emit meshQualityRequested(1);
+  });
+  quality->setMenu(qualityMenu);
   fit->setObjectName("fitCommand");
   iso->setObjectName("isoCommand");
   fit->setMinimumSize(58, 56);
   iso->setMinimumSize(58, 56);
   views->addWidget(fit);
   views->addWidget(iso);
+  views->addWidget(displayMode);
+  views->addWidget(quality);
   root->addWidget(group(QString::fromUtf8("ВИД"), views, this, {fit, iso}), 1);
 
   connect(createSketch, &QToolButton::clicked, this,

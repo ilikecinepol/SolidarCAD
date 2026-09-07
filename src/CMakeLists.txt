@@ -11,6 +11,8 @@ add_library(solidar_model
   model/Body.h
   model/Document.cpp
   model/Document.h
+  model/EdgeManipulatorGeometry.cpp
+  model/EdgeManipulatorGeometry.h
   model/DraftBuilder.cpp
   model/DraftBuilder.h
   model/DraftFeature.cpp
@@ -122,6 +124,8 @@ add_library(solidar_viewport3d
   ui/BodyRenderMesh.cpp
   ui/BodyRenderMesh.h
   ui/EdgeSelectionState.h
+  ui/ManipulatorLayout.cpp
+  ui/ManipulatorLayout.h
   ui/ModelRibbon.cpp
   ui/ModelRibbon.h
   ui/PartDesignToolHelp.cpp
@@ -132,13 +136,18 @@ add_library(solidar_viewport3d
   ui/HistoryTimelineWidget.h
   ui/Viewport.cpp
   ui/Viewport.h
+  ui/ViewportCamera.cpp
+  ui/ViewportCamera.h
   ui/ViewportPicking.cpp
   ui/ViewportPicking.h
+  ui/ViewportRenderer.cpp
+  ui/ViewportRenderer.h
   ui/tools/ToolParameterHud.cpp
   ui/tools/ToolParameterHud.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)
+target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets
+  Qt6::OpenGL Qt6::OpenGLWidgets)
 solidar_warnings(solidar_viewport3d)
 
 add_library(solidar_editor
