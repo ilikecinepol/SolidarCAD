@@ -338,6 +338,14 @@ void ViewportRenderer::render(
     drawSurfaces(gpu, matrix, yawDeg, pitchDeg,
                  preview ? std::vector<std::size_t>{} : selectedFaces,
                  preview ? std::size_t(-1) : hoveredFace, preview != nullptr);
+    // A live tool preview reuses the source topology for face/edge picking but
+    // the preview mesh carries its own face indices. Keep the source body's
+    // highlighted (selected/hovered) faces visible by re-drawing them on top,
+    // exactly as edges are handled below. The preview pass is drawn first so
+    // the highlighted source faces read through the translucent preview.
+    if (preview && (!selectedFaces.empty() || hoveredFace != std::size_t(-1)))
+      drawSurfaces(*source_, matrix, yawDeg, pitchDeg, selectedFaces, hoveredFace,
+                   false);
     gl->glDisable(GL_POLYGON_OFFSET_FILL);
   }
   if (mode != ViewportDisplayMode::Shaded)

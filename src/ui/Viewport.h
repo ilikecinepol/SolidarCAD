@@ -152,8 +152,9 @@ class Viewport final : public QOpenGLWidget {
  private:
   void updateSketchPlaneHover(QPointF position);
   void updateExtrusionHover(QPointF position);
+  void pickFallbackBodyFace(QPointF position);
   void refreshSelectedExtrusionPolygon();
-  [[nodiscard]] QPointF extrusionScreenOffset() const;
+  [[nodiscard]] QPointF extrusionScreenOffset(double lengthMm) const;
   void rebuildSelectedExtrusionSketch();
   void updateBodyHover(QPointF position);
   void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
