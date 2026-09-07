@@ -53,7 +53,23 @@ const std::vector<EdgeReference>& FilletToolSession::edges() const noexcept {
   return edges_;
 }
 double FilletToolSession::radiusMm() const noexcept { return radiusMm_; }
-ToolLifecycle FilletToolSession::lifecycle() const noexcept { return lifecycle_; }
+ToolLifecycle FilletToolSession::lifecycle() const noexcept {
+  return lifecycle_;
+}
+ToolSelectionStage FilletToolSession::selectionStage() const noexcept {
+  if (lifecycle_ == ToolLifecycle::Inactive) return ToolSelectionStage::None;
+  return edges_.empty() ? ToolSelectionStage::SelectingInput
+                        : ToolSelectionStage::EditingParameters;
+}
+std::optional<SelectionRequirement> FilletToolSession::selectionRequirement() const {
+  if (!edges_.empty()) return std::nullopt;
+  return SelectionRequirement{SelectionType::Edge, "Select edges", 1,
+                              static_cast<std::size_t>(-1), true};
+}
+std::vector<ToolParameterDescriptor> FilletToolSession::parameters() const {
+  return {{"radius", "Radius", ToolParameterType::Distance, radiusMm_, 0.01,
+           100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
+}
 std::shared_ptr<const TopoDS_Shape> FilletToolSession::previewShape() const {
   return previewShape_;
 }
@@ -68,7 +84,7 @@ bool FilletToolSession::updatePreview() {
     return false;
   }
   if (edges_.empty()) {
-    lifecycle_ = ToolLifecycle::Editing;
+    lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
   std::vector<std::size_t> indices;
@@ -79,7 +95,13 @@ bool FilletToolSession::updatePreview() {
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
-    indices.push_back(edge.edgeIndex);
+    const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+    if (!resolved) {
+      error_ = "Fillet edge could not be resolved";
+      lifecycle_ = ToolLifecycle::PreviewInvalid;
+      return false;
+    }
+    indices.push_back(resolved.index);
   }
   previewShape_ = buildFilletShape(*baseShape_, indices, radiusMm_, &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
@@ -90,9 +112,10 @@ bool FilletToolSession::updatePreview() {
 std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
   if (!baseShape_ || edges_.empty()) return std::nullopt;
   try {
-    const auto edge = resolveEdge(*baseShape_, edges_.front().edgeIndex);
+    const auto edge =
+        resolveEdgeReference(*baseShape_, edges_.front().topology());
     if (!edge) return std::nullopt;
-    BRepAdaptor_Curve curve(*edge);
+    BRepAdaptor_Curve curve(*edge.subshape);
     const double parameter =
         (curve.FirstParameter() + curve.LastParameter()) * 0.5;
     const gp_Pnt point = curve.Value(parameter);

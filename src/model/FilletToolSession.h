@@ -20,11 +20,14 @@ class FilletToolSession final : public ToolSession {
 
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
-  [[nodiscard]] std::optional<FeatureId> editingFeatureId() const noexcept;
+  [[nodiscard]] std::optional<FeatureId> editingFeatureId() const noexcept override;
   [[nodiscard]] const std::vector<EdgeReference>& edges() const noexcept;
   [[nodiscard]] double radiusMm() const noexcept;
   [[nodiscard]] std::optional<LinearToolManipulator> manipulator() const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
+  [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
+  [[nodiscard]] std::optional<SelectionRequirement> selectionRequirement() const override;
+  [[nodiscard]] std::vector<ToolParameterDescriptor> parameters() const override;
   [[nodiscard]] std::shared_ptr<const TopoDS_Shape> previewShape() const override;
   [[nodiscard]] const std::string& error() const noexcept override;
   bool updatePreview() override;

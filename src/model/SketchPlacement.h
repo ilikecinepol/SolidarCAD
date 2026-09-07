@@ -42,21 +42,40 @@ struct SketchPlacement {
 struct FaceReference {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
-  // Temporary until persistent topological naming is introduced.
+  // Legacy traversal index retained for loading v2 project files.
   std::size_t faceIndex{};
+  std::string persistentTag;
+  std::optional<FaceSignature> signature;
 
   [[nodiscard]] TopologyReference topology() const {
-    return {bodyId, featureId, TopologyKind::Face, faceIndex};
+    TopologyReference result;
+    result.bodyId = bodyId;
+    result.featureId = featureId;
+    result.kind = TopologyKind::Face;
+    result.legacyIndex = faceIndex;
+    result.persistentTag = persistentTag;
+    result.faceSignature = signature;
+    return result;
   }
+  friend bool operator==(const FaceReference&, const FaceReference&) = default;
 };
 
 struct EdgeReference {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
-  // Temporary until persistent topological naming is introduced.
+  // Legacy traversal index retained for loading v2 project files.
   std::size_t edgeIndex{};
+  std::string persistentTag;
+  std::optional<EdgeSignature> signature;
   [[nodiscard]] TopologyReference topology() const {
-    return {bodyId, featureId, TopologyKind::Edge, edgeIndex};
+    TopologyReference result;
+    result.bodyId = bodyId;
+    result.featureId = featureId;
+    result.kind = TopologyKind::Edge;
+    result.legacyIndex = edgeIndex;
+    result.persistentTag = persistentTag;
+    result.edgeSignature = signature;
+    return result;
   }
   friend bool operator==(const EdgeReference&, const EdgeReference&) = default;
 };

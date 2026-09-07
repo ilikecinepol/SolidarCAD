@@ -8,6 +8,7 @@
 
 #include "model/Body.h"
 #include "model/FilletBuilder.h"
+#include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
 
@@ -86,8 +87,8 @@ bool FilletFeature::rebuild(const RebuildContext& context) {
     }
 
   // The selected topology belongs to the result immediately preceding this
-  // feature. edgeIndex remains temporary until persistent topological naming
-  // is implemented.
+  // feature. Persistent data resolves the current edge; edgeIndex is only the
+  // compatibility fallback for older project files.
   const auto& features = context.body->features();
   std::size_t ownIndex = features.size();
   for (std::size_t index = 0; index < features.size(); ++index)
@@ -103,7 +104,15 @@ bool FilletFeature::rebuild(const RebuildContext& context) {
 
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
-  for (const auto& edge : edges_) indices.push_back(edge.edgeIndex);
+  for (const auto& edge : edges_) {
+    const auto resolved =
+        resolveEdgeReference(*context.previousShape, edge.topology());
+    if (!resolved) {
+      markError("Fillet edge could not be resolved");
+      return false;
+    }
+    indices.push_back(resolved.index);
+  }
   std::string error;
   auto result = buildFilletShape(*context.previousShape, indices, radiusMm_,
                                  &error);

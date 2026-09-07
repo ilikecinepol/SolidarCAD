@@ -19,6 +19,7 @@ class ShapeFeature : public Feature {
 
   [[nodiscard]] const ShapePtr& shape() const noexcept;
   [[nodiscard]] bool hasShape() const noexcept;
+  void discardResult() noexcept;
 
  protected:
   void setShape(ShapePtr shape) noexcept;

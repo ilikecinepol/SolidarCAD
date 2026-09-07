@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <optional>
 
 #include "model/ShapeFeature.h"
 
@@ -34,6 +35,9 @@ class Body final {
   [[nodiscard]] ShapeFeature::ShapePtr resultShape() const noexcept;
   [[nodiscard]] bool rebuild(const RebuildContext& context);
   void markDirtyFrom(std::size_t index) noexcept;
+  [[nodiscard]] std::optional<std::size_t> featureIndex(
+      FeatureId id) const noexcept;
+  void eraseFeaturesFrom(std::size_t index);
 
  private:
   static BodyId nextId() noexcept;

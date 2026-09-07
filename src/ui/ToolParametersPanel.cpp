@@ -1,6 +1,8 @@
 #include "ui/ToolParametersPanel.h"
+#include "ui/PartDesignToolHelp.h"
 
 #include <QDoubleSpinBox>
+#include <QCheckBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -19,6 +21,10 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   titleFont.setBold(true);
   titleFont.setPointSize(titleFont.pointSize() + 2);
   title_->setFont(titleFont);
+  description_ = new QLabel(this);
+  description_->setObjectName("toolDescription");
+  description_->setWordWrap(true);
+  description_->setStyleSheet(QStringLiteral("color:#607493;"));
   auto* form = new QFormLayout;
   selectionCaption_ = new QLabel(this);
   selectionValue_ = new QLabel(this);
@@ -34,6 +40,9 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   parameter_ = new QDoubleSpinBox(this);
   form->addRow(selectionCaption_, selectionControls);
   form->addRow(parameterCaption_, parameter_);
+  option_ = new QCheckBox(this);
+  option_->hide();
+  form->addRow(QString{}, option_);
   status_ = new QLabel(this);
   status_->setWordWrap(true);
   auto* buttons = new QHBoxLayout;
@@ -46,6 +55,7 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   buttons->addWidget(cancel);
   buttons->addWidget(accept_);
   layout->addWidget(title_);
+  layout->addWidget(description_);
   layout->addLayout(form);
   layout->addWidget(status_);
   layout->addStretch();
@@ -58,6 +68,8 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
           &ToolParametersPanel::selectionRequested);
   connect(clear_, &QPushButton::clicked, this,
           &ToolParametersPanel::clearSelectionRequested);
+  connect(option_, &QCheckBox::toggled, this,
+          &ToolParametersPanel::optionChanged);
 }
 
 void ToolParametersPanel::configure(const QString& title,
@@ -68,6 +80,14 @@ void ToolParametersPanel::configure(const QString& title,
   selectionCaption_->setText(selectionName + QStringLiteral(":"));
   parameterCaption_->setText(parameterName + QStringLiteral(":"));
   parameter_->setSuffix(suffix);
+  option_->hide();
+}
+void ToolParametersPanel::configure(const PartDesignToolHelp& help,
+                                    const QString& selectionName,
+                                    const QString& parameterName,
+                                    const QString& suffix) {
+  configure(help.title.toUpper(), selectionName, parameterName, suffix);
+  setDescription(help.shortDescription);
 }
 void ToolParametersPanel::setSelectionCount(std::size_t count) {
   selectionValue_->setText(QString::fromUtf8("%1 выбрано").arg(count));
@@ -89,6 +109,23 @@ void ToolParametersPanel::setStatus(const QString& text, bool error) {
 }
 void ToolParametersPanel::setAcceptEnabled(bool enabled) {
   accept_->setEnabled(enabled);
+}
+void ToolParametersPanel::setDescription(const QString& text) {
+  description_->setText(text);
+}
+QString ToolParametersPanel::titleText() const { return title_->text(); }
+QString ToolParametersPanel::descriptionText() const {
+  return description_->text();
+}
+void ToolParametersPanel::configureOption(const QString& text, bool checked) {
+  const QSignalBlocker blocker(option_);
+  option_->setText(text);
+  option_->setChecked(checked);
+  option_->show();
+}
+void ToolParametersPanel::setOptionChecked(bool checked) {
+  const QSignalBlocker blocker(option_);
+  option_->setChecked(checked);
 }
 
 }  // namespace solidar

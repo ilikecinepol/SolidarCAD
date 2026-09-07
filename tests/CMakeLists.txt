@@ -16,6 +16,12 @@ add_executable(revolve_feature_tests revolve_feature_tests.cpp)
 target_link_libraries(revolve_feature_tests PRIVATE solidar_model)
 add_test(NAME revolve_feature_tests COMMAND revolve_feature_tests)
 
+add_executable(part_design_tool_framework_tests
+               part_design_tool_framework_tests.cpp)
+target_link_libraries(part_design_tool_framework_tests PRIVATE solidar_editor)
+add_test(NAME part_design_tool_framework_tests
+         COMMAND part_design_tool_framework_tests)
+
 add_executable(extrude_geometry_regression_tests
                extrude_geometry_regression_tests.cpp)
 target_link_libraries(extrude_geometry_regression_tests PRIVATE solidar_model)
@@ -50,6 +56,20 @@ add_executable(model_ribbon_tests model_ribbon_tests.cpp)
 target_link_libraries(model_ribbon_tests PRIVATE solidar_editor Qt6::Widgets)
 add_test(NAME model_ribbon_tests COMMAND model_ribbon_tests)
 
+add_executable(part_design_history_ui_tests part_design_history_ui_tests.cpp)
+target_link_libraries(part_design_history_ui_tests
+  PRIVATE solidar_editor solidar_project Qt6::Widgets)
+add_test(NAME part_design_history_ui_tests COMMAND part_design_history_ui_tests)
+add_executable(feature_removal_tests feature_removal_tests.cpp)
+target_link_libraries(feature_removal_tests PRIVATE solidar_model)
+add_test(NAME feature_removal_tests COMMAND feature_removal_tests)
+add_executable(history_timeline_geometry_tests history_timeline_geometry_tests.cpp)
+target_link_libraries(history_timeline_geometry_tests PRIVATE solidar_viewport3d)
+add_test(NAME history_timeline_geometry_tests COMMAND history_timeline_geometry_tests)
+add_executable(historical_preview_tests historical_preview_tests.cpp)
+target_link_libraries(historical_preview_tests PRIVATE solidar_viewport3d)
+add_test(NAME historical_preview_tests COMMAND historical_preview_tests)
+
 add_executable(sketch_regression_tests sketch_regression_tests.cpp)
 target_link_libraries(sketch_regression_tests PRIVATE solidar_model)
 add_test(NAME sketch_regression_tests COMMAND sketch_regression_tests)
@@ -58,6 +78,25 @@ add_executable(body_render_mesh_tests body_render_mesh_tests.cpp)
 target_link_libraries(body_render_mesh_tests PRIVATE solidar_viewport3d)
 add_test(NAME body_render_mesh_tests COMMAND body_render_mesh_tests)
 
+add_executable(edge_selection_state_tests edge_selection_state_tests.cpp)
+target_link_libraries(edge_selection_state_tests PRIVATE solidar_viewport3d)
+add_test(NAME edge_selection_state_tests COMMAND edge_selection_state_tests)
+
+add_executable(viewport_picking_tests viewport_picking_tests.cpp)
+target_link_libraries(viewport_picking_tests PRIVATE solidar_viewport3d)
+add_test(NAME viewport_picking_tests COMMAND viewport_picking_tests)
+
+add_executable(viewport_manipulator_tests viewport_manipulator_tests.cpp)
+target_link_libraries(viewport_manipulator_tests
+                      PRIVATE solidar_viewport3d Qt6::Widgets)
+add_test(NAME viewport_manipulator_tests COMMAND viewport_manipulator_tests)
+
+add_executable(viewport_preview_selection_tests
+               viewport_preview_selection_tests.cpp)
+target_link_libraries(viewport_preview_selection_tests PRIVATE solidar_viewport3d)
+add_test(NAME viewport_preview_selection_tests
+         COMMAND viewport_preview_selection_tests)
+
 add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
@@ -65,6 +104,10 @@ add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
 add_executable(fillet_feature_tests fillet_feature_tests.cpp)
 target_link_libraries(fillet_feature_tests PRIVATE solidar_model)
 add_test(NAME fillet_feature_tests COMMAND fillet_feature_tests)
+
+add_executable(chamfer_feature_tests chamfer_feature_tests.cpp)
+target_link_libraries(chamfer_feature_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME chamfer_feature_tests COMMAND chamfer_feature_tests)
 
 add_executable(parametric_feature_chain_tests
                parametric_feature_chain_tests.cpp)
@@ -79,6 +122,45 @@ target_link_libraries(part_design_regression_tests
 add_test(NAME part_design_regression_tests
          COMMAND part_design_regression_tests)
 
+add_executable(downstream_feature_preservation_tests
+               downstream_feature_preservation_tests.cpp)
+target_link_libraries(downstream_feature_preservation_tests
+  PRIVATE solidar_project Qt6::Core)
+add_test(NAME downstream_feature_preservation_tests
+         COMMAND downstream_feature_preservation_tests)
+
+add_executable(shell_feature_tests shell_feature_tests.cpp)
+target_link_libraries(shell_feature_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME shell_feature_tests COMMAND shell_feature_tests)
+add_executable(shell_complex_topology_tests shell_complex_topology_tests.cpp)
+target_link_libraries(shell_complex_topology_tests PRIVATE solidar_model)
+add_test(NAME shell_complex_topology_tests COMMAND shell_complex_topology_tests)
+
+add_executable(draft_feature_tests draft_feature_tests.cpp)
+target_link_libraries(draft_feature_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME draft_feature_tests COMMAND draft_feature_tests)
+
+add_executable(parametric_history_tests parametric_history_tests.cpp)
+target_link_libraries(parametric_history_tests PRIVATE solidar_model)
+add_test(NAME parametric_history_tests COMMAND parametric_history_tests)
+
+foreach(pattern_test mirror_feature_tests linear_pattern_feature_tests circular_pattern_feature_tests)
+  add_executable(${pattern_test} ${pattern_test}.cpp)
+  target_link_libraries(${pattern_test} PRIVATE solidar_model)
+  add_test(NAME ${pattern_test} COMMAND ${pattern_test})
+endforeach()
+add_executable(pattern_persistence_tests pattern_persistence_tests.cpp)
+target_link_libraries(pattern_persistence_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME pattern_persistence_tests COMMAND pattern_persistence_tests)
+add_executable(multi_solid_edge_feature_tests multi_solid_edge_feature_tests.cpp)
+target_link_libraries(multi_solid_edge_feature_tests PRIVATE solidar_model)
+add_test(NAME multi_solid_edge_feature_tests COMMAND multi_solid_edge_feature_tests)
+
+add_executable(persistent_topology_tests
+               persistent_topology_tests.cpp)
+target_link_libraries(persistent_topology_tests PRIVATE solidar_model)
+add_test(NAME persistent_topology_tests COMMAND persistent_topology_tests)
+
 add_test(
   NAME compliance_artifacts_tests
   COMMAND ${CMAKE_COMMAND}
@@ -90,10 +172,16 @@ set_tests_properties(
   document_tests
   extrude_feature_tests
   revolve_feature_tests
+  part_design_tool_framework_tests
   pocket_feature_tests
   body_render_mesh_tests
+  edge_selection_state_tests
+  viewport_picking_tests
+  viewport_manipulator_tests
+  viewport_preview_selection_tests
   macro_foundation_tests
   fillet_feature_tests
+  chamfer_feature_tests
   PROPERTIES LABELS "unit"
 )
 
@@ -104,17 +192,38 @@ set_tests_properties(
   project_file_tests
   sketch_regression_tests
   fillet_feature_tests
+  chamfer_feature_tests
   revolve_feature_tests
   parametric_feature_chain_tests
   part_design_regression_tests
+  downstream_feature_preservation_tests
+  shell_feature_tests
+  shell_complex_topology_tests
+  draft_feature_tests
+  parametric_history_tests
+  persistent_topology_tests
+  mirror_feature_tests
+  linear_pattern_feature_tests
+  circular_pattern_feature_tests
+  pattern_persistence_tests
+  multi_solid_edge_feature_tests
   PROPERTIES LABELS "regression"
 )
 
+set_property(TEST persistent_topology_tests
+             PROPERTY LABELS "regression;topology")
 set_tests_properties(
   editor_smoke_tests
   model_ribbon_tests
+  part_design_history_ui_tests
+  feature_removal_tests
+  history_timeline_geometry_tests
+  historical_preview_tests
   PROPERTIES LABELS "ui-smoke"
 )
+
+set_property(TEST historical_preview_tests
+             PROPERTY LABELS "regression;ui-smoke")
 
 set_tests_properties(
   compliance_artifacts_tests
@@ -135,6 +244,7 @@ if(WIN32)
     document_tests
     extrude_feature_tests
     revolve_feature_tests
+    part_design_tool_framework_tests
     extrude_geometry_regression_tests
     extrude_boolean_regression_tests
     extrude_history_regression_tests
@@ -142,12 +252,32 @@ if(WIN32)
     project_file_tests
     editor_smoke_tests
     model_ribbon_tests
+    part_design_history_ui_tests
+    feature_removal_tests
+    history_timeline_geometry_tests
+    historical_preview_tests
     sketch_regression_tests
     body_render_mesh_tests
+    edge_selection_state_tests
+    viewport_picking_tests
+    viewport_manipulator_tests
+    viewport_preview_selection_tests
     macro_foundation_tests
     fillet_feature_tests
+    chamfer_feature_tests
     parametric_feature_chain_tests
     part_design_regression_tests
+    downstream_feature_preservation_tests
+    shell_feature_tests
+    shell_complex_topology_tests
+    draft_feature_tests
+    parametric_history_tests
+    persistent_topology_tests
+    mirror_feature_tests
+    linear_pattern_feature_tests
+    circular_pattern_feature_tests
+    pattern_persistence_tests
+    multi_solid_edge_feature_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"

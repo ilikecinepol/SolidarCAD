@@ -6,20 +6,26 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "model/ChamferToolSession.h"
 #include "model/FilletToolSession.h"
 #include "model/RevolveToolSession.h"
+#include "model/ShellToolSession.h"
+#include "model/DraftToolSession.h"
+#include "ui/tools/PartDesignToolController.h"
+#include "ui/PartDesignHistory.h"
 #include "sketch/Sketch.h"
 
 class QTreeWidget;
 class QStackedWidget;
 class QAction;
 class QHBoxLayout;
-class QSlider;
 class QDockWidget;
 class QDoubleSpinBox;
 class QPushButton;
 class QComboBox;
 class QCheckBox;
+class QLabel;
+class QScrollArea;
 class QTreeWidget;
 
 namespace solidar {
@@ -30,6 +36,7 @@ class DrawingSheetView;
 class SketchRibbon;
 class ModelRibbon;
 class ToolParametersPanel;
+class HistoryTimelineWidget;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -61,14 +68,35 @@ class MainWindow final : public QMainWindow {
   void updateFilletToolPreview();
   void acceptFilletTool();
   void cancelFilletTool();
+  void createChamfer();
+  void createMirror();
+  void createLinearPattern();
+  void createCircularPattern();
+  void editPatternFeature(FeatureId featureId);
+  void updateChamferToolPreview();
+  void acceptChamferTool();
+  void cancelChamferTool();
+  void createShell();
+  void updateShellToolPreview();
+  void acceptShellTool();
+  void cancelShellTool();
+  void createDraft();
+  void updateDraftToolPreview();
+  void acceptDraftTool();
+  void cancelDraftTool();
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
   void applyHistoryPosition(int position);
   void editSketchStep(std::size_t index);
-  void editExtrusionStep();
-  void editPocketStep();
-  void editFilletStep();
+  void editSketchById(SketchId sketchId);
+  void editHistoryFeature(BodyId bodyId, FeatureId featureId);
+  void removeHistoryStep(const HistoryStep& step);
+  bool ensureHistoryAtEnd();
+  void editExtrusionStep(BodyId bodyId, FeatureId featureId);
+  void editPocketStep(BodyId bodyId, FeatureId featureId);
+  void editFilletStep(BodyId bodyId, FeatureId featureId);
+  void editChamferStep(BodyId bodyId, FeatureId featureId);
   void exportPdf();
   void printDrawing();
   void undoLastAction();
@@ -96,12 +124,18 @@ class MainWindow final : public QMainWindow {
   QAction* undoAction_{nullptr};
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
-  QSlider* historySlider_{nullptr};
+  QScrollArea* historyScroll_{nullptr};
+  HistoryTimelineWidget* historyTimeline_{nullptr};
+  std::vector<HistoryStep> historySteps_;
   QDockWidget* extrusionDock_{nullptr};
   QDockWidget* toolParametersDock_{nullptr};
   ToolParametersPanel* toolParametersPanel_{nullptr};
   FilletToolSession filletToolSession_;
+  ChamferToolSession chamferToolSession_;
+  ShellToolSession shellToolSession_;
+  DraftToolSession draftToolSession_;
   RevolveToolSession revolveToolSession_;
+  PartDesignToolController partDesignTools_;
   QDockWidget* revolveDock_{nullptr};
   QComboBox* revolveProfileCombo_{nullptr};
   QComboBox* revolveAxisCombo_{nullptr};
@@ -109,6 +143,7 @@ class MainWindow final : public QMainWindow {
   QComboBox* revolveOperationCombo_{nullptr};
   QCheckBox* revolveReverseCheck_{nullptr};
   QPushButton* revolveAcceptButton_{nullptr};
+  QLabel* revolveStepHint_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
   QCheckBox* extrusionReverseCheck_{nullptr};

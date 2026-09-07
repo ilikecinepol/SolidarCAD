@@ -1,5 +1,6 @@
 #include <array>
 #include "ui/SketchCanvas.h"
+#include "model/TopologyReferenceResolver.h"
 #include "sketch/SketchSolver.h"
 
 #include <QKeySequence>
@@ -1249,13 +1250,9 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
     return;
 
   referenceBodyMesh_.rebuild(*context.supportShape);
-  std::size_t faceIndex = 0;
-  for (TopExp_Explorer faces(*context.supportShape, TopAbs_FACE); faces.More();
-       faces.Next(), ++faceIndex) {
-    if (faceIndex != context.supportFace->faceIndex) continue;
-    referenceFaceMesh_.rebuild(faces.Current());
-    break;
-  }
+  const auto resolved = resolveFaceReference(
+      *context.supportShape, context.supportFace->topology());
+  if (resolved) referenceFaceMesh_.rebuild(*resolved.subshape);
   realReferenceBodyVisible_ = !referenceBodyMesh_.triangles().empty();
   if (!realReferenceBodyVisible_) return;
 

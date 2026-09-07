@@ -43,6 +43,7 @@ class Feature {
   [[nodiscard]] bool isFailed() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept;
   void setDirty(bool dirty = true) noexcept;
+  void markBlocked(std::string message);
 
   [[nodiscard]] virtual std::string typeName() const = 0;
   [[nodiscard]] virtual bool dependsOnSketch(SketchId sketchId) const noexcept;

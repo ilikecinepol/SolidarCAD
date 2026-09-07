@@ -7,6 +7,7 @@
 #include <QWidget>
 #include <vector>
 #include <optional>
+#include <string>
 
 #include "model/Document.h"
 #include "model/SolidFeature.h"
@@ -22,16 +23,23 @@ class QDoubleSpinBox;
 
 namespace solidar {
 
+class ToolParameterHud;
+
 struct BodyViewShape {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
   ShapeFeature::ShapePtr shape;
 };
 
+enum class SelectionFilter { Any, Face, Edge, Plane };
+
 class Viewport final : public QWidget {
   Q_OBJECT
 
  public:
+  static constexpr qulonglong kGlobalXAxisToken = 0xfffffffffffffff0ULL;
+  static constexpr qulonglong kGlobalYAxisToken = 0xfffffffffffffff1ULL;
+  static constexpr qulonglong kGlobalZAxisToken = 0xfffffffffffffff2ULL;
   explicit Viewport(QWidget* parent = nullptr);
   void setBox(BoxParameters parameters);
   void setBodyShape(ShapeFeature::ShapePtr shape,
@@ -60,6 +68,7 @@ class Viewport final : public QWidget {
   void resetScene();
   void beginSketchPlaneSelection();
   void beginExtrusionSurfaceSelection();
+  void beginRevolveAxisSelection(std::size_t sketchIndex);
   void showExtrusionManipulator(double lengthMm);
   void hideExtrusionManipulator();
   void setExtrusionPreviewLength(double lengthMm);
@@ -67,9 +76,17 @@ class Viewport final : public QWidget {
   [[nodiscard]] QString selectedFaceName() const;
   [[nodiscard]] std::optional<std::size_t> selectedBodyFaceIndex() const noexcept;
   [[nodiscard]] std::optional<FaceReference> selectedBodyFace() const noexcept;
+  [[nodiscard]] std::vector<FaceReference> selectedBodyFaces() const;
+  void setSelectedBodyFaces(const std::vector<FaceReference>& faces);
+  void setFaceMultiSelectionMode(bool enabled) noexcept;
+  [[nodiscard]] bool faceMultiSelectionMode() const noexcept;
   [[nodiscard]] std::optional<EdgeReference> selectedBodyEdge() const noexcept;
   [[nodiscard]] std::vector<EdgeReference> selectedBodyEdges() const;
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
+  void setEdgeMultiSelectionMode(bool enabled) noexcept;
+  [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
+  void setSelectionFilter(SelectionFilter filter) noexcept;
+  [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                            ShapeFeature::ShapePtr shape);
   void clearToolPreviewShape();
@@ -84,6 +101,8 @@ class Viewport final : public QWidget {
   void viewRight();
   void viewLeft();
   void viewIsometric();
+  [[nodiscard]] float cameraYawDegrees() const noexcept;
+  [[nodiscard]] float cameraPitchDegrees() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
@@ -105,8 +124,12 @@ class Viewport final : public QWidget {
   void extrusionPreviewLengthChanged(double lengthMm);
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
+  void bodyFaceSelectionChanged();
   void toolManipulatorValueChanged(double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
+  // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
+  // values >= 3 encode a sketch line id plus three.
+  void revolveAxisPicked(qulonglong axisToken);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -127,14 +150,21 @@ class Viewport final : public QWidget {
                           bool clearSelection);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(
       std::size_t index) const noexcept;
-  enum class PickMode { None, SketchPlane, ExtrusionSurface };
+  [[nodiscard]] std::optional<FaceReference> faceReferenceForGlobalIndex(
+      std::size_t index) const noexcept;
+  enum class PickMode { None, SketchPlane, ExtrusionSurface, RevolveAxis };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
+  ShapeFeature::ShapePtr toolPreviewShape_;
+  BodyRenderMesh toolPreviewRenderMesh_;
+  BodyId toolPreviewBodyId_{kInvalidBodyId};
+  FeatureId toolPreviewFeatureId_{kInvalidFeatureId};
   std::vector<BodyViewShape> bodyViewShapes_;
   struct BodyTopologyRange {
     BodyId bodyId{kInvalidBodyId};
     FeatureId featureId{kInvalidFeatureId};
+    ShapeFeature::ShapePtr shape;
     std::size_t firstFace{};
     std::size_t faceCount{};
     std::size_t firstEdge{};
@@ -161,10 +191,16 @@ class Viewport final : public QWidget {
   bool basePlanesVisible_[3]{false, false, false};
   PickMode pickMode_{PickMode::None};
   int selectedFace_{-1};
+  std::vector<std::size_t> selectedBodyFaceIndices_;
+  std::vector<FaceReference> selectedBodyFaceReferences_;
+  bool faceMultiSelectionMode_{false};
   std::size_t hoveredBodyFaceIndex_{static_cast<std::size_t>(-1)};
   std::size_t hoveredBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedBodyEdgeIndex_{static_cast<std::size_t>(-1)};
   std::vector<std::size_t> selectedBodyEdgeIndices_;
+  std::vector<EdgeReference> selectedBodyEdgeReferences_;
+  bool edgeMultiSelectionMode_{false};
+  SelectionFilter selectionFilter_{SelectionFilter::Any};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
   bool selectedOrigin_{false};
@@ -181,7 +217,10 @@ class Viewport final : public QWidget {
   QString hoveredExtrusionSurface_;
   std::size_t hoveredExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
+  std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
+  ToolParameterHud* toolParameterHud_{nullptr};
+  std::string toolHudParameterId_;
   QPointF extrusionManipulatorAnchor_;
   double extrusionPreviewLengthMm_{25.0};
   bool extrusionManipulatorVisible_{false};

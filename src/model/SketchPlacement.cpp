@@ -1,4 +1,5 @@
 #include "model/SketchPlacement.h"
+#include "model/TopologyReferenceResolver.h"
 
 #include <BRepAdaptor_Surface.hxx>
 #include <GeomAbs_SurfaceType.hxx>
@@ -91,9 +92,9 @@ ResolvedFacePlacement resolveFacePlacement(const TopoDS_Shape& shape,
 
 ResolvedFacePlacement resolveFacePlacement(
     const TopoDS_Shape& shape, const TopologyReference& reference) {
-  if (reference.kind != TopologyKind::Face || !reference.hasValidOwner())
-    return {};
-  return resolveFacePlacement(shape, reference.legacyIndex);
+  const auto resolved = resolveFaceReference(shape, reference);
+  return resolved ? resolveFacePlacement(shape, resolved.index)
+                  : ResolvedFacePlacement{};
 }
 
 }  // namespace solidar

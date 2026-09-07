@@ -11,6 +11,18 @@ add_library(solidar_model
   model/Body.h
   model/Document.cpp
   model/Document.h
+  model/DraftBuilder.cpp
+  model/DraftBuilder.h
+  model/DraftFeature.cpp
+  model/DraftFeature.h
+  model/DraftToolSession.cpp
+  model/DraftToolSession.h
+  model/ChamferBuilder.cpp
+  model/ChamferBuilder.h
+  model/ChamferFeature.cpp
+  model/ChamferFeature.h
+  model/ChamferToolSession.cpp
+  model/ChamferToolSession.h
   model/ExtrudeFeature.cpp
   model/ExtrudeFeature.h
   model/ExtrudeOperationDetector.cpp
@@ -21,7 +33,16 @@ add_library(solidar_model
   model/FilletBuilder.h
   model/FilletToolSession.cpp
   model/FilletToolSession.h
+  model/PatternTypes.h
+  model/MirrorFeature.cpp
+  model/MirrorFeature.h
+  model/LinearPatternFeature.cpp
+  model/LinearPatternFeature.h
+  model/CircularPatternFeature.cpp
+  model/CircularPatternFeature.h
   model/ToolSession.h
+  model/PartDesignToolFramework.h
+  model/PartDesignToolFramework.cpp
   model/PocketFeature.cpp
   model/PocketFeature.h
   model/RevolveFeature.cpp
@@ -34,6 +55,14 @@ add_library(solidar_model
   model/Feature.h
   model/ShapeFeature.cpp
   model/ShapeFeature.h
+  model/ShapeContainerUtils.cpp
+  model/ShapeContainerUtils.h
+  model/ShellBuilder.cpp
+  model/ShellBuilder.h
+  model/ShellFeature.cpp
+  model/ShellFeature.h
+  model/ShellToolSession.cpp
+  model/ShellToolSession.h
   model/SketchPlacement.cpp
   model/SketchPlacement.h
   model/SolidFeature.h
@@ -54,7 +83,7 @@ target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(solidar_model PUBLIC
   TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool
-  TKFillet TKMesh
+  TKFillet TKMesh TKOffset
 )
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)
@@ -92,10 +121,21 @@ solidar_warnings(solidar_drawing_ui)
 add_library(solidar_viewport3d
   ui/BodyRenderMesh.cpp
   ui/BodyRenderMesh.h
+  ui/EdgeSelectionState.h
   ui/ModelRibbon.cpp
   ui/ModelRibbon.h
+  ui/PartDesignToolHelp.cpp
+  ui/PartDesignToolHelp.h
+  ui/PartDesignHistory.cpp
+  ui/PartDesignHistory.h
+  ui/HistoryTimelineWidget.cpp
+  ui/HistoryTimelineWidget.h
   ui/Viewport.cpp
   ui/Viewport.h
+  ui/ViewportPicking.cpp
+  ui/ViewportPicking.h
+  ui/tools/ToolParameterHud.cpp
+  ui/tools/ToolParameterHud.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets)
@@ -108,6 +148,8 @@ add_library(solidar_editor
   ui/MainWindow.h
   ui/ToolParametersPanel.cpp
   ui/ToolParametersPanel.h
+  ui/tools/PartDesignToolController.cpp
+  ui/tools/PartDesignToolController.h
 )
 target_include_directories(solidar_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_editor PUBLIC

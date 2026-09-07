@@ -1,4 +1,5 @@
 #include "model/Document.h"
+#include "model/TopologyReferenceResolver.h"
 
 #include <algorithm>
 #include <atomic>
@@ -110,9 +111,10 @@ const Body* Document::activeBody() const noexcept {
 
 bool Document::rebuild() {
   const RebuildContext context{*this};
+  bool valid = true;
   for (auto& body : bodies_)
-    if (!body.rebuild(context)) return false;
-  return true;
+    if (!body.rebuild(context)) valid = false;
+  return valid;
 }
 
 bool Document::recompute() { return rebuild(); }
@@ -128,6 +130,84 @@ std::string Document::rebuildError() const {
         return "Body '" + body.name() + "', feature '" + feature->name() +
                "' is invalid without a diagnostic message";
   return {};
+}
+
+FeatureRemovalPlan Document::planFeatureRemoval(BodyId bodyId,
+                                                FeatureId featureId) const {
+  FeatureRemovalPlan plan;
+  plan.bodyId = bodyId; plan.selectedFeatureId = featureId;
+  const Body* body = findBody(bodyId);
+  if (!body) return plan;
+  const auto start = body->featureIndex(featureId);
+  if (!start) return plan;
+  for (std::size_t index = *start; index < body->features().size(); ++index)
+    plan.featureIds.push_back(body->features()[index]->id());
+  for (const auto& sketch : sketches_)
+    if (sketch.support.type == SketchSupportType::Face &&
+        std::find(plan.featureIds.begin(), plan.featureIds.end(),
+                  sketch.support.face.featureId) != plan.featureIds.end())
+      plan.sketchIds.push_back(sketch.id);
+  return plan;
+}
+
+FeatureRemovalPlan Document::planSketchRemoval(SketchId sketchId) const {
+  FeatureRemovalPlan plan;
+  if (!findSketch(sketchId)) return plan;
+  plan.selectedSketchId = sketchId; plan.sketchIds.push_back(sketchId);
+  for (const Body& body : bodies_) {
+    for (std::size_t index = 0; index < body.features().size(); ++index) {
+      if (!body.features()[index]->dependsOnSketch(sketchId)) continue;
+      auto downstream = planFeatureRemoval(body.id(), body.features()[index]->id());
+      plan.bodyId = body.id();
+      plan.featureIds.insert(plan.featureIds.end(), downstream.featureIds.begin(),
+                             downstream.featureIds.end());
+      plan.sketchIds.insert(plan.sketchIds.end(), downstream.sketchIds.begin(),
+                            downstream.sketchIds.end());
+      break;
+    }
+  }
+  std::sort(plan.sketchIds.begin(), plan.sketchIds.end());
+  plan.sketchIds.erase(std::unique(plan.sketchIds.begin(), plan.sketchIds.end()),
+                       plan.sketchIds.end());
+  return plan;
+}
+
+bool Document::removeFeatureCascade(BodyId bodyId, FeatureId featureId,
+                                    std::string* error) {
+  const auto plan = planFeatureRemoval(bodyId, featureId);
+  Body* body = findBody(bodyId);
+  const auto start = body ? body->featureIndex(featureId) : std::nullopt;
+  if (!body || !start) {
+    if (error) *error = "Feature to remove was not found";
+    return false;
+  }
+  body->eraseFeaturesFrom(*start);
+  sketches_.erase(std::remove_if(sketches_.begin(), sketches_.end(),
+      [&plan](const DocumentSketch& sketch) {
+        return std::find(plan.sketchIds.begin(), plan.sketchIds.end(), sketch.id) !=
+               plan.sketchIds.end();
+      }), sketches_.end());
+  return true;
+}
+
+bool Document::removeSketchCascade(SketchId sketchId, std::string* error) {
+  const auto plan = planSketchRemoval(sketchId);
+  if (plan.empty()) {
+    if (error) *error = "Sketch to remove was not found";
+    return false;
+  }
+  if (!plan.featureIds.empty()) {
+    Body* body = findBody(plan.bodyId);
+    const auto start = body ? body->featureIndex(plan.featureIds.front())
+                            : std::nullopt;
+    if (body && start) body->eraseFeaturesFrom(*start);
+  }
+  sketches_.erase(std::remove_if(sketches_.begin(), sketches_.end(),
+      [&plan](const DocumentSketch& sketch) {
+        return std::find(plan.sketchIds.begin(), plan.sketchIds.end(), sketch.id) !=
+               plan.sketchIds.end();
+      }), sketches_.end());
+  return true;
 }
 
 bool Document::recomputeFrom(FeatureId featureId) {
@@ -148,6 +228,16 @@ bool Document::recomputeFrom(FeatureId featureId) {
 bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
   auto* sketch = findSketch(sketchId);
   if (!sketch) return false;
+  const Body* body = findBody(reference.bodyId);
+  if (body && !reference.signature) {
+    for (const auto& feature : body->features())
+      if (feature->id() == reference.featureId && feature->shape()) {
+        reference = makeFaceReference(*feature->shape(), reference.bodyId,
+                                      reference.featureId,
+                                      reference.faceIndex);
+        break;
+      }
+  }
   sketch->support = {SketchSupportType::Face, reference};
   updateSketchPlacements();
   return sketch->supportResolved;
@@ -156,7 +246,7 @@ bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
 void Document::updateSketchPlacements() {
   for (auto& sketch : sketches_) {
     if (sketch.support.type != SketchSupportType::Face) continue;
-    const auto& reference = sketch.support.face;
+    auto& reference = sketch.support.face;
     const Body* body = findBody(reference.bodyId);
     const ShapeFeature* feature = nullptr;
     if (body) {
@@ -170,8 +260,15 @@ void Document::updateSketchPlacements() {
       sketch.supportResolved = false;
       continue;
     }
-    const auto resolved =
-        resolveFacePlacement(*feature->shape(), reference.topology());
+    const auto resolution =
+        resolveFaceReference(*feature->shape(), reference.topology());
+    if (resolution && !reference.signature)
+      reference = makeFaceReference(*feature->shape(), reference.bodyId,
+                                    reference.featureId, resolution.index);
+    const auto resolved = resolution
+                              ? resolveFacePlacement(*feature->shape(),
+                                                     resolution.index)
+                              : ResolvedFacePlacement{};
     sketch.supportResolved = resolved.planar;
     if (resolved.planar) sketch.placement = resolved.placement;
   }

@@ -203,6 +203,11 @@ int main() {
 
   faceSketch.support.face.faceIndex = 9999;
   attachedDocument.updateSketchPlacements();
+  // Persistent identity, rather than the compatibility index, owns the link.
+  assert(faceSketch.supportResolved);
+  faceSketch.support.face.persistentTag.clear();
+  faceSketch.support.face.signature.reset();
+  attachedDocument.updateSketchPlacements();
   assert(!faceSketch.supportResolved);
   assert(!faceSketch.geometry.lines().empty());
 

@@ -7,7 +7,7 @@ constrained 2D sketch → extrusion → editable feature history.
 ## Current prototype
 
 - standalone Home screen with create/open project actions
-- versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet history
+- versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet/Chamfer history
 - independently linkable Home, Sketch, Drawing and 3D View modules
 - Qt 6 desktop shell with model tree and parameter editor
 - 2D sketch workspace with a constrained rectangular profile
@@ -19,9 +19,9 @@ constrained 2D sketch → extrusion → editable feature history.
 - platform-neutral document model with a smoke test
 
 The 3D workflow uses Open CASCADE B-Rep geometry for extrusion, boolean pocket,
-fillet, topology selection and body rendering. Persistent topological naming
-remains a future step; current references retain an explicit legacy-index
-fallback behind `TopologyReference`.
+fillet, equal-distance chamfer, topology selection and body rendering.
+Persistent face and edge references use semantic tags and geometric signatures,
+with an explicit legacy-index fallback for older v2 projects.
 
 ## Prerequisites
 
@@ -101,6 +101,8 @@ profile and its current conformance boundary.
 See [docs/modules.md](docs/modules.md) for feature ownership and module boundaries.
 See [docs/testing.md](docs/testing.md) for CTest labels and the mandatory CAD
 regression coverage.
+See [docs/persistent-topology.md](docs/persistent-topology.md) for the v1 face
+and edge reference model, fallback rules and known limitations.
 See [docs/reports/2026-08-28-parametric-3d-status.md](docs/reports/2026-08-28-parametric-3d-status.md)
 for the current parametric 3D stabilization status and verification gate.
 
@@ -111,5 +113,5 @@ components retain their respective licenses; see [DEPENDENCIES.md](DEPENDENCIES.
 and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 # Parametric 3D features
 
-SolidarCAD supports history-based Extrude, Pocket, Fillet and Revolve features.
+SolidarCAD supports history-based Extrude, Pocket, Fillet, Chamfer and Revolve features.
 The Russian UI exposes Revolve as **«Инструмент вращения»**.

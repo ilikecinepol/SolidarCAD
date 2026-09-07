@@ -7,9 +7,12 @@
 namespace solidar {
 
 enum class AxisReferenceType {
-  SketchHorizontalAxis,
-  SketchVerticalAxis,
-  SketchLine
+  SketchHorizontalAxis = 0,
+  SketchVerticalAxis = 1,
+  SketchLine = 2,
+  GlobalX = 3,
+  GlobalY = 4,
+  GlobalZ = 5
 };
 
 struct AxisReference {

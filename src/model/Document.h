@@ -25,6 +25,17 @@ struct BoxParameters {
   double heightMm{25.0};
 };
 
+struct FeatureRemovalPlan {
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId selectedFeatureId{kInvalidFeatureId};
+  SketchId selectedSketchId{kInvalidSketchId};
+  std::vector<FeatureId> featureIds;
+  std::vector<SketchId> sketchIds;
+  [[nodiscard]] bool empty() const noexcept {
+    return featureIds.empty() && sketchIds.empty();
+  }
+};
+
 class Document final {
  public:
   Document();
@@ -51,6 +62,13 @@ class Document final {
   [[nodiscard]] bool recompute();
   [[nodiscard]] bool recomputeFrom(FeatureId featureId);
   [[nodiscard]] std::string rebuildError() const;
+  [[nodiscard]] FeatureRemovalPlan planFeatureRemoval(
+      BodyId bodyId, FeatureId featureId) const;
+  [[nodiscard]] FeatureRemovalPlan planSketchRemoval(SketchId sketchId) const;
+  bool removeFeatureCascade(BodyId bodyId, FeatureId featureId,
+                            std::string* error = nullptr);
+  bool removeSketchCascade(SketchId sketchId,
+                           std::string* error = nullptr);
   bool attachSketchToFace(SketchId sketchId, FaceReference reference);
   void updateSketchPlacements();
   [[nodiscard]] const BoxParameters& box() const noexcept;
