@@ -67,4 +67,9 @@ standardPartDesignToolDefinitions() {
   return definitions;
 }
 
+bool acceptsSelection(const SelectionRequirement& requirement,
+                      SelectionType candidate) noexcept {
+  return requirement.type == candidate;
+}
+
 }  // namespace solidar

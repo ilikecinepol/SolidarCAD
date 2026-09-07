@@ -45,6 +45,16 @@ int main() {
     CHECK(!help->title.isEmpty());
     CHECK(!help->detailedDescription.isEmpty());
   }
+  const auto& mirror = definitions[5];
+  CHECK(solidar::acceptsSelection(mirror.selections[1],
+                                  solidar::SelectionType::Plane));
+  CHECK(!solidar::acceptsSelection(mirror.selections[1],
+                                   solidar::SelectionType::Body));
+  const auto& circular = definitions[7];
+  CHECK(solidar::acceptsSelection(circular.selections[0],
+                                  solidar::SelectionType::Feature));
+  CHECK(solidar::acceptsSelection(circular.selections[1],
+                                  solidar::SelectionType::Axis));
   CHECK(solidar::partDesignToolStepHint(
             solidar::PartDesignToolKind::Revolve,
             solidar::ToolSelectionStage::SelectingInput) ==
@@ -68,9 +78,14 @@ int main() {
   CHECK(!revolve.cancelled);
   CHECK(controller.activeTool() == solidar::PartDesignToolKind::Revolve);
 
-  controller.activate(solidar::PartDesignToolKind::Fillet);
+  revolve.cancelled = false;
+  controller.activate(solidar::PartDesignToolKind::Revolve);
   CHECK(revolve.cancelled);
   CHECK(presentationClears == 1);
+
+  controller.activate(solidar::PartDesignToolKind::Fillet);
+  CHECK(revolve.cancelled);
+  CHECK(presentationClears == 2);
   CHECK(controller.activeTool() == solidar::PartDesignToolKind::Fillet);
   CHECK(!controller.handleEscape());
   CHECK(fillet.cancelled);

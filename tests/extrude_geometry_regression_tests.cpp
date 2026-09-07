@@ -5,8 +5,10 @@
 #endif
 #include <cassert>
 #include <limits>
+#include <initializer_list>
 #include <memory>
 #include <numbers>
+#include <vector>
 
 #include "TestGeometryUtils.h"
 #include "model/Document.h"
@@ -54,6 +56,21 @@ void verifyCircle(const solidar::SketchPlacement& placement,
                              std::numbers::pi * 100.0 * 50.0, 1e-3));
 }
 
+void verifyPolygon(std::initializer_list<solidar::sketch::Point> points) {
+  solidar::Document document;
+  auto& sketch = document.addSketch("Polygon");
+  std::vector<solidar::sketch::Point> vertices(points);
+  for (std::size_t index = 0; index < vertices.size(); ++index)
+    sketch.geometry.addLine(vertices[index],
+                            vertices[(index + 1) % vertices.size()]);
+  auto& body = document.addBody();
+  body.addFeature(std::make_unique<solidar::ExtrudeFeature>(sketch.id, 25.0));
+  assert(document.rebuild());
+  assert(body.activeFeature()->isValid());
+  assert(solidar::test::solidCount(*body.resultShape()) == 1);
+  assert(solidar::test::volumeOf(*body.resultShape()) > 1.0);
+}
+
 }  // namespace
 
 int main() {
@@ -63,6 +80,9 @@ int main() {
   verifyCircle(solidar::SketchPlacement::xy(), 20.0, 20.0, 50.0);
   verifyCircle(solidar::SketchPlacement::xz(), 20.0, 50.0, 20.0);
   verifyCircle(solidar::SketchPlacement::yz(), 50.0, 20.0, 20.0);
+  verifyPolygon({{0.0, 0.0}, {30.0, 0.0}, {12.0, 20.0}});
+  verifyPolygon({{0.0, 0.0}, {28.0, 2.0}, {35.0, 17.0},
+                 {17.0, 31.0}, {-4.0, 15.0}});
 
   // Arbitrary orthonormal placement: local X is world diagonal, local Y is Z,
   // therefore extrusion follows the horizontal placement normal.

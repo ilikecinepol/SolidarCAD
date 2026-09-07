@@ -77,5 +77,7 @@ struct PartDesignToolDefinition {
 // consumes these definitions instead of inventing per-tool selection stages.
 [[nodiscard]] const std::vector<PartDesignToolDefinition>&
 standardPartDesignToolDefinitions();
+[[nodiscard]] bool acceptsSelection(const SelectionRequirement& requirement,
+                                    SelectionType candidate) noexcept;
 
 }  // namespace solidar

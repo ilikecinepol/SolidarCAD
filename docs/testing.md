@@ -93,3 +93,29 @@ DPI-independent logical layout, body and overlay avoidance, visual sign
 selection, expanded angular radius, and translation-invariant local edge
 directions. Pixel-perfect rendering and driver-specific flicker remain manual
 GPU checks.
+
+## Part Design Stability Gate 2
+
+Run this manual gate for at least 15–20 minutes with a real GPU context. Repeat
+each tool two or three times, including both Apply/reopen and Cancel/reopen:
+
+1. Rectangle, circle and polygon sketches followed by Extrude.
+2. Sketch-on-Face followed by Extrude and Pocket.
+3. Fillet, Chamfer, Mirror, Linear Pattern and Circular Pattern.
+4. Revolve at 30, 90, 180 and 360 degrees.
+5. Switch directly between Extrude, Revolve, Mirror and Circular Pattern; verify
+   that only valid Sketch/Feature/Plane/Axis targets highlight.
+6. Edit an existing feature, scrub the timeline backward and forward, then
+   continue modelling.
+7. Save, close, reopen, continue editing and Undo.
+8. Perform at least twenty sequential tool sessions, including invalid input.
+
+Throughout the run, Apply and Cancel must remain visible and clickable; docks,
+menus, timeline and feature tree must exist exactly once; selection, preview and
+manipulators must clear after Apply/Cancel; invalid input must be recoverable;
+and no tool may require restarting the application.
+
+The automated companion is `part_design_ui_state_regression_tests`. It performs
+twenty repeated controller cycles and checks the single-active-tool invariant,
+typed re-selection cancellation, presentation cleanup and duplicate registration
+guard.

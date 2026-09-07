@@ -22,6 +22,12 @@ target_link_libraries(part_design_tool_framework_tests PRIVATE solidar_editor)
 add_test(NAME part_design_tool_framework_tests
          COMMAND part_design_tool_framework_tests)
 
+add_executable(part_design_ui_state_regression_tests
+               part_design_ui_state_regression_tests.cpp)
+target_link_libraries(part_design_ui_state_regression_tests PRIVATE solidar_editor)
+add_test(NAME part_design_ui_state_regression_tests
+         COMMAND part_design_ui_state_regression_tests)
+
 add_executable(extrude_geometry_regression_tests
                extrude_geometry_regression_tests.cpp)
 target_link_libraries(extrude_geometry_regression_tests PRIVATE solidar_model)
@@ -185,6 +191,7 @@ set_tests_properties(
   extrude_feature_tests
   revolve_feature_tests
   part_design_tool_framework_tests
+  part_design_ui_state_regression_tests
   pocket_feature_tests
   body_render_mesh_tests
   body_render_mesh_normals_tests
@@ -263,6 +270,7 @@ if(WIN32)
     extrude_feature_tests
     revolve_feature_tests
     part_design_tool_framework_tests
+    part_design_ui_state_regression_tests
     extrude_geometry_regression_tests
     extrude_boolean_regression_tests
     extrude_history_regression_tests

@@ -34,6 +34,7 @@ class PartDesignToolController final {
   [[nodiscard]] ToolSession* activeSession() const noexcept;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept;
   [[nodiscard]] bool isReselecting() const noexcept;
+  [[nodiscard]] std::size_t registrationCount() const noexcept;
 
  private:
   std::map<PartDesignToolKind, Registration> registrations_;
