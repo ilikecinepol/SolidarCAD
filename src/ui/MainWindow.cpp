@@ -1485,6 +1485,16 @@ void MainWindow::extrudeSketch() {
       QString::fromUtf8("Грань тела"));
   const auto& pickedSketch = viewport_->extrusionCandidateSketch();
   const std::size_t pickedIndex = viewport_->extrusionCandidateSketchIndex();
+  // A body face is not a DocumentSketch. Never reinterpret a screen-space
+  // face polygon as the last sketch in history: create/attach a model sketch
+  // first so the operation has an explicit, persistent profile source.
+  if (fromBodyFace && pickedIndex == static_cast<std::size_t>(-1)) {
+    QMessageBox::warning(
+        this, QString::fromUtf8("Выдавливание"),
+        QString::fromUtf8(
+            "Для выдавливания грани сначала создайте на ней эскиз."));
+    return;
+  }
   const std::size_t sourceIndex =
       pickedIndex != static_cast<std::size_t>(-1)
           ? pickedIndex

@@ -15,6 +15,27 @@ struct ManipulatorStyle {
   double arrowHeadWidth{8.0};
   double bodyClearance{26.0};
   double hudClearance{12.0};
+  double preferredLength{80.0};
+  double minimumLength{50.0};
+  double maximumLength{115.0};
+};
+
+struct LinearManipulatorDragContext {
+  QPointF pressMouse;
+  double pressValue{};
+  QPointF screenAxis;
+  double pixelsPerUnit{1.0};
+  double visualSign{1.0};
+  double minValue{};
+  double maxValue{};
+};
+
+struct AngularManipulatorDragContext {
+  double pressAngle{};
+  double previousMouseAngle{};
+  double accumulatedDelta{};
+  double minValue{};
+  double maxValue{360.0};
 };
 
 struct ManipulatorLayoutInput {
@@ -41,5 +62,11 @@ struct ManipulatorLayoutResult {
 [[nodiscard]] double safeAngularManipulatorRadius(
     QPointF origin, double requestedRadiusPx, const QRectF& bodySilhouette,
     double clearancePx = 26.0);
+[[nodiscard]] double linearDragValue(const LinearManipulatorDragContext& context,
+                                     QPointF mouse);
+[[nodiscard]] double signedShortestAngleDelta(double previousDeg,
+                                              double currentDeg);
+[[nodiscard]] double angularDragValue(AngularManipulatorDragContext& context,
+                                      double currentMouseAngleDeg);
 
 }  // namespace solidar

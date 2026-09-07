@@ -25,13 +25,15 @@ ManipulatorLayoutResult computeManipulatorLayout(
   double bestScore = -std::numeric_limits<double>::max();
   ManipulatorLayoutResult result;
   for (double sign : {1.0, -1.0}) {
-    double length = std::max(std::abs(input.semanticLengthPx),
-                             style.bodyClearance + style.handleRadius);
+    double length = std::clamp(
+        std::max(std::abs(input.semanticLengthPx), style.preferredLength),
+        style.minimumLength, style.maximumLength);
     QPointF handle = input.anchor + direction * (sign * length);
     int extensionAttempts = 0;
-    for (; extensionAttempts < 8 && blocked.contains(handle);
+    for (; extensionAttempts < 8 && blocked.contains(handle) &&
+           length < style.maximumLength;
          ++extensionAttempts) {
-      length += style.bodyClearance;
+      length = std::min(style.maximumLength, length + style.bodyClearance);
       handle = input.anchor + direction * (sign * length);
     }
     double score = blocked.contains(handle) ? -10000.0 : 1000.0;
@@ -72,14 +74,43 @@ ManipulatorLayoutResult computeManipulatorLayout(
 double safeAngularManipulatorRadius(QPointF origin, double requestedRadiusPx,
                                     const QRectF& bodySilhouette,
                                     double clearancePx) {
-  double radius = std::max(requestedRadiusPx, 34.0);
+  double radius = std::clamp(requestedRadiusPx, 40.0, 110.0);
   if (bodySilhouette.contains(origin)) {
     const double edgeDistance = std::max(
         {origin.x() - bodySilhouette.left(), bodySilhouette.right() - origin.x(),
          origin.y() - bodySilhouette.top(), bodySilhouette.bottom() - origin.y()});
-    radius = std::max(radius, edgeDistance + clearancePx);
+    radius = std::min(110.0, std::max(radius, edgeDistance + clearancePx));
   }
   return radius;
+}
+
+double linearDragValue(const LinearManipulatorDragContext& context,
+                       QPointF mouse) {
+  const QPointF axis = context.screenAxis;
+  const double length = QLineF({}, axis).length();
+  if (length <= 1e-9 || context.pixelsPerUnit <= 1e-9)
+    return std::clamp(context.pressValue, context.minValue, context.maxValue);
+  const QPointF unitAxis = axis / length;
+  const double pixels = QPointF::dotProduct(mouse - context.pressMouse,
+                                            unitAxis);
+  const double raw = context.pressValue +
+                     pixels * context.visualSign / context.pixelsPerUnit;
+  return std::clamp(raw, context.minValue, context.maxValue);
+}
+
+double signedShortestAngleDelta(double previousDeg, double currentDeg) {
+  double delta = std::fmod(currentDeg - previousDeg + 540.0, 360.0) - 180.0;
+  return delta;
+}
+
+double angularDragValue(AngularManipulatorDragContext& context,
+                        double currentMouseAngleDeg) {
+  context.accumulatedDelta +=
+      signedShortestAngleDelta(context.previousMouseAngle,
+                               currentMouseAngleDeg);
+  context.previousMouseAngle = currentMouseAngleDeg;
+  return std::clamp(context.pressAngle + context.accumulatedDelta,
+                    context.minValue, context.maxValue);
 }
 
 }  // namespace solidar

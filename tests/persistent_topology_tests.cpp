@@ -61,8 +61,8 @@ int main() {
     CHECK(placement.placement.normal().z > 0.99);
     CHECK(std::abs(placement.placement.origin.z - 60.0) < 1e-6);
 
-    // A geometric edge signature follows a distinctive vertical corner edge
-    // through an ordinary upstream dimension edit.
+    // Feature-created semantic provenance follows the same logical corner
+    // edge even when both its length and position change.
     std::optional<solidar::EdgeReference> vertical;
     for (std::size_t index = 0; index < 32; ++index) {
       auto reference = solidar::makeEdgeReference(
@@ -76,11 +76,11 @@ int main() {
       }
     }
     CHECK(vertical && vertical->signature);
+    CHECK(!vertical->persistentTag.empty());
     const auto resolvedVertical =
         solidar::resolveEdgeReference(resized, vertical->topology());
     CHECK(resolvedVertical);
-    CHECK(resolvedVertical.method ==
-          solidar::TopologyMatchMethod::GeometricSignature);
+    CHECK(resolvedVertical.method == solidar::TopologyMatchMethod::SemanticTag);
 
     // Old v2 references contain only an index and must retain their fallback.
     solidar::EdgeReference legacy{bodyId, featureId, 0};
@@ -113,6 +113,7 @@ int main() {
       }
     CHECK(equivalent);
     auto ambiguous = edges[equivalent->first];
+    ambiguous.persistentTag.clear();
     const auto& other = *edges[equivalent->second].signature;
     ambiguous.signature->midpoint = {
         (ambiguous.signature->midpoint.x + other.midpoint.x) * 0.5,
@@ -124,6 +125,7 @@ int main() {
     CHECK(ambiguity.error.find("ambiguous") != std::string::npos);
 
     auto impossible = vertical->topology();
+    impossible.persistentTag.clear();
     impossible.edgeSignature->midpoint = {10000.0, 10000.0, 10000.0};
     const auto missing = solidar::resolveEdgeReference(original, impossible);
     CHECK(!missing);

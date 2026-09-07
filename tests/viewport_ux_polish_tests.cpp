@@ -39,6 +39,11 @@ int main() {
       {{500, 290}, {1, 0}, 45, body, viewport, {130, 40}, {}});
   assert(layout.visualSign > 0.0);
   assert(!body.adjusted(-20, -20, 20, 20).contains(layout.handle));
+  assert(layout.visualLengthPx >= 50.0 && layout.visualLengthPx <= 115.0);
+
+  layout = computeManipulatorLayout(
+      {{400, 290}, {1, 0}, 5000, body, viewport, {130, 40}, {}});
+  assert(layout.visualLengthPx <= 115.0);
 
   layout = computeManipulatorLayout(
       {{305, 290}, {1, 0}, 45, body, viewport, {130, 40}, {}});
@@ -48,11 +53,26 @@ int main() {
   layout = computeManipulatorLayout(
       {{400, 290}, {1, 0}, 5, body, viewport, {130, 40},
        {QRectF(500, 0, 300, 130)}});
-  assert(!body.adjusted(-20, -20, 20, 20).contains(layout.handle));
+  // A deeply embedded anchor may overlap the body: bounded locality wins over
+  // extending the arrow across half the viewport.
+  assert(layout.visualLengthPx <= 115.0);
   assert(viewport.contains(QRectF(layout.hudTopLeft, QSizeF(130, 40))));
   assert(!QRectF(layout.hudTopLeft, QSizeF(130, 40))
               .intersects(QRectF(500, 0, 300, 130)));
-  assert(safeAngularManipulatorRadius({400, 290}, 20, body) > 100.0);
+  assert(safeAngularManipulatorRadius({400, 290}, 20, body) <= 110.0);
+
+  const LinearManipulatorDragContext linear{
+      {100, 100}, 5.0, {1, 0}, 10.0, 1.0, 0.0, 10.0};
+  assert(close(linearDragValue(linear, {200, 100}), 10.0));
+  assert(close(linearDragValue(linear, {300, 100}), 10.0));
+  assert(close(linearDragValue(linear, {150, 100}), 10.0));
+  assert(close(linearDragValue(linear, {140, 100}), 9.0));
+  assert(close(linearDragValue(linear, {-100, 100}), 0.0));
+
+  AngularManipulatorDragContext angular{359.0, 359.0, 0.0, 0.0, 360.0};
+  assert(close(angularDragValue(angular, 0.0), 360.0));
+  assert(close(angularDragValue(angular, 1.0), 360.0));
+  assert(close(angularDragValue(angular, 359.0), 359.0));
 
   for (float yaw : {-180.0F, -90.0F, 0.0F, 90.0F, 180.0F}) {
     for (float pitch : {-85.0F, -45.0F, 0.0F, 45.0F, 85.0F}) {

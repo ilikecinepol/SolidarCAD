@@ -245,6 +245,8 @@ class Viewport final : public QOpenGLWidget {
   std::optional<AngularToolManipulator> angularToolManipulator_;
   bool draggingToolManipulator_{false};
   bool draggingAngularToolManipulator_{false};
+  std::optional<LinearManipulatorDragContext> linearDragContext_;
+  std::optional<AngularManipulatorDragContext> angularDragContext_;
   bool panningView_{false};
   QPointF cameraPan_;
   bool draggingBody_{false};

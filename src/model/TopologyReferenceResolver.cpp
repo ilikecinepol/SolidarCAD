@@ -150,7 +150,36 @@ std::string automaticFaceTag(const FaceSignature& face,
 }
 
 struct FaceCandidate { TopoDS_Face face; std::size_t index; FaceSignature signature; std::string tag; };
-struct EdgeCandidate { TopoDS_Edge edge; std::size_t index; EdgeSignature signature; };
+std::string automaticEdgeTag(const EdgeSignature& edge,
+                             const TopologyBounds& shapeBounds) {
+  if (edge.curve != CurveKind::Line) return {};
+  const double tolerance = diagonal(shapeBounds) * 1e-6 + 1e-7;
+  const double spans[] = {edge.bounds.maximum.x - edge.bounds.minimum.x,
+                          edge.bounds.maximum.y - edge.bounds.minimum.y,
+                          edge.bounds.maximum.z - edge.bounds.minimum.z};
+  int varying = 0;
+  if (spans[1] > spans[varying]) varying = 1;
+  if (spans[2] > spans[varying]) varying = 2;
+  const char* axis[] = {"x", "y", "z"};
+  std::string tag = "extrude:edge:along-" + std::string(axis[varying]);
+  const double center[] = {edge.midpoint.x, edge.midpoint.y, edge.midpoint.z};
+  const double minimum[] = {shapeBounds.minimum.x, shapeBounds.minimum.y,
+                            shapeBounds.minimum.z};
+  const double maximum[] = {shapeBounds.maximum.x, shapeBounds.maximum.y,
+                            shapeBounds.maximum.z};
+  for (int coordinate = 0; coordinate < 3; ++coordinate) {
+    if (coordinate == varying) continue;
+    if (std::abs(center[coordinate] - minimum[coordinate]) <= tolerance)
+      tag += ":min-" + std::string(axis[coordinate]);
+    else if (std::abs(center[coordinate] - maximum[coordinate]) <= tolerance)
+      tag += ":max-" + std::string(axis[coordinate]);
+    else
+      return {};
+  }
+  return tag;
+}
+
+struct EdgeCandidate { TopoDS_Edge edge; std::size_t index; EdgeSignature signature; std::string tag; };
 
 std::vector<FaceCandidate> faceCandidates(const TopoDS_Shape& shape) {
   std::vector<FaceCandidate> result;
@@ -176,6 +205,7 @@ std::vector<FaceCandidate> faceCandidates(const TopoDS_Shape& shape) {
 
 std::vector<EdgeCandidate> edgeCandidates(const TopoDS_Shape& shape) {
   std::vector<EdgeCandidate> result;
+  const auto shapeBounds = boundsOf(shape);
   std::size_t index = 0;
   for (TopExp_Explorer explorer(shape, TopAbs_EDGE); explorer.More();
        explorer.Next(), ++index) {
@@ -184,7 +214,9 @@ std::vector<EdgeCandidate> edgeCandidates(const TopoDS_Shape& shape) {
           return item.edge.IsSame(edge);
         }))
       continue;
-    result.push_back({edge, index, signatureOf(edge)});
+    auto signature = signatureOf(edge);
+    result.push_back(
+        {edge, index, signature, automaticEdgeTag(signature, shapeBounds)});
   }
   return result;
 }
@@ -309,7 +341,8 @@ EdgeReference makeEdgeReference(const TopoDS_Shape& shape, BodyId bodyId,
     if (canonical == candidates.end()) return result;
     result.edgeIndex = canonical->index;
     result.signature = canonical->signature;
-    result.persistentTag = std::move(semanticTag);
+    result.persistentTag = semanticTag.empty() ? canonical->tag
+                                                : std::move(semanticTag);
   } catch (...) {
   }
   return result;
@@ -383,6 +416,19 @@ EdgeResolution resolveEdgeReference(const TopoDS_Shape& shape,
   }
   try {
     const auto candidates = edgeCandidates(shape);
+    if (!reference.persistentTag.empty()) {
+      std::vector<const EdgeCandidate*> tagged;
+      for (const auto& candidate : candidates)
+        if (candidate.tag == reference.persistentTag) tagged.push_back(&candidate);
+      if (tagged.size() == 1)
+        return resolvedEdge(*tagged.front(), TopologyMatchMethod::SemanticTag);
+      if (tagged.size() > 1) {
+        failure.error = "Topology edge reference is ambiguous by semantic tag";
+        return failure;
+      }
+      failure.error = "Topology edge semantic identity no longer exists";
+      return failure;
+    }
     if (reference.edgeSignature) {
       std::vector<std::pair<double, const EdgeCandidate*>> matches;
       const double size = diagonal(boundsOf(shape));

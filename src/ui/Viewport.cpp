@@ -1946,6 +1946,12 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     const QPointF handle = layout.handle;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingToolManipulator_ = true;
+      const QPointF axis = semanticEnd - start;
+      const double semanticPixels = QLineF(start, semanticEnd).length();
+      linearDragContext_ = LinearManipulatorDragContext{
+          scenePosition, toolManipulator_->valueMm, axis,
+          semanticPixels / std::max(toolManipulator_->valueMm, 1e-9),
+          layout.visualSign, 0.01, 100000.0};
       setCursor(Qt::SizeAllCursor);
       return;
     }
@@ -2006,6 +2012,13 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
         manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingAngularToolManipulator_ = true;
+      const QPointF origin = projectBodyPoint(
+          manipulator.origin, manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
+      const double mouseAngle = std::atan2(scenePosition.y() - origin.y(),
+                                           scenePosition.x() - origin.x()) *
+                                180.0 / std::numbers::pi;
+      angularDragContext_ = AngularManipulatorDragContext{
+          manipulator.angleDeg, mouseAngle, 0.0, 0.01, 360.0};
       setCursor(Qt::SizeAllCursor);
       return;
     }
@@ -2990,6 +3003,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
   if (draggingAngularToolManipulator_ && angularToolManipulator_ &&
+      angularDragContext_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
     const auto [u, v] = angularBasis(angularToolManipulator_->axis);
     const Point3d originWorld = angularToolManipulator_->origin;
@@ -3014,8 +3028,10 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     const QPointF vPoint = projectBodyPoint(
         offsetPoint(originWorld, v, visualRadiusMm),
         originWorld, size(), yaw_, pitch_, zoom_).screen;
-    angularToolManipulator_->angleDeg = angularValueFromProjectedBasis(
+    const double mouseAngle = angularValueFromProjectedBasis(
         event->position() - cameraPan_, origin, uPoint, vPoint);
+    angularToolManipulator_->angleDeg =
+        angularDragValue(*angularDragContext_, mouseAngle);
     {
       toolParameterHud_->setValue("angle", angularToolManipulator_->angleDeg);
     }
@@ -3023,44 +3039,12 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     update();
     return;
   }
-  if (draggingToolManipulator_ && toolManipulator_ &&
+  if (draggingToolManipulator_ && toolManipulator_ && linearDragContext_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
-    const Point3d center = bodyRenderMesh_.center();
-    const auto origin = projectBodyPoint(toolManipulator_->origin, center, size(),
-                                         yaw_, pitch_, zoom_).screen;
-    const Point3d unitWorld{
-        toolManipulator_->origin.x + toolManipulator_->direction.x,
-        toolManipulator_->origin.y + toolManipulator_->direction.y,
-        toolManipulator_->origin.z + toolManipulator_->direction.z};
-    const auto unit = projectBodyPoint(unitWorld, center, size(), yaw_, pitch_,
-                                       zoom_).screen;
-    const QPointF axis = unit - origin;
-    const double axisLengthSquared = QPointF::dotProduct(axis, axis);
-    if (axisLengthSquared > 1e-6) {
-      double value = QPointF::dotProduct(
-                               event->position() - cameraPan_ - origin, axis) /
-                           axisLengthSquared;
-      const Point3d semanticEndWorld = offsetPoint(
-          toolManipulator_->origin, toolManipulator_->direction,
-          toolManipulator_->valueMm);
-      const QPointF semanticEnd = projectBodyPoint(
-          semanticEndWorld, toolManipulator_->origin, size(), yaw_, pitch_,
-          zoom_).screen;
-      const bool hasToolPreview = toolPreviewShape_ && !toolPreviewShape_->IsNull();
-      const QRectF bodyBounds = hasToolPreview
-          ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
-          : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
-      const auto layout = computeManipulatorLayout({
-          origin, semanticEnd - origin, QLineF(origin, semanticEnd).length(),
-          bodyBounds, QRectF(QPointF(-cameraPan_.x(), -cameraPan_.y()), size()),
-          toolParameterHud_ ? toolParameterHud_->size() : QSizeF(132, 40),
-          {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(),
-                  116.0, 116.0)}});
-      value *= layout.visualSign;
-      toolManipulator_->valueMm = std::max(0.01, value);
-      emit toolManipulatorValueChanged(toolManipulator_->valueMm);
-      update();
-    }
+    toolManipulator_->valueMm = linearDragValue(
+        *linearDragContext_, event->position() - cameraPan_);
+    emit toolManipulatorValueChanged(toolManipulator_->valueMm);
+    update();
     return;
   }
   if (panningView_ && event->buttons().testFlag(Qt::MiddleButton)) {
@@ -3141,12 +3125,14 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
   }
   if (event->button() == Qt::LeftButton && draggingToolManipulator_) {
     draggingToolManipulator_ = false;
+    linearDragContext_.reset();
     unsetCursor();
     event->accept();
     return;
   }
   if (event->button() == Qt::LeftButton && draggingAngularToolManipulator_) {
     draggingAngularToolManipulator_ = false;
+    angularDragContext_.reset();
     unsetCursor(); event->accept(); return;
   }
   if (event->button() == Qt::LeftButton && draggingBody_) {

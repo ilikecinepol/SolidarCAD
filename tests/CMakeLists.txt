@@ -141,6 +141,12 @@ target_link_libraries(downstream_feature_preservation_tests
 add_test(NAME downstream_feature_preservation_tests
          COMMAND downstream_feature_preservation_tests)
 
+add_executable(sketch_on_face_stability_tests
+               sketch_on_face_stability_tests.cpp)
+target_link_libraries(sketch_on_face_stability_tests PRIVATE solidar_model)
+add_test(NAME sketch_on_face_stability_tests
+         COMMAND sketch_on_face_stability_tests)
+
 add_executable(shell_feature_tests shell_feature_tests.cpp)
 target_link_libraries(shell_feature_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME shell_feature_tests COMMAND shell_feature_tests)
@@ -215,6 +221,7 @@ set_tests_properties(
   parametric_feature_chain_tests
   part_design_regression_tests
   downstream_feature_preservation_tests
+  sketch_on_face_stability_tests
   shell_feature_tests
   shell_complex_topology_tests
   draft_feature_tests
@@ -289,6 +296,7 @@ if(WIN32)
     parametric_feature_chain_tests
     part_design_regression_tests
     downstream_feature_preservation_tests
+    sketch_on_face_stability_tests
     shell_feature_tests
     shell_complex_topology_tests
     draft_feature_tests
