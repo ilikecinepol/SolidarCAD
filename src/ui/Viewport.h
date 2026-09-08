@@ -23,6 +23,7 @@ class QPaintEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QDoubleSpinBox;
+class QPainter;
 
 namespace solidar {
 
@@ -89,6 +90,7 @@ class Viewport final : public QOpenGLWidget {
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
   void setEdgeMultiSelectionMode(bool enabled) noexcept;
   [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
+  [[nodiscard]] std::optional<std::size_t> hoveredBodyEdgeIndex() const noexcept;
   void setSelectionFilter(SelectionFilter filter) noexcept;
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
@@ -158,6 +160,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] QPointF extrusionScreenOffset(double lengthMm) const;
   void rebuildSelectedExtrusionSketch();
   void updateBodyHover(QPointF position);
+  void drawBodyEdgeInteractionOverlay(QPainter& painter) const;
   void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
                           bool clearSelection);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(

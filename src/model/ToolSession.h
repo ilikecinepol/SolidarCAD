@@ -26,6 +26,10 @@ struct LinearToolManipulator {
   Point3d origin{};
   Vector3d direction{0.0, 0.0, 1.0};
   double valueMm{};
+  // Tool sessions own the admissible parameter range. Chamfer and fillet
+  // intentionally permit zero so the preview can return to the source shape.
+  double minimumMm{0.01};
+  double maximumMm{100000.0};
 };
 
 struct AngularToolManipulator {

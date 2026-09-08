@@ -281,6 +281,7 @@ int main() {
         solidar::ToolLifecycle::PreviewValid);
   CHECK(multiEdgeSession.previewShape());
   CHECK(std::abs(multiEdgeSession.radiusMm() - 1.0) < 1e-9);
+  CHECK(multiEdgeSession.error().empty());
   CHECK(multiEdgeSession.edges() == selectedReferences);
   multiEdgeSession.setRadiusFromManipulator(0.0);
   CHECK(multiEdgeSession.lifecycle() ==

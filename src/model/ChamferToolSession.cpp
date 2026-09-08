@@ -120,7 +120,8 @@ std::optional<LinearToolManipulator> ChamferToolSession::manipulator() const {
     const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
     if (!geometry) return std::nullopt;
     return LinearToolManipulator{geometry->midpoint,
-                                 geometry->outwardDirection, distance_.value()};
+                                 geometry->outwardDirection, distance_.value(),
+                                 0.0, 100000.0};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {
@@ -134,11 +135,13 @@ bool ChamferToolSession::trySetDistance(double distanceMm) {
   const double previous = distance_.value();
   const auto previousPreview = previewShape_;
   const auto previousLifecycle = lifecycle_;
+  const auto previousError = error_;
   distance_.accept(*candidate);
   if (updatePreview()) return true;
   distance_.accept(previous);
   previewShape_ = previousPreview;
   lifecycle_ = previousLifecycle;
+  error_ = previousError;
   return false;
 }
 

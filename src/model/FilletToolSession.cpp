@@ -122,7 +122,8 @@ std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
     const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
     if (!geometry) return std::nullopt;
     return LinearToolManipulator{geometry->midpoint,
-                                 geometry->outwardDirection, radius_.value()};
+                                 geometry->outwardDirection, radius_.value(),
+                                 0.0, 100000.0};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {
@@ -136,11 +137,13 @@ bool FilletToolSession::trySetRadius(double radiusMm) {
   const double previous = radius_.value();
   const auto previousPreview = previewShape_;
   const auto previousLifecycle = lifecycle_;
+  const auto previousError = error_;
   radius_.accept(*candidate);
   if (updatePreview()) return true;
   radius_.accept(previous);
   previewShape_ = previousPreview;
   lifecycle_ = previousLifecycle;
+  error_ = previousError;
   return false;
 }
 

@@ -809,13 +809,20 @@ SelectionFilter Viewport::selectionFilter() const noexcept {
   return selectionFilter_;
 }
 
+std::optional<std::size_t> Viewport::hoveredBodyEdgeIndex() const noexcept {
+  if (hoveredBodyEdgeIndex_ == static_cast<std::size_t>(-1))
+    return std::nullopt;
+  return hoveredBodyEdgeIndex_;
+}
+
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   toolManipulator_ = manipulator;
   angularToolManipulator_.reset();
   if (toolHudParameterId_ != "distance") {
     toolParameterHud_->setParameters({
         {"distance", "Distance", ToolParameterType::Distance,
-         manipulator.valueMm, 0.01, 100000.0, 0.1, "mm", true,
+         manipulator.valueMm, manipulator.minimumMm, manipulator.maximumMm,
+         0.1, "mm", true,
          ToolManipulatorType::Linear}});
     toolHudParameterId_ = "distance";
   } else {
@@ -834,6 +841,30 @@ void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   toolParameterHud_->show();
   toolParameterHud_->raise();
   update();
+}
+
+void Viewport::drawBodyEdgeInteractionOverlay(QPainter& painter) const {
+  if (bodyRenderMesh_.edges().empty()) return;
+  const auto drawEdge = [&](std::size_t edgeIndex, const QColor& color,
+                            qreal width) {
+    for (const auto& edge : bodyRenderMesh_.edges()) {
+      if (edge.edgeIndex != edgeIndex || edge.points.size() < 2) continue;
+      QPainterPath path;
+      path.moveTo(projectBodyPoint(edge.points.front(), bodyRenderMesh_.center(),
+                                   size(), yaw_, pitch_, zoom_).screen);
+      for (std::size_t point = 1; point < edge.points.size(); ++point)
+        path.lineTo(projectBodyPoint(edge.points[point], bodyRenderMesh_.center(),
+                                     size(), yaw_, pitch_, zoom_).screen);
+      painter.setPen(QPen(color, width, Qt::SolidLine, Qt::RoundCap,
+                          Qt::RoundJoin));
+      painter.drawPath(path);
+      return;
+    }
+  };
+  for (const auto edgeIndex : selectedBodyEdgeIndices_)
+    drawEdge(edgeIndex, QColor("#f59e0b"), 3.5);
+  if (const auto hovered = hoveredBodyEdgeIndex())
+    drawEdge(*hovered, QColor("#22d3ee"), 4.5);
 }
 
 void Viewport::setAngularToolManipulator(
@@ -1176,6 +1207,10 @@ void Viewport::paintGL() {
                      hoveredBodyFaceIndex_, selectedBodyEdgeIndices_,
                      hoveredBodyEdgeIndex_);
     painter.endNativePainting();
+    // The source mesh owns selection and hover even when a tool preview is
+    // drawn. Paint this lightweight interaction layer last so a preview can
+    // never hide the candidate edge before the first click.
+    drawBodyEdgeInteractionOverlay(painter);
     if (!renderer_.error().isEmpty()) {
       painter.setPen(QColor("#b42318"));
       painter.drawText(rect().adjusted(24, 24, -24, -24),

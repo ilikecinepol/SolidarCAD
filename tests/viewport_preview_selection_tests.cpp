@@ -144,7 +144,21 @@ int main(int argc, char** argv) {
   CHECK(edgeA.signature && edgeB.signature && edgeC.signature);
 
   solidar::Viewport viewport;
+  viewport.resize(800, 600);
   viewport.setBodyShape(source, bodyId, sourceFeatureId);
+  viewport.setSolidVisible(true);
+  viewport.setSelectionFilter(solidar::SelectionFilter::Edge);
+  const solidar::ViewportCameraState sourceCamera{
+      viewport.cameraYawDegrees(), viewport.cameraPitchDegrees(), 1.0F, {},
+      viewport.size(), 1.0F, {20.0, 15.0, 10.0}, 1.0};
+  // Hover remains source-topology based even before a tool has selected an
+  // edge, which is the state Chamfer and Fillet start in.
+  mouse(viewport, QEvent::MouseMove, sourceCamera.worldToScreen({0, 0, 0}),
+        Qt::NoButton, Qt::NoButton);
+  CHECK(viewport.hoveredBodyEdgeIndex());
+  viewport.setToolManipulator({{}, {0, 0, 1}, 0.0, 0.0, 100000.0});
+  const auto* distanceHud = viewport.findChild<QDoubleSpinBox*>("distance");
+  CHECK(distanceHud && std::abs(distanceHud->minimum()) < 1e-12);
   viewport.setSelectedBodyEdges({edgeA});
   viewport.setToolPreviewShape(bodyId, previewFeatureId, previewA);
   CHECK(viewport.selectedBodyEdges() ==
