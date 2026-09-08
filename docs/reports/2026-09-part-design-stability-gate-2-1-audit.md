@@ -113,3 +113,121 @@ the auto Extrude Join proposal.
 4. Sticky auto proposal for Extrude (detect once per new profile/input, not per
    length/drag/camera change) + bare-face default proposal = `Join`.
 5. New real-mouse-edge test suite + tool transition assertions.
+
+## Remediation performed (this branch)
+
+All five remediation items shipped in the following commit set (final SHA below):
+
+1. `Viewport::resetToolInteraction()` – central reset of pick mode, selection
+   filter, edge/face multi-select, selected/hovered body edges+faces, base plane,
+   vertex, origin, extrusion hover/selection candidates, `revolveAxisSketchIndex_`,
+   dragging flags, `basePlanesVisible_`, extrusion manipulator and cursor status.
+   Installed as the first step of every `begin*Selection` context
+   (`beginEdgeSelection`, `beginFaceSelection`, `beginSketchPlaneSelection`,
+   `beginExtrusionSurfaceSelection`, `beginRevolveAxisSelection`).
+2. `PartDesignToolController::deactivate()` clears `active_`/`temporaryStage_`/
+   `returnStage_` *before* the shared `clearPresentation` lambda runs; all five
+   registrations (Revolve, Fillet, Chamfer, Shell, Draft) now use one idempotent
+   lambda (preview + manipulator + `resetToolInteraction()` + dock hide). The
+   duplicate manual cleanup inside the cancel/accept handlers of MainWindow is gone.
+3. `cancelActive()` added on entry to Extrude, Pocket, the three Pattern tools and
+   Sketch, so unregistered sessions cannot leak across tools.
+4. Sticky Extrude auto proposal: `extrudeAutoDetectEnabled_` /
+   `extrudeOperationStale_` flags gate `updateAutomaticExtrudeOperation()` (one
+   re-detect per new profile, not per length/drag/preview change); bare body-face
+   picks with no sketch contour propose `Join` by default.
+5. `SOLIDAR_VIEWPORT_LOG` (NDEBUG-gated) beside the existing `SOLIDAR_TOOL_LOG` on
+   the controller side.
+
+## Verification
+
+- `ctest`: 43/43 green at the final SHA, including the new
+  `viewport_edge_interaction_tests` (real QMouseEvent hover/click over a
+  B-Rep box: edge hover, click-select, preview survival, preview rebuild,
+  stale Extrusion/SketchPlane/RevolveAxis pick-mode immunity, cross-tool reset,
+  face hover/select) and the extended `extrude_feature_tests` (Join stays stable
+  across lengths 5/60/400 mm; circle and 3-line polygon profiles on an attached
+  face propose Join; reverse proposes Cut).
+- Clean full rebuild (no ABI rebuild issue after the `Viewport.h` change).
+
+---
+
+## Final report (gate §21 format)
+
+```text
+Branch:                 codex/stability-gate-2-1
+Base SHA:               9e67c66ae17bceceb775d3897fcd1051061f0b2e
+Final SHA:              0b429102a36222cade8367a5f59151f482209e77
+
+Root causes:
+1. Viewport::pickMode_ / selectionFilter_ / multi-select / selected-body refs
+   persisted between tools; beginExtrusionSurfaceSelection and
+   beginRevolveAxisSelection did not reset filter or stale selections, so edge
+   hover/select state leaked across tool switches (P0.1/P0.2).
+2. clearPresentation of all five registered tools was a no-op and cleanup was
+   duplicated and incomplete in MainWindow cancel/accept handlers; deactivate()
+   cleared active_ only after clearPresentation, allowing recursive/partial
+   state teardown (P0.3).
+3. Unregistered tools (Extrude/Pocket/Patterns/Sketch) never asked the
+   controller to cancel, leaving an active session open across transitions.
+4. updateAutomaticExtrudeOperation re-ran detectExtrudeOperation on every
+   length/drag/camera/preview change (Join <-> NewBody flip), and bare body-face
+   picks with no sketch contour always fell back to NewBody (Join-by-construction
+   case).
+
+Interaction-state changes:
+  Viewport::resetToolInteraction() central reset; begin*Selection contexts
+  (Edge/Face/SketchPlane/ExtrusionSurface/RevolveAxis) all start from it;
+  hoveredBodyEdgeIndex()/hoveredBodyFaceIndex() accessors for tests.
+
+Edge highlight fix:
+  Edge hover/click now routes only when filter==Edge and no stale pick mode is
+  active; preview rebuilds keep the underlying selected source edges.
+
+Tool lifecycle fix:
+  One clearPresentation lambda used by all 5 registrations; deactivate() resets
+  session state before teardown; cancelActive() added to the 5 unregistered tool
+  entry points.
+
+Extrude Join fix:
+  Sticky auto-detection (single re-evaluation per new profile/input) and
+  bare-face default proposal = Join for attached body faces.
+
+Files changed:
+  src/ui/Viewport.h
+  src/ui/Viewport.cpp
+  src/ui/MainWindow.h
+  src/ui/MainWindow.cpp
+  src/ui/tools/PartDesignToolController.cpp
+  tests/CMakeLists.txt
+  tests/viewport_edge_interaction_tests.cpp   (new)
+  tests/extrude_feature_tests.cpp
+  docs/reports/2026-09-part-design-stability-gate-2-1-audit.md   (this report)
+
+Tests added/updated:
+  ctest 43/43 green (was 42/42). New: viewport_edge_interaction_tests
+  (8 scenarios). Updated: extrude_feature_tests (Join length-stability loop,
+  circle + polygon attached-face Join/Cut).
+
+Manual GPU Gate:
+A: Not run (requires interactive GPU host)
+B: Not run
+C: Not run
+D: Not run
+
+Windows CI:
+  Local clean rebuild + full ctest green. (No CI pipeline attached to branch.)
+Ubuntu CI:
+  Not run on this branch (Windows workstation only).
+
+Known limitations:
+  - GPU Gate A-D and Linux CI still require the manual/interactive pass.
+  - Edge hovering depends on the depth-epsilon heuristic already in use; the
+    new tests replicate the fitAll projection rather than driving a real
+    camera, so GPU-exact pixel behavior is verified only indirectly.
+  - Multi-body sheets and non-planar support faces are outside the equalizer'd
+    regression set.
+
+Safe to merge into main:
+  NO
+```
