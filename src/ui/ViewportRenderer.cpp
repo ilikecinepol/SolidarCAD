@@ -351,9 +351,16 @@ void ViewportRenderer::render(
   if (mode != ViewportDisplayMode::Shaded)
     drawEdges(gpu, matrix, preview ? std::vector<std::size_t>{} : selectedEdges,
               preview ? std::size_t(-1) : hoveredEdge, true, dpr);
-  if (preview && (!selectedEdges.empty() || hoveredEdge != std::size_t(-1)))
+  if (preview && (!selectedEdges.empty() || hoveredEdge != std::size_t(-1))) {
+    // Fillet/chamfer previews replace the source edge with new faces. Drawing
+    // the source highlight with the preview depth buffer still active can bury
+    // it completely, even though picking correctly found that source edge.
+    // This pass contains highlighted edges only, so render it as an explicit
+    // interaction overlay above the translucent preview.
+    gl->glDisable(GL_DEPTH_TEST);
     drawEdges(*source_, matrix, selectedEdges, hoveredEdge, false, dpr);
-  else if (mode == ViewportDisplayMode::Shaded &&
+    gl->glEnable(GL_DEPTH_TEST);
+  } else if (mode == ViewportDisplayMode::Shaded &&
            (!selectedEdges.empty() || hoveredEdge != std::size_t(-1)))
     drawEdges(*source_, matrix, selectedEdges, hoveredEdge, false, dpr);
   gl->glLineWidth(1.0F);
