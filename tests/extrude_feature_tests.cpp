@@ -373,6 +373,59 @@ int main() {
   assert(solidar::detectExtrudeOperation(remoteProfile, 5.0, false,
                                          detectionShape.get(), false) ==
          solidar::ExtrudeOperation::NewBody);
+
+  // Gate 2.1 §13: an attached-face proposal stays Join regardless of length
+  // (no flip Join <-> NewBody on drag), and only a real reverse becomes Cut.
+  for (const double length : {5.0, 60.0, 400.0}) {
+    assert(solidar::detectExtrudeOperation(faceProfile, length, false,
+                                           detectionShape.get(), true) ==
+           solidar::ExtrudeOperation::Join);
+    assert(solidar::detectExtrudeOperation(faceProfile, length, true,
+                                           detectionShape.get(), true) ==
+           solidar::ExtrudeOperation::Cut);
+  }
+
+  solidar::Document circleFaceDocument;
+  auto& circleFaceBase = circleFaceDocument.addSketch("Circle face base");
+  circleFaceBase.geometry.addRectangle({0.0, 0.0}, {40.0, 40.0});
+  auto& circleFaceBody = circleFaceDocument.addBody();
+  circleFaceBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      circleFaceBase.id, 20.0));
+  assert(circleFaceDocument.rebuild());
+  auto& circleFaceProfile = circleFaceDocument.addSketch("Circle face profile");
+  circleFaceProfile.geometry.addCircle({-10.0, -10.0}, 4.0);
+  assert(circleFaceDocument.attachSketchToFace(
+      circleFaceProfile.id,
+      {circleFaceBody.id(), circleFaceBody.activeFeature()->id(),
+       topFaceOf(*circleFaceBody.resultShape(), 20.0)}));
+  const auto circleFaceShape = circleFaceBody.resultShape();
+  assert(solidar::detectExtrudeOperation(circleFaceProfile, 15.0, false,
+                                         circleFaceShape.get(), true) ==
+         solidar::ExtrudeOperation::Join);
+  assert(solidar::detectExtrudeOperation(circleFaceProfile, 15.0, true,
+                                         circleFaceShape.get(), true) ==
+         solidar::ExtrudeOperation::Cut);
+
+  solidar::Document polygonFaceDocument;
+  auto& polygonFaceBase = polygonFaceDocument.addSketch("Poly face base");
+  polygonFaceBase.geometry.addRectangle({0.0, 0.0}, {40.0, 40.0});
+  auto& polygonFaceBody = polygonFaceDocument.addBody();
+  polygonFaceBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      polygonFaceBase.id, 20.0));
+  assert(polygonFaceDocument.rebuild());
+  auto& polygonFaceProfile = polygonFaceDocument.addSketch("Poly face profile");
+  polygonFaceProfile.geometry.addLine({-12.0, -12.0}, {-2.0, -6.0});
+  polygonFaceProfile.geometry.addLine({-2.0, -6.0}, {-10.0, -2.0});
+  polygonFaceProfile.geometry.addLine({-10.0, -2.0}, {-12.0, -12.0});
+  assert(polygonFaceDocument.attachSketchToFace(
+      polygonFaceProfile.id,
+      {polygonFaceBody.id(), polygonFaceBody.activeFeature()->id(),
+       topFaceOf(*polygonFaceBody.resultShape(), 20.0)}));
+  const auto polygonFaceShape = polygonFaceBody.resultShape();
+  assert(solidar::detectExtrudeOperation(polygonFaceProfile, 10.0, false,
+                                         polygonFaceShape.get(), true) ==
+         solidar::ExtrudeOperation::Join);
+
   const auto normalized = solidar::normalizeExtrusionInput(-20.0, false);
   assert(near(normalized.distanceMm, 20.0));
   assert(normalized.reversed);

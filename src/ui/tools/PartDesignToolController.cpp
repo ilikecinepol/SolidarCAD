@@ -29,12 +29,12 @@ void PartDesignToolController::activate(PartDesignToolKind kind) {
 void PartDesignToolController::deactivate(PartDesignToolKind kind) noexcept {
   if (active_ != kind) return;
   const auto found = registrations_.find(active_);
-  if (found != registrations_.end() && found->second.clearPresentation)
-    found->second.clearPresentation();
-  SOLIDAR_TOOL_LOG("Tool applied/closed kind=" << static_cast<int>(kind));
   active_ = PartDesignToolKind::None;
   temporaryStage_.reset();
   returnStage_ = ToolSelectionStage::None;
+  SOLIDAR_TOOL_LOG("Tool applied/closed kind=" << static_cast<int>(kind));
+  if (found != registrations_.end() && found->second.clearPresentation)
+    found->second.clearPresentation();
 }
 
 void PartDesignToolController::cancelActive() {

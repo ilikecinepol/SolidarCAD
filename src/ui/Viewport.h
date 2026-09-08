@@ -69,9 +69,20 @@ class Viewport final : public QOpenGLWidget {
   void setOriginVisible(bool visible);
   void setBasePlaneVisible(int plane, bool visible);
   void resetScene();
+  // Clears only the transient tool-interaction state (pick modes, selection
+  // filters, hover, multi-selection toggles, temporary sketch-plane/extrusion/
+  // axis candidates, drag state and the cursor). Preview shape and manipulators
+  // are owned by the tool lifecycle and stay untouched.
+  void resetToolInteraction() noexcept;
+  // Opens a fresh per-tool interaction context: any previous pick mode, filter,
+  // hover or selection is cleared first, so state cannot leak between tools.
+  void beginEdgeSelection(const std::vector<EdgeReference>& initial = {});
+  void beginFaceSelection(const std::vector<FaceReference>& initial = {});
   void beginSketchPlaneSelection();
   void beginExtrusionSurfaceSelection();
   void beginRevolveAxisSelection(std::size_t sketchIndex);
+  [[nodiscard]] std::size_t hoveredBodyEdgeIndex() const noexcept;
+  [[nodiscard]] std::size_t hoveredBodyFaceIndex() const noexcept;
   void showExtrusionManipulator(double lengthMm);
   void hideExtrusionManipulator();
   void setExtrusionPreviewLength(double lengthMm);

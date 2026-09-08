@@ -148,6 +148,10 @@ class MainWindow final : public QMainWindow {
   QComboBox* extrusionOperationCombo_{nullptr};
   QCheckBox* extrusionReverseCheck_{nullptr};
   bool extrudeOperationManuallyChanged_{false};
+  // Auto Extrude-proposal stickiness: a fresh profile/input re-detects once,
+  // but subsequent length/drag/camera/reverse changes never flip the operation.
+  bool extrudeAutoDetectEnabled_{false};
+  bool extrudeOperationStale_{false};
   QDockWidget* sketchSettingsDock_{nullptr};
   QComboBox* sketchLineTypeCombo_{nullptr};
   QTreeWidget* sketchConstraintsList_{nullptr};

@@ -115,6 +115,12 @@ target_link_libraries(viewport_preview_selection_tests PRIVATE solidar_viewport3
 add_test(NAME viewport_preview_selection_tests
          COMMAND viewport_preview_selection_tests)
 
+add_executable(viewport_edge_interaction_tests
+               viewport_edge_interaction_tests.cpp)
+target_link_libraries(viewport_edge_interaction_tests PRIVATE solidar_viewport3d)
+add_test(NAME viewport_edge_interaction_tests
+         COMMAND viewport_edge_interaction_tests)
+
 add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
@@ -201,6 +207,7 @@ set_tests_properties(
   viewport_picking_tests
   viewport_manipulator_tests
   viewport_preview_selection_tests
+  viewport_edge_interaction_tests
   macro_foundation_tests
   fillet_feature_tests
   chamfer_feature_tests
@@ -291,6 +298,7 @@ if(WIN32)
     viewport_picking_tests
     viewport_manipulator_tests
     viewport_preview_selection_tests
+    viewport_edge_interaction_tests
     macro_foundation_tests
     fillet_feature_tests
     chamfer_feature_tests

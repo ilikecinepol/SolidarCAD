@@ -39,6 +39,13 @@
 #include <utility>
 #include <numbers>
 
+#ifndef NDEBUG
+#include <iostream>
+#define SOLIDAR_VIEWPORT_LOG(message) (std::clog << "[Viewport] " << message << '\n')
+#else
+#define SOLIDAR_VIEWPORT_LOG(message) ((void)0)
+#endif
+
 namespace solidar {
 namespace {
 
@@ -586,25 +593,23 @@ void Viewport::resetScene() {
   update();
 }
 
-void Viewport::beginSketchPlaneSelection() {
-  selectionFilter_ = SelectionFilter::Face;
-  pickMode_ = PickMode::SketchPlane;
-  extrusionHoverPolygon_.clear();
-  extrusionHoverPath_ = {};
-  hoveredExtrusionSurface_.clear();
-  hoveredExtrusionSupport_.clear();
+void Viewport::resetToolInteraction() noexcept {
+  pickMode_ = PickMode::None;
+  selectionFilter_ = SelectionFilter::Any;
+  edgeMultiSelectionMode_ = false;
+  faceMultiSelectionMode_ = false;
   selectedFace_ = -1;
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
-  for (bool& visible : basePlanesVisible_) visible = true;
-  setCursor(Qt::CrossCursor);
-  update();
-}
-
-void Viewport::beginExtrusionSurfaceSelection() {
-  hideExtrusionManipulator();
-  pickMode_ = PickMode::ExtrusionSurface;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  // Temporary extrusion hover/selection and axis-selection candidates.
   extrusionHoverPolygon_.clear();
   extrusionHoverPath_ = {};
   hoveredExtrusionSketch_.clear();
@@ -612,6 +617,7 @@ void Viewport::beginExtrusionSurfaceSelection() {
   hoveredExtrusionSurface_.clear();
   hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
   hoveredExtrusionOnBodyCap_ = false;
+  hasHoveredExtrusionPlacement_ = false;
   selectedExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
   selectedExtrusionPolygons_.clear();
   selectedExtrusionPaths_.clear();
@@ -622,11 +628,54 @@ void Viewport::beginExtrusionSurfaceSelection() {
   selectedExtrusionBodyFace_ = false;
   selectedExtrusionOnBodyCap_ = false;
   hasSelectedExtrusionPlacement_ = false;
-  selectedFace_ = -1;
-  selectedBasePlane_ = -1;
-  selectedVertex_ = -1;
-  selectedOrigin_ = false;
+  revolveAxisSketchIndex_ = static_cast<std::size_t>(-1);
+  // Drag state and the transient cursor.
+  draggingToolManipulator_ = false;
+  draggingAngularToolManipulator_ = false;
+  hideExtrusionManipulator();
+  for (bool& visible : basePlanesVisible_) visible = false;
+  unsetCursor();
+  SOLIDAR_VIEWPORT_LOG("interaction context reset");
+  update();
+}
+
+void Viewport::beginEdgeSelection(const std::vector<EdgeReference>& initial) {
+  resetToolInteraction();
+  selectionFilter_ = SelectionFilter::Edge;
+  edgeMultiSelectionMode_ = true;
+  if (!initial.empty()) setSelectedBodyEdges(initial);
   setCursor(Qt::CrossCursor);
+  SOLIDAR_VIEWPORT_LOG("edge-selection context opened, "
+                       << initial.size() << " restored edge(s)");
+  update();
+}
+
+void Viewport::beginFaceSelection(const std::vector<FaceReference>& initial) {
+  resetToolInteraction();
+  selectionFilter_ = SelectionFilter::Face;
+  faceMultiSelectionMode_ = true;
+  if (!initial.empty()) setSelectedBodyFaces(initial);
+  setCursor(Qt::CrossCursor);
+  SOLIDAR_VIEWPORT_LOG("face-selection context opened, "
+                       << initial.size() << " restored face(s)");
+  update();
+}
+
+void Viewport::beginSketchPlaneSelection() {
+  resetToolInteraction();
+  selectionFilter_ = SelectionFilter::Face;
+  pickMode_ = PickMode::SketchPlane;
+  for (bool& visible : basePlanesVisible_) visible = true;
+  setCursor(Qt::CrossCursor);
+  SOLIDAR_VIEWPORT_LOG("sketch-plane selection context opened");
+  update();
+}
+
+void Viewport::beginExtrusionSurfaceSelection() {
+  resetToolInteraction();
+  pickMode_ = PickMode::ExtrusionSurface;
+  setCursor(Qt::CrossCursor);
+  SOLIDAR_VIEWPORT_LOG("extrusion-surface selection context opened");
   update();
 }
 
@@ -759,10 +808,20 @@ std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
 }
 
 void Viewport::beginRevolveAxisSelection(std::size_t sketchIndex) {
+  resetToolInteraction();
   pickMode_ = PickMode::RevolveAxis;
   revolveAxisSketchIndex_ = sketchIndex;
   setCursor(Qt::CrossCursor);
+  SOLIDAR_VIEWPORT_LOG("revolve-axis selection context opened");
   update();
+}
+
+std::size_t Viewport::hoveredBodyEdgeIndex() const noexcept {
+  return hoveredBodyEdgeIndex_;
+}
+
+std::size_t Viewport::hoveredBodyFaceIndex() const noexcept {
+  return hoveredBodyFaceIndex_;
 }
 
 std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
