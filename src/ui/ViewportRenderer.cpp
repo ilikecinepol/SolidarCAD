@@ -348,21 +348,22 @@ void ViewportRenderer::render(
                    false);
     gl->glDisable(GL_POLYGON_OFFSET_FILL);
   }
+  // Ordinary model/preview edges are drawn without interaction coloring.
+  // Selection/hover is then rendered exactly once from the selectable source
+  // topology. Keeping this inside the native OpenGL pass avoids mixing a
+  // second QPainter overlay into QOpenGLWidget::paintGL().
   if (mode != ViewportDisplayMode::Shaded)
-    drawEdges(gpu, matrix, preview ? std::vector<std::size_t>{} : selectedEdges,
-              preview ? std::size_t(-1) : hoveredEdge, true, dpr);
-  if (preview && (!selectedEdges.empty() || hoveredEdge != std::size_t(-1))) {
-    // Fillet/chamfer previews replace the source edge with new faces. Drawing
-    // the source highlight with the preview depth buffer still active can bury
-    // it completely, even though picking correctly found that source edge.
-    // This pass contains highlighted edges only, so render it as an explicit
-    // interaction overlay above the translucent preview.
+    drawEdges(gpu, matrix, {}, std::size_t(-1), true, dpr);
+
+  if (!selectedEdges.empty() || hoveredEdge != std::size_t(-1)) {
+    // Picking already rejects occluded hover candidates. Disable depth only for
+    // this tiny highlighted-edge pass to avoid z-fighting with the source face
+    // and to keep the candidate visible while a Fillet/Chamfer preview exists.
     gl->glDisable(GL_DEPTH_TEST);
     drawEdges(*source_, matrix, selectedEdges, hoveredEdge, false, dpr);
     gl->glEnable(GL_DEPTH_TEST);
-  } else if (mode == ViewportDisplayMode::Shaded &&
-           (!selectedEdges.empty() || hoveredEdge != std::size_t(-1)))
-    drawEdges(*source_, matrix, selectedEdges, hoveredEdge, false, dpr);
+  }
+
   gl->glLineWidth(1.0F);
   gl->glDisable(GL_POLYGON_OFFSET_FILL);
   gl->glDisable(GL_DEPTH_TEST);

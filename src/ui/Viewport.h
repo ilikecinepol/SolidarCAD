@@ -23,7 +23,6 @@ class QPaintEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QDoubleSpinBox;
-class QPainter;
 
 namespace solidar {
 
@@ -160,7 +159,6 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] QPointF extrusionScreenOffset(double lengthMm) const;
   void rebuildSelectedExtrusionSketch();
   void updateBodyHover(QPointF position);
-  void drawBodyEdgeInteractionOverlay(QPainter& painter) const;
   void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
                           bool clearSelection);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(

@@ -6,6 +6,10 @@
 #include "ui/EditorFactory.h"
 
 int main(int argc, char* argv[]) {
+  // The 3D viewport is also used while the first editor is being created.
+  // Prefer Qt's software OpenGL backend here: on affected Windows drivers the
+  // hardware context may corrupt the process during that initial paint.
+  QApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
   QApplication application(argc, argv);
   QApplication::setApplicationName(QString::fromUtf8("Солидарность CAD"));
   QApplication::setOrganizationName("Solidar CAD");

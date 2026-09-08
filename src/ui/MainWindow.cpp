@@ -188,6 +188,21 @@ void MainWindow::createProject() {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка создания"), error);
     return;
   }
+  // A new document must not inherit any live Part Design session from the
+  // previous document. In particular, Fillet/Chamfer keep B-Rep references,
+  // preview shapes and HUD/manipulator callbacks. Leaving them alive while
+  // Document and Viewport are reset can dereference stale geometry on the next
+  // event/paint and crash project creation.
+  filletToolSession_.cancel();
+  chamferToolSession_.cancel();
+  shellToolSession_.cancel();
+  draftToolSession_.cancel();
+  revolveToolSession_.cancel();
+  if (toolParametersDock_) toolParametersDock_->hide();
+  if (revolveDock_) revolveDock_->hide();
+  viewport_->clearToolManipulator();
+  viewport_->clearToolPreviewShape();
+
   setProjectPath(path);
   sketchCanvas_->resetSketch();
   document_ = Document{};

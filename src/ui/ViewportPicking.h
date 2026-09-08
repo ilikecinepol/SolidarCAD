@@ -6,7 +6,7 @@
 
 namespace solidar {
 
-inline constexpr double kEdgeHitRadiusPx = 7.0;
+inline constexpr double kEdgeHitRadiusPx = 9.0;
 inline constexpr double kVertexHitRadiusPx = 9.0;
 inline constexpr double kDepthEpsilonScale = 1e-4;
 
