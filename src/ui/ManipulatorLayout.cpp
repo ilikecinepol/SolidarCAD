@@ -25,18 +25,16 @@ ManipulatorLayoutResult computeManipulatorLayout(
   double bestScore = -std::numeric_limits<double>::max();
   ManipulatorLayoutResult result;
   for (double sign : {1.0, -1.0}) {
-    double length = std::max(std::abs(input.semanticLengthPx),
-                             style.bodyClearance + style.handleRadius);
-    QPointF handle = input.anchor + direction * (sign * length);
-    int extensionAttempts = 0;
-    for (; extensionAttempts < 8 && blocked.contains(handle);
-         ++extensionAttempts) {
-      length += style.bodyClearance;
-      handle = input.anchor + direction * (sign * length);
-    }
-    double score = blocked.contains(handle) ? -10000.0 : 1000.0;
-    score -= extensionAttempts * 120.0;
+    const double length = std::clamp(std::abs(input.semanticLengthPx),
+                                     style.minimumLength,
+                                     style.maximumLength);
+    const QPointF handle = input.anchor + direction * (sign * length);
+    double score = blocked.contains(handle) ? 0.0 : 1000.0;
     score += input.viewport.adjusted(10, 10, -10, -10).contains(handle) ? 200.0 : -500.0;
+    // In screen coordinates positive Y points down. Prefer that presentation
+    // when both directions are otherwise equally usable, without coupling the
+    // parameter math itself to the screen Y axis.
+    score += direction.y() * sign > 1e-6 ? 80.0 : 0.0;
     score += sign > 0.0 ? 1.0 : 0.0;
     for (const QRectF& exclusion : input.exclusions)
       if (exclusion.contains(handle)) score -= 800.0;

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "model/ShapeFeature.h"
+#include "model/NumericParameterState.h"
 #include "model/ToolSession.h"
 
 namespace solidar {
@@ -34,12 +35,13 @@ class FilletToolSession final : public ToolSession {
   void cancel() noexcept override;
 
  private:
+  bool trySetRadius(double radiusMm);
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
   ShapeFeature::ShapePtr baseShape_;
   std::vector<EdgeReference> edges_;
-  double radiusMm_{5.0};
+  NumericParameterState radius_;
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   std::string error_;

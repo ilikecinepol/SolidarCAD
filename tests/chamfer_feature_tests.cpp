@@ -164,9 +164,13 @@ int main(int argc, char* argv[]) {
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.edges() == pairReferences);
     pairSession.setDistanceFromPanel(1000.0);
-    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
-    CHECK(!pairSession.previewShape());
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+    CHECK(pairSession.previewShape());
+    CHECK(std::abs(pairSession.distanceMm() - 0.75) < 1e-9);
     CHECK(pairSession.edges() == pairReferences);
+    pairSession.setDistanceFromManipulator(0.0);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::EditingParameters);
+    CHECK(pairSession.previewShape().get() == upstream.get());
     pairSession.setDistanceFromPanel(1.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.edges() == pairReferences);

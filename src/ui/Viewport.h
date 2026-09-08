@@ -13,6 +13,7 @@
 #include "model/SolidFeature.h"
 #include "sketch/Sketch.h"
 #include "ui/BodyRenderMesh.h"
+#include "ui/ViewportPicking.h"
 #include "ui/ManipulatorLayout.h"
 #include "ui/ViewportRenderer.h"
 #include "model/ToolSession.h"
@@ -245,6 +246,7 @@ class Viewport final : public QOpenGLWidget {
   std::optional<LinearToolManipulator> toolManipulator_;
   std::optional<AngularToolManipulator> angularToolManipulator_;
   bool draggingToolManipulator_{false};
+  std::optional<LinearDragSnapshot> linearDragSnapshot_;
   bool draggingAngularToolManipulator_{false};
   bool panningView_{false};
   QPointF cameraPan_;

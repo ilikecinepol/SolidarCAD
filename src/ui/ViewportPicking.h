@@ -21,6 +21,17 @@ struct SegmentHit {
   double depth{};
 };
 
+struct LinearDragSnapshot {
+  QPointF cursorStart;
+  QPointF projectedUnitAxis;
+  double initialValue{};
+};
+
+[[nodiscard]] double linearValueFromDrag(const LinearDragSnapshot& drag,
+                                         QPointF cursor,
+                                         double minimum = 0.0,
+                                         double maximum = 100000.0);
+
 [[nodiscard]] std::optional<double> triangleDepthAt(
     QPointF point, const ProjectedPoint& a, const ProjectedPoint& b,
     const ProjectedPoint& c);

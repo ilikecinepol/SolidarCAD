@@ -548,7 +548,7 @@ void MainWindow::buildUi() {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterRange(0.01, 100000.0, 2);
+  toolParametersPanel_->setParameterRange(0.0, 100000.0, 2);
   toolParametersDock_->setWidget(toolParametersPanel_);
   toolParametersDock_->setMinimumWidth(250);
   addDockWidget(Qt::RightDockWidgetArea, toolParametersDock_);
@@ -648,9 +648,13 @@ void MainWindow::buildUi() {
     if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       chamferToolSession_.setEdges(viewport_->selectedBodyEdges());
       updateChamferToolPreview();
+      if (!chamferToolSession_.edges().empty())
+        toolParametersPanel_->focusParameterInput();
     } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       filletToolSession_.setEdges(viewport_->selectedBodyEdges());
       updateFilletToolPreview();
+      if (!filletToolSession_.edges().empty())
+        toolParametersPanel_->focusParameterInput();
     }
   });
   connect(viewport_, &Viewport::bodyFaceSelectionChanged, this, [this] {
@@ -1825,7 +1829,7 @@ void MainWindow::createFillet() {
       return;
     }
   filletToolSession_.begin(body->id(), body->activeFeature()->id(),
-                           body->resultShape(), edges, 5.0);
+                           body->resultShape(), edges, 0.0);
   viewport_->setEdgeMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Edge);
   viewport_->setSelectedBodyEdges(edges);
@@ -1833,10 +1837,12 @@ void MainWindow::createFillet() {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterValue(5.0);
+  toolParametersPanel_->setParameterRange(0.0, 100000.0, 2);
+  toolParametersPanel_->setParameterValue(0.0);
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFilletToolPreview();
+  if (!edges.empty()) toolParametersPanel_->focusParameterInput();
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
@@ -2080,7 +2086,7 @@ void MainWindow::createChamfer() {
       return;
     }
   chamferToolSession_.begin(body->id(), body->activeFeature()->id(),
-                            body->resultShape(), edges, 2.0);
+                             body->resultShape(), edges, 0.0);
   viewport_->setEdgeMultiSelectionMode(true);
   viewport_->setSelectionFilter(SelectionFilter::Edge);
   viewport_->setSelectedBodyEdges(edges);
@@ -2088,10 +2094,12 @@ void MainWindow::createChamfer() {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterValue(2.0);
+  toolParametersPanel_->setParameterRange(0.0, 100000.0, 2);
+  toolParametersPanel_->setParameterValue(0.0);
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateChamferToolPreview();
+  if (!edges.empty()) toolParametersPanel_->focusParameterInput();
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));

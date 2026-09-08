@@ -22,7 +22,7 @@ void ChamferToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
   edges_ = std::move(edges);
-  distanceMm_ = distanceMm;
+  distance_.reset(distanceMm, 0.0, 100000.0);
   editingFeatureId_ = editingFeatureId;
   lifecycle_ = ToolLifecycle::Editing;
   updatePreview();
@@ -33,12 +33,10 @@ void ChamferToolSession::setEdges(std::vector<EdgeReference> edges) {
   updatePreview();
 }
 void ChamferToolSession::setDistanceFromPanel(double distanceMm) {
-  distanceMm_ = distanceMm;
-  updatePreview();
+  trySetDistance(distanceMm);
 }
 void ChamferToolSession::setDistanceFromManipulator(double distanceMm) {
-  distanceMm_ = std::max(0.01, distanceMm);
-  updatePreview();
+  trySetDistance(distanceMm);
 }
 
 BodyId ChamferToolSession::bodyId() const noexcept { return bodyId_; }
@@ -51,7 +49,7 @@ std::optional<FeatureId> ChamferToolSession::editingFeatureId() const noexcept {
 const std::vector<EdgeReference>& ChamferToolSession::edges() const noexcept {
   return edges_;
 }
-double ChamferToolSession::distanceMm() const noexcept { return distanceMm_; }
+double ChamferToolSession::distanceMm() const noexcept { return distance_.value(); }
 ToolLifecycle ChamferToolSession::lifecycle() const noexcept {
   return lifecycle_;
 }
@@ -66,8 +64,8 @@ std::optional<SelectionRequirement> ChamferToolSession::selectionRequirement() c
                               static_cast<std::size_t>(-1), true};
 }
 std::vector<ToolParameterDescriptor> ChamferToolSession::parameters() const {
-  return {{"distance", "Distance", ToolParameterType::Distance, distanceMm_,
-           0.01, 100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
+  return {{"distance", "Distance", ToolParameterType::Distance, distance_.value(),
+           0.0, 100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
 }
 std::shared_ptr<const TopoDS_Shape> ChamferToolSession::previewShape() const {
   return previewShape_;
@@ -102,7 +100,12 @@ bool ChamferToolSession::updatePreview() {
     }
     indices.push_back(resolved.index);
   }
-  previewShape_ = buildChamferShape(*baseShape_, indices, distanceMm_, &error_);
+  if (distance_.value() <= 0.0) {
+    previewShape_ = baseShape_;
+    lifecycle_ = ToolLifecycle::EditingParameters;
+    return true;
+  }
+  previewShape_ = buildChamferShape(*baseShape_, indices, distance_.value(), &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
@@ -117,12 +120,26 @@ std::optional<LinearToolManipulator> ChamferToolSession::manipulator() const {
     const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
     if (!geometry) return std::nullopt;
     return LinearToolManipulator{geometry->midpoint,
-                                 geometry->outwardDirection, distanceMm_};
+                                 geometry->outwardDirection, distance_.value()};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {
     return std::nullopt;
   }
+}
+
+bool ChamferToolSession::trySetDistance(double distanceMm) {
+  const auto candidate = distance_.candidate(distanceMm);
+  if (!candidate || !baseShape_ || edges_.empty()) return false;
+  const double previous = distance_.value();
+  const auto previousPreview = previewShape_;
+  const auto previousLifecycle = lifecycle_;
+  distance_.accept(*candidate);
+  if (updatePreview()) return true;
+  distance_.accept(previous);
+  previewShape_ = previousPreview;
+  lifecycle_ = previousLifecycle;
+  return false;
 }
 
 void ChamferToolSession::cancel() noexcept {

@@ -40,6 +40,23 @@ SegmentHit closestSegmentHit(QPointF point, const ProjectedPoint& a,
           a.depth + (b.depth - a.depth) * parameter};
 }
 
+double linearValueFromDrag(const LinearDragSnapshot& drag, QPointF cursor,
+                           double minimum, double maximum) {
+  if (!std::isfinite(drag.initialValue) || !std::isfinite(minimum) ||
+      !std::isfinite(maximum) || minimum > maximum)
+    return minimum;
+  const double lengthSquared =
+      QPointF::dotProduct(drag.projectedUnitAxis, drag.projectedUnitAxis);
+  if (lengthSquared <= 1e-9)
+    return std::clamp(drag.initialValue, minimum, maximum);
+  const double signedDelta = QPointF::dotProduct(
+      cursor - drag.cursorStart, drag.projectedUnitAxis) / lengthSquared;
+  const double candidate = drag.initialValue + signedDelta;
+  return std::isfinite(candidate)
+             ? std::clamp(candidate, minimum, maximum)
+             : std::clamp(drag.initialValue, minimum, maximum);
+}
+
 double angularValueFromProjectedBasis(QPointF cursor, QPointF origin,
                                       QPointF uPoint, QPointF vPoint) {
   const QPointF u = uPoint - origin;

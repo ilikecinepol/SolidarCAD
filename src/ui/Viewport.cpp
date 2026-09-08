@@ -1970,6 +1970,16 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     const QPointF handle = layout.handle;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingToolManipulator_ = true;
+      const Point3d unitWorld{
+          toolManipulator_->origin.x + toolManipulator_->direction.x,
+          toolManipulator_->origin.y + toolManipulator_->direction.y,
+          toolManipulator_->origin.z + toolManipulator_->direction.z};
+      QPointF projectedUnitAxis =
+          projectBodyPoint(unitWorld, center, size(), yaw_, pitch_, zoom_).screen -
+          start;
+      if (layout.visualSign < 0.0) projectedUnitAxis = -projectedUnitAxis;
+      linearDragSnapshot_ = {scenePosition, projectedUnitAxis,
+                             toolManipulator_->valueMm};
       setCursor(Qt::SizeAllCursor);
       return;
     }
@@ -3081,39 +3091,9 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
   }
   if (draggingToolManipulator_ && toolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
-    const Point3d center = bodyRenderMesh_.center();
-    const auto origin = projectBodyPoint(toolManipulator_->origin, center, size(),
-                                         yaw_, pitch_, zoom_).screen;
-    const Point3d unitWorld{
-        toolManipulator_->origin.x + toolManipulator_->direction.x,
-        toolManipulator_->origin.y + toolManipulator_->direction.y,
-        toolManipulator_->origin.z + toolManipulator_->direction.z};
-    const auto unit = projectBodyPoint(unitWorld, center, size(), yaw_, pitch_,
-                                       zoom_).screen;
-    const QPointF axis = unit - origin;
-    const double axisLengthSquared = QPointF::dotProduct(axis, axis);
-    if (axisLengthSquared > 1e-6) {
-      double value = QPointF::dotProduct(
-                               event->position() - cameraPan_ - origin, axis) /
-                           axisLengthSquared;
-      const Point3d semanticEndWorld = offsetPoint(
-          toolManipulator_->origin, toolManipulator_->direction,
-          toolManipulator_->valueMm);
-      const QPointF semanticEnd = projectBodyPoint(
-          semanticEndWorld, toolManipulator_->origin, size(), yaw_, pitch_,
-          zoom_).screen;
-      const bool hasToolPreview = toolPreviewShape_ && !toolPreviewShape_->IsNull();
-      const QRectF bodyBounds = hasToolPreview
-          ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
-          : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
-      const auto layout = computeManipulatorLayout({
-          origin, semanticEnd - origin, QLineF(origin, semanticEnd).length(),
-          bodyBounds, QRectF(QPointF(-cameraPan_.x(), -cameraPan_.y()), size()),
-          toolParameterHud_ ? toolParameterHud_->size() : QSizeF(132, 40),
-          {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(),
-                  116.0, 116.0)}});
-      value *= layout.visualSign;
-      toolManipulator_->valueMm = std::max(0.01, value);
+    if (linearDragSnapshot_) {
+      toolManipulator_->valueMm = linearValueFromDrag(
+          *linearDragSnapshot_, event->position() - cameraPan_);
       emit toolManipulatorValueChanged(toolManipulator_->valueMm);
       update();
     }
@@ -3191,6 +3171,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
   }
   if (event->button() == Qt::LeftButton && draggingToolManipulator_) {
     draggingToolManipulator_ = false;
+    linearDragSnapshot_.reset();
     unsetCursor();
     event->accept();
     return;

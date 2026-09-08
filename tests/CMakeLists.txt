@@ -104,6 +104,10 @@ add_executable(viewport_picking_tests viewport_picking_tests.cpp)
 target_link_libraries(viewport_picking_tests PRIVATE solidar_viewport3d)
 add_test(NAME viewport_picking_tests COMMAND viewport_picking_tests)
 
+add_executable(numeric_parameter_state_tests numeric_parameter_state_tests.cpp)
+target_link_libraries(numeric_parameter_state_tests PRIVATE solidar_model)
+add_test(NAME numeric_parameter_state_tests COMMAND numeric_parameter_state_tests)
+
 add_executable(viewport_manipulator_tests viewport_manipulator_tests.cpp)
 target_link_libraries(viewport_manipulator_tests
                       PRIVATE solidar_viewport3d Qt6::Widgets)
@@ -199,6 +203,7 @@ set_tests_properties(
   viewport_ux_polish_tests
   edge_selection_state_tests
   viewport_picking_tests
+  numeric_parameter_state_tests
   viewport_manipulator_tests
   viewport_preview_selection_tests
   macro_foundation_tests

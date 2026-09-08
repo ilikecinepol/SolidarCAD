@@ -9,12 +9,14 @@
 namespace solidar {
 
 struct ManipulatorStyle {
-  double handleRadius{7.0};
-  double shaftWidth{3.0};
-  double arrowHeadLength{12.0};
-  double arrowHeadWidth{8.0};
-  double bodyClearance{26.0};
+  double handleRadius{8.0};
+  double shaftWidth{4.0};
+  double arrowHeadLength{11.0};
+  double arrowHeadWidth{9.0};
+  double bodyClearance{18.0};
   double hudClearance{12.0};
+  double minimumLength{36.0};
+  double maximumLength{72.0};
 };
 
 struct ManipulatorLayoutInput {

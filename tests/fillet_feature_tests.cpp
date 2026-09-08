@@ -278,9 +278,14 @@ int main() {
   CHECK(multiEdgeSession.edges() == selectedReferences);
   multiEdgeSession.setRadiusFromPanel(1000.0);
   CHECK(multiEdgeSession.lifecycle() ==
-        solidar::ToolLifecycle::PreviewInvalid);
-  CHECK(!multiEdgeSession.previewShape());
+        solidar::ToolLifecycle::PreviewValid);
+  CHECK(multiEdgeSession.previewShape());
+  CHECK(std::abs(multiEdgeSession.radiusMm() - 1.0) < 1e-9);
   CHECK(multiEdgeSession.edges() == selectedReferences);
+  multiEdgeSession.setRadiusFromManipulator(0.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::EditingParameters);
+  CHECK(multiEdgeSession.previewShape().get() == multiEdgeSource.get());
   multiEdgeSession.setRadiusFromPanel(2.0);
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::PreviewValid);

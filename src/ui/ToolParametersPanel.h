@@ -26,6 +26,7 @@ class ToolParametersPanel final : public QWidget {
   [[nodiscard]] double parameterValue() const;
   void setStatus(const QString& text, bool error = false);
   void setAcceptEnabled(bool enabled);
+  void focusParameterInput();
   void setDescription(const QString& text);
   [[nodiscard]] QString titleText() const;
   [[nodiscard]] QString descriptionText() const;

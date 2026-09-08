@@ -22,7 +22,7 @@ void FilletToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
   edges_ = std::move(edges);
-  radiusMm_ = radiusMm;
+  radius_.reset(radiusMm, 0.0, 100000.0);
   editingFeatureId_ = editingFeatureId;
   lifecycle_ = ToolLifecycle::Editing;
   updatePreview();
@@ -34,13 +34,11 @@ void FilletToolSession::setEdges(std::vector<EdgeReference> edges) {
 }
 
 void FilletToolSession::setRadiusFromPanel(double radiusMm) {
-  radiusMm_ = radiusMm;
-  updatePreview();
+  trySetRadius(radiusMm);
 }
 
 void FilletToolSession::setRadiusFromManipulator(double radiusMm) {
-  radiusMm_ = std::max(0.01, radiusMm);
-  updatePreview();
+  trySetRadius(radiusMm);
 }
 
 BodyId FilletToolSession::bodyId() const noexcept { return bodyId_; }
@@ -53,7 +51,7 @@ std::optional<FeatureId> FilletToolSession::editingFeatureId() const noexcept {
 const std::vector<EdgeReference>& FilletToolSession::edges() const noexcept {
   return edges_;
 }
-double FilletToolSession::radiusMm() const noexcept { return radiusMm_; }
+double FilletToolSession::radiusMm() const noexcept { return radius_.value(); }
 ToolLifecycle FilletToolSession::lifecycle() const noexcept {
   return lifecycle_;
 }
@@ -68,7 +66,7 @@ std::optional<SelectionRequirement> FilletToolSession::selectionRequirement() co
                               static_cast<std::size_t>(-1), true};
 }
 std::vector<ToolParameterDescriptor> FilletToolSession::parameters() const {
-  return {{"radius", "Radius", ToolParameterType::Distance, radiusMm_, 0.01,
+  return {{"radius", "Radius", ToolParameterType::Distance, radius_.value(), 0.0,
            100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
 }
 std::shared_ptr<const TopoDS_Shape> FilletToolSession::previewShape() const {
@@ -104,7 +102,12 @@ bool FilletToolSession::updatePreview() {
     }
     indices.push_back(resolved.index);
   }
-  previewShape_ = buildFilletShape(*baseShape_, indices, radiusMm_, &error_);
+  if (radius_.value() <= 0.0) {
+    previewShape_ = baseShape_;
+    lifecycle_ = ToolLifecycle::EditingParameters;
+    return true;
+  }
+  previewShape_ = buildFilletShape(*baseShape_, indices, radius_.value(), &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
@@ -119,12 +122,26 @@ std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
     const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
     if (!geometry) return std::nullopt;
     return LinearToolManipulator{geometry->midpoint,
-                                 geometry->outwardDirection, radiusMm_};
+                                 geometry->outwardDirection, radius_.value()};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {
     return std::nullopt;
   }
+}
+
+bool FilletToolSession::trySetRadius(double radiusMm) {
+  const auto candidate = radius_.candidate(radiusMm);
+  if (!candidate || !baseShape_ || edges_.empty()) return false;
+  const double previous = radius_.value();
+  const auto previousPreview = previewShape_;
+  const auto previousLifecycle = lifecycle_;
+  radius_.accept(*candidate);
+  if (updatePreview()) return true;
+  radius_.accept(previous);
+  previewShape_ = previousPreview;
+  lifecycle_ = previousLifecycle;
+  return false;
 }
 
 void FilletToolSession::cancel() noexcept {

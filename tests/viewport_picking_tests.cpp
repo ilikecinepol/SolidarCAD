@@ -14,6 +14,13 @@
 
 int main() {
   using solidar::ProjectedPoint;
+  const solidar::LinearDragSnapshot drag{{100.0, 80.0}, {4.0, 0.0}, 0.0};
+  CHECK(std::abs(solidar::linearValueFromDrag(drag, {100.0, 80.0})) < 1e-9);
+  CHECK(std::abs(solidar::linearValueFromDrag(drag, {102.0, 80.0}) - 0.5) < 1e-9);
+  CHECK(std::abs(solidar::linearValueFromDrag(drag, {108.0, 80.0}) - 2.0) < 1e-9);
+  CHECK(std::abs(solidar::linearValueFromDrag(drag, {104.0, 80.0}) - 1.0) < 1e-9);
+  CHECK(solidar::linearValueFromDrag(drag, {-100.0, 80.0}) == 0.0);
+
   const ProjectedPoint backA{{0.0, 0.0}, 1.0};
   const ProjectedPoint backB{{100.0, 0.0}, 1.0};
   const ProjectedPoint backC{{0.0, 100.0}, 1.0};

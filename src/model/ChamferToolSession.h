@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "model/ShapeFeature.h"
+#include "model/NumericParameterState.h"
 #include "model/ToolSession.h"
 
 namespace solidar {
@@ -34,12 +35,13 @@ class ChamferToolSession final : public ToolSession {
   void cancel() noexcept override;
 
  private:
+  bool trySetDistance(double distanceMm);
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
   ShapeFeature::ShapePtr baseShape_;
   std::vector<EdgeReference> edges_;
-  double distanceMm_{2.0};
+  NumericParameterState distance_;
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   std::string error_;
