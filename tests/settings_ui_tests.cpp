@@ -34,20 +34,36 @@ int main(int argc, char** argv) {
   QTemporaryDir directory;
   CHECK(directory.isValid());
 
-  // SettingsWidget edits and reflects AppSettings without a signal loop.
+  // SettingsWidget keeps a temporary selection separate from the saved value;
+  // Apply commits it and Cancel reverts it.
   {
     solidar::AppSettings settings(directory.filePath("a.ini"));
     solidar::SettingsWidget widget(settings);
     auto* combo = widget.findChild<QComboBox*>("themeCombo");
-    CHECK(combo);
+    auto* apply = widget.findChild<QPushButton*>("applyButton");
+    auto* cancel = widget.findChild<QPushButton*>("cancelButton");
+    CHECK(combo && apply && cancel);
     CHECK(combo->count() == 3);
     CHECK(combo->currentIndex() == 0);  // System default
+    CHECK(settings.theme() == solidar::AppTheme::System);
 
+    // Changing the combo is temporary and does not persist.
     combo->setCurrentIndex(2);  // Dark
-    CHECK(settings.theme() == solidar::AppTheme::Dark);
     CHECK(combo->currentIndex() == 2);
+    CHECK(settings.theme() == solidar::AppTheme::System);
 
-    settings.setTheme(solidar::AppTheme::Light);  // external change reflects back
+    apply->click();
+    CHECK(settings.theme() == solidar::AppTheme::Dark);
+
+    // Cancel discards a new temporary choice and reverts to the saved value.
+    combo->setCurrentIndex(1);  // Light (temporary)
+    CHECK(settings.theme() == solidar::AppTheme::Dark);
+    cancel->click();
+    CHECK(combo->currentIndex() == 2);  // reverted to Dark
+    CHECK(settings.theme() == solidar::AppTheme::Dark);
+
+    // An external change is reflected back into the combo.
+    settings.setTheme(solidar::AppTheme::Light);
     CHECK(combo->currentIndex() == 1);
     CHECK(settings.theme() == solidar::AppTheme::Light);
   }

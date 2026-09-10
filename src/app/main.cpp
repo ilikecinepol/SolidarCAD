@@ -38,6 +38,10 @@ int main(int argc, char* argv[]) {
   solidar::AppSettings settings;
   applyTheme(settings);
 
+  // Apply the theme whenever the user commits a new preference.
+  QObject::connect(&settings, &solidar::AppSettings::themeChanged, &application,
+                   [&settings](solidar::AppTheme) { applyTheme(settings); });
+
   // React to the OS color scheme changing while "System" is selected.
   QObject::connect(QGuiApplication::styleHints(),
                    &QStyleHints::colorSchemeChanged, &application,

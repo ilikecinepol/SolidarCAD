@@ -3,7 +3,9 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
 
@@ -48,27 +50,53 @@ SettingsWidget::SettingsWidget(AppSettings& settings, QWidget* parent)
   themeDescription_->setWordWrap(true);
   cardLayout->addWidget(themeDescription_);
 
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch();
+  cancelButton_ = new QPushButton(QString::fromUtf8("Отмена"), card);
+  cancelButton_->setObjectName("cancelButton");
+  applyButton_ = new QPushButton(QString::fromUtf8("Применить"), card);
+  applyButton_->setObjectName("applyButton");
+  applyButton_->setProperty("uiRole", "primaryAction");
+  buttons->addWidget(cancelButton_);
+  buttons->addWidget(applyButton_);
+  cardLayout->addLayout(buttons);
+
   root->addWidget(card);
   root->addStretch();
 
-  auto applyCombo = [this](AppTheme theme) {
-    const int index = theme == AppTheme::Light   ? 1
-                      : theme == AppTheme::Dark ? 2
-                                                : 0;
-    const QSignalBlocker blocker(themeCombo_);
-    themeCombo_->setCurrentIndex(index);
-    updateDescription(theme);
-  };
-  applyCombo(settings_.theme());
+  syncComboToSettings();
 
-  connect(themeCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
-    const AppTheme theme = index == 1   ? AppTheme::Light
-                           : index == 2 ? AppTheme::Dark
-                                        : AppTheme::System;
-    settings_.setTheme(theme);
-    updateDescription(theme);
+  connect(themeCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+    updateDescription(selectedTheme());
   });
-  connect(&settings_, &AppSettings::themeChanged, this, applyCombo);
+  connect(applyButton_, &QPushButton::clicked, this, &SettingsWidget::applyChanges);
+  connect(cancelButton_, &QPushButton::clicked, this, &SettingsWidget::cancelChanges);
+  connect(&settings_, &AppSettings::themeChanged, this,
+          [this](AppTheme) { syncComboToSettings(); });
+}
+
+AppTheme SettingsWidget::selectedTheme() const {
+  const int index = themeCombo_->currentIndex();
+  return index == 1 ? AppTheme::Light : index == 2 ? AppTheme::Dark
+                                                   : AppTheme::System;
+}
+
+void SettingsWidget::syncComboToSettings() {
+  const AppTheme theme = settings_.theme();
+  const int index = theme == AppTheme::Light   ? 1
+                    : theme == AppTheme::Dark ? 2
+                                              : 0;
+  const QSignalBlocker blocker(themeCombo_);
+  themeCombo_->setCurrentIndex(index);
+  updateDescription(theme);
+}
+
+void SettingsWidget::applyChanges() {
+  settings_.setTheme(selectedTheme());
+}
+
+void SettingsWidget::cancelChanges() {
+  syncComboToSettings();
 }
 
 void SettingsWidget::updateDescription(AppTheme theme) {
