@@ -139,6 +139,8 @@ add_library(solidar_viewport3d
   ui/Viewport.h
   ui/ViewCube.cpp
   ui/ViewCube.h
+  ui/WorldGrid.cpp
+  ui/WorldGrid.h
   ui/ViewportCamera.cpp
   ui/ViewportCamera.h
   ui/ViewportPicking.cpp

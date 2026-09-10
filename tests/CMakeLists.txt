@@ -138,6 +138,11 @@ target_link_libraries(view_cube_tests PRIVATE solidar_viewport3d)
 add_test(NAME view_cube_tests COMMAND view_cube_tests)
 set_tests_properties(view_cube_tests PROPERTIES LABELS "regression;ui-smoke")
 
+add_executable(world_grid_tests world_grid_tests.cpp)
+target_link_libraries(world_grid_tests PRIVATE solidar_viewport3d)
+add_test(NAME world_grid_tests COMMAND world_grid_tests)
+set_tests_properties(world_grid_tests PROPERTIES LABELS "regression")
+
 add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
@@ -323,6 +328,7 @@ if(WIN32)
     viewport_preview_selection_tests
     viewport_reset_tests
     view_cube_tests
+    world_grid_tests
     macro_foundation_tests
     fillet_feature_tests
     chamfer_feature_tests
