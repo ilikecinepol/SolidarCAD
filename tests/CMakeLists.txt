@@ -128,6 +128,11 @@ target_link_libraries(viewport_preview_selection_tests PRIVATE solidar_viewport3
 add_test(NAME viewport_preview_selection_tests
          COMMAND viewport_preview_selection_tests)
 
+add_executable(viewport_reset_tests viewport_reset_tests.cpp)
+target_link_libraries(viewport_reset_tests
+  PRIVATE solidar_viewport3d Qt6::Widgets)
+add_test(NAME viewport_reset_tests COMMAND viewport_reset_tests)
+
 add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
@@ -247,6 +252,7 @@ set_tests_properties(
   circular_pattern_feature_tests
   pattern_persistence_tests
   multi_solid_edge_feature_tests
+  viewport_reset_tests
   PROPERTIES LABELS "regression"
 )
 
@@ -310,6 +316,7 @@ if(WIN32)
     viewport_picking_tests
     viewport_manipulator_tests
     viewport_preview_selection_tests
+    viewport_reset_tests
     macro_foundation_tests
     fillet_feature_tests
     chamfer_feature_tests

@@ -59,5 +59,44 @@ int main() {
             {140.0, 99.99}, angularOrigin, angularU, angularV) > 359.0);
   CHECK(solidar::angularValueFromProjectedBasis(
             {140.0, 100.01}, angularOrigin, angularU, angularV) < 1.0);
+
+  // Occlusion: a rear edge projected behind a front surface must be rejected
+  // for hover. Mirrors Viewport::updateBodyHover, which rejects an edge when
+  // its depth is behind the nearest surface at the same screen position.
+  {
+    const ProjectedPoint frontA{{0.0, 0.0}, 9.0};
+    const ProjectedPoint frontB{{100.0, 0.0}, 9.0};
+    const ProjectedPoint frontC{{0.0, 100.0}, 9.0};
+    const ProjectedPoint rearA{{20.0, 20.0}, 1.0};
+    const ProjectedPoint rearB{{80.0, 20.0}, 1.0};
+    const QPointF cursor{50.0, 20.0};
+    const auto hit = solidar::closestSegmentHit(cursor, rearA, rearB);
+    CHECK(hit.distance <= solidar::kEdgeHitRadiusPx);
+    const QPointF closest =
+        rearA.screen + (rearB.screen - rearA.screen) * hit.parameter;
+    const auto surfaceDepth =
+        solidar::triangleDepthAt(closest, frontA, frontB, frontC);
+    CHECK(surfaceDepth.has_value());
+    CHECK(hit.depth + 1e-6 < *surfaceDepth);
+  }
+
+  // Positive control: an edge coplanar with the front surface is not occluded.
+  {
+    const ProjectedPoint frontA{{0.0, 0.0}, 9.0};
+    const ProjectedPoint frontB{{100.0, 0.0}, 9.0};
+    const ProjectedPoint frontC{{0.0, 100.0}, 9.0};
+    const ProjectedPoint edgeA{{20.0, 20.0}, 9.0};
+    const ProjectedPoint edgeB{{80.0, 20.0}, 9.0};
+    const QPointF cursor{50.0, 20.0};
+    const auto hit = solidar::closestSegmentHit(cursor, edgeA, edgeB);
+    CHECK(hit.distance <= solidar::kEdgeHitRadiusPx);
+    const QPointF closest =
+        edgeA.screen + (edgeB.screen - edgeA.screen) * hit.parameter;
+    const auto surfaceDepth =
+        solidar::triangleDepthAt(closest, frontA, frontB, frontC);
+    CHECK(surfaceDepth.has_value());
+    CHECK(!(hit.depth + 1e-6 < *surfaceDepth));
+  }
+
   return EXIT_SUCCESS;
 }
