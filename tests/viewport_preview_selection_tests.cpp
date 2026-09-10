@@ -2,7 +2,9 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <QApplication>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QMouseEvent>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -28,9 +30,14 @@ int main(int argc, char** argv) {
   QApplication application(argc, argv);
   // Exercise widget events without showing a QOpenGLWidget or needing a GPU.
   const auto mouse = [](solidar::Viewport& view, QEvent::Type type,
-                        QPointF position, Qt::MouseButton button,
-                        Qt::MouseButtons buttons) {
+                         QPointF position, Qt::MouseButton button,
+                         Qt::MouseButtons buttons) {
     QMouseEvent event(type, position, position, button, buttons, Qt::NoModifier);
+    QApplication::sendEvent(&view, &event);
+  };
+  const auto wheel = [](solidar::Viewport& view, QPointF position) {
+    QWheelEvent event(position, position, {}, {0, 120}, Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(&view, &event);
   };
   const std::vector<solidar::SketchPlacement> placements{
@@ -156,6 +163,38 @@ int main(int argc, char** argv) {
   mouse(viewport, QEvent::MouseMove, sourceCamera.worldToScreen({0, 0, 0}),
         Qt::NoButton, Qt::NoButton);
   CHECK(viewport.hoveredBodyEdgeIndex());
+  const std::size_t sourceHoverIndex = *viewport.hoveredBodyEdgeIndex();
+  const auto preselectedEdge = solidar::makeEdgeReference(
+      *source, bodyId, sourceFeatureId, (sourceHoverIndex + 1) % 12);
+  CHECK(preselectedEdge.signature);
+  CHECK(preselectedEdge.edgeIndex != sourceHoverIndex);
+  const std::vector<solidar::EdgeReference> preselection{preselectedEdge};
+  viewport.setSelectedBodyEdges(preselection);
+
+  int edgeSelectionSignals = 0;
+  int generalSelectionSignals = 0;
+  QObject::connect(&viewport, &solidar::Viewport::bodyEdgeSelectionChanged,
+                   &viewport, [&] { ++edgeSelectionSignals; });
+  QObject::connect(&viewport, &solidar::Viewport::selectionChanged, &viewport,
+                   [&](const QString&) { ++generalSelectionSignals; });
+
+  // A live Fillet/Chamfer preview must keep picking the source topology. Hover
+  // is transient and must not replace the already committed source edge.
+  viewport.setToolPreviewShape(bodyId, previewFeatureId, previewA);
+  mouse(viewport, QEvent::MouseMove, sourceCamera.worldToScreen({0, 0, 0}),
+        Qt::NoButton, Qt::NoButton);
+  CHECK(viewport.hoveredBodyEdgeIndex() == sourceHoverIndex);
+  CHECK(viewport.selectedBodyEdges() == preselection);
+  CHECK(viewport.selectedBodyEdges().front().bodyId == bodyId);
+  CHECK(viewport.selectedBodyEdges().front().featureId == sourceFeatureId);
+
+  QEvent edgeLeave(QEvent::Leave);
+  QApplication::sendEvent(&viewport, &edgeLeave);
+  CHECK(!viewport.hoveredBodyEdgeIndex());
+  CHECK(viewport.selectedBodyEdges() == preselection);
+  CHECK(edgeSelectionSignals == 0);
+  CHECK(generalSelectionSignals == 0);
+
   viewport.setToolManipulator({{}, {0, 0, 1}, 0.0, 0.0, 100000.0});
   const auto* distanceHud = viewport.findChild<QDoubleSpinBox*>("distance");
   CHECK(distanceHud && std::abs(distanceHud->minimum()) < 1e-12);
@@ -194,6 +233,126 @@ int main(int argc, char** argv) {
   viewport.clearToolPreviewShape();
   CHECK(viewport.selectedBodyEdges() ==
         std::vector<solidar::EdgeReference>({edgeA, edgeC}));
+
+  enum class CameraGesture { Orbit, Pan, Zoom };
+  for (const auto gesture : {CameraGesture::Orbit, CameraGesture::Pan,
+                             CameraGesture::Zoom}) {
+    solidar::Viewport gestureViewport;
+    gestureViewport.resize(800, 600);
+    gestureViewport.setBodyShape(source, bodyId, sourceFeatureId);
+    gestureViewport.setSolidVisible(true);
+    gestureViewport.setSelectionFilter(solidar::SelectionFilter::Edge);
+    gestureViewport.setToolPreviewShape(bodyId, previewFeatureId, previewA);
+    gestureViewport.setSelectedBodyEdges(preselection);
+    const solidar::ViewportCameraState gestureCamera{
+        gestureViewport.cameraYawDegrees(),
+        gestureViewport.cameraPitchDegrees(), 1.0F, {},
+        gestureViewport.size(), 1.0F, {20.0, 15.0, 10.0}, 1.0};
+    const QPointF edgePoint = gestureCamera.worldToScreen({0, 0, 0});
+
+    int gestureEdgeSelectionSignals = 0;
+    int gestureGeneralSelectionSignals = 0;
+    QObject::connect(&gestureViewport,
+                     &solidar::Viewport::bodyEdgeSelectionChanged,
+                     &gestureViewport,
+                     [&] { ++gestureEdgeSelectionSignals; });
+    QObject::connect(&gestureViewport, &solidar::Viewport::selectionChanged,
+                     &gestureViewport,
+                     [&](const QString&) { ++gestureGeneralSelectionSignals; });
+
+    mouse(gestureViewport, QEvent::MouseMove, edgePoint,
+          Qt::NoButton, Qt::NoButton);
+    CHECK(gestureViewport.hoveredBodyEdgeIndex());
+
+    if (gesture == CameraGesture::Orbit) {
+      mouse(gestureViewport, QEvent::MouseButtonPress, edgePoint,
+            Qt::RightButton, Qt::RightButton);
+      mouse(gestureViewport, QEvent::MouseMove, edgePoint + QPointF(12, 8),
+            Qt::NoButton, Qt::RightButton);
+      mouse(gestureViewport, QEvent::MouseButtonRelease,
+            edgePoint + QPointF(12, 8), Qt::RightButton, Qt::NoButton);
+    } else if (gesture == CameraGesture::Pan) {
+      mouse(gestureViewport, QEvent::MouseButtonPress, edgePoint,
+            Qt::MiddleButton, Qt::MiddleButton);
+      mouse(gestureViewport, QEvent::MouseMove, edgePoint + QPointF(15, -9),
+            Qt::NoButton, Qt::MiddleButton);
+      mouse(gestureViewport, QEvent::MouseButtonRelease,
+            edgePoint + QPointF(15, -9), Qt::MiddleButton, Qt::NoButton);
+    } else {
+      wheel(gestureViewport, edgePoint);
+    }
+
+    CHECK(!gestureViewport.hoveredBodyEdgeIndex());
+    CHECK(gestureViewport.selectedBodyEdges() == preselection);
+    CHECK(gestureEdgeSelectionSignals == 0);
+    CHECK(gestureGeneralSelectionSignals == 0);
+  }
+
+  // Face hover is independent from committed face selection, emits no
+  // selection signal, and is invalidated by both leave and camera changes.
+  {
+    solidar::Viewport faceViewport;
+    faceViewport.resize(800, 600);
+    faceViewport.setBodyShape(source, bodyId, sourceFeatureId);
+    faceViewport.setSolidVisible(true);
+    faceViewport.setSelectionFilter(solidar::SelectionFilter::Face);
+    const solidar::ViewportCameraState faceCamera{
+        faceViewport.cameraYawDegrees(), faceViewport.cameraPitchDegrees(),
+        1.0F, {}, faceViewport.size(), 1.0F, {20.0, 15.0, 10.0}, 1.0};
+    const QPointF topFace = faceCamera.worldToScreen({20.0, 15.0, 20.0});
+
+    int faceSelectionSignals = 0;
+    int faceGeneralSelectionSignals = 0;
+    QObject::connect(&faceViewport,
+                     &solidar::Viewport::bodyFaceSelectionChanged,
+                     &faceViewport, [&] { ++faceSelectionSignals; });
+    QObject::connect(&faceViewport, &solidar::Viewport::selectionChanged,
+                     &faceViewport,
+                     [&](const QString&) { ++faceGeneralSelectionSignals; });
+
+    mouse(faceViewport, QEvent::MouseMove, topFace,
+          Qt::NoButton, Qt::NoButton);
+    CHECK(faceViewport.hoveredBodyFaceIndex());
+    const std::size_t hoveredFace = *faceViewport.hoveredBodyFaceIndex();
+    const auto selectedFace = solidar::makeFaceReference(
+        *source, bodyId, sourceFeatureId, (hoveredFace + 1) % 6);
+    CHECK(selectedFace.signature);
+    const std::vector<solidar::FaceReference> selectedFaces{selectedFace};
+    faceViewport.setSelectedBodyFaces(selectedFaces);
+
+    mouse(faceViewport, QEvent::MouseMove, topFace,
+          Qt::NoButton, Qt::NoButton);
+    CHECK(faceViewport.hoveredBodyFaceIndex() == hoveredFace);
+    CHECK(faceViewport.selectedBodyFaces() == selectedFaces);
+    CHECK(faceViewport.selectedBodyFaceIndex() !=
+          faceViewport.hoveredBodyFaceIndex());
+    CHECK(faceSelectionSignals == 0);
+    CHECK(faceGeneralSelectionSignals == 0);
+
+    faceViewport.setSolidVisible(false);
+    CHECK(!faceViewport.hoveredBodyFaceIndex());
+    CHECK(faceViewport.selectedBodyFaces() == selectedFaces);
+    CHECK(faceSelectionSignals == 0);
+    CHECK(faceGeneralSelectionSignals == 0);
+    faceViewport.setSolidVisible(true);
+    mouse(faceViewport, QEvent::MouseMove, topFace,
+          Qt::NoButton, Qt::NoButton);
+    CHECK(faceViewport.hoveredBodyFaceIndex() == hoveredFace);
+
+    QEvent faceLeave(QEvent::Leave);
+    QApplication::sendEvent(&faceViewport, &faceLeave);
+    CHECK(!faceViewport.hoveredBodyFaceIndex());
+    CHECK(faceViewport.selectedBodyFaces() == selectedFaces);
+
+    mouse(faceViewport, QEvent::MouseMove, topFace,
+          Qt::NoButton, Qt::NoButton);
+    CHECK(faceViewport.hoveredBodyFaceIndex());
+    faceViewport.viewTop();
+    CHECK(!faceViewport.hoveredBodyFaceIndex());
+    CHECK(faceViewport.selectedBodyFaces() == selectedFaces);
+    CHECK(faceSelectionSignals == 0);
+    CHECK(faceGeneralSelectionSignals == 0);
+  }
 
   // Regression: the Extrusion tool must still select a real B-Rep body face
   // even when no sketch contour lies under the cursor. This was broken by an

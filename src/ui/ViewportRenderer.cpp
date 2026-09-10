@@ -51,6 +51,7 @@ const char* surfaceFragmentShader = R"(
   uniform int uSelectedCount;
   uniform int uHoveredFace;
   uniform bool uPreview;
+  uniform bool uHighlightOnly;
   out vec4 color;
   void main() {
     vec3 n = normalize(vNormal);
@@ -63,8 +64,10 @@ const char* surfaceFragmentShader = R"(
     bool selected = false;
     for (int i = 0; i < uSelectedCount; ++i)
       selected = selected || vFaceIndex == uSelectedFaces[i];
+    bool hovered = vFaceIndex == uHoveredFace;
+    if (uHighlightOnly && !selected && !hovered) discard;
     if (selected) base = mix(base, vec3(0.10, 0.43, 0.94), 0.58);
-    else if (vFaceIndex == uHoveredFace)
+    else if (hovered)
       base = mix(base, vec3(0.25, 0.65, 1.0), 0.38);
     color = vec4(base * (0.46 + 0.38 * diffuse + 0.16 * fillDiffuse) +
                  vec3(0.10 * specular), 1.0);
@@ -273,7 +276,7 @@ QMatrix4x4 ViewportRenderer::projectionMatrix(
 void ViewportRenderer::drawSurfaces(
     GpuMesh& gpu, const QMatrix4x4& matrix, float yawDeg, float pitchDeg,
     const std::vector<std::size_t>& selectedFaces, std::size_t hoveredFace,
-    bool preview) {
+    bool preview, bool highlightOnly) {
   if (gpu.indexCount == 0) return;
   const float yaw = yawDeg * std::numbers::pi_v<float> / 180.0F;
   const float pitch = pitchDeg * std::numbers::pi_v<float> / 180.0F;
@@ -293,6 +296,7 @@ void ViewportRenderer::drawSurfaces(
   surfaceProgram_.setUniformValue("uSelectedCount", count);
   surfaceProgram_.setUniformValue("uHoveredFace", hoveredFace == std::size_t(-1) ? -1 : static_cast<int>(hoveredFace));
   surfaceProgram_.setUniformValue("uPreview", preview);
+  surfaceProgram_.setUniformValue("uHighlightOnly", highlightOnly);
   QOpenGLVertexArrayObject::Binder binder(&gpu.surfaceVao);
   gpu.indices.bind();
   QOpenGLContext::currentContext()->functions()->glDrawElements(
@@ -358,22 +362,30 @@ void ViewportRenderer::render(
     gl->glDisable(GL_MULTISAMPLE);
   gl->glClearDepthf(1.0F);
   gl->glClear(GL_DEPTH_BUFFER_BIT);
-  if (mode != ViewportDisplayMode::Wireframe) {
+  const bool hasFaceHighlights =
+      !selectedFaces.empty() || hoveredFace != std::size_t(-1);
+  const auto surfacePolicy = viewportSurfacePassPolicy(
+      mode, preview != nullptr, hasFaceHighlights);
+  if (surfacePolicy.ordinarySurfaces ||
+      surfacePolicy.highlightOnlySourceFaces) {
     // Push filled fragments slightly away so the subsequent B-Rep edge pass is
     // crisp without disabling depth testing for rear geometry.
     gl->glEnable(GL_POLYGON_OFFSET_FILL);
     gl->glPolygonOffset(1.0F, 1.0F);
-    drawSurfaces(gpu, matrix, yawDeg, pitchDeg,
-                 preview ? std::vector<std::size_t>{} : selectedFaces,
-                 preview ? std::size_t(-1) : hoveredFace, preview != nullptr);
+    if (surfacePolicy.ordinarySurfaces)
+      drawSurfaces(gpu, matrix, yawDeg, pitchDeg,
+                   preview ? std::vector<std::size_t>{} : selectedFaces,
+                   preview ? std::size_t(-1) : hoveredFace, preview != nullptr,
+                   false);
     // A live tool preview reuses the source topology for face/edge picking but
     // the preview mesh carries its own face indices. Keep the source body's
-    // highlighted (selected/hovered) faces visible by re-drawing them on top,
-    // exactly as edges are handled below. The preview pass is drawn first so
-    // the highlighted source faces read through the translucent preview.
-    if (preview && (!selectedFaces.empty() || hoveredFace != std::size_t(-1)))
+    // highlighted (selected/hovered) faces visible with a separate source pass.
+    // Wireframe uses this same pass without submitting ordinary filled faces.
+    // The shader discards every unhighlighted source face, so this never draws
+    // the whole source solid or masks a preview with unselected source faces.
+    if (surfacePolicy.highlightOnlySourceFaces)
       drawSurfaces(*source_, matrix, yawDeg, pitchDeg, selectedFaces, hoveredFace,
-                   false);
+                    false, true);
     gl->glDisable(GL_POLYGON_OFFSET_FILL);
   }
   // Ordinary model/preview edges are drawn without interaction coloring.

@@ -2,9 +2,19 @@
 
 #include <QVector4D>
 
-#include <cassert>
+#include <array>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <numbers>
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 int main() {
   const QSize size(1000, 800);
@@ -24,6 +34,36 @@ int main() {
   const double expectedY = 800.0 * 0.52 + y2 * scale + pan.y();
   const double actualX = (clip.x() + 1.0) * 500.0;
   const double actualY = (1.0 - clip.y()) * 400.0;
-  assert(std::abs(actualX - expectedX) < 1e-3);
-  assert(std::abs(actualY - expectedY) < 1e-3);
+  CHECK(std::abs(actualX - expectedX) < 1e-3);
+  CHECK(std::abs(actualY - expectedY) < 1e-3);
+
+  struct PolicyCase {
+    solidar::ViewportDisplayMode mode;
+    bool hasPreview;
+    solidar::ViewportSurfacePassPolicy expected;
+  };
+  const std::array policyCases{
+      PolicyCase{solidar::ViewportDisplayMode::Shaded, false, {true, false}},
+      PolicyCase{solidar::ViewportDisplayMode::Shaded, true, {true, true}},
+      PolicyCase{solidar::ViewportDisplayMode::ShadedWithEdges, false,
+                 {true, false}},
+      PolicyCase{solidar::ViewportDisplayMode::ShadedWithEdges, true,
+                 {true, true}},
+      PolicyCase{solidar::ViewportDisplayMode::Wireframe, false,
+                 {false, true}},
+      PolicyCase{solidar::ViewportDisplayMode::Wireframe, true,
+                 {false, true}},
+  };
+  for (const auto& policyCase : policyCases) {
+    CHECK(solidar::viewportSurfacePassPolicy(policyCase.mode,
+                                             policyCase.hasPreview, true) ==
+          policyCase.expected);
+    const auto withoutHighlights = solidar::viewportSurfacePassPolicy(
+        policyCase.mode, policyCase.hasPreview, false);
+    CHECK(withoutHighlights.ordinarySurfaces ==
+          policyCase.expected.ordinarySurfaces);
+    CHECK(!withoutHighlights.highlightOnlySourceFaces);
+  }
+
+  return EXIT_SUCCESS;
 }

@@ -17,6 +17,20 @@ namespace solidar {
 
 enum class ViewportDisplayMode { Shaded, ShadedWithEdges, Wireframe };
 
+struct ViewportSurfacePassPolicy {
+  bool ordinarySurfaces{};
+  bool highlightOnlySourceFaces{};
+
+  bool operator==(const ViewportSurfacePassPolicy&) const = default;
+};
+
+[[nodiscard]] constexpr ViewportSurfacePassPolicy viewportSurfacePassPolicy(
+    ViewportDisplayMode mode, bool hasPreview, bool hasFaceHighlights) noexcept {
+  return {mode != ViewportDisplayMode::Wireframe,
+          hasFaceHighlights &&
+              (hasPreview || mode == ViewportDisplayMode::Wireframe)};
+}
+
 class ViewportRenderer final {
  public:
   ViewportRenderer();
@@ -47,7 +61,8 @@ class ViewportRenderer final {
   void drawSurfaces(GpuMesh& gpu, const QMatrix4x4& matrix,
                     float yawDeg, float pitchDeg,
                     const std::vector<std::size_t>& selectedFaces,
-                    std::size_t hoveredFace, bool preview);
+                    std::size_t hoveredFace, bool preview,
+                    bool highlightOnly);
   void drawEdges(GpuMesh& gpu, const QMatrix4x4& matrix,
                  const std::vector<std::size_t>& selectedEdges,
                  std::size_t hoveredEdge, bool ordinaryEdges,

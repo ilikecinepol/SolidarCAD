@@ -91,6 +91,7 @@ class Viewport final : public QOpenGLWidget {
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
   void setEdgeMultiSelectionMode(bool enabled) noexcept;
   [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
+  [[nodiscard]] std::optional<std::size_t> hoveredBodyFaceIndex() const noexcept;
   [[nodiscard]] std::optional<std::size_t> hoveredBodyEdgeIndex() const noexcept;
   void setSelectionFilter(SelectionFilter filter) noexcept;
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
@@ -162,6 +163,7 @@ class Viewport final : public QOpenGLWidget {
   void animateOrientation(CameraOrientation target);
   void setStandardView(StandardView view);
   void clearCubeHover();
+  void clearGeometryHover();
   QVariantAnimation* orientationAnimation_{nullptr};
   ViewCubeHit cubeHover_, cubePressed_;
   Qt::CursorShape cursorBeforeCube_{Qt::ArrowCursor};

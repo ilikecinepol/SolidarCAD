@@ -356,7 +356,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
   bodyShape_.reset();
   bodyId_ = kInvalidBodyId;
   bodyFeatureId_ = kInvalidFeatureId;
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
   if (clearSelection) {
     selectedFace_ = -1;
     selectedBodyFaceIndices_.clear();
@@ -365,7 +365,6 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
     selectedBodyEdgeIndices_.clear();
     selectedBodyEdgeReferences_.clear();
   }
-  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   bodyRenderMesh_.clear();
   bodyTopologyRanges_.clear();
   TopoDS_Compound compound;
@@ -462,6 +461,7 @@ const std::vector<SolidFeature>& Viewport::solidFeatures() const noexcept {
 
 void Viewport::setSolidVisible(bool visible) {
   solidVisible_ = visible;
+  if (!visible) clearGeometryHover();
   update();
 }
 
@@ -513,15 +513,12 @@ void Viewport::removeSketch(std::size_t index) {
   sketch_ = displaySketches_.empty() ? sketch::Sketch{}
                                      : displaySketches_.back().geometry;
   selectedExtrusionSketch_.clear();
-  hoveredExtrusionSketch_.clear();
   selectedExtrusionPolygon_.clear();
   selectedExtrusionPolygons_.clear();
   selectedExtrusionPaths_.clear();
   selectedExtrusionRegionSketches_.clear();
-  extrusionHoverPolygon_.clear();
-  extrusionHoverPath_ = {};
   selectedExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
-  hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
   selectedExtrusionBodyFace_ = false;
   selectedExtrusionOnBodyCap_ = false;
   update();
@@ -558,11 +555,11 @@ void Viewport::resetScene() {
   bodyViewShapes_.clear();
   bodyId_ = kInvalidBodyId;
   bodyFeatureId_ = kInvalidFeatureId;
+  clearGeometryHover();
   sketch_.clear();
   solidSketch_.clear();
   additiveExtrusions_.clear();
   displaySketches_.clear();
-  extrusionHoverPolygon_.clear();
   selectedExtrusionPolygon_.clear();
   selectedExtrusionPolygons_.clear();
   selectedExtrusionPaths_.clear();
@@ -575,11 +572,9 @@ void Viewport::resetScene() {
   selectedFace_ = -1;
   selectedBodyFaceIndices_.clear();
   selectedBodyFaceReferences_.clear();
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBodyEdgeIndices_.clear();
   selectedBodyEdgeReferences_.clear();
-  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
@@ -613,12 +608,9 @@ void Viewport::resetScene() {
 }
 
 void Viewport::beginSketchPlaneSelection() {
+  clearGeometryHover();
   selectionFilter_ = SelectionFilter::Face;
   pickMode_ = PickMode::SketchPlane;
-  extrusionHoverPolygon_.clear();
-  extrusionHoverPath_ = {};
-  hoveredExtrusionSurface_.clear();
-  hoveredExtrusionSupport_.clear();
   selectedFace_ = -1;
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
@@ -630,14 +622,8 @@ void Viewport::beginSketchPlaneSelection() {
 
 void Viewport::beginExtrusionSurfaceSelection() {
   hideExtrusionManipulator();
+  clearGeometryHover();
   pickMode_ = PickMode::ExtrusionSurface;
-  extrusionHoverPolygon_.clear();
-  extrusionHoverPath_ = {};
-  hoveredExtrusionSketch_.clear();
-  hoveredExtrusionSupport_.clear();
-  hoveredExtrusionSurface_.clear();
-  hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
-  hoveredExtrusionOnBodyCap_ = false;
   selectedExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
   selectedExtrusionPolygons_.clear();
   selectedExtrusionPaths_.clear();
@@ -778,6 +764,7 @@ std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
 }
 
 void Viewport::beginRevolveAxisSelection(std::size_t sketchIndex) {
+  clearGeometryHover();
   pickMode_ = PickMode::RevolveAxis;
   revolveAxisSketchIndex_ = sketchIndex;
   setCursor(Qt::CrossCursor);
@@ -826,13 +813,18 @@ bool Viewport::edgeMultiSelectionMode() const noexcept {
 
 void Viewport::setSelectionFilter(SelectionFilter filter) noexcept {
   selectionFilter_ = filter;
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
   update();
 }
 
 SelectionFilter Viewport::selectionFilter() const noexcept {
   return selectionFilter_;
+}
+
+std::optional<std::size_t> Viewport::hoveredBodyFaceIndex() const noexcept {
+  if (hoveredBodyFaceIndex_ == static_cast<std::size_t>(-1))
+    return std::nullopt;
+  return hoveredBodyFaceIndex_;
 }
 
 std::optional<std::size_t> Viewport::hoveredBodyEdgeIndex() const noexcept {
@@ -909,7 +901,11 @@ void Viewport::clearToolManipulator() {
 }
 
 void Viewport::fitAll() {
-  if (bodyRenderMesh_.diagonal() <= 1e-9) return;
+  clearGeometryHover();
+  if (bodyRenderMesh_.diagonal() <= 1e-9) {
+    update();
+    return;
+  }
   double minX = std::numeric_limits<double>::max();
   double minY = minX;
   double maxX = -minX;
@@ -957,6 +953,7 @@ void Viewport::animateOrientation(CameraOrientation target) {
   const CameraOrientation start{yaw_,pitch_};
   connect(orientationAnimation_, &QVariantAnimation::valueChanged, this,
           [this,start,target](const QVariant& value) {
+    clearGeometryHover();
     const auto camera = interpolateOrientation(start,target,value.toFloat());
     yaw_ = camera.yaw; pitch_ = camera.pitch;
     update();
@@ -972,8 +969,22 @@ void Viewport::clearCubeHover() {
   update();
 }
 
+void Viewport::clearGeometryHover() {
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
+  hoveredExtrusionSketch_.clear();
+  hoveredExtrusionSupport_.clear();
+  hoveredExtrusionSurface_.clear();
+  hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  hoveredExtrusionOnBodyCap_ = false;
+}
+
 void Viewport::leaveEvent(QEvent* event) {
   clearCubeHover();
+  clearGeometryHover();
+  update();
   QOpenGLWidget::leaveEvent(event);
 }
 float Viewport::cameraYawDegrees() const noexcept { return yaw_; }
@@ -1004,6 +1015,7 @@ QString Viewport::solidSupport() const { return solidSupportName_; }
 QPointF Viewport::bodyPosition() const noexcept { return {offsetX_, offsetY_}; }
 
 void Viewport::setBodyPosition(QPointF position) {
+  clearGeometryHover();
   offsetX_ = static_cast<float>(position.x());
   offsetY_ = static_cast<float>(position.y());
   update();
@@ -1951,12 +1963,16 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     cubePressed_ = viewCubeGeometry(size(), {yaw_,pitch_}).hitTest(event->position());
     if (cubePressed_) {
       orientationAnimation_->stop();
+      clearGeometryHover();
       update();
       event->accept();
       return;
     }
   }
   orientationAnimation_->stop();
+  if (event->button() == Qt::MiddleButton ||
+      event->button() == Qt::RightButton)
+    clearGeometryHover();
   clearCubeHover();
   if (event->button() == Qt::MiddleButton) {
     panningView_ = true;
@@ -2258,7 +2274,6 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     selectedBodyFaceIndices_.clear();
     selectedBodyFaceReferences_.clear();
   }
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
   const bool toggleEdge = edgeMultiSelectionMode_ ||
                           event->modifiers().testFlag(Qt::ControlModifier);
   if (!toggleEdge) {
@@ -2266,9 +2281,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     selectedBodyEdgeIndices_.clear();
     selectedBodyEdgeReferences_.clear();
   }
-  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
@@ -2504,8 +2517,7 @@ void Viewport::rebuildSelectedExtrusionSketch() {
 }
 
 void Viewport::updateBodyHover(QPointF position) {
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
-  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
   if (!solidVisible_ || bodyRenderMesh_.triangles().empty()) return;
   const Point3d center = bodyRenderMesh_.center();
   struct ProjectedTriangle {
@@ -2571,11 +2583,7 @@ void Viewport::updateBodyHover(QPointF position) {
 }
 
 void Viewport::updateSketchPlaneHover(QPointF position) {
-  extrusionHoverPolygon_.clear();
-  extrusionHoverPath_ = {};
-  hoveredExtrusionSurface_.clear();
-  hoveredExtrusionSupport_.clear();
-  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
 
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
@@ -2701,13 +2709,7 @@ void Viewport::updateSketchPlaneHover(QPointF position) {
 }
 
 void Viewport::updateExtrusionHover(QPointF position) {
-  extrusionHoverPolygon_.clear();
-  extrusionHoverPath_ = {};
-  hoveredExtrusionSketch_.clear();
-  hoveredExtrusionSupport_.clear();
-  hoveredExtrusionSurface_.clear();
-  hoveredExtrusionOnBodyCap_ = false;
-  hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  clearGeometryHover();
 
   // Resolve one real sketch before splitting regions. Screen overlap does not
   // imply coplanarity, and the parametric feature references one DocumentSketch.
@@ -3081,7 +3083,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
       if (!(cubeHover_ == hit)) QToolTip::showText(event->globalPosition().toPoint(), viewCubeToolTip(hit), this);
       cubeHover_ = hit;
       setCursor(Qt::PointingHandCursor);
-      hoveredBodyFaceIndex_ = hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+      clearGeometryHover();
       update(); event->accept(); return;
     }
     clearCubeHover();
@@ -3131,6 +3133,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   if (panningView_ && event->buttons().testFlag(Qt::MiddleButton)) {
+    clearGeometryHover();
     const QPoint delta = event->position().toPoint() - lastMousePosition_;
     cameraPan_ += QPointF(delta);
     lastMousePosition_ = event->position().toPoint();
@@ -3161,6 +3164,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   if (draggingBody_ && event->buttons().testFlag(Qt::LeftButton)) {
+    clearGeometryHover();
     const QPoint delta = event->position().toPoint() - lastMousePosition_;
     const float scale = std::max(0.01F, std::min(width(), height()) * 0.008F * zoom_);
     offsetX_ += static_cast<float>(delta.x()) / scale;
@@ -3169,6 +3173,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     update();
   } else if (event->buttons().testFlag(Qt::RightButton) ||
              (event->buttons().testFlag(Qt::LeftButton) && !solidVisible_)) {
+    clearGeometryHover();
     const QPoint delta = event->position().toPoint() - lastMousePosition_;
     const Point3d orbitCenter = bodyRenderMesh_.center();
     const QPointF centerBefore = projectBodyPoint(
@@ -3236,6 +3241,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
 
 void Viewport::wheelEvent(QWheelEvent* event) {
   orientationAnimation_->stop();
+  clearGeometryHover();
   zoom_ = std::clamp(zoom_ * (event->angleDelta().y() > 0 ? 1.1F : 0.9F),
                      0.25F, 5.0F);
   update();
@@ -3244,9 +3250,8 @@ void Viewport::wheelEvent(QWheelEvent* event) {
 void Viewport::keyPressEvent(QKeyEvent* event) {
   if (event->key() == Qt::Key_Control && extrusionManipulatorVisible_) {
     hideExtrusionManipulator();
+    clearGeometryHover();
     pickMode_ = PickMode::ExtrusionSurface;
-    extrusionHoverPolygon_.clear();
-    extrusionHoverPath_ = {};
     setCursor(Qt::CrossCursor);
     update();
     event->accept();
@@ -3255,8 +3260,7 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
   if (event->key() == Qt::Key_Escape) {
     pickMode_ = PickMode::None;
     hideExtrusionManipulator();
-    extrusionHoverPolygon_.clear();
-    extrusionHoverPath_ = {};
+    clearGeometryHover();
     selectedExtrusionPolygons_.clear();
     selectedExtrusionPaths_.clear();
     selectedExtrusionRegionSketches_.clear();
