@@ -38,6 +38,15 @@ int main(int argc, char* argv[]) {
   assert(QFile::exists(path));
   assert(solidar::project::ProjectFile::validate(path, &error));
 
+  // A freshly created project is already a canonical v2 document.  This is
+  // important because Home -> New immediately feeds the file into the editor's
+  // document loader; it must not take a legacy-only initialization path.
+  solidar::Document createdDocument;
+  assert(solidar::project::ProjectFile::loadDocument(
+      path, &createdDocument, &error));
+  assert(createdDocument.sketches().empty());
+  assert(createdDocument.bodies().empty());
+
   // Project v2 round-trip preserves IDs, parameters, face support and the
   // complete editable feature chain, then rebuilds B-Rep from history.
   solidar::Document source;

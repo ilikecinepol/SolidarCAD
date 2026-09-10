@@ -137,7 +137,10 @@ FaceReference loadedFaceReference(const QJsonValue& value) {
 }  // namespace
 
 bool ProjectFile::create(const QString& path, QString* error) {
-  return save(path, ProjectData{}, error);
+  // New projects must start in the canonical parametric format.  Creating a
+  // legacy v1 shell and upgrading it only on the first Save made the create
+  // path different from every subsequent load/save cycle.
+  return saveDocument(path, Document{}, error);
 }
 
 bool ProjectFile::save(const QString& path, const ProjectData& data,

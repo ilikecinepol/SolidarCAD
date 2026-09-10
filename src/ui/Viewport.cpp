@@ -179,8 +179,12 @@ bool isFrontFacing(const QPolygonF& polygon) {
 Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   QSurfaceFormat format;
   format.setRenderableType(QSurfaceFormat::OpenGL);
-  format.setVersion(3, 3);
-  format.setProfile(QSurfaceFormat::CoreProfile);
+  // QApplication currently uses Qt's software OpenGL backend on Windows to
+  // avoid the project-creation driver crash. That backend exposes OpenGL 3.0
+  // / GLSL 1.30 on the affected configuration, which is sufficient for the
+  // renderer. Do not require a 3.3 core context here.
+  format.setVersion(3, 0);
+  format.setProfile(QSurfaceFormat::NoProfile);
   format.setDepthBufferSize(24);
   format.setSamples(4);
   setFormat(format);

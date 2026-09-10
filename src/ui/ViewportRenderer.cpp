@@ -29,10 +29,10 @@ struct GpuEdgeVertex {
 };
 
 const char* surfaceVertexShader = R"(
-  #version 330 core
-  layout(location=0) in vec3 aPosition;
-  layout(location=1) in vec3 aNormal;
-  layout(location=2) in float aFaceIndex;
+  #version 130
+  in vec3 aPosition;
+  in vec3 aNormal;
+  in float aFaceIndex;
   uniform mat4 uMvp;
   uniform mat3 uNormalMatrix;
   out vec3 vNormal;
@@ -44,7 +44,7 @@ const char* surfaceVertexShader = R"(
   })";
 
 const char* surfaceFragmentShader = R"(
-  #version 330 core
+  #version 130
   in vec3 vNormal;
   flat in int vFaceIndex;
   uniform int uSelectedFaces[32];
@@ -71,9 +71,9 @@ const char* surfaceFragmentShader = R"(
   })";
 
 const char* edgeVertexShader = R"(
-  #version 330 core
-  layout(location=0) in vec3 aPosition;
-  layout(location=1) in float aEdgeIndex;
+  #version 130
+  in vec3 aPosition;
+  in float aEdgeIndex;
   uniform mat4 uMvp;
   flat out int vEdgeIndex;
   void main() {
@@ -82,7 +82,7 @@ const char* edgeVertexShader = R"(
   })";
 
 const char* edgeFragmentShader = R"(
-  #version 330 core
+  #version 130
   flat in int vEdgeIndex;
   uniform int uSelectedEdges[32];
   uniform int uSelectedCount;
@@ -134,19 +134,39 @@ bool ViewportRenderer::initialize() {
     error_ = QStringLiteral("OpenGL context is unavailable");
     return false;
   }
+  error_.clear();
   auto compile = [this](QOpenGLShaderProgram& program, const char* vertex,
-                        const char* fragment) {
-    if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, vertex) ||
-        !program.addShaderFromSourceCode(QOpenGLShader::Fragment, fragment) ||
-        !program.link()) {
+                        const char* fragment, bool edgeProgram) {
+    program.removeAllShaders();
+    if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, vertex)) {
+      error_ = program.log();
+      return false;
+    }
+    if (!program.addShaderFromSourceCode(QOpenGLShader::Fragment, fragment)) {
+      error_ = program.log();
+      return false;
+    }
+
+    // GLSL 1.30 predates layout(location=...). Keep the same attribute
+    // indices expected by upload() by assigning them through Qt before link.
+    program.bindAttributeLocation("aPosition", 0);
+    if (edgeProgram) {
+      program.bindAttributeLocation("aEdgeIndex", 1);
+    } else {
+      program.bindAttributeLocation("aNormal", 1);
+      program.bindAttributeLocation("aFaceIndex", 2);
+    }
+
+    if (!program.link()) {
       error_ = program.log();
       return false;
     }
     return true;
   };
   initialized_ = compile(surfaceProgram_, surfaceVertexShader,
-                         surfaceFragmentShader) &&
-                 compile(edgeProgram_, edgeVertexShader, edgeFragmentShader);
+                         surfaceFragmentShader, false) &&
+                 compile(edgeProgram_, edgeVertexShader, edgeFragmentShader,
+                         true);
   return initialized_;
 }
 

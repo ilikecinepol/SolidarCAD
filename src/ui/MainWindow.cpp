@@ -188,42 +188,13 @@ void MainWindow::createProject() {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка создания"), error);
     return;
   }
-  // A new document must not inherit any live Part Design session from the
-  // previous document. In particular, Fillet/Chamfer keep B-Rep references,
-  // preview shapes and HUD/manipulator callbacks. Leaving them alive while
-  // Document and Viewport are reset can dereference stale geometry on the next
-  // event/paint and crash project creation.
-  filletToolSession_.cancel();
-  chamferToolSession_.cancel();
-  shellToolSession_.cancel();
-  draftToolSession_.cancel();
-  revolveToolSession_.cancel();
-  if (toolParametersDock_) toolParametersDock_->hide();
-  if (revolveDock_) revolveDock_->hide();
-  viewport_->clearToolManipulator();
-  viewport_->clearToolPreviewShape();
-
-  setProjectPath(path);
-  sketchCanvas_->resetSketch();
-  document_ = Document{};
-  hasExtrusion_ = false;
-  sketchCount_ = 0;
-  extrusionSourceSketch_.reset();
-  selectedExtrusionSurface_.clear();
-  currentSketchSupport_ = QStringLiteral("XY");
-  currentSketchPlacement_ = SketchPlacement::xy();
-  currentSketchFaceReference_.reset();
-  if (extrusionDock_) extrusionDock_->hide();
-  viewport_->hideExtrusionManipulator();
-  viewport_->resetScene();
-  viewport_->setBox(document_.box());
-  sketchHistory_.clear();
-  modelUndoStack_.clear();
-  historyPosition_ = 0;
-  editingSketchIndex_.reset();
-  rebuildFeatureTree();
-  rebuildHistoryPanel();
-  workspaceStack_->setCurrentWidget(viewport_);
+  // Use exactly the same document-transition path as Open.  Maintaining a
+  // second hand-written reset sequence here is what allowed controller/session
+  // state to outlive the Document that owned its B-Rep references.
+  if (!loadProject(path, &error)) {
+    QMessageBox::critical(this, QString::fromUtf8("Ошибка создания"), error);
+    return;
+  }
   statusBar()->showMessage(QString::fromUtf8("Создан новый проект"), 3000);
 }
 
@@ -247,8 +218,40 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   QString modelError;
   const bool hasParametricHistory = project::ProjectFile::loadDocument(
       path, &restoredDocument, &modelError);
+
+  // Tear down every piece of transient UI state while the old Document is
+  // still alive.  PartDesignToolController is authoritative for the active
+  // tool; cancelling only the individual sessions leaves controller.active_
+  // pointing at an inactive session and allows later viewport events to enter
+  // stale presentation callbacks.
+  partDesignTools_.cancelActive();
+  filletToolSession_.cancel();
+  chamferToolSession_.cancel();
+  shellToolSession_.cancel();
+  draftToolSession_.cancel();
+  revolveToolSession_.cancel();
+
+  if (modelRibbon_) modelRibbon_->clearActiveTool();
+  if (toolParametersDock_) toolParametersDock_->hide();
+  if (revolveDock_) revolveDock_->hide();
+  if (extrusionDock_) extrusionDock_->hide();
+
+  viewport_->clearToolManipulator();
+  viewport_->clearToolPreviewShape();
+  viewport_->hideExtrusionManipulator();
+  viewport_->setEdgeMultiSelectionMode(false);
+  viewport_->setFaceMultiSelectionMode(false);
+  viewport_->setSelectionFilter(SelectionFilter::Any);
+  viewport_->setSelectedBodyEdges({});
+  viewport_->setSelectedBodyFaces({});
+
+  // Only now is it safe to destroy the old model/B-Rep graph.
   document_ = hasParametricHistory ? std::move(restoredDocument) : Document{};
   if (!hasParametricHistory) document_.setBox(data.box);
+  selectedExtrusionSurface_.clear();
+  currentSketchSupport_ = QStringLiteral("XY");
+  currentSketchPlacement_ = SketchPlacement::xy();
+  currentSketchFaceReference_.reset();
   sketchHistory_.clear();
   viewport_->resetScene();
   viewport_->setBox(document_.box());
@@ -286,6 +289,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   historyPosition_ = static_cast<int>(sketchHistory_.size()) +
                      (hasExtrusion_ ? 1 : 0);
   editingSketchIndex_.reset();
+  extrudeOperationManuallyChanged_ = false;
   modelUndoStack_.clear();
   sketchCanvas_->resetSketch();
   rebuildFeatureTree();
