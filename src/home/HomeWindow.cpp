@@ -8,10 +8,13 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QVBoxLayout>
 
 #include "project/ProjectFile.h"
+#include "ui/SettingsWidget.h"
 
 namespace solidar::home {
 namespace {
@@ -51,11 +54,23 @@ QFrame* makeActionCard(const QString& icon, const QString& title,
 
 }  // namespace
 
-HomeWindow::HomeWindow(QWidget* parent) : QMainWindow(parent) {
+HomeWindow::HomeWindow(AppSettings& settings, QWidget* parent)
+    : QMainWindow(parent), settings_(settings) {
   buildUi();
   resize(1280, 760);
   setMinimumSize(960, 620);
   setWindowTitle(QString::fromUtf8("Солидарность 3D"));
+}
+
+void HomeWindow::showPage(int index) {
+  pages_->setCurrentIndex(index);
+  overviewButton_->setObjectName(index == 0 ? "navActive" : "navButton");
+  settingsButton_->setObjectName(index == 1 ? "navActive" : "navButton");
+  // Re-polish so the objectName change (and its stylesheet rule) takes effect.
+  overviewButton_->style()->unpolish(overviewButton_);
+  overviewButton_->style()->polish(overviewButton_);
+  settingsButton_->style()->unpolish(settingsButton_);
+  settingsButton_->style()->polish(settingsButton_);
 }
 
 void HomeWindow::buildUi() {
@@ -85,13 +100,13 @@ void HomeWindow::buildUi() {
   brandLayout->addWidget(logo);
   sidebarLayout->addWidget(brand);
 
-  auto* overview = new QPushButton(
+  overviewButton_ = new QPushButton(
       QIcon(QStringLiteral(":/icons/home.png")),
       QString::fromUtf8("Главная"), sidebar);
-  overview->setObjectName("navActive");
-  overview->setMinimumHeight(54);
-  overview->setIconSize(QSize(30, 30));
-  overview->setCursor(Qt::PointingHandCursor);
+  overviewButton_->setObjectName("navActive");
+  overviewButton_->setMinimumHeight(54);
+  overviewButton_->setIconSize(QSize(30, 30));
+  overviewButton_->setCursor(Qt::PointingHandCursor);
   auto* projects = new QPushButton(
       QIcon(QStringLiteral(":/icons/projects.png")),
       QString::fromUtf8("Проекты"), sidebar);
@@ -99,23 +114,27 @@ void HomeWindow::buildUi() {
   projects->setMinimumHeight(48);
   projects->setIconSize(QSize(30, 30));
   projects->setCursor(Qt::PointingHandCursor);
-  auto* settings = new QPushButton(
+  settingsButton_ = new QPushButton(
       QIcon(QStringLiteral(":/icons/settings.png")),
       QString::fromUtf8("Настройки"), sidebar);
-  settings->setObjectName("navButton");
-  settings->setMinimumHeight(48);
-  settings->setIconSize(QSize(30, 30));
-  settings->setCursor(Qt::PointingHandCursor);
-  sidebarLayout->addWidget(overview);
+  settingsButton_->setObjectName("navButton");
+  settingsButton_->setMinimumHeight(48);
+  settingsButton_->setIconSize(QSize(30, 30));
+  settingsButton_->setCursor(Qt::PointingHandCursor);
+  sidebarLayout->addWidget(overviewButton_);
   sidebarLayout->addWidget(projects);
-  sidebarLayout->addWidget(settings);
+  sidebarLayout->addWidget(settingsButton_);
   sidebarLayout->addStretch();
 
   auto* version = new QLabel(QString::fromUtf8("Открытая параметрическая САПР\nВерсия 0.1.0"), sidebar);
   version->setObjectName("versionLabel");
   sidebarLayout->addWidget(version);
 
-  auto* content = new QWidget(root);
+  pages_ = new QStackedWidget(root);
+  pages_->setObjectName("pages");
+
+  // Home page.
+  auto* content = new QWidget(pages_);
   content->setObjectName("content");
   auto* contentLayout = new QVBoxLayout(content);
   contentLayout->setContentsMargins(54, 44, 54, 48);
@@ -158,36 +177,26 @@ void HomeWindow::buildUi() {
   connect(openButton, &QPushButton::clicked, this, &HomeWindow::openProject);
   connect(projects, &QPushButton::clicked, this, &HomeWindow::openProject);
 
-  rootLayout->addWidget(sidebar);
-  rootLayout->addWidget(content, 1);
-  setCentralWidget(root);
+  // Settings page.
+  auto* settingsPage = new QWidget(pages_);
+  settingsPage->setObjectName("settingsPage");
+  auto* settingsLayout = new QVBoxLayout(settingsPage);
+  settingsLayout->setContentsMargins(54, 44, 54, 48);
+  settingsLayout->setSpacing(20);
+  auto* settingsHeading = new QLabel(QString::fromUtf8("Настройки"), settingsPage);
+  settingsHeading->setObjectName("heading");
+  settingsLayout->addWidget(settingsHeading);
+  settingsLayout->addWidget(new SettingsWidget(settings_, settingsPage));
 
-  setStyleSheet(R"(
-    QWidget#root, QWidget#content { background: #f8faff; }
-    QFrame#sidebar { background: #ffffff; border-right: 1px solid #dce5f3; }
-    QPushButton#navActive { background: #086cff; color: white; border: none;
-      border-radius: 10px; text-align: left; padding-left: 22px; font-size: 15px; }
-    QPushButton#navButton { background: transparent; color: #254477; border: none;
-      border-radius: 10px; text-align: left; padding-left: 22px; font-size: 15px; }
-    QPushButton#navButton:hover { background: #edf5ff; }
-    QLabel#versionLabel { color: #7c8eaa; font-size: 12px; line-height: 1.4; }
-    QLabel#heading { color: #102c69; font-size: 34px; font-weight: 700; }
-    QLabel#subtitle { color: #667a9e; font-size: 15px; }
-    QLabel#sectionTitle { color: #17346f; font-size: 20px; font-weight: 650; }
-    QFrame#actionCard { background: white; border: 1px solid #dce5f3;
-      border-radius: 14px; }
-    QFrame#actionCard:hover { border: 1px solid #9fc5ff; }
-    QLabel#cardIcon { background: #eaf4ff; color: #0872ff; border-radius: 29px;
-      font-size: 30px; font-weight: 500; }
-    QLabel#cardTitle { color: #102c69; font-size: 22px; font-weight: 700; }
-    QLabel#cardDescription { color: #6d7f9e; font-size: 14px; }
-    QPushButton#primaryButton { background: #086cff; color: white; border: none;
-      border-radius: 9px; font-size: 15px; font-weight: 600; }
-    QPushButton#primaryButton:hover { background: #0059dc; }
-    QPushButton#secondaryButton { background: white; color: #0864df;
-      border: 1px solid #86b8ff; border-radius: 9px; font-size: 15px; font-weight: 600; }
-    QPushButton#secondaryButton:hover { background: #edf5ff; }
-  )");
+  pages_->addWidget(content);
+  pages_->addWidget(settingsPage);
+
+  connect(overviewButton_, &QPushButton::clicked, this, [this] { showPage(0); });
+  connect(settingsButton_, &QPushButton::clicked, this, [this] { showPage(1); });
+
+  rootLayout->addWidget(sidebar);
+  rootLayout->addWidget(pages_, 1);
+  setCentralWidget(root);
 }
 
 void HomeWindow::createProject() {

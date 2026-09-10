@@ -1,9 +1,23 @@
 #include <QApplication>
+#include <QGuiApplication>
 #include <QMessageBox>
 #include <QPointer>
+#include <QStyleHints>
 
+#include "app/AppSettings.h"
 #include "home/HomeWindow.h"
 #include "ui/EditorFactory.h"
+#include "ui/ThemeManager.h"
+
+namespace {
+
+void applyTheme(const solidar::AppSettings& settings) {
+  const auto resolved = solidar::resolveTheme(
+      settings.theme(), solidar::ThemeManager::systemColorScheme());
+  solidar::ThemeManager::instance().apply(resolved);
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
   // The 3D viewport is also used while the first editor is being created.
@@ -11,15 +25,33 @@ int main(int argc, char* argv[]) {
   // hardware context may corrupt the process during that initial paint.
   QApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
   QApplication application(argc, argv);
-  QApplication::setApplicationName(QString::fromUtf8("Солидарность CAD"));
-  QApplication::setOrganizationName("Solidar CAD");
+
+  // Stable technical identifiers keep the QSettings namespace independent of
+  // the display name and of theme/language changes.
+  QCoreApplication::setOrganizationName(QStringLiteral("SolidarCAD"));
+  QCoreApplication::setApplicationName(QStringLiteral("SolidarCAD"));
+  QApplication::setApplicationDisplayName(
+      QString::fromUtf8("Солидарность CAD"));
+
+  // Load settings and resolve/apply the theme before any window is created so
+  // the first frame is already correctly themed (no flash of the wrong theme).
+  solidar::AppSettings settings;
+  applyTheme(settings);
+
+  // React to the OS color scheme changing while "System" is selected.
+  QObject::connect(QGuiApplication::styleHints(),
+                   &QStyleHints::colorSchemeChanged, &application,
+                   [&settings](Qt::ColorScheme) {
+                     if (settings.theme() == solidar::AppTheme::System)
+                       applyTheme(settings);
+                   });
 
   if (argc > 1) {
     QString error;
     QPointer<QMainWindow> editor(solidar::createEditorWindow(
-        QString::fromLocal8Bit(argv[1]), &error));
+        QString::fromLocal8Bit(argv[1]), settings, &error));
     if (!editor) {
-      QMessageBox::critical(nullptr, QString::fromUtf8("Ошибка открытия"), error);
+      QMessageBox::critical(nullptr, QString::fromUtf8("Не удалось открыть"), error);
       return 1;
     }
     editor->setAttribute(Qt::WA_DeleteOnClose);
@@ -27,7 +59,7 @@ int main(int argc, char* argv[]) {
     return application.exec();
   }
 
-  solidar::home::HomeWindow home;
+  solidar::home::HomeWindow home(settings);
   QPointer<QMainWindow> editor;
   QObject::connect(&home, &solidar::home::HomeWindow::projectRequested,
                    &application, [&](const QString& path) {
@@ -37,10 +69,10 @@ int main(int argc, char* argv[]) {
                        return;
                      }
                      QString error;
-                     editor = solidar::createEditorWindow(path, &error);
+                     editor = solidar::createEditorWindow(path, settings, &error);
                      if (!editor) {
                        QMessageBox::critical(&home,
-                                             QString::fromUtf8("Ошибка открытия"),
+                                             QString::fromUtf8("Не удалось открыть"),
                                              error);
                        return;
                      }
@@ -53,5 +85,7 @@ int main(int argc, char* argv[]) {
                      editor->showMaximized();
                    });
   home.showMaximized();
-  return application.exec();
+  const int result = application.exec();
+  settings.sync();
+  return result;
 }
