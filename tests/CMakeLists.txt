@@ -133,6 +133,11 @@ target_link_libraries(viewport_reset_tests
   PRIVATE solidar_viewport3d Qt6::Widgets)
 add_test(NAME viewport_reset_tests COMMAND viewport_reset_tests)
 
+add_executable(view_cube_tests view_cube_tests.cpp)
+target_link_libraries(view_cube_tests PRIVATE solidar_viewport3d)
+add_test(NAME view_cube_tests COMMAND view_cube_tests)
+set_tests_properties(view_cube_tests PROPERTIES LABELS "regression;ui-smoke")
+
 add_executable(macro_foundation_tests macro_foundation_tests.cpp)
 target_link_libraries(macro_foundation_tests PRIVATE solidar_model)
 add_test(NAME macro_foundation_tests COMMAND macro_foundation_tests)
@@ -317,6 +322,7 @@ if(WIN32)
     viewport_manipulator_tests
     viewport_preview_selection_tests
     viewport_reset_tests
+    view_cube_tests
     macro_foundation_tests
     fillet_feature_tests
     chamfer_feature_tests

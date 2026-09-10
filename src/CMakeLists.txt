@@ -137,6 +137,8 @@ add_library(solidar_viewport3d
   ui/HistoryTimelineWidget.h
   ui/Viewport.cpp
   ui/Viewport.h
+  ui/ViewCube.cpp
+  ui/ViewCube.h
   ui/ViewportCamera.cpp
   ui/ViewportCamera.h
   ui/ViewportPicking.cpp

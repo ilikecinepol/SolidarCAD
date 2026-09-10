@@ -16,6 +16,7 @@
 #include "ui/ViewportPicking.h"
 #include "ui/ManipulatorLayout.h"
 #include "ui/ViewportRenderer.h"
+#include "ui/ViewCube.h"
 #include "model/ToolSession.h"
 
 class QMouseEvent;
@@ -23,6 +24,7 @@ class QPaintEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QDoubleSpinBox;
+class QVariantAnimation;
 
 namespace solidar {
 
@@ -150,8 +152,15 @@ class Viewport final : public QOpenGLWidget {
   void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
+  void leaveEvent(QEvent* event) override;
 
  private:
+  void animateOrientation(CameraOrientation target);
+  void setStandardView(StandardView view);
+  void clearCubeHover();
+  QVariantAnimation* orientationAnimation_{nullptr};
+  ViewCubeHit cubeHover_, cubePressed_;
+  Qt::CursorShape cursorBeforeCube_{Qt::ArrowCursor};
   void updateSketchPlaneHover(QPointF position);
   void updateExtrusionHover(QPointF position);
   void pickFallbackBodyFace(QPointF position);

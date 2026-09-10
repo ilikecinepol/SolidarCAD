@@ -1,4 +1,6 @@
 #include "ui/Viewport.h"
+#include <QVariantAnimation>
+#include <QToolTip>
 
 #include "ui/EdgeSelectionState.h"
 #include "ui/ManipulatorLayout.h"
@@ -177,6 +179,10 @@ bool isFrontFacing(const QPolygonF& polygon) {
 }  // namespace
 
 Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
+  orientationAnimation_ = new QVariantAnimation(this);
+  orientationAnimation_->setObjectName("viewOrientationTransition");
+  orientationAnimation_->setDuration(200);
+  orientationAnimation_->setEasingCurve(QEasingCurve::InOutCubic);
   QSurfaceFormat format;
   format.setRenderableType(QSurfaceFormat::OpenGL);
   // QApplication currently uses Qt's software OpenGL backend on Windows to
@@ -543,6 +549,9 @@ void Viewport::setBasePlaneVisible(int plane, bool visible) {
 }
 
 void Viewport::resetScene() {
+  orientationAnimation_->stop();
+  clearCubeHover();
+  cubePressed_ = {};
   bodyShape_.reset();
   bodyRenderMesh_.clear();
   toolPreviewShape_.reset();
@@ -929,13 +938,46 @@ void Viewport::fitAll() {
   update();
 }
 
-void Viewport::viewTop() { yaw_ = 0; pitch_ = 0; fitAll(); }
-void Viewport::viewBottom() { yaw_ = 0; pitch_ = 180; fitAll(); }
-void Viewport::viewFront() { yaw_ = 0; pitch_ = -90; fitAll(); }
-void Viewport::viewBack() { yaw_ = 0; pitch_ = 90; fitAll(); }
-void Viewport::viewRight() { yaw_ = 90; pitch_ = 90; fitAll(); }
-void Viewport::viewLeft() { yaw_ = -90; pitch_ = 90; fitAll(); }
-void Viewport::viewIsometric() { yaw_ = -45; pitch_ = 30; fitAll(); }
+void Viewport::setStandardView(StandardView view) {
+  orientationAnimation_->stop();
+  const auto target = orientationFor(view);
+  yaw_ = target.yaw; pitch_ = target.pitch;
+  fitAll();
+}
+void Viewport::viewTop() { setStandardView(StandardView::Top); }
+void Viewport::viewBottom() { setStandardView(StandardView::Bottom); }
+void Viewport::viewFront() { setStandardView(StandardView::Front); }
+void Viewport::viewBack() { setStandardView(StandardView::Back); }
+void Viewport::viewRight() { setStandardView(StandardView::Right); }
+void Viewport::viewLeft() { setStandardView(StandardView::Left); }
+void Viewport::viewIsometric() { setStandardView(StandardView::Isometric); }
+
+void Viewport::animateOrientation(CameraOrientation target) {
+  orientationAnimation_->stop();
+  // Re-target from the currently displayed orientation, including mid-animation.
+  disconnect(orientationAnimation_, nullptr, this, nullptr);
+  const CameraOrientation start{yaw_,pitch_};
+  connect(orientationAnimation_, &QVariantAnimation::valueChanged, this,
+          [this,start,target](const QVariant& value) {
+    const auto camera = interpolateOrientation(start,target,value.toFloat());
+    yaw_ = camera.yaw; pitch_ = camera.pitch;
+    update();
+  });
+  orientationAnimation_->setStartValue(0.0F);
+  orientationAnimation_->setEndValue(1.0F);
+  orientationAnimation_->start();
+}
+
+void Viewport::clearCubeHover() {
+  if (cubeHover_) { setCursor(cursorBeforeCube_); QToolTip::hideText(); }
+  cubeHover_ = {};
+  update();
+}
+
+void Viewport::leaveEvent(QEvent* event) {
+  clearCubeHover();
+  QOpenGLWidget::leaveEvent(event);
+}
 float Viewport::cameraYawDegrees() const noexcept { return yaw_; }
 float Viewport::cameraPitchDegrees() const noexcept { return pitch_; }
 
@@ -1867,42 +1909,8 @@ void Viewport::paintGL() {
 
   painter.restore();
 
-  // Orientation cube: only visible faces are drawn, with their names placed
-  // directly on the corresponding face.
-  const QPointF cubeCenter(width() - 70.0, 66.0);
-  const QSize cubeProjectionSize(92, 92);
-  const float c = 28.0F;
-  const std::array<Point3, 8> cubeVertices{{{-c, -c, -c}, {c, -c, -c},
-                                            {c, c, -c}, {-c, c, -c},
-                                            {-c, -c, c}, {c, -c, c},
-                                            {c, c, c}, {-c, c, c}}};
-  const std::array<std::array<int, 4>, 6> cubeFaces{{
-      {{0, 1, 2, 3}}, {{4, 7, 6, 5}}, {{0, 4, 5, 1}},
-      {{1, 5, 6, 2}}, {{2, 6, 7, 3}}, {{3, 7, 4, 0}}}};
-  const std::array<QString, 6> cubeLabels{
-      QStringLiteral(u"СНИЗУ"), QStringLiteral(u"СВЕРХУ"),
-      QStringLiteral(u"СПЕРЕДИ"), QStringLiteral(u"СПРАВА"),
-      QStringLiteral(u"СЗАДИ"), QStringLiteral(u"СЛЕВА")};
-  QFont cubeFont = painter.font();
-  cubeFont.setBold(true);
-  cubeFont.setPixelSize(8);
-  painter.setFont(cubeFont);
-  for (std::size_t face = 0; face < cubeFaces.size(); ++face) {
-    QPolygonF polygon;
-    for (int vertex : cubeFaces[face]) {
-      QPointF point = project(cubeVertices[vertex], cubeProjectionSize,
-                              yaw_, pitch_, 1.0F);
-      point += cubeCenter - QPointF(cubeProjectionSize.width() * 0.5,
-                                    cubeProjectionSize.height() * 0.52);
-      polygon << point;
-    }
-    if (!isFrontFacing(polygon)) continue;
-    painter.setBrush(face == 1 ? QColor("#e5f0ff") : QColor("#f8fbff"));
-    painter.setPen(QPen(QColor("#5275a8"), 1.2));
-    painter.drawPolygon(polygon);
-    painter.setPen(QColor("#123d84"));
-    painter.drawText(polygon.boundingRect(), Qt::AlignCenter, cubeLabels[face]);
-  }
+  paintViewCube(painter, viewCubeGeometry(size(), {yaw_,pitch_}),
+                {yaw_,pitch_}, cubeHover_, cubePressed_);
 
   painter.setPen(QColor(171, 184, 201));
   painter.drawText(16, height() - 18, "Drag to orbit  •  Wheel to zoom");
@@ -1914,58 +1922,16 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   draggingBody_ = false;
   bodyDragStart_ = {offsetX_, offsetY_};
   if (event->button() == Qt::LeftButton) {
-    const QPointF cubeCenter(width() - 70.0, 66.0);
-    const QSize cubeProjectionSize(92, 92);
-    constexpr float c = 28.0F;
-    const std::array<Point3, 8> cubeVertices{{
-        {-c, -c, -c}, {c, -c, -c}, {c, c, -c}, {-c, c, -c},
-        {-c, -c, c},  {c, -c, c},  {c, c, c},  {-c, c, c}}};
-    const std::array<std::array<int, 4>, 6> cubeFaces{{
-        {{0, 1, 2, 3}}, {{4, 7, 6, 5}}, {{0, 4, 5, 1}},
-        {{1, 5, 6, 2}}, {{2, 6, 7, 3}}, {{3, 7, 4, 0}}}};
-    for (std::size_t face = 0; face < cubeFaces.size(); ++face) {
-      QPolygonF polygon;
-      for (const int vertex : cubeFaces[face]) {
-        QPointF point = project(cubeVertices[vertex], cubeProjectionSize,
-                                yaw_, pitch_, 1.0F);
-        point += cubeCenter - QPointF(cubeProjectionSize.width() * 0.5,
-                                      cubeProjectionSize.height() * 0.52);
-        polygon << point;
-      }
-      if (!isFrontFacing(polygon) ||
-          !polygon.containsPoint(event->position(), Qt::OddEvenFill))
-        continue;
-      switch (face) {
-        case 0:  // Bottom
-          yaw_ = 0.0F;
-          pitch_ = 180.0F;
-          break;
-        case 1:  // Top
-          yaw_ = 0.0F;
-          pitch_ = 0.0F;
-          break;
-        case 2:  // Front
-          yaw_ = 0.0F;
-          pitch_ = -90.0F;
-          break;
-        case 3:  // Right
-          yaw_ = 90.0F;
-          pitch_ = 90.0F;
-          break;
-        case 4:  // Back
-          yaw_ = 0.0F;
-          pitch_ = 90.0F;
-          break;
-        case 5:  // Left
-          yaw_ = -90.0F;
-          pitch_ = 90.0F;
-          break;
-      }
+    cubePressed_ = viewCubeGeometry(size(), {yaw_,pitch_}).hitTest(event->position());
+    if (cubePressed_) {
+      orientationAnimation_->stop();
       update();
       event->accept();
       return;
     }
   }
+  orientationAnimation_->stop();
+  clearCubeHover();
   if (event->button() == Qt::MiddleButton) {
     panningView_ = true;
     setCursor(Qt::ClosedHandCursor);
@@ -3081,6 +3047,19 @@ void Viewport::pickFallbackBodyFace(QPointF position) {
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
+  if (cubePressed_) { event->accept(); return; }
+  if (event->buttons() == Qt::NoButton) {
+    const auto hit = viewCubeGeometry(size(), {yaw_,pitch_}).hitTest(event->position());
+    if (hit) {
+      if (!cubeHover_) cursorBeforeCube_ = cursor().shape();
+      if (!(cubeHover_ == hit)) QToolTip::showText(event->globalPosition().toPoint(), viewCubeToolTip(hit), this);
+      cubeHover_ = hit;
+      setCursor(Qt::PointingHandCursor);
+      hoveredBodyFaceIndex_ = hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+      update(); event->accept(); return;
+    }
+    clearCubeHover();
+  }
   if (draggingAngularToolManipulator_ && angularToolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
     const auto [u, v] = angularBasis(angularToolManipulator_->axis);
@@ -3183,6 +3162,18 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void Viewport::mouseReleaseEvent(QMouseEvent* event) {
+  if (event->button() == Qt::LeftButton && cubePressed_) {
+    const auto hit = viewCubeGeometry(size(), {yaw_,pitch_}).hitTest(event->position());
+    const auto pressed = cubePressed_;
+    cubePressed_ = {};
+    if (hit == pressed) {
+      if (hit.zone == ViewCubeZone::Fit) fitAll();
+      else animateOrientation(hit.zone == ViewCubeZone::Home ?
+          orientationFor(StandardView::Isometric) : orientationForDirection(hit.direction));
+    }
+    clearCubeHover();
+    event->accept(); return;
+  }
   if (event->button() == Qt::MiddleButton && panningView_) {
     panningView_ = false;
     unsetCursor();
@@ -3218,6 +3209,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void Viewport::wheelEvent(QWheelEvent* event) {
+  orientationAnimation_->stop();
   zoom_ = std::clamp(zoom_ * (event->angleDelta().y() > 0 ? 1.1F : 0.9F),
                      0.25F, 5.0F);
   update();
