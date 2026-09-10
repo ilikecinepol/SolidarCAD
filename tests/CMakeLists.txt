@@ -266,6 +266,9 @@ set_tests_properties(
 set_property(TEST historical_preview_tests
              PROPERTY LABELS "regression;ui-smoke")
 
+set_property(TEST project_switch_ui_tests
+             PROPERTY LABELS "regression;ui-smoke")
+
 set_tests_properties(
   compliance_artifacts_tests
   PROPERTIES LABELS "compliance"

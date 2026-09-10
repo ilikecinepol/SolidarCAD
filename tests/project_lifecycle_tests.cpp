@@ -5,11 +5,21 @@
 #include <QFile>
 #include <QTemporaryDir>
 
-#include <cassert>
-#include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <memory>
 
 #include "model/ExtrudeFeature.h"
+
+// Every critical check uses CHECK (not assert) so it remains active in the
+// Release CI build where NDEBUG is defined.
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 // Crash-free "New Project" lifecycle regression. Repeats the create ->
 // validate -> load -> destroy cycle that previously faulted when stale tool
@@ -23,9 +33,9 @@ int main(int argc, char* argv[]) {
   QTemporaryDir directory(QDir::current().filePath(
       QStringLiteral("project-lifecycle-tests-XXXXXX")));
   if (!directory.isValid()) {
-    std::fprintf(stderr, "QTemporaryDir failed: %s\n",
-                 directory.errorString().toUtf8().constData());
-    return 1;
+    std::cerr << "QTemporaryDir failed: "
+              << directory.errorString().toUtf8().constData() << '\n';
+    return EXIT_FAILURE;
   }
 
   for (int cycle = 0; cycle < 10; ++cycle) {
@@ -33,30 +43,30 @@ int main(int argc, char* argv[]) {
         QStringLiteral("lifecycle-%1.solidar").arg(cycle));
     QString error;
 
-    assert(solidar::project::ProjectFile::create(path, &error));
+    CHECK(solidar::project::ProjectFile::create(path, &error));
 
     // A freshly created project is immediately a valid canonical v2 document,
     // not a legacy v1 shell upgraded later on the first save.
-    assert(QFile::exists(path));
-    assert(solidar::project::ProjectFile::validate(path, &error));
+    CHECK(QFile::exists(path));
+    CHECK(solidar::project::ProjectFile::validate(path, &error));
 
     solidar::Document document;
-    assert(solidar::project::ProjectFile::loadDocument(path, &document, &error));
-    assert(document.sketches().empty());
-    assert(document.bodies().empty());
+    CHECK(solidar::project::ProjectFile::loadDocument(path, &document, &error));
+    CHECK(document.sketches().empty());
+    CHECK(document.bodies().empty());
 
     // create -> load -> saveDocument -> loadDocument round-trip preserves the
     // same empty, valid canonical state with no lost or fake geometry.
     const QString roundTrip = directory.filePath(
         QStringLiteral("roundtrip-%1.solidar").arg(cycle));
-    assert(solidar::project::ProjectFile::saveDocument(roundTrip, document,
-                                                       &error));
+    CHECK(solidar::project::ProjectFile::saveDocument(roundTrip, document,
+                                                      &error));
     solidar::Document reloaded;
-    assert(solidar::project::ProjectFile::loadDocument(roundTrip, &reloaded,
-                                                       &error));
-    assert(reloaded.sketches().empty());
-    assert(reloaded.bodies().empty());
-    assert(solidar::project::ProjectFile::validate(roundTrip, &error));
+    CHECK(solidar::project::ProjectFile::loadDocument(roundTrip, &reloaded,
+                                                      &error));
+    CHECK(reloaded.sketches().empty());
+    CHECK(reloaded.bodies().empty());
+    CHECK(solidar::project::ProjectFile::validate(roundTrip, &error));
   }
 
   // A non-empty project created through the same canonical path persists real
@@ -68,20 +78,20 @@ int main(int argc, char* argv[]) {
     auto& body = document.addBody("Body");
     body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
         baseSketch.id, 15.0, "Extrude"));
-    assert(document.recompute());
+    CHECK(document.recompute());
 
     const QString path =
         directory.filePath(QStringLiteral("featured.solidar"));
     QString error;
-    assert(solidar::project::ProjectFile::saveDocument(path, document, &error));
+    CHECK(solidar::project::ProjectFile::saveDocument(path, document, &error));
 
     solidar::Document reloaded;
-    assert(solidar::project::ProjectFile::loadDocument(path, &reloaded, &error));
-    assert(reloaded.sketches().size() == 1);
-    assert(reloaded.bodies().size() == 1);
-    assert(reloaded.bodies()[0].features().size() == 1);
-    assert(reloaded.bodies()[0].resultShape() != nullptr);
+    CHECK(solidar::project::ProjectFile::loadDocument(path, &reloaded, &error));
+    CHECK(reloaded.sketches().size() == 1);
+    CHECK(reloaded.bodies().size() == 1);
+    CHECK(reloaded.bodies()[0].features().size() == 1);
+    CHECK(reloaded.bodies()[0].resultShape() != nullptr);
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }
