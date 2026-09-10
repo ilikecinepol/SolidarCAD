@@ -824,9 +824,7 @@ void MainWindow::buildUi() {
 
   auto* constraintsSection = new QFrame(settingsPanel);
   constraintsSection->setObjectName(QStringLiteral("constraintsSection"));
-  constraintsSection->setStyleSheet(
-      "QFrame#constraintsSection{border-top:1px solid #d8e1ef;"
-      "margin-top:8px;padding-top:10px;}");
+  constraintsSection->setProperty("uiRole", "sectionPanel");
   auto* constraintsSectionLayout = new QVBoxLayout(constraintsSection);
   constraintsSectionLayout->setContentsMargins(0, 12, 0, 0);
   constraintsSectionLayout->setSpacing(7);
@@ -845,22 +843,13 @@ void MainWindow::buildUi() {
   sketchConstraintsList_->setMaximumHeight(150);
   sketchConstraintsList_->setColumnWidth(0, 185);
   sketchConstraintsList_->setColumnWidth(1, 28);
-  sketchConstraintsList_->setStyleSheet(
-      "QTreeWidget{border:1px solid #d8e1ef;border-radius:6px;"
-      "background:#fbfcff;color:#29466f;padding:2px;}"
-      "QTreeWidget::item{padding:4px 5px;}"
-      "QHeaderView::section{background:#f2f5fa;color:#66758c;"
-      "border:none;border-bottom:1px solid #d8e1ef;padding:5px;}");
-
   constraintsSectionLayout->addWidget(constraintsTitle);
   constraintsSectionLayout->addWidget(sketchConstraintsList_);
   settingsLayout->addWidget(constraintsSection);
 
   auto* circlePropertiesSection = new QFrame(settingsPanel);
   circlePropertiesSection->setObjectName(QStringLiteral("circlePropertiesSection"));
-  circlePropertiesSection->setStyleSheet(
-      "QFrame#circlePropertiesSection{border-top:1px solid #d8e1ef;"
-      "margin-top:8px;padding-top:10px;}");
+  circlePropertiesSection->setProperty("uiRole", "sectionPanel");
   auto* circleLayout = new QFormLayout(circlePropertiesSection);
   circleLayout->setContentsMargins(0, 12, 0, 0);
   circleLayout->setSpacing(10);
@@ -901,11 +890,6 @@ void MainWindow::buildUi() {
     button->setIconSize(QSize(26, 26));
     button->setFixedSize(36, 36);
     button->setToolTip(QString::fromUtf8(circleModes[index].tooltip));
-    button->setStyleSheet(
-        "QToolButton{border:1px solid transparent;border-radius:6px;"
-        "background:transparent;padding:4px;}"
-        "QToolButton:hover{background:#edf5ff;border-color:#9bc4ff;}"
-        "QToolButton:checked{background:#dcecff;border:2px solid #0a72ff;}");
     circleModeGroup->addButton(button, index);
     circleModeLayout->addWidget(button);
     if (index == 0) button->setChecked(true);
@@ -918,9 +902,7 @@ void MainWindow::buildUi() {
   auto* rectanglePropertiesSection = new QFrame(settingsPanel);
   rectanglePropertiesSection->setObjectName(
       QStringLiteral("rectanglePropertiesSection"));
-  rectanglePropertiesSection->setStyleSheet(
-      "QFrame#rectanglePropertiesSection{border-top:1px solid #d8e1ef;"
-      "margin-top:8px;padding-top:10px;}");
+  rectanglePropertiesSection->setProperty("uiRole", "sectionPanel");
   auto* rectangleLayout = new QVBoxLayout(rectanglePropertiesSection);
   rectangleLayout->setContentsMargins(0, 12, 0, 0);
   rectangleLayout->setSpacing(10);
@@ -949,11 +931,6 @@ void MainWindow::buildUi() {
     button->setIconSize(QSize(26, 26));
     button->setFixedSize(36, 36);
     button->setToolTip(QString::fromUtf8(rectangleModes[index].tooltip));
-    button->setStyleSheet(
-        "QToolButton{border:1px solid transparent;border-radius:6px;"
-        "background:transparent;padding:4px;}"
-        "QToolButton:hover{background:#edf5ff;border-color:#9bc4ff;}"
-        "QToolButton:checked{background:#dcecff;border:2px solid #0a72ff;}");
     rectangleModeGroup->addButton(button, index);
     rectangleModeLayout->addWidget(button);
     if (index == 0) button->setChecked(true);

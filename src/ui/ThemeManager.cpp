@@ -27,6 +27,7 @@ QString substituteColors(QString qss, const ThemeColors& c) {
       {"$selection", c.selection.name(QColor::HexRgb)},
       {"$selectionText", c.selectionText.name(QColor::HexRgb)},
       {"$danger", c.danger.name(QColor::HexRgb)},
+      {"$warning", c.warning.name(QColor::HexRgb)},
   };
   for (auto it = tokens.cbegin(); it != tokens.cend(); ++it)
     qss.replace(it.key(), it.value());
@@ -150,6 +151,11 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     QToolButton:pressed { background: $accentSoft; }
     QToolButton:checked { background: $accentSoft; color: $accent; border: 1px solid $accent; }
     QToolButton:disabled { color: $textDisabled; }
+    QToolButton[stateRole="error"] { border: 2px solid $danger; }
+    QToolButton[stateRole="dirty"] { border: 2px solid $warning; }
+
+    QFrame[uiRole="sectionPanel"] { border-top: 1px solid $border; margin-top: 8px;
+      padding-top: 10px; }
 
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
       background: $surface; color: $textPrimary; border: 1px solid $borderStrong;

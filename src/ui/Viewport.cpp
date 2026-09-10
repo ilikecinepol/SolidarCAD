@@ -204,12 +204,6 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   extrusionLengthEditor_->setDecimals(2);
   extrusionLengthEditor_->setSuffix(QStringLiteral(" mm"));
   extrusionLengthEditor_->setFixedSize(132, 42);
-  extrusionLengthEditor_->setStyleSheet(
-      "QDoubleSpinBox{background:#ffffff;color:#20252c;border:1px solid #c8d1de;"
-      "border-radius:8px;padding:6px 8px;font-size:16px;}"
-      "QDoubleSpinBox:focus{border:2px solid #1477ed;}"
-      "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:28px;"
-      "border:none;background:transparent;}");
   extrusionLengthEditor_->hide();
   connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
           &Viewport::setExtrusionPreviewLength);

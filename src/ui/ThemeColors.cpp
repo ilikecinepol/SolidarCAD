@@ -24,6 +24,7 @@ ThemeColors lightThemeColors() {
   c.selection = QColor("#e5f0ff");
   c.selectionText = QColor("#075fdd");
   c.danger = QColor("#c62828");
+  c.warning = QColor("#b97a00");
 
   c.viewportBackground = QColor("#f6f9fc");
 
@@ -69,6 +70,7 @@ ThemeColors darkThemeColors() {
   c.selection = QColor("#2b3c55");
   c.selectionText = QColor("#cfe4ff");
   c.danger = QColor("#ef7a70");
+  c.warning = QColor("#e0a53d");
 
   c.viewportBackground = QColor("#1b2026");
 

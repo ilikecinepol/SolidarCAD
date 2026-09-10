@@ -27,6 +27,7 @@ struct ThemeColors {
   QColor selection;
   QColor selectionText;
   QColor danger;
+  QColor warning;
 
   QColor viewportBackground;
 

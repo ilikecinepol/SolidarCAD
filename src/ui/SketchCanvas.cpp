@@ -653,10 +653,6 @@ SketchCanvas::SketchCanvas(QWidget* parent) : QWidget(parent) {
     input->setDecimals(2);
     input->setSuffix(QString::fromUtf8(" мм"));
     input->setFixedWidth(122);
-    input->setStyleSheet(
-        "QDoubleSpinBox{background:white;border:2px solid #0a72ff;"
-        "border-radius:6px;padding:5px;color:#12356b;}"
-        "QDoubleSpinBox:focus{border-color:#ff8a24;}");
     input->installEventFilter(this);
     input->hide();
     return input;
