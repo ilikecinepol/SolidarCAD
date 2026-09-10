@@ -101,6 +101,21 @@ target_include_directories(solidar_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_project PUBLIC solidar_model Qt6::Core)
 solidar_warnings(solidar_project)
 
+add_library(solidar_theme
+  app/AppSettings.cpp
+  app/AppSettings.h
+  app/AppTheme.h
+  ui/ThemeColors.cpp
+  ui/ThemeColors.h
+  ui/ThemeManager.cpp
+  ui/ThemeManager.h
+  ui/SettingsWidget.cpp
+  ui/SettingsWidget.h
+)
+target_include_directories(solidar_theme PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(solidar_theme PUBLIC Qt6::Widgets)
+solidar_warnings(solidar_theme)
+
 add_library(solidar_sketch_ui
   sketch/SketchRibbon.cpp
   sketch/SketchRibbon.h
@@ -151,7 +166,7 @@ add_library(solidar_viewport3d
   ui/tools/ToolParameterHud.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_viewport3d PUBLIC solidar_model Qt6::Widgets
+target_link_libraries(solidar_viewport3d PUBLIC solidar_model solidar_theme Qt6::Widgets
   Qt6::OpenGL Qt6::OpenGLWidgets)
 solidar_warnings(solidar_viewport3d)
 
@@ -177,7 +192,7 @@ add_library(solidar_home
   home/HomeWindow.h
 )
 target_include_directories(solidar_home PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_home PUBLIC solidar_project Qt6::Widgets)
+target_link_libraries(solidar_home PUBLIC solidar_project solidar_theme Qt6::Widgets)
 solidar_warnings(solidar_home)
 
 add_executable(solidar

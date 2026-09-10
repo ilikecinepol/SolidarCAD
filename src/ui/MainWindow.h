@@ -14,6 +14,7 @@
 #include "ui/tools/PartDesignToolController.h"
 #include "ui/PartDesignHistory.h"
 #include "sketch/Sketch.h"
+#include "app/AppSettings.h"
 
 class QTreeWidget;
 class QStackedWidget;
@@ -42,13 +43,14 @@ class MainWindow final : public QMainWindow {
   Q_OBJECT
 
  public:
-  explicit MainWindow(QWidget* parent = nullptr);
+  explicit MainWindow(AppSettings& settings, QWidget* parent = nullptr);
   void setProjectPath(const QString& path);
   bool loadProject(const QString& path, QString* error = nullptr);
 
  private:
   void buildUi();
   void buildMenus();
+  void openSettings();
   void createProject();
   void openProject();
   void saveProject();
@@ -106,6 +108,7 @@ class MainWindow final : public QMainWindow {
   bool configureSketchEditContext();
 
   Document document_;
+  AppSettings& settings_;
   Viewport* viewport_{nullptr};
   SketchCanvas* sketchCanvas_{nullptr};
   DrawingSheetView* drawingSheet_{nullptr};

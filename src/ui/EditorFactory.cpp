@@ -4,8 +4,9 @@
 
 namespace solidar {
 
-QMainWindow* createEditorWindow(const QString& projectPath, QString* error) {
-  auto* editor = new MainWindow;
+QMainWindow* createEditorWindow(const QString& projectPath, AppSettings& settings,
+                                QString* error) {
+  auto* editor = new MainWindow(settings);
   if (!projectPath.isEmpty() && !editor->loadProject(projectPath, error)) {
     delete editor;
     return nullptr;

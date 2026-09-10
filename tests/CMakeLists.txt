@@ -8,6 +8,21 @@ add_executable(document_tests document_tests.cpp)
 target_link_libraries(document_tests PRIVATE solidar_model)
 add_test(NAME document_tests COMMAND document_tests)
 
+add_executable(app_settings_tests app_settings_tests.cpp)
+target_link_libraries(app_settings_tests PRIVATE solidar_theme Qt6::Core)
+add_test(NAME app_settings_tests COMMAND app_settings_tests)
+set_tests_properties(app_settings_tests PROPERTIES LABELS "unit")
+
+add_executable(theme_manager_tests theme_manager_tests.cpp)
+target_link_libraries(theme_manager_tests PRIVATE solidar_theme)
+add_test(NAME theme_manager_tests COMMAND theme_manager_tests)
+set_tests_properties(theme_manager_tests PROPERTIES LABELS "unit")
+
+add_executable(settings_ui_tests settings_ui_tests.cpp)
+target_link_libraries(settings_ui_tests PRIVATE solidar_home solidar_theme Qt6::Widgets)
+add_test(NAME settings_ui_tests COMMAND settings_ui_tests)
+set_tests_properties(settings_ui_tests PROPERTIES LABELS "ui-smoke")
+
 add_executable(extrude_feature_tests extrude_feature_tests.cpp)
 target_link_libraries(extrude_feature_tests PRIVATE solidar_model)
 add_test(NAME extrude_feature_tests COMMAND extrude_feature_tests)
@@ -302,6 +317,9 @@ if(WIN32)
 
   set_tests_properties(
     document_tests
+    app_settings_tests
+    theme_manager_tests
+    settings_ui_tests
     extrude_feature_tests
     revolve_feature_tests
     part_design_tool_framework_tests

@@ -213,25 +213,6 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::linearPatternRequested);
   connect(circularPattern, &QToolButton::clicked, this,
           &ModelRibbon::circularPatternRequested);
-
-  setStyleSheet(R"(
-    QWidget#modelRibbon { background:#ffffff; border-bottom:1px solid #d8e1ef; }
-    QToolButton#modelCommand { background:transparent; color:#17356e;
-      border:1px solid transparent; border-radius:8px; font-size:13px; padding:5px 10px; }
-    QToolButton#modelCommand:hover { background:#edf5ff; border-color:#a9cbff; }
-    QToolButton#modelCommand:checked { background:#dcecff; color:#0068e8;
-      border:2px solid #78adf8; font-weight:600; }
-    QToolButton#modelGroupMenuButton { color:#526d98; background:transparent;
-      border:none; font-size:10px; font-weight:700; padding:2px 10px; }
-    QToolButton#modelGroupMenuButton:hover { color:#0868e8; background:#edf5ff;
-      border-radius:5px; }
-    QMenu { background:#ffffff; color:#17356e; border:1px solid #cfdbee;
-      padding:5px; }
-    QMenu::item { padding:7px 24px 7px 8px; border-radius:4px; }
-    QMenu::item:selected { background:#e8f2ff; color:#0868e8; }
-    QLabel#modelPlaceholder { color:#a8b7cd; font-size:12px; }
-    QFrame#modelSeparator { color:#d8e1ef; margin:4px 7px; }
-  )");
 }
 
 void ModelRibbon::clearActiveTool() {

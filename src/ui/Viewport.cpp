@@ -1,5 +1,6 @@
 #include "ui/Viewport.h"
 #include "ui/WorldGrid.h"
+#include "ui/ThemeManager.h"
 #include <QVariantAnimation>
 #include <QToolTip>
 
@@ -1196,17 +1197,20 @@ void Viewport::refreshSelectedExtrusionPolygon() {
 void Viewport::paintGL() {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
-  painter.fillRect(rect(), QColor(246, 249, 252));
+  const ThemeColors& theme = ThemeManager::instance().colors();
+  painter.fillRect(rect(), theme.viewportBackground);
 
   // World-space work-plane grid. It shares the camera (including pan) with the
   // body, sketches, base planes and ViewCube, so orbit/pan/zoom move them all
   // together instead of leaving a screen-locked checkerboard behind.
+  const WorldGridStyle gridStyle{theme.gridMinor, theme.gridMajor, theme.axisX,
+                                 theme.axisY, theme.axisZ};
   if (workGridVisible_) {
     const ViewportCameraState gridCamera{yaw_, pitch_, zoom_, cameraPan_,
                                          size(), 1.0F, {}, 1.0};
     paintWorldGrid(painter,
                    buildWorldGrid(workGridPlacement_, gridCamera, size()),
-                   gridCamera);
+                   gridCamera, gridStyle);
   }
 
   painter.save();
@@ -1934,9 +1938,13 @@ void Viewport::paintGL() {
   painter.restore();
 
   paintViewCube(painter, viewCubeGeometry(size(), {yaw_,pitch_}),
-                {yaw_,pitch_}, cubeHover_, cubePressed_);
+                {yaw_,pitch_}, cubeHover_, cubePressed_,
+                ViewCubeStyle{theme.cubeTop, theme.cubeFront, theme.cubeSide,
+                              theme.cubeOutline, theme.cubeText, theme.cubeBevel,
+                              theme.cubeHover, theme.cubePressed, theme.cubeActive,
+                              theme.cubeAccent, theme.cubeShadow});
 
-  painter.setPen(QColor(171, 184, 201));
+  painter.setPen(theme.textSecondary);
   painter.drawText(16, height() - 18, "Drag to orbit  •  Wheel to zoom");
 }
 
