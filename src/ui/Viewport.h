@@ -129,6 +129,10 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] QString solidSupport() const;
   [[nodiscard]] QPointF bodyPosition() const noexcept;
   void setBodyPosition(QPointF position);
+  void setWorkGridPlacement(const SketchPlacement& placement);
+  void resetWorkGridPlacement();
+  void setWorkGridVisible(bool visible);
+  [[nodiscard]] bool workGridVisible() const noexcept;
 
  signals:
   void selectionChanged(const QString& description);
@@ -268,6 +272,8 @@ class Viewport final : public QOpenGLWidget {
   float yaw_{-35.0F};
   float pitch_{25.0F};
   float zoom_{1.0F};
+  SketchPlacement workGridPlacement_{SketchPlacement::xy()};
+  bool workGridVisible_{true};
 };
 
 }  // namespace solidar

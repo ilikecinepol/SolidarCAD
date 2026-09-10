@@ -1,4 +1,5 @@
 #include "ui/Viewport.h"
+#include "ui/WorldGrid.h"
 #include <QVariantAnimation>
 #include <QToolTip>
 
@@ -609,6 +610,8 @@ void Viewport::resetScene() {
   offsetX_ = 0.0F;
   offsetY_ = 0.0F;
   cameraPan_ = {};
+  workGridPlacement_ = SketchPlacement::xy();
+  workGridVisible_ = true;
   hideExtrusionManipulator();
   for (bool& visible : basePlanesVisible_) visible = false;
   update();
@@ -1011,6 +1014,23 @@ void Viewport::setBodyPosition(QPointF position) {
   update();
 }
 
+void Viewport::setWorkGridPlacement(const SketchPlacement& placement) {
+  workGridPlacement_ = placement;
+  update();
+}
+
+void Viewport::resetWorkGridPlacement() {
+  workGridPlacement_ = SketchPlacement::xy();
+  update();
+}
+
+void Viewport::setWorkGridVisible(bool visible) {
+  workGridVisible_ = visible;
+  update();
+}
+
+bool Viewport::workGridVisible() const noexcept { return workGridVisible_; }
+
 void Viewport::refreshSelectedExtrusionPolygon() {
   // Screen coordinates become stale whenever a dock is opened, the viewport
   // is resized, or the camera changes.  Reproject the selected sketch from
@@ -1178,12 +1198,16 @@ void Viewport::paintGL() {
   painter.setRenderHint(QPainter::Antialiasing);
   painter.fillRect(rect(), QColor(246, 249, 252));
 
-  painter.setPen(QPen(QColor(224, 231, 241), 1));
-  constexpr int gridStep = 28;
-  for (int x = width() / 2 % gridStep; x < width(); x += gridStep)
-    painter.drawLine(x, 0, x, height());
-  for (int y = height() / 2 % gridStep; y < height(); y += gridStep)
-    painter.drawLine(0, y, width(), y);
+  // World-space work-plane grid. It shares the camera (including pan) with the
+  // body, sketches, base planes and ViewCube, so orbit/pan/zoom move them all
+  // together instead of leaving a screen-locked checkerboard behind.
+  if (workGridVisible_) {
+    const ViewportCameraState gridCamera{yaw_, pitch_, zoom_, cameraPan_,
+                                         size(), 1.0F, {}, 1.0};
+    paintWorldGrid(painter,
+                   buildWorldGrid(workGridPlacement_, gridCamera, size()),
+                   gridCamera);
+  }
 
   painter.save();
   painter.translate(cameraPan_);
