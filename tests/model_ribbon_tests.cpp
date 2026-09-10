@@ -27,7 +27,8 @@ int main(int argc, char** argv) {
     const auto title = group->property("groupTitle").toString();
     if (title == QString::fromUtf8("СОЗДАНИЕ")) creation = group;
     if (title == QString::fromUtf8("РЕДАКТИРОВАНИЕ")) editing = group;
-    if (title == QString::fromUtf8("ВИД")) view = group;
+    if (title == QString::fromUtf8("ОТОБРАЖЕНИЕ")) view = group;
+    assert(title != QString::fromUtf8("ВИД"));
     auto* menuButton = group->findChild<QToolButton*>("modelGroupMenuButton");
     assert(menuButton);
     assert(menuButton->menu());
@@ -56,7 +57,9 @@ int main(int argc, char** argv) {
     assert(!command->accessibleName().isEmpty());
     assert(!command->accessibleDescription().isEmpty());
   }
-  assert(documentedCommands == 12);
+  assert(documentedCommands == 10);
+  assert(!ribbon.findChild<QToolButton*>("fitCommand"));
+  assert(!ribbon.findChild<QToolButton*>("isoCommand"));
   const std::initializer_list<solidar::PartDesignToolKind> historyKinds{
       solidar::PartDesignToolKind::Extrude,
       solidar::PartDesignToolKind::Pocket,

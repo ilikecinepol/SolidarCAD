@@ -22,8 +22,6 @@ const std::array<Entry, 13> kEntries{{
     {Kind::Mirror, "mirror", {QString::fromUtf8("Зеркало"), QString::fromUtf8("Создаёт зеркальную копию геометрии относительно выбранной плоскости."), QString::fromUtf8("Отражает выбранную геометрию относительно плоскости. Выберите исходный объект или операцию, затем плоскость зеркального отражения."), QString::fromUtf8("Выберите исходную геометрию и плоскость зеркала."), {}, {QString::fromUtf8("Выберите исходную геометрию."), QString::fromUtf8("Выберите плоскость зеркала.")}}},
     {Kind::LinearPattern, "linearPattern", {QString::fromUtf8("Линейный массив"), QString::fromUtf8("Повторяет выбранную геометрию вдоль заданного направления."), QString::fromUtf8("Создаёт несколько копий выбранной геометрии вдоль одного направления. Выберите исходный объект и направление, затем задайте шаг и количество экземпляров."), QString::fromUtf8("Выберите исходную геометрию и направление массива."), QString::fromUtf8("Задайте шаг и количество экземпляров."), {QString::fromUtf8("Выберите исходную геометрию."), QString::fromUtf8("Выберите направление массива."), QString::fromUtf8("Задайте шаг."), QString::fromUtf8("Задайте количество экземпляров.")}}},
     {Kind::CircularPattern, "circularPattern", {QString::fromUtf8("Круговой массив"), QString::fromUtf8("Повторяет выбранную геометрию вокруг заданной оси."), QString::fromUtf8("Создаёт несколько копий выбранной геометрии вокруг оси. Выберите исходный объект и ось вращения, затем задайте общий угол и количество экземпляров."), QString::fromUtf8("Выберите исходную геометрию и ось массива."), QString::fromUtf8("Задайте угол и количество экземпляров."), {QString::fromUtf8("Выберите исходную геометрию."), QString::fromUtf8("Выберите ось массива."), QString::fromUtf8("Задайте угол распределения."), QString::fromUtf8("Задайте количество экземпляров.")}}},
-    {Kind::None, "fit", {QString::fromUtf8("По размеру"), QString::fromUtf8("Помещает всю модель в окне."), QString::fromUtf8("Автоматически изменяет масштаб и положение камеры, чтобы вся модель поместилась в окне."), {}, {}, {}}},
-    {Kind::None, "iso", {QString::fromUtf8("Изометрия"), QString::fromUtf8("Устанавливает стандартный изометрический ракурс."), QString::fromUtf8("Устанавливает стандартный изометрический ракурс модели."), {}, {}, {}}},
 }};
 
 }  // namespace
@@ -102,17 +100,11 @@ QIcon partDesignToolIcon(PartDesignToolKind kind) {
 }
 
 QIcon modelCommandIcon(const QString& commandId) {
-  if (commandId == QLatin1String("createSketch") ||
-      commandId == QLatin1String("fit") || commandId == QLatin1String("iso")) {
+  if (commandId == QLatin1String("createSketch")) {
     QPixmap pixmap(24, 24); pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap); painter.setPen(QPen(QColor("#185ca8"), 2));
-    if (commandId == QLatin1String("createSketch")) {
-      painter.drawRect(4, 4, 14, 14); painter.drawLine(9, 12, 21, 2);
-      painter.drawLine(17, 2, 21, 6);
-    } else {
-      painter.drawRect(5, 5, 14, 14); painter.drawLine(5, 5, 12, 2);
-      painter.drawLine(19, 5, 12, 2);
-    }
+    painter.drawRect(4, 4, 14, 14); painter.drawLine(9, 12, 21, 2);
+    painter.drawLine(17, 2, 21, 6);
     return QIcon(pixmap);
   }
   for (const auto& entry : kEntries)

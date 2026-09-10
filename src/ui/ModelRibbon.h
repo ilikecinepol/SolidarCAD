@@ -25,8 +25,6 @@ class ModelRibbon final : public QWidget {
   void mirrorRequested();
   void linearPatternRequested();
   void circularPatternRequested();
-  void fitRequested();
-  void isoRequested();
   void displayModeRequested(int mode);
   void meshQualityRequested(int quality);
 

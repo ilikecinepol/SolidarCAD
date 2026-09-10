@@ -49,6 +49,11 @@ QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
   auto* menu = new QMenu(caption);
   menu->setObjectName("modelGroupMenu");
   for (auto* button : menuButtons) {
+    if (button->menu()) {
+      button->menu()->setTitle(button->text());
+      menu->addMenu(button->menu());
+      continue;
+    }
     auto* action = menu->addAction(button->icon(), button->text());
     action->setObjectName(button->objectName() + QStringLiteral("Action"));
     action->setEnabled(button->isEnabled());
@@ -146,8 +151,6 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
 
   auto* views = new QHBoxLayout;
   views->setSpacing(3);
-  auto* fit = commandButton(QStringLiteral("fit"), this);
-  auto* iso = commandButton(QStringLiteral("iso"), this);
   auto* displayMode = new QToolButton(this);
   displayMode->setObjectName("displayModeCommand");
   displayMode->setText(QString::fromUtf8("Затенённый\nс рёбрами"));
@@ -188,15 +191,10 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
     emit meshQualityRequested(1);
   });
   quality->setMenu(qualityMenu);
-  fit->setObjectName("fitCommand");
-  iso->setObjectName("isoCommand");
-  fit->setMinimumSize(58, 56);
-  iso->setMinimumSize(58, 56);
-  views->addWidget(fit);
-  views->addWidget(iso);
   views->addWidget(displayMode);
   views->addWidget(quality);
-  root->addWidget(group(QString::fromUtf8("ВИД"), views, this, {fit, iso}), 1);
+  root->addWidget(group(QString::fromUtf8("ОТОБРАЖЕНИЕ"), views, this,
+                        {displayMode, quality}), 1);
 
   connect(createSketch, &QToolButton::clicked, this,
           &ModelRibbon::createSketchRequested);
@@ -215,8 +213,6 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::linearPatternRequested);
   connect(circularPattern, &QToolButton::clicked, this,
           &ModelRibbon::circularPatternRequested);
-  connect(fit, &QToolButton::clicked, this, &ModelRibbon::fitRequested);
-  connect(iso, &QToolButton::clicked, this, &ModelRibbon::isoRequested);
 
   setStyleSheet(R"(
     QWidget#modelRibbon { background:#ffffff; border-bottom:1px solid #d8e1ef; }
