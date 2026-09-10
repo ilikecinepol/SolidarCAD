@@ -167,6 +167,14 @@ bool ViewportRenderer::initialize() {
                          surfaceFragmentShader, false) &&
                  compile(edgeProgram_, edgeVertexShader, edgeFragmentShader,
                          true);
+  if (!initialized_) {
+    // Roll back any partial program state so a failed initialization leaves no
+    // stale shaders or GPU program objects behind. Without this, a surface
+    // program that linked before an edge-program failure would outlive
+    // initialize() while release() early-returns on !initialized_.
+    surfaceProgram_.removeAllShaders();
+    edgeProgram_.removeAllShaders();
+  }
   return initialized_;
 }
 
