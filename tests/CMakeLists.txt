@@ -58,14 +58,14 @@ add_executable(editor_smoke_tests editor_smoke_tests.cpp)
 target_link_libraries(editor_smoke_tests PRIVATE solidar_editor solidar_home Qt6::Widgets)
 add_test(NAME editor_smoke_tests COMMAND editor_smoke_tests)
 
-add_executable(project_create_crash_repro_tests project_create_crash_repro_tests.cpp)
-target_link_libraries(project_create_crash_repro_tests PRIVATE solidar_editor solidar_home Qt6::Widgets)
-if(WIN32)
-  target_link_libraries(project_create_crash_repro_tests PRIVATE Dbghelp Psapi)
-  target_link_options(project_create_crash_repro_tests PRIVATE "/MAP")
-endif()
-add_test(NAME project_create_crash_repro_tests COMMAND project_create_crash_repro_tests)
-set_tests_properties(project_create_crash_repro_tests PROPERTIES TIMEOUT 120)
+add_executable(project_lifecycle_tests project_lifecycle_tests.cpp)
+target_link_libraries(project_lifecycle_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME project_lifecycle_tests COMMAND project_lifecycle_tests)
+
+add_executable(project_switch_ui_tests project_switch_ui_tests.cpp)
+target_link_libraries(project_switch_ui_tests
+  PRIVATE solidar_editor solidar_project Qt6::Widgets)
+add_test(NAME project_switch_ui_tests COMMAND project_switch_ui_tests)
 
 add_executable(model_ribbon_tests model_ribbon_tests.cpp)
 target_link_libraries(model_ribbon_tests PRIVATE solidar_editor Qt6::Widgets)
@@ -241,6 +241,7 @@ set_tests_properties(
   draft_feature_tests
   parametric_history_tests
   persistent_topology_tests
+  project_lifecycle_tests
   mirror_feature_tests
   linear_pattern_feature_tests
   circular_pattern_feature_tests
@@ -258,6 +259,7 @@ set_tests_properties(
   feature_removal_tests
   history_timeline_geometry_tests
   historical_preview_tests
+  project_switch_ui_tests
   PROPERTIES LABELS "ui-smoke"
 )
 
@@ -321,7 +323,8 @@ if(WIN32)
     circular_pattern_feature_tests
     pattern_persistence_tests
     multi_solid_edge_feature_tests
-    project_create_crash_repro_tests
+    project_lifecycle_tests
+    project_switch_ui_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"
