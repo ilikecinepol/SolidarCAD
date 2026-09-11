@@ -348,5 +348,87 @@ int main(int argc, char** argv) {
     CHECK(commitSpy.at(0).at(0).toString() == QStringLiteral("distance"));
   }
 
+  // Test 12: public focus/introspection API — hasEditableParameters /
+  // hasFieldFocus / focusFirstField / focusLastField / focusNextField.
+  {
+    solidar::ToolParameterHud hud;
+    CHECK(!hud.hasEditableParameters());
+    CHECK(!hud.hasFieldFocus());
+
+    hud.setParameters({distanceParam("spacing", 10.0), countParam(2)});
+    CHECK(hud.hasEditableParameters());
+    CHECK(!hud.hasFieldFocus());
+    auto* first = hud.findChild<QDoubleSpinBox*>("spacing");
+    auto* second = hud.findChild<QDoubleSpinBox*>("count");
+    CHECK(first != nullptr && second != nullptr);
+
+    showAndFocus(hud, first);
+    CHECK(hud.hasFieldFocus());
+    CHECK(QApplication::focusWidget() == first);
+
+    // focusFirstField focuses the first editor and selects its text.
+    hud.focusFirstField();
+    CHECK(QApplication::focusWidget() == first);
+    auto* firstLine = spinLineEdit(first);
+    CHECK(firstLine != nullptr);
+    CHECK(firstLine->hasSelectedText());
+
+    // focusLastField focuses the last editor and selects its text.
+    hud.focusLastField();
+    CHECK(QApplication::focusWidget() == second);
+    auto* secondLine = spinLineEdit(second);
+    CHECK(secondLine != nullptr);
+    CHECK(secondLine->hasSelectedText());
+
+    // focusNextField(false) from the last wraps forward to the first.
+    hud.focusNextField(false);
+    CHECK(QApplication::focusWidget() == first);
+    CHECK(spinLineEdit(first)->hasSelectedText());
+
+    // focusNextField(true) from the first wraps backward to the last.
+    hud.focusNextField(true);
+    CHECK(QApplication::focusWidget() == second);
+    CHECK(spinLineEdit(second)->hasSelectedText());
+
+    // Forward from first advances to second.
+    hud.focusFirstField();
+    hud.focusNextField(false);
+    CHECK(QApplication::focusWidget() == second);
+    CHECK(spinLineEdit(second)->hasSelectedText());
+
+    // Backward from second returns to first.
+    hud.focusNextField(true);
+    CHECK(QApplication::focusWidget() == first);
+    CHECK(spinLineEdit(first)->hasSelectedText());
+  }
+
+  // Test 13: single parameter — focusFirstField focuses it and selects text;
+  // focusLastField focuses the same (only) field.
+  {
+    solidar::ToolParameterHud hud;
+    hud.setParameters({distanceParam("distance", 10.0)});
+    CHECK(hud.hasEditableParameters());
+    auto* editor = hud.findChild<QDoubleSpinBox*>("distance");
+    CHECK(editor != nullptr);
+
+    showAndFocus(hud, nullptr);
+    hud.focusFirstField();
+    CHECK(QApplication::focusWidget() == editor);
+    auto* line = spinLineEdit(editor);
+    CHECK(line != nullptr);
+    CHECK(line->hasSelectedText());
+    CHECK(hud.hasFieldFocus());
+
+    hud.focusLastField();
+    CHECK(QApplication::focusWidget() == editor);
+    CHECK(spinLineEdit(editor)->hasSelectedText());
+
+    // focusNextField on a single field re-focuses the same field.
+    hud.focusNextField(false);
+    CHECK(QApplication::focusWidget() == editor);
+    hud.focusNextField(true);
+    CHECK(QApplication::focusWidget() == editor);
+  }
+
   return EXIT_SUCCESS;
 }

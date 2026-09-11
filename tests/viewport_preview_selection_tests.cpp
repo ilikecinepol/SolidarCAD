@@ -473,15 +473,26 @@ int main(int argc, char** argv) {
     CHECK(view.selectedBodyEdges().empty());
   }
 
-  // Single visible body: Ctrl+A selects exactly that body.
+  // Single visible body: Ctrl+A selects exactly that body and emits
+  // bodiesSelected exactly once (single publish point in setSelectedBodies).
   {
     solidar::Viewport view;
     view.resize(800, 600);
     view.setBodyShape(boxShape, bodyId, sourceFeatureId);
     view.setSolidVisible(true);
+    int emissions = 0;
+    std::vector<solidar::BodyId> emittedIds;
+    QObject::connect(
+        &view, &solidar::Viewport::bodiesSelected, &view,
+        [&](const std::vector<solidar::BodyId>& ids) {
+          ++emissions;
+          emittedIds = ids;
+        });
     sendStandardKey(view);
     const std::vector<solidar::BodyId> expected{bodyId};
     CHECK(view.selectedBodies() == expected);
+    CHECK(emissions == 1);
+    CHECK(emittedIds == expected);
     CHECK(view.selectedBodyFaces().empty());
     CHECK(view.selectedBodyEdges().empty());
   }
@@ -522,6 +533,166 @@ int main(int argc, char** argv) {
     sendStandardKey(edgeView);
     CHECK(edgeView.selectedBodyEdges().size() == 1);
     CHECK(edgeView.selectedBodyFaces().empty());
+  }
+
+  // setSelectedBodies is the single publish point: each direct call emits
+  // bodiesSelected exactly once, whether selecting, re-selecting or clearing.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    int emissions = 0;
+    std::vector<solidar::BodyId> emittedIds;
+    QObject::connect(
+        &view, &solidar::Viewport::bodiesSelected, &view,
+        [&](const std::vector<solidar::BodyId>& ids) {
+          ++emissions;
+          emittedIds = ids;
+        });
+    view.setSelectedBodies({bodyId});
+    CHECK(emissions == 1);
+    CHECK(emittedIds == std::vector<solidar::BodyId>{bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    // Re-selecting the same body still publishes exactly one more emission.
+    view.setSelectedBodies({bodyId});
+    CHECK(emissions == 2);
+    CHECK(emittedIds == std::vector<solidar::BodyId>{bodyId});
+    // Clearing also publishes exactly once.
+    view.setSelectedBodies({});
+    CHECK(emissions == 3);
+    CHECK(emittedIds == std::vector<solidar::BodyId>{});
+    CHECK(view.selectedBodies().empty());
+  }
+
+  // Body → Face: selecting bodies, then setting a face selection, clears the
+  // whole-body selection and keeps the face selection.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(source, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    const auto faceA = solidar::makeFaceReference(*source, bodyId,
+                                                  sourceFeatureId, 0);
+    CHECK(faceA.signature);
+    view.setSelectedBodies({bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.setSelectedBodyFaces({faceA});
+    CHECK(view.selectedBodies().empty());
+    CHECK(view.selectedBodyFaces() ==
+          std::vector<solidar::FaceReference>{faceA});
+  }
+
+  // Body → Edge: selecting bodies, then setting an edge selection, clears the
+  // whole-body selection and keeps the edge selection.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(source, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setSelectedBodies({bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.setSelectedBodyEdges({edgeA});
+    CHECK(view.selectedBodies().empty());
+    CHECK(view.selectedBodyEdges() ==
+          std::vector<solidar::EdgeReference>{edgeA});
+  }
+
+  // SelectionFilter transitions: entering an Edge/Face tool or base-plane
+  // (Plane) selection drops a whole-body selection (Body → tool selection).
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+
+    view.setSelectedBodies({bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.setSelectionFilter(solidar::SelectionFilter::Edge);
+    CHECK(view.selectedBodies().empty());
+
+    view.setSelectionFilter(solidar::SelectionFilter::Any);
+    view.setSelectedBodies({bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.setSelectionFilter(solidar::SelectionFilter::Face);
+    CHECK(view.selectedBodies().empty());
+
+    view.setSelectionFilter(solidar::SelectionFilter::Any);
+    view.setSelectedBodies({bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.setSelectionFilter(solidar::SelectionFilter::Plane);
+    CHECK(view.selectedBodies().empty());
+  }
+
+  // resetScene clears the whole-body selection.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setSelectedBodies({bodyId});
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.resetScene();
+    CHECK(view.selectedBodies().empty());
+  }
+
+  // Ctrl+A targeted at a HUD field (as when the field has keyboard focus) must
+  // be handled by the field/editor — never the viewport's keyPressEvent — so a
+  // pre-existing body selection is left unchanged.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    sendStandardKey(view);
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    view.setToolManipulator({{}, {0, 0, 1}, 10.0, 0.0, 100000.0});
+    auto* field = view.findChild<QDoubleSpinBox*>("distance");
+    CHECK(field != nullptr);
+    QKeyEvent fieldSelectAll(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier);
+    QApplication::sendEvent(field, &fieldSelectAll);
+    CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+  }
+
+  // Render seam: effectiveSelectedFaceIndices() returns the global face
+  // ordinals of every selected body (so a body selection renders with the
+  // standard selected-face tint), and falls back to the sub-element face
+  // selection when no body is selected.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    CHECK(view.effectiveSelectedFaceIndices().empty());
+    view.setSelectedBodies({bodyId});
+    // A 40x30x20 box has 6 faces; the selected body contributes all 6 global
+    // ordinals (0..5).
+    const std::vector<std::size_t> expectedBox{0, 1, 2, 3, 4, 5};
+    CHECK(view.effectiveSelectedFaceIndices() == expectedBox);
+    // Dropping the body selection reverts the effective set to empty.
+    view.setSelectionFilter(solidar::SelectionFilter::Face);
+    CHECK(view.effectiveSelectedFaceIndices().empty());
+  }
+
+  // Multi-body render seam: face ordinals are concatenated in body order.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    const auto boxA = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape());
+    const auto boxB = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(100.0, 0.0, 0.0), 40.0, 30.0, 20.0)
+            .Shape());
+    const solidar::BodyId bodyA = 41;
+    const solidar::BodyId bodyB = 42;
+    const solidar::FeatureId featA = 73;
+    const solidar::FeatureId featB = 74;
+    view.setBodyShapes({{bodyA, featA, boxA}, {bodyB, featB, boxB}});
+    view.setSolidVisible(true);
+    view.setSelectedBodies({bodyA, bodyB});
+    const std::vector<std::size_t> expected{0, 1, 2, 3, 4, 5,
+                                            6, 7, 8, 9, 10, 11};
+    CHECK(view.effectiveSelectedFaceIndices() == expected);
   }
 
   // Plain marquee in an edge multi-select tool REPLACES the prior selection;
@@ -603,6 +774,76 @@ int main(int argc, char** argv) {
     QApplication::sendEvent(&view, &escape);
     CHECK(!view.marqueeActive());
     CHECK(view.selectedBodyFaces() == before);
+  }
+
+  // CONTRACT A keyboard workflow. With an editable HUD field present, Tab with
+  // viewport focus routes into the HUD (no dock focus request); a HUD Enter
+  // commit publishes toolParameterCommitted exactly once and auto-repeat Enter
+  // does not re-commit. Without an editable HUD field, Tab/Backtab request the
+  // dock focus with the correct backward flag.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setToolManipulator({{}, {0, 0, 1}, 10.0, 0.0, 100000.0});
+    auto* distance = view.findChild<QDoubleSpinBox*>("distance");
+    CHECK(distance != nullptr);
+
+    int tabRequests = 0;
+    bool lastBackward = false;
+    QObject::connect(&view, &solidar::Viewport::tabFocusRequested, &view,
+                     [&](bool backward) {
+                       ++tabRequests;
+                       lastBackward = backward;
+                     });
+    int commits = 0;
+    QObject::connect(&view, &solidar::Viewport::toolParameterCommitted, &view,
+                     [&] { ++commits; });
+
+    // Tab with an editable HUD field present routes into the HUD, so no dock
+    // focus is requested.
+    QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+    QApplication::sendEvent(&view, &tab);
+    CHECK(tabRequests == 0);
+
+    // A HUD field Enter commit emits toolParameterCommitted exactly once.
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(distance, &enter);
+    CHECK(commits == 1);
+
+    // Auto-repeat Enter must not re-commit (HUD guards isAutoRepeat).
+    QKeyEvent repeat(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier,
+                     QString(), /*autorep=*/true);
+    QApplication::sendEvent(distance, &repeat);
+    CHECK(commits == 1);
+  }
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    int tabRequests = 0;
+    bool lastBackward = true;
+    QObject::connect(&view, &solidar::Viewport::tabFocusRequested, &view,
+                     [&](bool backward) {
+                       ++tabRequests;
+                       lastBackward = backward;
+                     });
+
+    // No editable HUD field: Tab requests the dock focus (forward).
+    QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+    QApplication::sendEvent(&view, &tab);
+    CHECK(tabRequests == 1);
+    CHECK(lastBackward == false);
+
+    // Backtab requests the dock focus backward.
+    QKeyEvent backtab(QEvent::KeyPress, Qt::Key_Backtab, Qt::NoModifier);
+    QApplication::sendEvent(&view, &backtab);
+    CHECK(tabRequests == 2);
+    CHECK(lastBackward == true);
+
+    // Shift+Tab (Key_Tab + ShiftModifier) is also a backward request.
+    QKeyEvent shiftTab(QEvent::KeyPress, Qt::Key_Tab, Qt::ShiftModifier);
+    QApplication::sendEvent(&view, &shiftTab);
+    CHECK(tabRequests == 3);
+    CHECK(lastBackward == true);
   }
 
   return EXIT_SUCCESS;

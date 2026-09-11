@@ -97,6 +97,11 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
   [[nodiscard]] const std::vector<BodyId>& selectedBodies() const noexcept;
   void setSelectedBodies(std::vector<BodyId> ids);
+  // Face ordinals passed to the renderer as the selected-faces set. When whole
+  // bodies are selected this is the union of every selected body's face
+  // ordinals (so a body selection renders with the standard selected-face
+  // tint); otherwise it is the sub-element face selection.
+  [[nodiscard]] std::vector<std::size_t> effectiveSelectedFaceIndices() const;
   [[nodiscard]] std::optional<std::size_t> hoveredBodyEdgeIndex() const noexcept;
   void setSelectionFilter(SelectionFilter filter) noexcept;
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
@@ -154,6 +159,13 @@ class Viewport final : public QOpenGLWidget {
   void bodiesSelected(const std::vector<BodyId>& ids);
   void toolManipulatorValueChanged(double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
+  // Emitted after a HUD field commit via Enter (after the value has been routed
+  // to the session preview). MainWindow uses it to perform the active tool's
+  // Accept without re-interpreting the already-committed value.
+  void toolParameterCommitted();
+  // Emitted when Tab/Backtab is pressed with viewport focus and the HUD has no
+  // editable field, so MainWindow can focus the active tool's dock field.
+  void tabFocusRequested(bool backward);
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
   // values >= 3 encode a sketch line id plus three.
   void revolveAxisPicked(qulonglong axisToken);

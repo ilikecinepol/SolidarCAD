@@ -225,6 +225,11 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
           routeToolHudValue);
   connect(toolParameterHud_, &ToolParameterHud::valueCommitted, this,
           routeToolHudValue);
+  // After the committed value has been routed to the session preview, publish a
+  // dedicated commit signal so MainWindow can perform the tool's Accept exactly
+  // once (the value is already interpreted + preview-synced; do not re-interpret).
+  connect(toolParameterHud_, &ToolParameterHud::valueCommitted, this,
+          &Viewport::toolParameterCommitted);
 }
 
 void Viewport::setBox(BoxParameters parameters) {
@@ -761,6 +766,7 @@ std::vector<FaceReference> Viewport::selectedBodyFaces() const {
 }
 
 void Viewport::setSelectedBodyFaces(const std::vector<FaceReference>& faces) {
+  selectedBodyIds_.clear();
   selectedBodyFaceIndices_.clear();
   selectedBodyFaceReferences_.clear();
   for (const auto& face : faces)
@@ -813,6 +819,7 @@ std::vector<EdgeReference> Viewport::selectedBodyEdges() const {
 }
 
 void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
+  selectedBodyIds_.clear();
   selectedBodyEdgeIndices_.clear();
   selectedBodyEdgeReferences_.clear();
   for (const auto& edge : edges)
@@ -857,7 +864,22 @@ void Viewport::setSelectedBodies(std::vector<BodyId> ids) {
       selectedBodyIds_.empty()
           ? QString{}
           : QString::fromUtf8("Выбрано тел: %1").arg(selectedBodyIds_.size()));
+  emit bodiesSelected(selectedBodyIds_);
   update();
+}
+
+std::vector<std::size_t> Viewport::effectiveSelectedFaceIndices() const {
+  if (selectedBodyIds_.empty()) return selectedBodyFaceIndices_;
+  std::vector<std::size_t> indices;
+  for (const auto& range : bodyTopologyRanges_) {
+    if (std::find(selectedBodyIds_.begin(), selectedBodyIds_.end(),
+                  range.bodyId) == selectedBodyIds_.end())
+      continue;
+    for (std::size_t face = range.firstFace;
+         face < range.firstFace + range.faceCount; ++face)
+      indices.push_back(face);
+  }
+  return indices;
 }
 
 void Viewport::setSelectionFilter(SelectionFilter filter) noexcept {
@@ -874,6 +896,13 @@ void Viewport::setSelectionFilter(SelectionFilter filter) noexcept {
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
     selectedBodyEdgeReferences_.clear();
+  }
+  // Whole-body selection only lives in normal (Any) mode; entering a
+  // sub-element tool (Edge/Face) or base-plane selection (Plane) drops it so a
+  // body selection cannot coexist with face/edge selection.
+  if (filter == SelectionFilter::Edge || filter == SelectionFilter::Face ||
+      filter == SelectionFilter::Plane) {
+    selectedBodyIds_.clear();
   }
   update();
 }
@@ -1407,9 +1436,10 @@ void Viewport::paintGL() {
 
   if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
     painter.beginNativePainting();
+    const std::vector<std::size_t> selectedFaces = effectiveSelectedFaceIndices();
     renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
                      size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
-                     zoom_, cameraPan_, displayMode_, selectedBodyFaceIndices_,
+                     zoom_, cameraPan_, displayMode_, selectedFaces,
                      hoveredBodyFaceIndex_, selectedBodyEdgeIndices_,
                      hoveredBodyEdgeIndex_);
     painter.endNativePainting();
@@ -3550,6 +3580,26 @@ void Viewport::wheelEvent(QWheelEvent* event) {
 }
 
 void Viewport::keyPressEvent(QKeyEvent* event) {
+  // Tab/Backtab with viewport focus: if the HUD has an editable field, move
+  // focus into it (Tab → first field, Backtab → last field); otherwise ask
+  // MainWindow to focus the active tool's dock field.
+  if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
+      pickMode_ == PickMode::None) {
+    const bool backward = event->key() == Qt::Key_Backtab ||
+                          event->modifiers().testFlag(Qt::ShiftModifier);
+    if (toolParameterHud_ && toolParameterHud_->hasEditableParameters() &&
+        !toolParameterHud_->hasFieldFocus()) {
+      if (backward)
+        toolParameterHud_->focusLastField();
+      else
+        toolParameterHud_->focusFirstField();
+      event->accept();
+      return;
+    }
+    emit tabFocusRequested(backward);
+    event->accept();
+    return;
+  }
   // Ctrl+A selects the eligible visible domain: edges in the Edge tool, faces
   // in Face/normal mode. Multi-selection is only honored when the matching
   // tool's multi-select mode is on; otherwise only the frontmost entity is
@@ -3573,7 +3623,6 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
         }
       }
       setSelectedBodies(distinctIds);
-      emit bodiesSelected(distinctIds);
       event->accept();
       return;
     }

@@ -87,6 +87,53 @@ double ToolParameterHud::value(const std::string& id) const {
   return found == editors_.end() ? 0.0 : found->second->value();
 }
 
+bool ToolParameterHud::hasEditableParameters() const noexcept {
+  return !orderedEditors_.empty();
+}
+
+bool ToolParameterHud::hasFieldFocus() const noexcept {
+  for (const auto* editor : orderedEditors_)
+    if (editor->hasFocus()) return true;
+  return false;
+}
+
+void ToolParameterHud::focusFirstField() {
+  if (orderedEditors_.empty()) return;
+  auto* target = orderedEditors_.front();
+  target->setFocus(Qt::TabFocusReason);
+  target->selectAll();
+}
+
+void ToolParameterHud::focusLastField() {
+  if (orderedEditors_.empty()) return;
+  auto* target = orderedEditors_.back();
+  target->setFocus(Qt::TabFocusReason);
+  target->selectAll();
+}
+
+void ToolParameterHud::focusNextField(bool backward) {
+  if (orderedEditors_.empty()) return;
+  const auto current = std::find_if(
+      orderedEditors_.begin(), orderedEditors_.end(),
+      [](const QDoubleSpinBox* editor) { return editor->hasFocus(); });
+  std::size_t index;
+  if (current == orderedEditors_.end()) {
+    // No editor focused yet: start at the first (forward) or last (backward).
+    index = backward ? orderedEditors_.size() - 1 : 0;
+  } else {
+    index = static_cast<std::size_t>(
+        std::distance(orderedEditors_.begin(), current));
+    if (orderedEditors_.size() > 1) {
+      index = backward
+                  ? (index + orderedEditors_.size() - 1) % orderedEditors_.size()
+                  : (index + 1) % orderedEditors_.size();
+    }
+  }
+  auto* target = orderedEditors_[index];
+  target->setFocus(Qt::TabFocusReason);
+  target->selectAll();
+}
+
 bool ToolParameterHud::eventFilter(QObject* watched, QEvent* event) {
   auto* editor = qobject_cast<QDoubleSpinBox*>(watched);
   if (!editor) return QWidget::eventFilter(watched, event);
@@ -137,18 +184,9 @@ bool ToolParameterHud::eventFilter(QObject* watched, QEvent* event) {
                                    orderedEditors_.end(), editor);
     if (current == orderedEditors_.end())
       return QWidget::eventFilter(watched, event);
-    auto index = static_cast<std::size_t>(
-        std::distance(orderedEditors_.begin(), current));
-    if (orderedEditors_.size() > 1) {
-      const bool backward = key->key() == Qt::Key_Backtab ||
-                            key->modifiers().testFlag(Qt::ShiftModifier);
-      index = backward
-                  ? (index + orderedEditors_.size() - 1) % orderedEditors_.size()
-                  : (index + 1) % orderedEditors_.size();
-    }
-    auto* target = orderedEditors_[index];
-    target->setFocus(Qt::TabFocusReason);
-    target->selectAll();
+    const bool backward = key->key() == Qt::Key_Backtab ||
+                          key->modifiers().testFlag(Qt::ShiftModifier);
+    focusNextField(backward);
     return true;
   }
 

@@ -720,6 +720,38 @@ void MainWindow::buildUi() {
             toolParametersPanel_->setParameterValue(draftToolSession_.angleDeg());
             updateDraftToolPreview();
           });
+  // HUD Enter commit: the value is already interpreted + preview-synced via the
+  // value routing above, so perform the active tool's existing Accept exactly
+  // like the Готово button. Each accept*Tool guards its own lifecycle, so an
+  // invalid preview will not accept and focus stays in the HUD field.
+  connect(viewport_, &Viewport::toolParameterCommitted, this, [this] {
+    if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptChamferTool();
+    else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptShellTool();
+    else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptDraftTool();
+    else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptFilletTool();
+    else if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptRevolveTool();
+  });
+  // Tab with viewport focus and no HUD editable field: focus the active tool's
+  // numeric dock field (extrude/revolve docks, else the tool parameter panel).
+  connect(viewport_, &Viewport::tabFocusRequested, this, [this](bool) {
+    if (extrusionDock_->isVisible()) {
+      extrusionLengthSpin_->setFocus(Qt::TabFocusReason);
+      extrusionLengthSpin_->selectAll();
+      return;
+    }
+    if (revolveDock_->isVisible()) {
+      revolveAngleSpin_->setFocus(Qt::TabFocusReason);
+      revolveAngleSpin_->selectAll();
+      return;
+    }
+    if (toolParametersDock_->isVisible())
+      toolParametersPanel_->focusParameterInput();
+  });
   const auto acceptActiveTool = [this] {
     toolParametersPanel_->interpretParameterText();
     if (!toolParametersPanel_->acceptEnabled()) return;

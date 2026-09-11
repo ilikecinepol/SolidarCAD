@@ -24,6 +24,11 @@ class ToolParameterHud final : public QWidget {
   void setParameters(const std::vector<ToolParameterDescriptor>& parameters);
   void setValue(const std::string& id, double value);
   [[nodiscard]] double value(const std::string& id) const;
+  [[nodiscard]] bool hasEditableParameters() const noexcept;
+  [[nodiscard]] bool hasFieldFocus() const noexcept;
+  void focusFirstField();
+  void focusLastField();
+  void focusNextField(bool backward);
 
  signals:
   void valueChanged(const QString& id, double value);
