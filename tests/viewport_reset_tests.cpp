@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 #include "ui/Viewport.h"
 
@@ -58,11 +59,17 @@ int main(int argc, char** argv) {
   CHECK(viewport.angularToolManipulator().has_value());
   CHECK(!viewport.solidFeatures().empty());
 
+  // Populate the whole-body selection last (it clears the face/edge selection
+  // cross-type), then confirm resetScene clears it.
+  viewport.setSelectedBodies({bodyId});
+  CHECK(viewport.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+
   viewport.resetScene();
 
   // After reset, all transient interaction state must be cleared.
   CHECK(viewport.selectedBodyFaces().empty());
   CHECK(viewport.selectedBodyEdges().empty());
+  CHECK(viewport.selectedBodies().empty());
   CHECK(!viewport.faceMultiSelectionMode());
   CHECK(!viewport.edgeMultiSelectionMode());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);

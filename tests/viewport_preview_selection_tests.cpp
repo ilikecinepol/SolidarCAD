@@ -403,6 +403,8 @@ int main(int argc, char** argv) {
     // entries survive; the 3 hidden rear edges are rejected by depth).
     CHECK(edges.size() == 18);
     CHECK(view.selectedBodyFaces().empty());
+    // Body (model-level) selection is only produced in true normal mode.
+    CHECK(view.selectedBodies().empty());
     for (const auto& edge : edges) {
       CHECK(edge.bodyId == bodyId);
       CHECK(edge.featureId == sourceFeatureId);
@@ -423,8 +425,9 @@ int main(int argc, char** argv) {
     CHECK(view.selectedBodyEdges().empty());
   }
 
-  // Normal mode (Any filter) + face multi-select on: the selection domain is
-  // faces ("select all bodies" is deferred pending a body-selection model).
+  // Normal mode (Any filter) + face multi-select on: the selection domain
+  // remains faces — body selection only activates in true normal mode (no
+  // multi-select mode enabled).
   {
     solidar::Viewport view;
     view.resize(800, 600);
@@ -434,6 +437,69 @@ int main(int argc, char** argv) {
     sendStandardKey(view);
     CHECK(!view.selectedBodyFaces().empty());
     CHECK(view.selectedBodyEdges().empty());
+    CHECK(view.selectedBodies().empty());
+  }
+
+  // True normal mode (Any filter, no multi-select): Ctrl+A selects every
+  // distinct visible body (model-level entity), not faces/edges.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    const auto boxA = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape());
+    const auto boxB = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(100.0, 0.0, 0.0), 40.0, 30.0, 20.0)
+            .Shape());
+    const solidar::BodyId bodyA = 41;
+    const solidar::BodyId bodyB = 42;
+    const solidar::FeatureId featA = 73;
+    const solidar::FeatureId featB = 74;
+    view.setBodyShapes({{bodyA, featA, boxA}, {bodyB, featB, boxB}});
+    view.setSolidVisible(true);
+    int emissions = 0;
+    std::vector<solidar::BodyId> emittedIds;
+    QObject::connect(
+        &view, &solidar::Viewport::bodiesSelected, &view,
+        [&](const std::vector<solidar::BodyId>& ids) {
+          ++emissions;
+          emittedIds = ids;
+        });
+    sendStandardKey(view);
+    const std::vector<solidar::BodyId> expected{bodyA, bodyB};
+    CHECK(view.selectedBodies() == expected);
+    CHECK(emissions == 1);
+    CHECK(emittedIds == expected);
+    CHECK(view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+  }
+
+  // Single visible body: Ctrl+A selects exactly that body.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    sendStandardKey(view);
+    const std::vector<solidar::BodyId> expected{bodyId};
+    CHECK(view.selectedBodies() == expected);
+    CHECK(view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+  }
+
+  // Solid not visible: Ctrl+A selects nothing (no body ids are published).
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(false);
+    int emissions = 0;
+    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
+                     [&](const std::vector<solidar::BodyId>&) { ++emissions; });
+    sendStandardKey(view);
+    CHECK(view.selectedBodies().empty());
+    CHECK(view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+    CHECK(emissions == 1);
   }
 
   // Single-select contract: with the relevant multi-select mode OFF, Ctrl+A

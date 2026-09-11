@@ -373,6 +373,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
     selectedBodyEdgeReferences_.clear();
+    selectedBodyIds_.clear();
   }
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   bodyRenderMesh_.clear();
@@ -589,6 +590,7 @@ void Viewport::resetScene() {
   selectedBodyEdgeIndices_.clear();
   selectedBodyEdgeReferences_.clear();
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyIds_.clear();
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
@@ -835,6 +837,27 @@ void Viewport::setEdgeMultiSelectionMode(bool enabled) noexcept {
 
 bool Viewport::edgeMultiSelectionMode() const noexcept {
   return edgeMultiSelectionMode_;
+}
+
+const std::vector<BodyId>& Viewport::selectedBodies() const noexcept {
+  return selectedBodyIds_;
+}
+
+void Viewport::setSelectedBodies(std::vector<BodyId> ids) {
+  selectedBodyIds_ = std::move(ids);
+  // Cross-type: a whole-body selection cannot coexist with face or edge
+  // sub-element selection.
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  emit selectionChanged(
+      selectedBodyIds_.empty()
+          ? QString{}
+          : QString::fromUtf8("Выбрано тел: %1").arg(selectedBodyIds_.size()));
+  update();
 }
 
 void Viewport::setSelectionFilter(SelectionFilter filter) noexcept {
@@ -3531,11 +3554,29 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
   // in Face/normal mode. Multi-selection is only honored when the matching
   // tool's multi-select mode is on; otherwise only the frontmost entity is
   // selected so SelectAll cannot bypass a single-select tool contract.
-  // NOTE: "select all bodies" in normal mode is deferred pending a
-  // body-selection model; the Any-mode selection domain is faces.
+  // In normal mode (Any filter, no multi-select) the selection domain is whole
+  // bodies (model-level entities), not faces.
   if (event->matches(QKeySequence::SelectAll) &&
       pickMode_ == PickMode::None) {
     cancelMarquee();
+    // Normal mode: select all distinct visible bodies and publish the body
+    // selection. MainWindow consumption of bodiesSelected is deferred.
+    if (selectionFilter_ == SelectionFilter::Any && !faceMultiSelectionMode_ &&
+        !edgeMultiSelectionMode_) {
+      std::vector<BodyId> distinctIds;
+      if (solidVisible_) {
+        for (const auto& shape : bodyViewShapes_) {
+          if (shape.bodyId == kInvalidBodyId) continue;
+          if (std::find(distinctIds.begin(), distinctIds.end(), shape.bodyId) ==
+              distinctIds.end())
+            distinctIds.push_back(shape.bodyId);
+        }
+      }
+      setSelectedBodies(distinctIds);
+      emit bodiesSelected(distinctIds);
+      event->accept();
+      return;
+    }
     const bool wantsEdges = selectionFilter_ == SelectionFilter::Edge;
     const bool multiSelect = wantsEdges ? edgeMultiSelectionMode_
                                         : faceMultiSelectionMode_;

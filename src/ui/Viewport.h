@@ -95,6 +95,8 @@ class Viewport final : public QOpenGLWidget {
   void setSelectedBodyEdges(const std::vector<EdgeReference>& edges);
   void setEdgeMultiSelectionMode(bool enabled) noexcept;
   [[nodiscard]] bool edgeMultiSelectionMode() const noexcept;
+  [[nodiscard]] const std::vector<BodyId>& selectedBodies() const noexcept;
+  void setSelectedBodies(std::vector<BodyId> ids);
   [[nodiscard]] std::optional<std::size_t> hoveredBodyEdgeIndex() const noexcept;
   void setSelectionFilter(SelectionFilter filter) noexcept;
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
@@ -147,6 +149,9 @@ class Viewport final : public QOpenGLWidget {
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
   void bodyFaceSelectionChanged();
+  // Published whenever a whole-body (model-level) selection is committed via
+  // setSelectedBodies; MainWindow consumption is intentionally deferred.
+  void bodiesSelected(const std::vector<BodyId>& ids);
   void toolManipulatorValueChanged(double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
@@ -250,6 +255,8 @@ class Viewport final : public QOpenGLWidget {
   std::vector<std::size_t> selectedBodyEdgeIndices_;
   std::vector<EdgeReference> selectedBodyEdgeReferences_;
   bool edgeMultiSelectionMode_{false};
+  // Transient whole-body (model-level) selection published via bodiesSelected.
+  std::vector<BodyId> selectedBodyIds_;
   SelectionFilter selectionFilter_{SelectionFilter::Any};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
