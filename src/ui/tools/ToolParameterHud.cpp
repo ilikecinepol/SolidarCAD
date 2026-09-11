@@ -73,6 +73,18 @@ void ToolParameterHud::setValue(const std::string& id, double value) {
   committedValues_[found->second] = value;
 }
 
+void ToolParameterHud::setRangeAndValue(const std::string& id, double minimum,
+                                        double maximum, double value,
+                                        bool forceValue) {
+  const auto found = editors_.find(id);
+  if (found == editors_.end()) return;
+  if (found->second->hasFocus() && !forceValue) return;
+  const QSignalBlocker blocker(found->second);
+  found->second->setRange(minimum, maximum);
+  found->second->setValue(value);
+  committedValues_[found->second] = value;
+}
+
 double ToolParameterHud::value(const std::string& id) const {
   const auto found = editors_.find(id);
   return found == editors_.end() ? 0.0 : found->second->value();

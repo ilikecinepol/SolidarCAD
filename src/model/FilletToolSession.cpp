@@ -1,6 +1,8 @@
 #include "model/FilletToolSession.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Shape.hxx>
 #include <Standard_Failure.hxx>
@@ -13,6 +15,33 @@
 #include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
+namespace {
+
+double conservativeCap(const TopoDS_Shape& shape) {
+  try {
+    Bnd_Box bounds;
+    BRepBndLib::Add(shape, bounds);
+    if (bounds.IsVoid()) return 0.0;
+    double xmin, ymin, zmin, xmax, ymax, zmax;
+    bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    const double smallestExtent = std::min(
+        {std::abs(xmax - xmin), std::abs(ymax - ymin), std::abs(zmax - zmin)});
+    return std::isfinite(smallestExtent) && smallestExtent > 0.0
+               ? smallestExtent * 0.25
+               : 0.0;
+  } catch (const Standard_Failure&) {
+    return 0.0;
+  } catch (...) {
+    return 0.0;
+  }
+}
+
+}  // namespace
+
+FilletToolSession::FilletToolSession(BuildShape buildShape)
+    : buildShape_(std::move(buildShape)) {
+  if (!buildShape_) buildShape_ = buildFilletShape;
+}
 
 void FilletToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
                               ShapeFeature::ShapePtr baseShape,
@@ -22,23 +51,42 @@ void FilletToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
   edges_ = std::move(edges);
-  radius_.reset(radiusMm, 0.0, 100000.0);
+  const double initialRadius = editingFeatureId ? radiusMm : 0.0;
+  const double cap = baseShape_ && !baseShape_->IsNull()
+                         ? conservativeCap(*baseShape_)
+                         : 0.0;
+  radius_.reset(initialRadius, 0.0, std::max(cap, initialRadius));
   editingFeatureId_ = editingFeatureId;
   lifecycle_ = ToolLifecycle::Editing;
-  updatePreview();
+  if (updatePreview() && !edges_.empty()) {
+    std::vector<std::size_t> indices;
+    for (const auto& edge : edges_) {
+      const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+      if (!resolved) return;
+      indices.push_back(resolved.index);
+    }
+    updateValidatedMaximum(indices);
+  }
 }
 
 void FilletToolSession::setEdges(std::vector<EdgeReference> edges) {
   edges_ = std::move(edges);
-  updatePreview();
+  if (!updatePreview() || !baseShape_ || edges_.empty()) return;
+  std::vector<std::size_t> indices;
+  for (const auto& edge : edges_) {
+    const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+    if (!resolved) return;
+    indices.push_back(resolved.index);
+  }
+  updateValidatedMaximum(indices);
 }
 
-void FilletToolSession::setRadiusFromPanel(double radiusMm) {
-  trySetRadius(radiusMm);
+bool FilletToolSession::setRadiusFromPanel(double radiusMm) {
+  return trySetRadius(radiusMm);
 }
 
-void FilletToolSession::setRadiusFromManipulator(double radiusMm) {
-  trySetRadius(radiusMm);
+bool FilletToolSession::setRadiusFromManipulator(double radiusMm) {
+  return trySetRadius(radiusMm);
 }
 
 BodyId FilletToolSession::bodyId() const noexcept { return bodyId_; }
@@ -66,8 +114,9 @@ std::optional<SelectionRequirement> FilletToolSession::selectionRequirement() co
                               static_cast<std::size_t>(-1), true};
 }
 std::vector<ToolParameterDescriptor> FilletToolSession::parameters() const {
-  return {{"radius", "Radius", ToolParameterType::Distance, radius_.value(), 0.0,
-           100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
+  return {{"radius", "Radius", ToolParameterType::Distance, radius_.value(),
+            radius_.minimum(), radius_.maximum(), 0.1, "mm", true,
+            ToolManipulatorType::Linear}};
 }
 std::shared_ptr<const TopoDS_Shape> FilletToolSession::previewShape() const {
   return previewShape_;
@@ -107,7 +156,7 @@ bool FilletToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::EditingParameters;
     return true;
   }
-  previewShape_ = buildFilletShape(*baseShape_, indices, radius_.value(), &error_);
+  previewShape_ = buildShape_(*baseShape_, indices, radius_.value(), &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
@@ -123,7 +172,7 @@ std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
     if (!geometry) return std::nullopt;
     return LinearToolManipulator{geometry->midpoint,
                                  geometry->outwardDirection, radius_.value(),
-                                 0.0, 100000.0};
+                                  radius_.minimum(), radius_.maximum()};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {
@@ -134,6 +183,7 @@ std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
 bool FilletToolSession::trySetRadius(double radiusMm) {
   const auto candidate = radius_.candidate(radiusMm);
   if (!candidate || !baseShape_ || edges_.empty()) return false;
+  if (*candidate == radius_.value()) return true;
   const double previous = radius_.value();
   const auto previousPreview = previewShape_;
   const auto previousLifecycle = lifecycle_;
@@ -144,7 +194,32 @@ bool FilletToolSession::trySetRadius(double radiusMm) {
   previewShape_ = previousPreview;
   lifecycle_ = previousLifecycle;
   error_ = previousError;
+  // A rejected growing candidate establishes a conservative operational
+  // boundary at the last builder-validated value. Values inside a range are
+  // still individually validated; OCCT does not promise a monotonic domain.
+  radius_.setRange(radius_.minimum(), previous);
   return false;
+}
+
+void FilletToolSession::updateValidatedMaximum(
+    const std::vector<std::size_t>& edgeIndices) {
+  if (!baseShape_ || baseShape_->IsNull()) return;
+  const double current = radius_.value();
+  double probe = std::max(conservativeCap(*baseShape_), current);
+  constexpr int kMaximumValidationProbes = 8;
+  for (int attempt = 0;
+       attempt < kMaximumValidationProbes && probe > current + 1e-9;
+       ++attempt) {
+    std::string ignoredError;
+    if (buildShape_(*baseShape_, edgeIndices, probe, &ignoredError)) {
+      radius_.setRange(0.0, probe);
+      return;
+    }
+    probe *= 0.5;
+  }
+  // The current preview was already accepted; do not advertise an unvalidated
+  // value above it when the conservative probe was rejected.
+  radius_.setRange(0.0, current);
 }
 
 void FilletToolSession::cancel() noexcept {

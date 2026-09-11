@@ -124,9 +124,20 @@ int main(int argc, char* argv[]) {
     CHECK(upstream);
     solidar::ChamferToolSession session;
     session.begin(box.bodyId, box.extrudeId, upstream, {firstReference}, 1.0);
+    // A create session is deliberately a zero source-shape preview. Its cap
+    // is derived from the selected geometry and verified by OCCT first.
+    CHECK(session.distanceMm() == 0.0);
+    CHECK(session.lifecycle() == solidar::ToolLifecycle::EditingParameters);
+    CHECK(session.previewShape().get() == upstream.get());
+    const auto zeroParameter = session.parameters().front();
+    CHECK(zeroParameter.minimum == 0.0);
+    CHECK(zeroParameter.maximum > 0.0 && zeroParameter.maximum < 100000.0);
+    const auto zeroManipulator = session.manipulator();
+    CHECK(zeroManipulator && zeroManipulator->minimumMm == zeroParameter.minimum &&
+          zeroManipulator->maximumMm == zeroParameter.maximum);
+    session.setDistanceFromPanel(zeroParameter.maximum);
     CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
-    CHECK(session.previewShape());
-    CHECK(session.manipulator());
+    CHECK(std::abs(session.distanceMm() - zeroParameter.maximum) < 1e-9);
     session.setDistanceFromPanel(1.25);
     CHECK(session.distanceMm() == 1.25);
     session.setDistanceFromManipulator(0.75);
@@ -154,8 +165,8 @@ int main(int argc, char* argv[]) {
     CHECK(pair.size() == 2);
     solidar::ChamferToolSession pairSession;
     pairSession.begin(box.bodyId, box.extrudeId, upstream, pair, 1.0);
-    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
-    CHECK(pairSession.previewShape());
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::EditingParameters);
+    CHECK(pairSession.previewShape().get() == upstream.get());
     const auto pairReferences = pairSession.edges();
     pairSession.setDistanceFromPanel(1.25);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
@@ -163,12 +174,40 @@ int main(int argc, char* argv[]) {
     pairSession.setDistanceFromManipulator(0.75);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.edges() == pairReferences);
-    pairSession.setDistanceFromPanel(1000.0);
-    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
-    CHECK(pairSession.previewShape());
-    CHECK(std::abs(pairSession.distanceMm() - 0.75) < 1e-9);
-    CHECK(pairSession.error().empty());
-    CHECK(pairSession.edges() == pairReferences);
+    // The builder seam makes an in-range rejection deterministic while real
+    // OCCT still builds every other candidate. It must preserve the last
+    // published preview and contract subsequent manipulator growth.
+    auto rejectedDistance = std::make_shared<double>(-1.0);
+    solidar::ChamferToolSession rejectingSession(
+        [rejectedDistance](const TopoDS_Shape& shape,
+                           const std::vector<std::size_t>& indices,
+                           double distance, std::string* error) {
+          if (std::abs(distance - *rejectedDistance) < 1e-9) {
+            if (error) *error = "forced in-range rejection";
+            return std::shared_ptr<TopoDS_Shape>{};
+          }
+          return solidar::buildChamferShape(shape, indices, distance, error);
+        });
+    rejectingSession.begin(box.bodyId, box.extrudeId, upstream,
+                           {firstReference}, 0.0);
+    const double advertisedMaximum = rejectingSession.parameters().front().maximum;
+    CHECK(advertisedMaximum > 0.0);
+    const double lastAcceptedDistance = advertisedMaximum * 0.25;
+    CHECK(rejectingSession.setDistanceFromPanel(lastAcceptedDistance));
+    const auto acceptedPreview = rejectingSession.previewShape();
+    const auto acceptedLifecycle = rejectingSession.lifecycle();
+    const auto acceptedError = rejectingSession.error();
+    *rejectedDistance = advertisedMaximum * 0.5;
+    CHECK(*rejectedDistance > lastAcceptedDistance &&
+          *rejectedDistance < advertisedMaximum);
+    CHECK(!rejectingSession.setDistanceFromManipulator(*rejectedDistance));
+    CHECK(rejectingSession.previewShape().get() == acceptedPreview.get());
+    CHECK(std::abs(rejectingSession.distanceMm() - lastAcceptedDistance) < 1e-9);
+    CHECK(rejectingSession.lifecycle() == acceptedLifecycle);
+    CHECK(rejectingSession.error() == acceptedError);
+    CHECK(std::abs(rejectingSession.parameters().front().maximum -
+                   lastAcceptedDistance) < 1e-9);
+    CHECK(rejectingSession.edges().size() == 1);
     pairSession.setDistanceFromManipulator(0.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::EditingParameters);
     CHECK(pairSession.previewShape().get() == upstream.get());
@@ -185,6 +224,9 @@ int main(int argc, char* argv[]) {
                       editableFeature.id());
     CHECK(editSession.editingFeatureId() == editableFeature.id());
     CHECK(editSession.edges() == editableFeature.edges());
+    CHECK(editSession.distanceMm() == editableFeature.distanceMm());
+    CHECK(editSession.distanceMm() > 0.0);
+    CHECK(editSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     editSession.setEdges(pairReferences);
     CHECK(editSession.edges() == pairReferences);
 

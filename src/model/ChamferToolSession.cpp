@@ -1,6 +1,8 @@
 #include "model/ChamferToolSession.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS_Shape.hxx>
 
@@ -12,6 +14,33 @@
 #include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
+namespace {
+
+double conservativeCap(const TopoDS_Shape& shape) {
+  try {
+    Bnd_Box bounds;
+    BRepBndLib::Add(shape, bounds);
+    if (bounds.IsVoid()) return 0.0;
+    double xmin, ymin, zmin, xmax, ymax, zmax;
+    bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    const double smallestExtent = std::min(
+        {std::abs(xmax - xmin), std::abs(ymax - ymin), std::abs(zmax - zmin)});
+    return std::isfinite(smallestExtent) && smallestExtent > 0.0
+               ? smallestExtent * 0.25
+               : 0.0;
+  } catch (const Standard_Failure&) {
+    return 0.0;
+  } catch (...) {
+    return 0.0;
+  }
+}
+
+}  // namespace
+
+ChamferToolSession::ChamferToolSession(BuildShape buildShape)
+    : buildShape_(std::move(buildShape)) {
+  if (!buildShape_) buildShape_ = buildChamferShape;
+}
 
 void ChamferToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
                                ShapeFeature::ShapePtr baseShape,
@@ -22,21 +51,40 @@ void ChamferToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
   edges_ = std::move(edges);
-  distance_.reset(distanceMm, 0.0, 100000.0);
+  const double initialDistance = editingFeatureId ? distanceMm : 0.0;
+  const double cap = baseShape_ && !baseShape_->IsNull()
+                         ? conservativeCap(*baseShape_)
+                         : 0.0;
+  distance_.reset(initialDistance, 0.0, std::max(cap, initialDistance));
   editingFeatureId_ = editingFeatureId;
   lifecycle_ = ToolLifecycle::Editing;
-  updatePreview();
+  if (updatePreview() && !edges_.empty()) {
+    std::vector<std::size_t> indices;
+    for (const auto& edge : edges_) {
+      const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+      if (!resolved) return;
+      indices.push_back(resolved.index);
+    }
+    updateValidatedMaximum(indices);
+  }
 }
 
 void ChamferToolSession::setEdges(std::vector<EdgeReference> edges) {
   edges_ = std::move(edges);
-  updatePreview();
+  if (!updatePreview() || !baseShape_ || edges_.empty()) return;
+  std::vector<std::size_t> indices;
+  for (const auto& edge : edges_) {
+    const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+    if (!resolved) return;
+    indices.push_back(resolved.index);
+  }
+  updateValidatedMaximum(indices);
 }
-void ChamferToolSession::setDistanceFromPanel(double distanceMm) {
-  trySetDistance(distanceMm);
+bool ChamferToolSession::setDistanceFromPanel(double distanceMm) {
+  return trySetDistance(distanceMm);
 }
-void ChamferToolSession::setDistanceFromManipulator(double distanceMm) {
-  trySetDistance(distanceMm);
+bool ChamferToolSession::setDistanceFromManipulator(double distanceMm) {
+  return trySetDistance(distanceMm);
 }
 
 BodyId ChamferToolSession::bodyId() const noexcept { return bodyId_; }
@@ -64,8 +112,9 @@ std::optional<SelectionRequirement> ChamferToolSession::selectionRequirement() c
                               static_cast<std::size_t>(-1), true};
 }
 std::vector<ToolParameterDescriptor> ChamferToolSession::parameters() const {
-  return {{"distance", "Distance", ToolParameterType::Distance, distance_.value(),
-           0.0, 100000.0, 0.1, "mm", true, ToolManipulatorType::Linear}};
+  return {{"distance", "Distance", ToolParameterType::Distance,
+            distance_.value(), distance_.minimum(), distance_.maximum(), 0.1,
+            "mm", true, ToolManipulatorType::Linear}};
 }
 std::shared_ptr<const TopoDS_Shape> ChamferToolSession::previewShape() const {
   return previewShape_;
@@ -105,7 +154,7 @@ bool ChamferToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::EditingParameters;
     return true;
   }
-  previewShape_ = buildChamferShape(*baseShape_, indices, distance_.value(), &error_);
+  previewShape_ = buildShape_(*baseShape_, indices, distance_.value(), &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
@@ -121,7 +170,7 @@ std::optional<LinearToolManipulator> ChamferToolSession::manipulator() const {
     if (!geometry) return std::nullopt;
     return LinearToolManipulator{geometry->midpoint,
                                  geometry->outwardDirection, distance_.value(),
-                                 0.0, 100000.0};
+                                  distance_.minimum(), distance_.maximum()};
   } catch (const Standard_Failure&) {
     return std::nullopt;
   } catch (...) {
@@ -132,6 +181,7 @@ std::optional<LinearToolManipulator> ChamferToolSession::manipulator() const {
 bool ChamferToolSession::trySetDistance(double distanceMm) {
   const auto candidate = distance_.candidate(distanceMm);
   if (!candidate || !baseShape_ || edges_.empty()) return false;
+  if (*candidate == distance_.value()) return true;
   const double previous = distance_.value();
   const auto previousPreview = previewShape_;
   const auto previousLifecycle = lifecycle_;
@@ -142,7 +192,29 @@ bool ChamferToolSession::trySetDistance(double distanceMm) {
   previewShape_ = previousPreview;
   lifecycle_ = previousLifecycle;
   error_ = previousError;
+  // This is a conservative interaction boundary, not a claim that OCCT
+  // validity is mathematically monotonic within the remaining range.
+  distance_.setRange(distance_.minimum(), previous);
   return false;
+}
+
+void ChamferToolSession::updateValidatedMaximum(
+    const std::vector<std::size_t>& edgeIndices) {
+  if (!baseShape_ || baseShape_->IsNull()) return;
+  const double current = distance_.value();
+  double probe = std::max(conservativeCap(*baseShape_), current);
+  constexpr int kMaximumValidationProbes = 8;
+  for (int attempt = 0;
+       attempt < kMaximumValidationProbes && probe > current + 1e-9;
+       ++attempt) {
+    std::string ignoredError;
+    if (buildShape_(*baseShape_, edgeIndices, probe, &ignoredError)) {
+      distance_.setRange(0.0, probe);
+      return;
+    }
+    probe *= 0.5;
+  }
+  distance_.setRange(0.0, current);
 }
 
 void ChamferToolSession::cancel() noexcept {

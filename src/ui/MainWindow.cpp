@@ -592,6 +592,8 @@ void MainWindow::buildUi() {
           [this](double value) {
             if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               chamferToolSession_.setDistanceFromPanel(value);
+              toolParametersPanel_->setParameterValue(
+                  chamferToolSession_.distanceMm());
               updateChamferToolPreview();
             } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               shellToolSession_.setThicknessFromPanel(value);
@@ -601,6 +603,7 @@ void MainWindow::buildUi() {
               updateDraftToolPreview();
             } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               filletToolSession_.setRadiusFromPanel(value);
+              toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
               updateFilletToolPreview();
             }
           });
@@ -663,20 +666,22 @@ void MainWindow::buildUi() {
               updateFilletToolPreview();
             }
           });
-  connect(viewport_, &Viewport::toolManipulatorValueChanged, this,
+  connect(viewport_, &Viewport::toolManipulatorValueRequested, this,
           [this](double value) {
             if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
-              chamferToolSession_.setDistanceFromManipulator(value);
+              const bool accepted = chamferToolSession_.setDistanceFromManipulator(value);
               toolParametersPanel_->setParameterValue(chamferToolSession_.distanceMm());
               updateChamferToolPreview();
+              if (!accepted) viewport_->restoreToolManipulatorValue();
             } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               shellToolSession_.setThicknessFromManipulator(value);
               toolParametersPanel_->setParameterValue(shellToolSession_.thicknessMm());
               updateShellToolPreview();
             } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
-              filletToolSession_.setRadiusFromManipulator(value);
+              const bool accepted = filletToolSession_.setRadiusFromManipulator(value);
               toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
               updateFilletToolPreview();
+              if (!accepted) viewport_->restoreToolManipulatorValue();
             }
           });
   connect(viewport_, &Viewport::bodyEdgeSelectionChanged, this, [this] {
@@ -1838,8 +1843,11 @@ void MainWindow::createFillet() {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterRange(0.0, 100000.0, 2);
-  toolParametersPanel_->setParameterValue(0.0);
+  {
+    const auto parameter = filletToolSession_.parameters().front();
+    toolParametersPanel_->setParameterRangeAndValue(
+        parameter.minimum, parameter.maximum, 2, filletToolSession_.radiusMm());
+  }
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFilletToolPreview();
@@ -2095,8 +2103,11 @@ void MainWindow::createChamfer() {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterRange(0.0, 100000.0, 2);
-  toolParametersPanel_->setParameterValue(0.0);
+  {
+    const auto parameter = chamferToolSession_.parameters().front();
+    toolParametersPanel_->setParameterRangeAndValue(
+        parameter.minimum, parameter.maximum, 2, chamferToolSession_.distanceMm());
+  }
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateChamferToolPreview();
@@ -2322,6 +2333,12 @@ void MainWindow::updateChamferToolPreview() {
   const auto state = chamferToolSession_.lifecycle();
   if (state == ToolLifecycle::Inactive) return;
   toolParametersPanel_->setSelectionCount(chamferToolSession_.edges().size());
+  {
+    const auto parameter = chamferToolSession_.parameters().front();
+    toolParametersPanel_->setParameterRangeAndValue(
+        parameter.minimum, parameter.maximum, 2,
+        chamferToolSession_.distanceMm());
+  }
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
@@ -2410,6 +2427,11 @@ void MainWindow::updateFilletToolPreview() {
   const auto state = filletToolSession_.lifecycle();
   if (state == ToolLifecycle::Inactive) return;
   toolParametersPanel_->setSelectionCount(filletToolSession_.edges().size());
+  {
+    const auto parameter = filletToolSession_.parameters().front();
+    toolParametersPanel_->setParameterRangeAndValue(
+        parameter.minimum, parameter.maximum, 2, filletToolSession_.radiusMm());
+  }
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
@@ -2873,7 +2895,11 @@ void MainWindow::editFilletStep(BodyId bodyId, FeatureId featureId) {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Радиус"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterValue(fillet->radiusMm());
+  {
+    const auto parameter = filletToolSession_.parameters().front();
+    toolParametersPanel_->setParameterRangeAndValue(
+        parameter.minimum, parameter.maximum, 2, filletToolSession_.radiusMm());
+  }
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFilletToolPreview();
@@ -2910,7 +2936,12 @@ void MainWindow::editChamferStep(BodyId bodyId, FeatureId featureId) {
                                   QString::fromUtf8("Рёбра"),
                                   QString::fromUtf8("Размер"),
                                   QStringLiteral(" mm"));
-  toolParametersPanel_->setParameterValue(chamfer->distanceMm());
+  {
+    const auto parameter = chamferToolSession_.parameters().front();
+    toolParametersPanel_->setParameterRangeAndValue(
+        parameter.minimum, parameter.maximum, 2,
+        chamferToolSession_.distanceMm());
+  }
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateChamferToolPreview();

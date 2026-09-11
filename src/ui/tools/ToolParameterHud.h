@@ -20,6 +20,8 @@ class ToolParameterHud final : public QWidget {
  public:
   explicit ToolParameterHud(QWidget* parent = nullptr);
   void setParameters(const std::vector<ToolParameterDescriptor>& parameters);
+  void setRangeAndValue(const std::string& id, double minimum, double maximum,
+                        double value, bool forceValue = false);
   void setValue(const std::string& id, double value);
   [[nodiscard]] double value(const std::string& id) const;
 

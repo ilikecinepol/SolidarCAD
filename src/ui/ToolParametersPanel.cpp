@@ -97,9 +97,18 @@ void ToolParametersPanel::setSelectionCount(std::size_t count) {
   selectionValue_->setText(QString::fromUtf8("%1 выбрано").arg(count));
 }
 void ToolParametersPanel::setParameterRange(double minimum, double maximum,
-                                            int decimals) {
+                                             int decimals) {
   parameter_->setRange(minimum, maximum);
   parameter_->setDecimals(decimals);
+}
+void ToolParametersPanel::setParameterRangeAndValue(double minimum,
+                                                     double maximum,
+                                                     int decimals,
+                                                     double value) {
+  const QSignalBlocker blocker(parameter_);
+  parameter_->setRange(minimum, maximum);
+  parameter_->setDecimals(decimals);
+  parameter_->setValue(value);
 }
 void ToolParametersPanel::setParameterValue(double value) {
   const QSignalBlocker blocker(parameter_);

@@ -21,6 +21,7 @@
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+#include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/FilletToolSession.h"
 #include "model/TopologyReferenceResolver.h"
@@ -265,8 +266,22 @@ int main() {
   solidar::FilletToolSession multiEdgeSession;
   multiEdgeSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,
                          multiEdgeSource, verticalEdges, 2.0);
+  // New sessions always begin at zero, with the source shape as a stable but
+  // non-committable preview. The selected-edge cap is both scale-aware and
+  // accepted by the actual OCCT builder before it is exposed to a manipulator.
+  CHECK(multiEdgeSession.radiusMm() == 0.0);
   CHECK(multiEdgeSession.lifecycle() ==
-        solidar::ToolLifecycle::PreviewValid);
+        solidar::ToolLifecycle::EditingParameters);
+  CHECK(multiEdgeSession.previewShape().get() == multiEdgeSource.get());
+  const auto zeroParameter = multiEdgeSession.parameters().front();
+  CHECK(zeroParameter.minimum == 0.0);
+  CHECK(zeroParameter.maximum > 0.0 && zeroParameter.maximum < 100000.0);
+  const auto zeroManipulator = multiEdgeSession.manipulator();
+  CHECK(zeroManipulator && zeroManipulator->minimumMm == zeroParameter.minimum &&
+        zeroManipulator->maximumMm == zeroParameter.maximum);
+  multiEdgeSession.setRadiusFromPanel(zeroParameter.maximum);
+  CHECK(multiEdgeSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(std::abs(multiEdgeSession.radiusMm() - zeroParameter.maximum) < 1e-9);
   const auto selectedReferences = multiEdgeSession.edges();
   multiEdgeSession.setRadiusFromPanel(3.0);
   CHECK(multiEdgeSession.lifecycle() ==
@@ -276,13 +291,40 @@ int main() {
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::PreviewValid);
   CHECK(multiEdgeSession.edges() == selectedReferences);
-  multiEdgeSession.setRadiusFromPanel(1000.0);
-  CHECK(multiEdgeSession.lifecycle() ==
-        solidar::ToolLifecycle::PreviewValid);
-  CHECK(multiEdgeSession.previewShape());
-  CHECK(std::abs(multiEdgeSession.radiusMm() - 1.0) < 1e-9);
-  CHECK(multiEdgeSession.error().empty());
-  CHECK(multiEdgeSession.edges() == selectedReferences);
+  // Force one actual in-range builder rejection through the session's builder
+  // seam. This verifies the rollback and range contraction path independently
+  // of OCCT's version-dependent non-monotonic fillet domain.
+  auto rejectedRadius = std::make_shared<double>(-1.0);
+  solidar::FilletToolSession rejectingSession(
+      [rejectedRadius](const TopoDS_Shape& shape,
+                       const std::vector<std::size_t>& indices, double radius,
+                       std::string* error) {
+        if (std::abs(radius - *rejectedRadius) < 1e-9) {
+          if (error) *error = "forced in-range rejection";
+          return std::shared_ptr<TopoDS_Shape>{};
+        }
+        return solidar::buildFilletShape(shape, indices, radius, error);
+      });
+  rejectingSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,
+                         multiEdgeSource, {verticalEdges.front()}, 0.0);
+  const double advertisedMaximum = rejectingSession.parameters().front().maximum;
+  CHECK(advertisedMaximum > 0.0);
+  const double lastAcceptedRadius = advertisedMaximum * 0.25;
+  CHECK(rejectingSession.setRadiusFromPanel(lastAcceptedRadius));
+  const auto acceptedPreview = rejectingSession.previewShape();
+  const auto acceptedLifecycle = rejectingSession.lifecycle();
+  const auto acceptedError = rejectingSession.error();
+  *rejectedRadius = advertisedMaximum * 0.5;
+  CHECK(*rejectedRadius > lastAcceptedRadius &&
+        *rejectedRadius < advertisedMaximum);
+  CHECK(!rejectingSession.setRadiusFromManipulator(*rejectedRadius));
+  CHECK(rejectingSession.previewShape().get() == acceptedPreview.get());
+  CHECK(std::abs(rejectingSession.radiusMm() - lastAcceptedRadius) < 1e-9);
+  CHECK(rejectingSession.lifecycle() == acceptedLifecycle);
+  CHECK(rejectingSession.error() == acceptedError);
+  CHECK(std::abs(rejectingSession.parameters().front().maximum -
+                 lastAcceptedRadius) < 1e-9);
+  CHECK(rejectingSession.edges().size() == 1);
   multiEdgeSession.setRadiusFromManipulator(0.0);
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::EditingParameters);
@@ -307,6 +349,9 @@ int main() {
                     multiFillet->radiusMm(), multiFillet->id());
   CHECK(editSession.editingFeatureId() == multiFillet->id());
   CHECK(editSession.edges() == selectedReferences);
+  CHECK(editSession.radiusMm() == multiFillet->radiusMm());
+  CHECK(editSession.radiusMm() > 0.0);
+  CHECK(editSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
 
   // Preview geometry and synchronized parameter updates do not mutate the
   // Document or add history until the UI accepts the session.
@@ -324,9 +369,13 @@ int main() {
          solidar::ToolSelectionStage::SelectingInput);
   assert(!session.previewShape() && session.error().empty());
   session.setEdges({{previewBody->id(), previewBox.extrudeId, 0}});
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::EditingParameters);
+  session.setRadiusFromPanel(2.0);
   assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   session.begin(previewBody->id(), previewBox.extrudeId, originalShape,
                 {{previewBody->id(), previewBox.extrudeId, 0}}, 2.0);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::EditingParameters);
+  session.setRadiusFromPanel(2.0);
   assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   session.setRadiusFromPanel(3.0);
   assert(session.radiusMm() == 3.0);

@@ -49,8 +49,14 @@ double linearValueFromDrag(const LinearDragSnapshot& drag, QPointF cursor,
       QPointF::dotProduct(drag.projectedUnitAxis, drag.projectedUnitAxis);
   if (lengthSquared <= 1e-9)
     return std::clamp(drag.initialValue, minimum, maximum);
+  const double axisLength = std::sqrt(lengthSquared);
+  // A world axis can project to a fraction of a pixel when it is camera
+  // aligned. Keep its displayed direction, but never amplify a cursor delta
+  // by a sub-pixel scale into an extreme parameter jump.
+  const QPointF axisDirection = drag.projectedUnitAxis / axisLength;
+  const double pixelsPerMm = std::max(axisLength, 1.0);
   const double signedDelta = QPointF::dotProduct(
-      cursor - drag.cursorStart, drag.projectedUnitAxis) / lengthSquared;
+      cursor - drag.cursorStart, axisDirection) / pixelsPerMm;
   const double candidate = drag.initialValue + signedDelta;
   return std::isfinite(candidate)
              ? std::clamp(candidate, minimum, maximum)

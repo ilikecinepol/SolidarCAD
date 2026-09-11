@@ -22,6 +22,8 @@ class ToolParametersPanel final : public QWidget {
                  const QString& parameterName, const QString& suffix);
   void setSelectionCount(std::size_t count);
   void setParameterRange(double minimum, double maximum, int decimals);
+  void setParameterRangeAndValue(double minimum, double maximum, int decimals,
+                                 double value);
   void setParameterValue(double value);
   [[nodiscard]] double parameterValue() const;
   void setStatus(const QString& text, bool error = false);

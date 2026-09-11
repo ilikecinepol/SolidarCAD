@@ -21,6 +21,28 @@ int main() {
   CHECK(std::abs(solidar::linearValueFromDrag(drag, {104.0, 80.0}) - 1.0) < 1e-9);
   CHECK(solidar::linearValueFromDrag(drag, {-100.0, 80.0}) == 0.0);
 
+  // Drag ranges come from the active manipulator, never a global tool range.
+  CHECK(std::abs(solidar::linearValueFromDrag(drag, {200.0, 80.0}, 2.0, 5.0) -
+                 5.0) < 1e-9);
+  CHECK(std::abs(solidar::linearValueFromDrag(drag, {0.0, 80.0}, 2.0, 5.0) -
+                 2.0) < 1e-9);
+
+  // Both possible visible arrow orientations remain monotonic. The displayed
+  // axis is passed into the snapshot, so a reversed layout is semantic too.
+  const solidar::LinearDragSnapshot reversed{{100.0, 80.0}, {-4.0, 0.0}, 2.0};
+  CHECK(solidar::linearValueFromDrag(reversed, {96.0, 80.0}, 0.0, 10.0) > 2.0);
+  CHECK(solidar::linearValueFromDrag(reversed, {104.0, 80.0}, 0.0, 10.0) < 2.0);
+
+  // A camera-aligned world axis may be nearly invisible in projection. It
+  // must not divide ordinary cursor motion into a jump to the active maximum.
+  const solidar::LinearDragSnapshot nearlyDegenerate{{100.0, 80.0},
+                                                      {1e-4, 0.0}, 20.0};
+  const double safeNearAligned = solidar::linearValueFromDrag(
+      nearlyDegenerate, {180.0, 80.0}, 0.0, 100000.0);
+  CHECK(safeNearAligned > 20.0 && safeNearAligned < 1000.0);
+  CHECK(solidar::linearValueFromDrag(nearlyDegenerate, {0.0, 80.0}, 0.0,
+                                     100000.0) == 0.0);
+
   const ProjectedPoint backA{{0.0, 0.0}, 1.0};
   const ProjectedPoint backB{{100.0, 0.0}, 1.0};
   const ProjectedPoint backC{{0.0, 100.0}, 1.0};

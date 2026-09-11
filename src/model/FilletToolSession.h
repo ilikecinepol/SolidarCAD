@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -11,13 +12,18 @@ namespace solidar {
 
 class FilletToolSession final : public ToolSession {
  public:
+  using BuildShape = std::function<std::shared_ptr<TopoDS_Shape>(
+      const TopoDS_Shape&, const std::vector<std::size_t>&, double,
+      std::string*)>;
+
+  explicit FilletToolSession(BuildShape buildShape = {});
   void begin(BodyId bodyId, FeatureId sourceFeatureId,
              ShapeFeature::ShapePtr baseShape,
              std::vector<EdgeReference> edges, double radiusMm,
              std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setEdges(std::vector<EdgeReference> edges);
-  void setRadiusFromPanel(double radiusMm);
-  void setRadiusFromManipulator(double radiusMm);
+  bool setRadiusFromPanel(double radiusMm);
+  bool setRadiusFromManipulator(double radiusMm);
 
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
@@ -36,11 +42,13 @@ class FilletToolSession final : public ToolSession {
 
  private:
   bool trySetRadius(double radiusMm);
+  void updateValidatedMaximum(const std::vector<std::size_t>& edgeIndices);
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
   ShapeFeature::ShapePtr baseShape_;
   std::vector<EdgeReference> edges_;
+  BuildShape buildShape_;
   NumericParameterState radius_;
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;

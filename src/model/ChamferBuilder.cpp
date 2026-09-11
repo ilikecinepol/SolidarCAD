@@ -1,6 +1,7 @@
 #include "model/ChamferBuilder.h"
 
 #include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
@@ -40,11 +41,15 @@ std::shared_ptr<TopoDS_Shape> buildChamferShape(
         maker.Add(distanceMm, *edge);
       }
       maker.Build();
-      if (!maker.IsDone() || maker.Shape().IsNull())
+      if (!maker.IsDone() || maker.Shape().IsNull() ||
+          !BRepCheck_Analyzer(maker.Shape()).IsValid())
         return fail("Chamfer could not be built with the requested distance");
       selection->solids[solidIndex] = maker.Shape();
     }
-    return rebuildSolidContainer(selection->solids);
+    auto result = rebuildSolidContainer(selection->solids);
+    if (!result || result->IsNull() || !BRepCheck_Analyzer(*result).IsValid())
+      return fail("Chamfer could not be built with the requested distance");
+    return result;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();
     return fail(message && *message

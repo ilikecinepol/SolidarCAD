@@ -25,9 +25,11 @@ ManipulatorLayoutResult computeManipulatorLayout(
   double bestScore = -std::numeric_limits<double>::max();
   ManipulatorLayoutResult result;
   for (double sign : {1.0, -1.0}) {
-    const double length = std::clamp(std::abs(input.semanticLengthPx),
-                                     style.minimumLength,
-                                     style.maximumLength);
+    const double length = std::abs(input.semanticLengthPx) <= 1e-6
+                              ? style.zeroLength
+                              : std::clamp(std::abs(input.semanticLengthPx),
+                                           style.minimumLength,
+                                           style.maximumLength);
     const QPointF handle = input.anchor + direction * (sign * length);
     double score = blocked.contains(handle) ? 0.0 : 1000.0;
     score += input.viewport.adjusted(10, 10, -10, -10).contains(handle) ? 200.0 : -500.0;

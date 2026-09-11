@@ -1,6 +1,7 @@
 #include "model/FilletBuilder.h"
 
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
@@ -39,11 +40,15 @@ std::shared_ptr<TopoDS_Shape> buildFilletShape(
         maker.Add(radiusMm, *edge);
       }
       maker.Build();
-      if (!maker.IsDone() || maker.Shape().IsNull())
+      if (!maker.IsDone() || maker.Shape().IsNull() ||
+          !BRepCheck_Analyzer(maker.Shape()).IsValid())
         return fail("Fillet could not be built with the requested radius");
       selection->solids[solidIndex] = maker.Shape();
     }
-    return rebuildSolidContainer(selection->solids);
+    auto result = rebuildSolidContainer(selection->solids);
+    if (!result || result->IsNull() || !BRepCheck_Analyzer(*result).IsValid())
+      return fail("Fillet could not be built with the requested radius");
+    return result;
   } catch (const Standard_Failure&) {
     return fail("Fillet could not be built with the requested radius");
   } catch (...) {

@@ -211,10 +211,10 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   toolParameterHud_->hide();
   connect(toolParameterHud_, &ToolParameterHud::valueChanged, this,
           [this](const QString& id, double value) {
-            if (id == QStringLiteral("angle"))
-              emit angularToolManipulatorValueChanged(value);
-            else if (id == QStringLiteral("distance"))
-              emit toolManipulatorValueChanged(value);
+             if (id == QStringLiteral("angle"))
+               emit angularToolManipulatorValueChanged(value);
+             else if (id == QStringLiteral("distance"))
+               emit toolManipulatorValueRequested(value);
           });
 }
 
@@ -833,7 +833,8 @@ std::optional<std::size_t> Viewport::hoveredBodyEdgeIndex() const noexcept {
   return hoveredBodyEdgeIndex_;
 }
 
-void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
+void Viewport::setToolManipulator(const LinearToolManipulator& manipulator,
+                                  bool restoreHudValue) {
   toolManipulator_ = manipulator;
   angularToolManipulator_.reset();
   if (toolHudParameterId_ != "distance") {
@@ -844,7 +845,9 @@ void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
          ToolManipulatorType::Linear}});
     toolHudParameterId_ = "distance";
   } else {
-    toolParameterHud_->setValue("distance", manipulator.valueMm);
+    toolParameterHud_->setRangeAndValue("distance", manipulator.minimumMm,
+                                        manipulator.maximumMm,
+                                        manipulator.valueMm, restoreHudValue);
   }
   const QPointF tip = cameraPan_ + projectBodyPoint(
       {manipulator.origin.x + manipulator.direction.x * manipulator.valueMm,
@@ -967,6 +970,13 @@ void Viewport::clearCubeHover() {
   if (cubeHover_) { setCursor(cursorBeforeCube_); QToolTip::hideText(); }
   cubeHover_ = {};
   update();
+}
+
+void Viewport::restoreToolManipulatorValue() {
+  if (!toolManipulator_ || toolHudParameterId_ != "distance") return;
+  toolParameterHud_->setRangeAndValue("distance", toolManipulator_->minimumMm,
+                                      toolManipulator_->maximumMm,
+                                      toolManipulator_->valueMm, true);
 }
 
 void Viewport::clearGeometryHover() {
@@ -2004,16 +2014,23 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     const QPointF handle = layout.handle;
     if (QLineF(scenePosition, handle).length() <= 18.0) {
       draggingToolManipulator_ = true;
-      const Point3d unitWorld{
-          toolManipulator_->origin.x + toolManipulator_->direction.x,
-          toolManipulator_->origin.y + toolManipulator_->direction.y,
-          toolManipulator_->origin.z + toolManipulator_->direction.z};
-      QPointF projectedUnitAxis =
-          projectBodyPoint(unitWorld, center, size(), yaw_, pitch_, zoom_).screen -
-          start;
-      if (layout.visualSign < 0.0) projectedUnitAxis = -projectedUnitAxis;
-      linearDragSnapshot_ = {scenePosition, projectedUnitAxis,
-                             toolManipulator_->valueMm};
+       const QPointF visibleAxis = layout.handle - layout.anchor;
+       const double visibleLength = QLineF({}, visibleAxis).length();
+       const Point3d unitWorld{
+           toolManipulator_->origin.x + toolManipulator_->direction.x,
+           toolManipulator_->origin.y + toolManipulator_->direction.y,
+           toolManipulator_->origin.z + toolManipulator_->direction.z};
+       const double projectedPixelsPerMm = QLineF(
+           start, projectBodyPoint(unitWorld, center, size(), yaw_, pitch_, zoom_)
+                      .screen).length();
+       // The layout can deliberately reverse the visual arrow to keep it out
+       // of the body. Use that visible direction for semantic drag mapping;
+       // its fixed projection scale is independent from the bounded shaft.
+       const QPointF dragAxis = visibleLength > 1e-6
+           ? visibleAxis / visibleLength * std::max(projectedPixelsPerMm, 1.0)
+           : QPointF{};
+       linearDragSnapshot_ = {scenePosition, dragAxis,
+                              toolManipulator_->valueMm};
       setCursor(Qt::SizeAllCursor);
       return;
     }
@@ -3125,10 +3142,10 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
   if (draggingToolManipulator_ && toolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
     if (linearDragSnapshot_) {
-      toolManipulator_->valueMm = linearValueFromDrag(
-          *linearDragSnapshot_, event->position() - cameraPan_);
-      emit toolManipulatorValueChanged(toolManipulator_->valueMm);
-      update();
+      const double proposedValue = linearValueFromDrag(
+          *linearDragSnapshot_, event->position() - cameraPan_,
+          toolManipulator_->minimumMm, toolManipulator_->maximumMm);
+      emit toolManipulatorValueRequested(proposedValue);
     }
     return;
   }

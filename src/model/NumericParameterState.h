@@ -30,8 +30,20 @@ class NumericParameterState {
     lastValid_ = value;
   }
 
+  void setRange(double minimum, double maximum) noexcept {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
+        minimum > maximum)
+      return;
+    minimum_ = minimum;
+    maximum_ = maximum;
+    current_ = std::clamp(current_, minimum_, maximum_);
+    lastValid_ = std::clamp(lastValid_, minimum_, maximum_);
+  }
+
   [[nodiscard]] double value() const noexcept { return current_; }
   [[nodiscard]] double lastValidValue() const noexcept { return lastValid_; }
+  [[nodiscard]] double minimum() const noexcept { return minimum_; }
+  [[nodiscard]] double maximum() const noexcept { return maximum_; }
 
  private:
   double minimum_{};

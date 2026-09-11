@@ -15,6 +15,7 @@ struct ManipulatorStyle {
   double arrowHeadWidth{9.0};
   double bodyClearance{18.0};
   double hudClearance{12.0};
+  double zeroLength{18.0};
   double minimumLength{36.0};
   double maximumLength{72.0};
 };

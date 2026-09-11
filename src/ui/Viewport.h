@@ -98,8 +98,12 @@ class Viewport final : public QOpenGLWidget {
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                            ShapeFeature::ShapePtr shape);
   void clearToolPreviewShape();
-  void setToolManipulator(const LinearToolManipulator& manipulator);
+  void setToolManipulator(const LinearToolManipulator& manipulator,
+                          bool restoreHudValue = false);
+  void restoreToolManipulatorValue();
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
+  [[nodiscard]] const std::optional<LinearToolManipulator>&
+  toolManipulator() const noexcept { return toolManipulator_; }
   [[nodiscard]] const std::optional<AngularToolManipulator>&
   angularToolManipulator() const noexcept { return angularToolManipulator_; }
   void clearToolManipulator();
@@ -143,7 +147,9 @@ class Viewport final : public QOpenGLWidget {
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
   void bodyFaceSelectionChanged();
-  void toolManipulatorValueChanged(double valueMm);
+  // The viewport proposes values only. The owning tool session validates and
+  // reconciles the accepted value through setToolManipulator().
+  void toolManipulatorValueRequested(double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
   // values >= 3 encode a sketch line id plus three.

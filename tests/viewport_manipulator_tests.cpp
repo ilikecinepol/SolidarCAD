@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDoubleSpinBox>
 #include <cstdlib>
 #include <iostream>
 
@@ -35,5 +36,26 @@ int main(int argc, char** argv) {
   CHECK(viewport.angularToolManipulator().has_value());
   viewport.clearToolManipulator();
   CHECK(!viewport.angularToolManipulator().has_value());
+
+  // HUD edits are proposals. A direct observer sees the previously accepted
+  // viewport state until the owning session reconciles a replacement.
+  viewport.setToolManipulator(
+      {{0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 1.0, 0.0, 5.0});
+  CHECK(viewport.toolManipulator());
+  double requested = -1.0;
+  double observedAccepted = -1.0;
+  QObject::connect(&viewport, &solidar::Viewport::toolManipulatorValueRequested,
+                   [&viewport, &requested, &observedAccepted](double value) {
+                     requested = value;
+                     observedAccepted = viewport.toolManipulator()->valueMm;
+                   });
+  auto* distanceEditor = viewport.findChild<QDoubleSpinBox*>("distance");
+  CHECK(distanceEditor);
+  distanceEditor->setValue(3.0);
+  CHECK(std::abs(requested - 3.0) < 1e-9);
+  CHECK(std::abs(observedAccepted - 1.0) < 1e-9);
+  CHECK(std::abs(viewport.toolManipulator()->valueMm - 1.0) < 1e-9);
+  viewport.restoreToolManipulatorValue();
+  CHECK(std::abs(distanceEditor->value() - 1.0) < 1e-9);
   return EXIT_SUCCESS;
 }
