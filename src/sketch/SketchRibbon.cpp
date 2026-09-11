@@ -233,32 +233,6 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           &SketchCanvas::deleteSelection);
   connect(clear, &QPushButton::clicked, canvas, &SketchCanvas::clearSketch);
   connect(finish, &QPushButton::clicked, this, &SketchRibbon::finishRequested);
-
-  setStyleSheet(R"(
-    QWidget#sketchRibbon { background: #ffffff; border-bottom: 1px solid #d8e1ef; }
-    QPushButton#toolButton { background: transparent; color: #17356e; border: none;
-      border-radius: 7px; font-size: 13px; padding: 5px 8px; }
-    QPushButton#toolButton:hover { background: #edf5ff; }
-    QPushButton#toolButton:checked { background:#dcecff; color:#0068e8;
-      border:2px solid #78adf8; font-weight:600; }
-    QPushButton#toolButton:disabled { color:#9ca9bd; background:transparent; }
-    QLabel#groupCaption { color: #6d7f9d; font-size: 10px; font-weight: 600; }
-    QToolButton#groupMenuButton { color:#526d98; background:transparent;
-      border:none; font-size:10px; font-weight:700; padding:2px 10px; }
-    QToolButton#groupMenuButton:hover { color:#0868e8; background:#edf5ff;
-      border-radius:5px; }
-    QMenu { background:#ffffff; color:#17356e; border:1px solid #cfdbee;
-      padding:5px; }
-    QMenu::item { padding:7px 24px 7px 8px; border-radius:4px; }
-    QMenu::item:selected { background:#e8f2ff; color:#0868e8; }
-    QMenu::item:disabled { color:#9ca9bd; }
-    QFrame#separator { color: #d8e1ef; margin: 4px 7px; }
-    QLabel#constraintReady { color: #087449; font-size: 13px; }
-    QLabel#constraintMuted { color: #8795ac; font-size: 12px; }
-    QPushButton#finishButton { background: #0872f9; color: white; border: none;
-      border-radius: 9px; font-size: 14px; font-weight: 650; padding: 0 18px; }
-    QPushButton#finishButton:hover { background: #005ed8; }
-  )");
 }
 
 }  // namespace solidar

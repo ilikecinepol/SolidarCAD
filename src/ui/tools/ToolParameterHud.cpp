@@ -16,12 +16,8 @@ ToolParameterHud::ToolParameterHud(QWidget* parent) : QWidget(parent) {
   layout_ = new QHBoxLayout(this);
   layout_->setContentsMargins(0, 0, 0, 0);
   layout_->setSpacing(6);
-  setStyleSheet(
-      "QDoubleSpinBox{background:#fff;color:#20252c;border:1px solid #c8d1de;"
-      "border-radius:8px;padding:6px 8px;font-size:16px;}"
-      "QDoubleSpinBox:focus{border:2px solid #1477ed;}"
-      "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:24px;"
-      "border:none;background:transparent;}");
+  // Numeric fields follow the application theme via the global QDoubleSpinBox
+  // rule; a local light stylesheet would leave a white field in Dark mode.
 }
 
 void ToolParameterHud::clearEditors() {

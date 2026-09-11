@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 
+#include "app/AppSettings.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletToolSession.h"
 #include "project/ProjectFile.h"
@@ -55,7 +56,8 @@ int main(int argc, char** argv) {
   // teardown path (PartDesignToolController cancelActive, session cancel,
   // resetScene, history rebuild). No file dialogs, no OpenGL surface, no
   // platform-specific code.
-  solidar::MainWindow editor;
+  solidar::AppSettings settings(directory.filePath(QStringLiteral("settings.ini")));
+  solidar::MainWindow editor(settings);
   for (int cycle = 0; cycle < 6; ++cycle) {
     CHECK(editor.loadProject(pathA, &error));
     CHECK(editor.loadProject(pathB, &error));

@@ -1,5 +1,7 @@
 #include <QApplication>
+#include <QDir>
 #include <QPixmap>
+#include <QTemporaryDir>
 #include <QTimer>
 
 #ifdef NDEBUG
@@ -10,6 +12,7 @@
 #include <memory>
 #include <optional>
 
+#include "app/AppSettings.h"
 #include "home/HomeWindow.h"
 #include "model/ExtrudeFeature.h"
 #include "ui/MainWindow.h"
@@ -17,6 +20,9 @@
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
+  QTemporaryDir tempDir;
+  assert(tempDir.isValid());
+  solidar::AppSettings settings(tempDir.filePath("settings.ini"));
 
   // Regression: a Sketch-on-Face canvas receives the actual circular support
   // feature and its real topological boundary, not BoxParameters.
@@ -53,11 +59,11 @@ int main(int argc, char** argv) {
   const QPixmap renderedCanvas = canvas.grab();
   assert(!renderedCanvas.isNull());
 
-  solidar::home::HomeWindow home;
+  solidar::home::HomeWindow home(settings);
   solidar::MainWindow* editor = nullptr;
   QObject::connect(&home, &solidar::home::HomeWindow::projectRequested,
                    &application, [&](const QString& path) {
-    editor = new solidar::MainWindow;
+    editor = new solidar::MainWindow(settings);
     editor->setProjectPath(path);
     home.hide();
     // Construction/destruction is tested without exposing a native OpenGL

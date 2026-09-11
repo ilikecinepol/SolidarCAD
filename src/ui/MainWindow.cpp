@@ -64,16 +64,35 @@
 #include "sketch/SketchRibbon.h"
 #include "ui/DrawingSheetView.h"
 #include "ui/ModelRibbon.h"
+#include "ui/SettingsWidget.h"
 #include "ui/SketchCanvas.h"
 #include "ui/Viewport.h"
 
 namespace solidar {
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+MainWindow::MainWindow(AppSettings& settings, QWidget* parent)
+    : QMainWindow(parent), settings_(settings) {
   buildUi();
   buildMenus();
   resize(1200, 760);
   setWindowTitle(QString::fromUtf8("Солидарность CAD — Скетчер ЕСКД"));
+}
+
+void MainWindow::openSettings() {
+  // Shared settings control inside a modal dialog; switching the theme is a
+  // presentation-only change that never touches the open Document.
+  QDialog dialog(this);
+  dialog.setWindowTitle(QString::fromUtf8("Настройки"));
+  dialog.resize(460, 340);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->setContentsMargins(24, 24, 24, 24);
+  auto* settingsWidget = new SettingsWidget(settings_, &dialog);
+  layout->addWidget(settingsWidget);
+  // The editor dialog must close on Cancel; the Home page leaves the signal
+  // unconnected because there is no modal dialog to close.
+  connect(settingsWidget, &SettingsWidget::cancelRequested, &dialog,
+          &QDialog::reject);
+  dialog.exec();
 }
 
 void MainWindow::updateSketchConstraintPanel() {
@@ -132,6 +151,9 @@ void MainWindow::buildMenus() {
   undoAction_ = editMenu->addAction(QString::fromUtf8("Отменить"));
   undoAction_->setShortcut(QKeySequence::Undo);
   undoAction_->setEnabled(false);
+  auto* settingsAction = editMenu->addAction(QString::fromUtf8("Настройки…"));
+  settingsAction->setObjectName("settingsAction");
+  connect(settingsAction, &QAction::triggered, this, &MainWindow::openSettings);
 
   layout->addWidget(bar);
   ribbonStack_->setParent(menuHost);
@@ -379,12 +401,12 @@ void MainWindow::buildUi() {
   auto* extrusionDescription = new QLabel(extrudeHelp->shortDescription,
                                           extrusionPanel);
   extrusionDescription->setWordWrap(true);
-  extrusionDescription->setStyleSheet("color:#607493;");
+  extrusionDescription->setProperty("uiRole", "secondaryText");
   auto* extrusionHint = new QLabel(QString::fromUtf8(
       "Потяните синюю стрелку в 3D-виде или введите точное значение."),
       extrusionPanel);
   extrusionHint->setWordWrap(true);
-  extrusionHint->setStyleSheet("color:#607493;");
+  extrusionHint->setProperty("uiRole", "secondaryText");
   auto* extrusionForm = new QFormLayout;
   extrusionLengthSpin_ = new QDoubleSpinBox(extrusionPanel);
   extrusionLengthSpin_->setRange(-100000.0, 100000.0);
@@ -406,9 +428,8 @@ void MainWindow::buildUi() {
   auto* cancelExtrusion = new QPushButton(QString::fromUtf8("Отмена"), extrusionPanel);
   auto* acceptExtrusion = new QPushButton(QString::fromUtf8("Применить"), extrusionPanel);
   acceptExtrusion->setDefault(true);
-  acceptExtrusion->setStyleSheet(
-      "QPushButton{background:#0874f9;color:white;border:none;border-radius:6px;"
-      "padding:8px 14px;font-weight:600;} QPushButton:hover{background:#0665dc;}");
+  acceptExtrusion->setProperty("uiRole", "primaryAction");
+  acceptExtrusion->setObjectName("primaryAction");
   extrusionButtons->addWidget(cancelExtrusion);
   extrusionButtons->addWidget(acceptExtrusion);
   extrusionPanelLayout->addWidget(extrusionDescription);
@@ -433,7 +454,7 @@ void MainWindow::buildUi() {
   auto* revolveDescription = new QLabel(revolveHelp->shortDescription,
                                         revolvePanel);
   revolveDescription->setWordWrap(true);
-  revolveDescription->setStyleSheet("color:#607493;");
+  revolveDescription->setProperty("uiRole", "secondaryText");
   revolveStepHint_ = new QLabel(revolveHelp->selectionHint, revolvePanel);
   revolveStepHint_->setObjectName("revolveStepHint");
   revolveStepHint_->setWordWrap(true);
@@ -869,9 +890,7 @@ void MainWindow::buildUi() {
 
   auto* constraintsSection = new QFrame(settingsPanel);
   constraintsSection->setObjectName(QStringLiteral("constraintsSection"));
-  constraintsSection->setStyleSheet(
-      "QFrame#constraintsSection{border-top:1px solid #d8e1ef;"
-      "margin-top:8px;padding-top:10px;}");
+  constraintsSection->setProperty("uiRole", "sectionPanel");
   auto* constraintsSectionLayout = new QVBoxLayout(constraintsSection);
   constraintsSectionLayout->setContentsMargins(0, 12, 0, 0);
   constraintsSectionLayout->setSpacing(7);
@@ -890,12 +909,6 @@ void MainWindow::buildUi() {
   sketchConstraintsList_->setMaximumHeight(150);
   sketchConstraintsList_->setColumnWidth(0, 185);
   sketchConstraintsList_->setColumnWidth(1, 28);
-  sketchConstraintsList_->setStyleSheet(
-      "QTreeWidget{border:1px solid #d8e1ef;border-radius:6px;"
-      "background:#fbfcff;color:#29466f;padding:2px;}"
-      "QTreeWidget::item{padding:4px 5px;}"
-      "QHeaderView::section{background:#f2f5fa;color:#66758c;"
-      "border:none;border-bottom:1px solid #d8e1ef;padding:5px;}");
 
   constraintsSectionLayout->addWidget(constraintsTitle);
   constraintsSectionLayout->addWidget(sketchConstraintsList_);
@@ -903,9 +916,7 @@ void MainWindow::buildUi() {
 
   auto* circlePropertiesSection = new QFrame(settingsPanel);
   circlePropertiesSection->setObjectName(QStringLiteral("circlePropertiesSection"));
-  circlePropertiesSection->setStyleSheet(
-      "QFrame#circlePropertiesSection{border-top:1px solid #d8e1ef;"
-      "margin-top:8px;padding-top:10px;}");
+  circlePropertiesSection->setProperty("uiRole", "sectionPanel");
   auto* circleLayout = new QFormLayout(circlePropertiesSection);
   circleLayout->setContentsMargins(0, 12, 0, 0);
   circleLayout->setSpacing(10);
@@ -946,11 +957,6 @@ void MainWindow::buildUi() {
     button->setIconSize(QSize(26, 26));
     button->setFixedSize(36, 36);
     button->setToolTip(QString::fromUtf8(circleModes[index].tooltip));
-    button->setStyleSheet(
-        "QToolButton{border:1px solid transparent;border-radius:6px;"
-        "background:transparent;padding:4px;}"
-        "QToolButton:hover{background:#edf5ff;border-color:#9bc4ff;}"
-        "QToolButton:checked{background:#dcecff;border:2px solid #0a72ff;}");
     circleModeGroup->addButton(button, index);
     circleModeLayout->addWidget(button);
     if (index == 0) button->setChecked(true);
@@ -963,9 +969,7 @@ void MainWindow::buildUi() {
   auto* rectanglePropertiesSection = new QFrame(settingsPanel);
   rectanglePropertiesSection->setObjectName(
       QStringLiteral("rectanglePropertiesSection"));
-  rectanglePropertiesSection->setStyleSheet(
-      "QFrame#rectanglePropertiesSection{border-top:1px solid #d8e1ef;"
-      "margin-top:8px;padding-top:10px;}");
+  rectanglePropertiesSection->setProperty("uiRole", "sectionPanel");
   auto* rectangleLayout = new QVBoxLayout(rectanglePropertiesSection);
   rectangleLayout->setContentsMargins(0, 12, 0, 0);
   rectangleLayout->setSpacing(10);
@@ -994,11 +998,6 @@ void MainWindow::buildUi() {
     button->setIconSize(QSize(26, 26));
     button->setFixedSize(36, 36);
     button->setToolTip(QString::fromUtf8(rectangleModes[index].tooltip));
-    button->setStyleSheet(
-        "QToolButton{border:1px solid transparent;border-radius:6px;"
-        "background:transparent;padding:4px;}"
-        "QToolButton:hover{background:#edf5ff;border-color:#9bc4ff;}"
-        "QToolButton:checked{background:#dcecff;border:2px solid #0a72ff;}");
     rectangleModeGroup->addButton(button, index);
     rectangleModeLayout->addWidget(button);
     if (index == 0) button->setChecked(true);
@@ -1771,7 +1770,7 @@ void MainWindow::updateRevolveToolPreview() {
     viewport_->clearToolManipulator();
   if (revolveToolSession_.lifecycle() == ToolLifecycle::PreviewInvalid) {
     revolveStepHint_->setText(QString::fromStdString(revolveToolSession_.error()));
-    revolveStepHint_->setStyleSheet(QStringLiteral("color:#c62828;"));
+    revolveStepHint_->setProperty("uiRole", "danger");
     statusBar()->showMessage(QString::fromStdString(revolveToolSession_.error()));
   } else {
     const QString hint = valid
@@ -1780,7 +1779,7 @@ void MainWindow::updateRevolveToolPreview() {
         : partDesignToolStepHint(PartDesignToolKind::Revolve,
                                  revolveToolSession_.selectionStage());
     revolveStepHint_->setText(QString::fromUtf8("Сейчас: ") + hint);
-    revolveStepHint_->setStyleSheet(QStringLiteral("color:#607493;"));
+    revolveStepHint_->setProperty("uiRole", "secondaryText");
   }
 }
 

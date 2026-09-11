@@ -158,16 +158,11 @@ void configureHistoryButton(QToolButton& button, const HistoryStep& step,
   button.setToolButtonStyle(Qt::ToolButtonIconOnly);
   button.setFixedSize(28, 28); button.setCheckable(true);
   button.setChecked(selected); button.setCursor(Qt::PointingHandCursor);
-  const QString stateRule = step.state == FeatureState::Error
-      ? QStringLiteral("border:2px solid #d32f2f;")
-      : step.state == FeatureState::Dirty
-            ? QStringLiteral("border:2px solid #e6a100;")
-            : QStringLiteral("border:1px solid #cfdaea;");
-  button.setStyleSheet(
-      QStringLiteral("QToolButton{background:#fff;border-radius:6px;padding:3px;") +
-      stateRule + QStringLiteral("}"
-      "QToolButton:hover{background:#e8f2ff;border:2px solid #6fa8f7;}"
-      "QToolButton:checked{background:#d7e9ff;border:2px solid #1671e8;}"));
+  button.setProperty("stateRole", step.state == FeatureState::Error
+                                      ? QStringLiteral("error")
+                                      : step.state == FeatureState::Dirty
+                                            ? QStringLiteral("dirty")
+                                            : QString());
 }
 
 ShapeFeature* findHistoryFeature(Document& document, BodyId bodyId,

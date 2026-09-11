@@ -1,4 +1,5 @@
 #include "ui/Viewport.h"
+#include "ui/ThemeManager.h"
 #include "ui/WorldGrid.h"
 #include <QVariantAnimation>
 #include <QToolTip>
@@ -204,12 +205,9 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   extrusionLengthEditor_->setDecimals(2);
   extrusionLengthEditor_->setSuffix(QStringLiteral(" mm"));
   extrusionLengthEditor_->setFixedSize(132, 42);
-  extrusionLengthEditor_->setStyleSheet(
-      "QDoubleSpinBox{background:#ffffff;color:#20252c;border:1px solid #c8d1de;"
-      "border-radius:8px;padding:6px 8px;font-size:16px;}"
-      "QDoubleSpinBox:focus{border:2px solid #1477ed;}"
-      "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:28px;"
-      "border:none;background:transparent;}");
+  // The numeric editor follows the application theme via the global
+  // QDoubleSpinBox rule; a local light stylesheet would leave a white field in
+  // Dark mode.
   extrusionLengthEditor_->hide();
   connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
           &Viewport::setExtrusionPreviewLength);
@@ -1370,17 +1368,20 @@ void Viewport::refreshSelectedExtrusionPolygon() {
 void Viewport::paintGL() {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
-  painter.fillRect(rect(), QColor(246, 249, 252));
+  const ThemeColors& theme = ThemeManager::instance().colors();
+  painter.fillRect(rect(), theme.viewportBackground);
 
   // World-space work-plane grid. It shares the camera (including pan) with the
   // body, sketches, base planes and ViewCube, so orbit/pan/zoom move them all
   // together instead of leaving a screen-locked checkerboard behind.
+  const WorldGridStyle gridStyle{theme.gridMinor, theme.gridMajor, theme.axisX,
+                                 theme.axisY, theme.axisZ};
   if (workGridVisible_) {
     const ViewportCameraState gridCamera{yaw_, pitch_, zoom_, cameraPan_,
                                          size(), 1.0F, {}, 1.0};
     paintWorldGrid(painter,
                    buildWorldGrid(workGridPlacement_, gridCamera, size()),
-                   gridCamera);
+                   gridCamera, gridStyle);
   }
 
   painter.save();
@@ -2081,7 +2082,11 @@ void Viewport::paintGL() {
   painter.restore();
 
   paintViewCube(painter, viewCubeGeometry(size(), {yaw_,pitch_}),
-                {yaw_,pitch_}, cubeHover_, cubePressed_);
+                {yaw_,pitch_}, cubeHover_, cubePressed_,
+                ViewCubeStyle{theme.cubeTop, theme.cubeFront, theme.cubeSide,
+                              theme.cubeOutline, theme.cubeText, theme.cubeBevel,
+                              theme.cubeHover, theme.cubePressed, theme.cubeActive,
+                              theme.cubeAccent, theme.cubeShadow});
 
   // Rectangle marquee overlay. Drawn after restore + ViewCube so it stays
   // screen-space and topmost. Matches the Sketcher selection-box style.
@@ -2093,7 +2098,7 @@ void Viewport::paintGL() {
     painter.drawRect(marqueeRect.normalized());
   }
 
-  painter.setPen(QColor(171, 184, 201));
+  painter.setPen(theme.textSecondary);
   painter.drawText(16, height() - 18, "Drag to orbit  •  Wheel to zoom");
 }
 

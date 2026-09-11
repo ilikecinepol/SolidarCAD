@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <QVBoxLayout>
 
 namespace solidar {
@@ -25,7 +26,7 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   description_ = new QLabel(this);
   description_->setObjectName("toolDescription");
   description_->setWordWrap(true);
-  description_->setStyleSheet(QStringLiteral("color:#607493;"));
+  description_->setProperty("uiRole", "secondaryText");
   auto* form = new QFormLayout;
   selectionCaption_ = new QLabel(this);
   selectionValue_ = new QLabel(this);
@@ -50,9 +51,7 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   auto* cancel = new QPushButton(QString::fromUtf8("Отмена"), this);
   accept_ = new QPushButton(QStringLiteral("OK"), this);
   accept_->setDefault(true);
-  accept_->setStyleSheet(
-      "QPushButton{background:#0874f9;color:white;border:none;border-radius:6px;"
-      "padding:8px 14px;font-weight:600;} QPushButton:disabled{background:#9db4d1;}");
+  accept_->setProperty("uiRole", "primaryAction");
   buttons->addWidget(cancel);
   buttons->addWidget(accept_);
   layout->addWidget(title_);
@@ -105,8 +104,9 @@ void ToolParametersPanel::setParameterValue(double value) {
 double ToolParametersPanel::parameterValue() const { return parameter_->value(); }
 void ToolParametersPanel::setStatus(const QString& text, bool error) {
   status_->setText(text);
-  status_->setStyleSheet(error ? QStringLiteral("color:#c62828;")
-                               : QStringLiteral("color:#607493;"));
+  status_->setProperty("uiRole", error ? "danger" : "secondaryText");
+  status_->style()->unpolish(status_);
+  status_->style()->polish(status_);
 }
 void ToolParametersPanel::setAcceptEnabled(bool enabled) {
   accept_->setEnabled(enabled);
