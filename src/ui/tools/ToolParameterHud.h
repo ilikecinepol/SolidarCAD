@@ -13,8 +13,10 @@ class QHBoxLayout;
 
 namespace solidar {
 
-// Reusable viewport HUD. Enter commits only the focused parameter; normal Qt
-// focus traversal provides Tab/Shift+Tab for multi-parameter tools.
+// Reusable viewport HUD. Enter/keypad-Enter commits only the focused numeric
+// field; Tab/Shift+Tab move focus between HUD editors (selecting their text);
+// Escape restores the last committed value. All traversal is driven by the
+// HUD-editable descriptor set, never by per-tool shortcuts.
 class ToolParameterHud final : public QWidget {
   Q_OBJECT
  public:
@@ -34,6 +36,7 @@ class ToolParameterHud final : public QWidget {
   void clearEditors();
   QHBoxLayout* layout_{};
   std::map<std::string, QDoubleSpinBox*> editors_;
+  std::vector<QDoubleSpinBox*> orderedEditors_;
   std::map<QDoubleSpinBox*, double> committedValues_;
 };
 

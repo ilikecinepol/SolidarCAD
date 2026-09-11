@@ -38,6 +38,10 @@ struct BodyViewShape {
 
 enum class SelectionFilter { Any, Face, Edge, Plane };
 
+// Minimum marquee extent on release below which a drag is treated as a click,
+// mirroring the Sketcher selection-box threshold.
+inline constexpr double kMarqueeMinSizePx = 3.0;
+
 class Viewport final : public QOpenGLWidget {
   Q_OBJECT
 
@@ -94,6 +98,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] std::optional<std::size_t> hoveredBodyEdgeIndex() const noexcept;
   void setSelectionFilter(SelectionFilter filter) noexcept;
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
+  [[nodiscard]] bool marqueeActive() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                            ShapeFeature::ShapePtr shape);
   void clearToolPreviewShape();
@@ -170,10 +175,26 @@ class Viewport final : public QOpenGLWidget {
   void pickFallbackBodyFace(QPointF position);
   void refreshSelectedExtrusionPolygon();
   [[nodiscard]] QPointF extrusionScreenOffset(double lengthMm) const;
+  // Shared presentation helpers. A single layout/radius is computed once and
+  // used by both the draw pass and the hit-test so the two can never diverge.
+  struct AngularVisual {
+    QPointF origin;
+    Vector3d u{1.0, 0.0, 0.0};
+    Vector3d v{0.0, 1.0, 0.0};
+    Vector3d axis{0.0, 0.0, 1.0};
+    double visualRadiusMm{};
+  };
+  [[nodiscard]] std::optional<ManipulatorLayoutResult> toolManipulatorLayout()
+      const;
+  [[nodiscard]] std::optional<AngularVisual> angularVisual() const;
   void rebuildSelectedExtrusionSketch();
   void updateBodyHover(QPointF position);
   void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
                           bool clearSelection);
+  void selectInRect(const QRectF& rect, bool additive, bool singleOnly = false);
+  void cancelMarquee();
+  void commitEdgeSelection(std::size_t globalIndex, bool toggle);
+  void commitFaceSelection(std::size_t globalIndex, bool toggle);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(
       std::size_t index) const noexcept;
   [[nodiscard]] std::optional<FaceReference> faceReferenceForGlobalIndex(
@@ -259,6 +280,7 @@ class Viewport final : public QOpenGLWidget {
   bool draggingExtrusionHandle_{false};
   std::optional<LinearToolManipulator> toolManipulator_;
   std::optional<AngularToolManipulator> angularToolManipulator_;
+  ManipulatorStyle manipulatorStyle_;
   bool draggingToolManipulator_{false};
   std::optional<LinearDragSnapshot> linearDragSnapshot_;
   bool draggingAngularToolManipulator_{false};
@@ -266,6 +288,10 @@ class Viewport final : public QOpenGLWidget {
   QPointF cameraPan_;
   bool draggingBody_{false};
   QPointF bodyDragStart_;
+  bool marqueeActive_{false};
+  QPointF marqueeStart_{};
+  QPointF marqueeCurrent_{};
+  bool marqueeAdditive_{false};
   float offsetX_{0.0F};
   float offsetY_{0.0F};
   QPoint lastMousePosition_;

@@ -2,7 +2,10 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <QApplication>
 #include <QDoubleSpinBox>
+#include <QKeyEvent>
 #include <QMouseEvent>
+
+#include <gp_Pnt.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -31,6 +34,13 @@ int main(int argc, char** argv) {
                         QPointF position, Qt::MouseButton button,
                         Qt::MouseButtons buttons) {
     QMouseEvent event(type, position, position, button, buttons, Qt::NoModifier);
+    QApplication::sendEvent(&view, &event);
+  };
+  const auto mouseMod = [](solidar::Viewport& view, QEvent::Type type,
+                           QPointF position, Qt::MouseButton button,
+                           Qt::MouseButtons buttons,
+                           Qt::KeyboardModifiers modifiers) {
+    QMouseEvent event(type, position, position, button, buttons, modifiers);
     QApplication::sendEvent(&view, &event);
   };
   const std::vector<solidar::SketchPlacement> placements{
@@ -234,5 +244,300 @@ int main(int argc, char** argv) {
           Qt::LeftButton, Qt::LeftButton);
     CHECK(facePicks == 1);
   }
+
+  // Rectangle marquee state machine. The body is a 40x30x20 box; with the
+  // default camera (yaw -35, pitch 25) three faces are front-facing.
+  const auto boxShape = std::make_shared<TopoDS_Shape>(
+      BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape());
+  const auto marqueeDrag = [&mouseMod](solidar::Viewport& view, QPointF start,
+                                       QPointF end,
+                                       Qt::KeyboardModifiers modifiers =
+                                           Qt::NoModifier) {
+    mouseMod(view, QEvent::MouseButtonPress, start, Qt::LeftButton,
+             Qt::LeftButton, modifiers);
+    mouseMod(view, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton,
+             modifiers);
+    mouseMod(view, QEvent::MouseButtonRelease, end, Qt::LeftButton,
+             Qt::NoButton, modifiers);
+  };
+
+  // Empty-area drag spanning the body selects the spanned (front-facing) faces.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    CHECK(!view.marqueeActive());
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.marqueeActive());
+    const auto faces = view.selectedBodyFaces();
+    CHECK(!faces.empty());
+    for (const auto& face : faces) {
+      CHECK(face.bodyId == bodyId);
+      CHECK(face.featureId == sourceFeatureId);
+      CHECK(face.signature.has_value());
+    }
+  }
+
+  // A sub-threshold (<3px) drag is a click: marquee becomes active on press
+  // and is cancelled on release without selecting anything.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    mouseMod(view, QEvent::MouseButtonPress, {1.0, 1.0}, Qt::LeftButton,
+             Qt::LeftButton, Qt::NoModifier);
+    CHECK(view.marqueeActive());
+    mouseMod(view, QEvent::MouseButtonRelease, {2.0, 2.0}, Qt::LeftButton,
+             Qt::NoButton, Qt::NoModifier);
+    CHECK(!view.marqueeActive());
+    CHECK(view.selectedBodyFaces().empty());
+  }
+
+  // Edge filter selects edges only; Face filter selects faces only.
+  {
+    solidar::Viewport edgeView;
+    edgeView.resize(800, 600);
+    edgeView.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    edgeView.setSolidVisible(true);
+    edgeView.setSelectionFilter(solidar::SelectionFilter::Edge);
+    marqueeDrag(edgeView, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(edgeView.selectedBodyFaces().empty());
+    const auto edges = edgeView.selectedBodyEdges();
+    // Occlusion parity: the box has 12 unique edges, but BodyRenderMesh stores
+    // 24 edge entries because TopExp_Explorer returns each shared edge twice
+    // (once per the two faces it joins). Of these, the 3 fully-hidden edges
+    // (x2 = 6 entries, meeting at the back corner) are rejected by the depth
+    // occlusion test, so exactly 18 edges are selected. A broken occlusion
+    // would select all 24; this exact count proves rear-edge rejection.
+    CHECK(!edges.empty());
+    CHECK(edges.size() == 18);
+    for (const auto& edge : edges) {
+      CHECK(edge.bodyId == bodyId);
+      CHECK(edge.featureId == sourceFeatureId);
+      CHECK(edge.signature.has_value());
+    }
+  }
+  {
+    solidar::Viewport faceView;
+    faceView.resize(800, 600);
+    faceView.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    faceView.setSolidVisible(true);
+    faceView.setSelectionFilter(solidar::SelectionFilter::Face);
+    marqueeDrag(faceView, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!faceView.selectedBodyFaces().empty());
+    CHECK(faceView.selectedBodyEdges().empty());
+  }
+
+  // Rect outside geometry: non-additive clears the selection, Ctrl preserves.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyFaces().empty());
+    // Non-additive drag over empty area replaces (clears) the selection.
+    marqueeDrag(view, {5.0, 5.0}, {60.0, 60.0});
+    CHECK(view.selectedBodyFaces().empty());
+    // Re-select, then a Ctrl-drag over empty area keeps it.
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyFaces().empty());
+    marqueeDrag(view, {5.0, 5.0}, {60.0, 60.0}, Qt::ControlModifier);
+    CHECK(!view.selectedBodyFaces().empty());
+  }
+
+  // Multi-body: a marquee over one body maps to that body's persistent refs.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    const auto boxA = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape());
+    const auto boxB = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(100.0, 0.0, 0.0), 40.0, 30.0, 20.0)
+            .Shape());
+    const solidar::BodyId bodyA = 41;
+    const solidar::BodyId bodyB = 42;
+    const solidar::FeatureId featA = 73;
+    const solidar::FeatureId featB = 74;
+    view.setBodyShapes({{bodyA, featA, boxA}, {bodyB, featB, boxB}});
+    view.setSolidVisible(true);
+    const solidar::ViewportCameraState camera{
+        view.cameraYawDegrees(), view.cameraPitchDegrees(), 1.0F, {},
+        view.size(), 1.0F, {70.0, 15.0, 10.0}, 1.0};
+    // boxB top-face centre (boxB spans x 100..140, y 0..30, z 0..20).
+    const QPointF boxBTop = camera.worldToScreen({120.0, 15.0, 20.0});
+    // Drag from the gap between the two bodies (left of boxB) across boxB.
+    marqueeDrag(view, boxBTop + QPointF(-150.0, 0.0),
+                boxBTop + QPointF(60.0, 120.0));
+    const auto faces = view.selectedBodyFaces();
+    CHECK(!faces.empty());
+    for (const auto& face : faces) {
+      CHECK(face.bodyId == bodyB);
+      CHECK(face.featureId == featB);
+      CHECK(face.signature.has_value());
+    }
+  }
+
+  // Ctrl+A (QKeySequence::SelectAll) sends the standard SelectAll key press
+  // straight to the viewport, bypassing any MainWindow-level shortcut handling.
+  const auto sendStandardKey = [](solidar::Viewport& view) {
+    QKeyEvent event(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier);
+    QApplication::sendEvent(&view, &event);
+  };
+
+  // Edge tool + multi-select on: SelectAll selects every eligible visible
+  // edge (occlusion + single-body) and leaves the face selection empty.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setSelectionFilter(solidar::SelectionFilter::Edge);
+    view.setEdgeMultiSelectionMode(true);
+    sendStandardKey(view);
+    const auto edges = view.selectedBodyEdges();
+    CHECK(!edges.empty());
+    // Occlusion parity: identical to the marquee edge count (18 of 24 edge
+    // entries survive; the 3 hidden rear edges are rejected by depth).
+    CHECK(edges.size() == 18);
+    CHECK(view.selectedBodyFaces().empty());
+    for (const auto& edge : edges) {
+      CHECK(edge.bodyId == bodyId);
+      CHECK(edge.featureId == sourceFeatureId);
+      CHECK(edge.signature.has_value());
+    }
+  }
+
+  // Face tool + multi-select on: SelectAll selects faces only.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setSelectionFilter(solidar::SelectionFilter::Face);
+    view.setFaceMultiSelectionMode(true);
+    sendStandardKey(view);
+    CHECK(!view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+  }
+
+  // Normal mode (Any filter) + face multi-select on: the selection domain is
+  // faces ("select all bodies" is deferred pending a body-selection model).
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setFaceMultiSelectionMode(true);
+    sendStandardKey(view);
+    CHECK(!view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+  }
+
+  // Single-select contract: with the relevant multi-select mode OFF, Ctrl+A
+  // selects at most one (frontmost) entity instead of everything.
+  {
+    solidar::Viewport faceView;
+    faceView.resize(800, 600);
+    faceView.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    faceView.setSolidVisible(true);
+    faceView.setSelectionFilter(solidar::SelectionFilter::Face);
+    sendStandardKey(faceView);
+    CHECK(faceView.selectedBodyFaces().size() == 1);
+    CHECK(faceView.selectedBodyEdges().empty());
+
+    solidar::Viewport edgeView;
+    edgeView.resize(800, 600);
+    edgeView.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    edgeView.setSolidVisible(true);
+    edgeView.setSelectionFilter(solidar::SelectionFilter::Edge);
+    sendStandardKey(edgeView);
+    CHECK(edgeView.selectedBodyEdges().size() == 1);
+    CHECK(edgeView.selectedBodyFaces().empty());
+  }
+
+  // Plain marquee in an edge multi-select tool REPLACES the prior selection;
+  // Ctrl-drag ADDS to it. The additive flag must reflect only the Ctrl
+  // modifier, never the multi-select mode.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setSelectionFilter(solidar::SelectionFilter::Edge);
+    view.setEdgeMultiSelectionMode(true);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(view.selectedBodyEdges().size() == 18);
+    // Plain drag over empty area replaces (clears) the selection.
+    marqueeDrag(view, {5.0, 5.0}, {60.0, 60.0});
+    CHECK(view.selectedBodyEdges().empty());
+    // Re-select, then a Ctrl-drag over empty area keeps it (adds).
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(view.selectedBodyEdges().size() == 18);
+    marqueeDrag(view, {5.0, 5.0}, {60.0, 60.0}, Qt::ControlModifier);
+    CHECK(view.selectedBodyEdges().size() == 18);
+  }
+
+  // Plane filter: a marquee selects no body geometry (Plane means base-plane
+  // selection, never body faces/edges).
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    view.setSelectionFilter(solidar::SelectionFilter::Plane);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+  }
+
+  // Cross-type: selecting edges clears a prior face selection, and selecting
+  // faces clears a prior edge selection, so no mixed selection persists.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+
+    // Faces first (Any filter selects faces), then edges.
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyFaces().empty());
+    view.setSelectionFilter(solidar::SelectionFilter::Edge);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyEdges().empty());
+    CHECK(view.selectedBodyFaces().empty());
+
+    // Edges first, then faces.
+    view.setSelectionFilter(solidar::SelectionFilter::Edge);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyEdges().empty());
+    view.setSelectionFilter(solidar::SelectionFilter::Face);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+  }
+
+  // Cancel marquee preserves the pre-drag selection. Pressing on empty area no
+  // longer clears selection; Escape only cancels the marquee.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(!view.selectedBodyFaces().empty());
+    const auto before = view.selectedBodyFaces();
+    // Start a marquee on empty area.
+    mouseMod(view, QEvent::MouseButtonPress, {1.0, 1.0}, Qt::LeftButton,
+             Qt::LeftButton, Qt::NoModifier);
+    CHECK(view.marqueeActive());
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(&view, &escape);
+    CHECK(!view.marqueeActive());
+    CHECK(view.selectedBodyFaces() == before);
+  }
+
   return EXIT_SUCCESS;
 }

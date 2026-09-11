@@ -2,6 +2,7 @@
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
+#include <QMouseEvent>
 
 #include <cstdlib>
 #include <iostream>
@@ -36,12 +37,14 @@ int main(int argc, char** argv) {
   solidar::sketch::Sketch sketch;
   sketch.addRectangle({0.0, 0.0}, {40.0, 20.0});
 
-  // Populate transient interaction state through the public API.
-  viewport.setSelectedBodyFaces({solidar::FaceReference{bodyId, featureId, 0}});
+  // Populate transient interaction state through the public API. The face
+  // selection is set after the Edge filter because switching the selection
+  // context to edges clears the now-incompatible face selection.
   viewport.setSelectedBodyEdges({solidar::EdgeReference{bodyId, featureId, 0}});
   viewport.setFaceMultiSelectionMode(true);
   viewport.setEdgeMultiSelectionMode(true);
   viewport.setSelectionFilter(solidar::SelectionFilter::Edge);
+  viewport.setSelectedBodyFaces({solidar::FaceReference{bodyId, featureId, 0}});
   viewport.setToolManipulator(solidar::LinearToolManipulator{});
   viewport.setAngularToolManipulator(solidar::AngularToolManipulator{});
   viewport.commitAdditiveExtrusion(sketch, QStringLiteral("XY"), 0.0, 10.0);
@@ -66,15 +69,49 @@ int main(int argc, char** argv) {
   CHECK(!viewport.angularToolManipulator().has_value());
   CHECK(viewport.solidFeatures().empty());
 
-  // The viewport remains reusable: repopulate and reset again.
+  // The viewport remains reusable: repopulate and reset again. The edge
+  // selection is set after the Face filter because switching to faces clears
+  // the now-incompatible edge selection.
   viewport.setBodyShape(box, bodyId, featureId);
-  viewport.setSelectedBodyEdges({solidar::EdgeReference{bodyId, featureId, 0}});
   viewport.setSelectionFilter(solidar::SelectionFilter::Face);
+  viewport.setSelectedBodyEdges({solidar::EdgeReference{bodyId, featureId, 0}});
   CHECK(viewport.selectedBodyEdges().size() == 1);
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Face);
   viewport.resetScene();
   CHECK(viewport.selectedBodyEdges().empty());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+
+  // resetScene clears the transient marquee and leaves the viewport reusable.
+  {
+    solidar::Viewport marqueeView;
+    marqueeView.resize(800, 600);
+    const auto marqueeBox = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape());
+    marqueeView.setBodyShape(marqueeBox, bodyId, featureId);
+    marqueeView.setSolidVisible(true);
+    const auto mouse = [](solidar::Viewport& view, QEvent::Type type,
+                          QPointF position, Qt::MouseButton button,
+                          Qt::MouseButtons buttons) {
+      QMouseEvent event(type, position, position, button, buttons,
+                        Qt::NoModifier);
+      QApplication::sendEvent(&view, &event);
+    };
+    // Press on empty area begins a marquee.
+    mouse(marqueeView, QEvent::MouseButtonPress, {1.0, 1.0}, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(marqueeView.marqueeActive());
+    marqueeView.resetScene();
+    CHECK(!marqueeView.marqueeActive());
+    // The viewport is reusable: repopulate and start another marquee.
+    marqueeView.setBodyShape(marqueeBox, bodyId, featureId);
+    marqueeView.setSolidVisible(true);
+    mouse(marqueeView, QEvent::MouseButtonPress, {1.0, 1.0}, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(marqueeView.marqueeActive());
+    mouse(marqueeView, QEvent::MouseButtonRelease, {1.0, 1.0}, Qt::LeftButton,
+          Qt::NoButton);
+    CHECK(!marqueeView.marqueeActive());
+  }
 
   return EXIT_SUCCESS;
 }

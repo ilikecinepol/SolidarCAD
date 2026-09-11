@@ -63,10 +63,6 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   layout->addLayout(buttons);
   connect(parameter_, &QDoubleSpinBox::valueChanged, this,
           &ToolParametersPanel::parameterChanged);
-  if (auto* editor = parameter_->findChild<QLineEdit*>())
-    connect(editor, &QLineEdit::returnPressed, this, [this] {
-      if (accept_->isEnabled()) emit accepted();
-    });
   connect(accept_, &QPushButton::clicked, this, &ToolParametersPanel::accepted);
   connect(cancel, &QPushButton::clicked, this, &ToolParametersPanel::cancelled);
   connect(select_, &QPushButton::clicked, this,
@@ -115,9 +111,13 @@ void ToolParametersPanel::setStatus(const QString& text, bool error) {
 void ToolParametersPanel::setAcceptEnabled(bool enabled) {
   accept_->setEnabled(enabled);
 }
+bool ToolParametersPanel::acceptEnabled() const { return accept_->isEnabled(); }
 void ToolParametersPanel::focusParameterInput() {
   parameter_->setFocus(Qt::OtherFocusReason);
   parameter_->selectAll();
+}
+void ToolParametersPanel::interpretParameterText() {
+  parameter_->interpretText();
 }
 void ToolParametersPanel::setDescription(const QString& text) {
   description_->setText(text);

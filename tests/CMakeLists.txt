@@ -4,6 +4,8 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+
 add_executable(document_tests document_tests.cpp)
 target_link_libraries(document_tests PRIVATE solidar_model)
 add_test(NAME document_tests COMMAND document_tests)
@@ -24,9 +26,17 @@ add_test(NAME part_design_tool_framework_tests
 
 add_executable(part_design_ui_state_regression_tests
                part_design_ui_state_regression_tests.cpp)
-target_link_libraries(part_design_ui_state_regression_tests PRIVATE solidar_editor)
+target_link_libraries(part_design_ui_state_regression_tests
+                      PRIVATE solidar_editor Qt6::Test)
 add_test(NAME part_design_ui_state_regression_tests
          COMMAND part_design_ui_state_regression_tests)
+
+add_executable(tool_parameter_hud_tests tool_parameter_hud_tests.cpp)
+target_link_libraries(tool_parameter_hud_tests
+                      PRIVATE solidar_viewport3d Qt6::Widgets Qt6::Test)
+add_test(NAME tool_parameter_hud_tests COMMAND tool_parameter_hud_tests)
+set_tests_properties(tool_parameter_hud_tests
+                     PROPERTIES LABELS "unit;regression")
 
 add_executable(extrude_geometry_regression_tests
                extrude_geometry_regression_tests.cpp)
@@ -306,6 +316,7 @@ if(WIN32)
     revolve_feature_tests
     part_design_tool_framework_tests
     part_design_ui_state_regression_tests
+    tool_parameter_hud_tests
     extrude_geometry_regression_tests
     extrude_boolean_regression_tests
     extrude_history_regression_tests

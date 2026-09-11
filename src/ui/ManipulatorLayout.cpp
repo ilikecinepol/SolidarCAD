@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
+#include <optional>
 
 namespace solidar {
 namespace {
@@ -12,13 +14,36 @@ bool conflicts(const QRectF& rect, const std::vector<QRectF>& exclusions) {
   return std::any_of(exclusions.begin(), exclusions.end(),
                      [&](const QRectF& other) { return rect.intersects(other); });
 }
+
+std::optional<QPointF> normalizeSafe(QPointF value) {
+  if (!std::isfinite(value.x()) || !std::isfinite(value.y()))
+    return std::nullopt;
+  const double magnitude = QLineF({}, value).length();
+  if (magnitude < 1e-9) return std::nullopt;
+  return value / magnitude;
+}
 }  // namespace
+
+StableProjectedDirection stableProjectedDirection(
+    QPointF semanticDirection, QPointF fallbackDirection,
+    double nearEndOnThresholdPx) {
+  const double threshold = std::max(1e-9, nearEndOnThresholdPx);
+  if (std::isfinite(semanticDirection.x()) &&
+      std::isfinite(semanticDirection.y())) {
+    const double magnitude = QLineF({}, semanticDirection).length();
+    if (magnitude >= threshold)
+      return {semanticDirection / magnitude, false};
+  }
+  if (const auto fallback = normalizeSafe(fallbackDirection))
+    return {*fallback, true};
+  return {{0.0, -1.0}, true};
+}
 
 ManipulatorLayoutResult computeManipulatorLayout(
     const ManipulatorLayoutInput& input, const ManipulatorStyle& style) {
-  QPointF direction = input.semanticDirection;
-  const double magnitude = QLineF({}, direction).length();
-  direction = magnitude > 1e-6 ? direction / magnitude : QPointF(0.0, -1.0);
+  const auto stable = stableProjectedDirection(
+      input.semanticDirection, QPointF(0.0, -1.0), style.nearEndOnThresholdPx);
+  const QPointF direction = stable.normalizedDirection;
   const QRectF blocked = input.bodySilhouette.adjusted(
       -style.bodyClearance, -style.bodyClearance, style.bodyClearance,
       style.bodyClearance);
@@ -40,7 +65,8 @@ ManipulatorLayoutResult computeManipulatorLayout(
       if (exclusion.contains(handle)) score -= 800.0;
     if (score > bestScore) {
       bestScore = score;
-      result = {input.anchor, handle, {}, sign, length};
+      result = {input.anchor, handle, {}, sign, length, direction,
+                stable.usedFallback};
     }
   }
 
@@ -69,15 +95,37 @@ ManipulatorLayoutResult computeManipulatorLayout(
 
 double safeAngularManipulatorRadius(QPointF origin, double requestedRadiusPx,
                                     const QRectF& bodySilhouette,
-                                    double clearancePx) {
-  double radius = std::max(requestedRadiusPx, 34.0);
+                                    double clearancePx, double minimumPx,
+                                    double maximumPx) {
+  const double ceiling = std::max(minimumPx, maximumPx);
+  double radius = std::max(requestedRadiusPx, minimumPx);
   if (bodySilhouette.contains(origin)) {
     const double edgeDistance = std::max(
         {origin.x() - bodySilhouette.left(), bodySilhouette.right() - origin.x(),
          origin.y() - bodySilhouette.top(), bodySilhouette.bottom() - origin.y()});
     radius = std::max(radius, edgeDistance + clearancePx);
   }
-  return radius;
+  // Keep the arc readable: the inside-silhouette expansion must not grow the
+  // visual radius without bound.
+  return std::clamp(radius, minimumPx, ceiling);
+}
+
+AngularVisualRadius computeAngularVisualRadius(
+    QPointF origin, QPointF uPoint, QPointF vPoint, double radiusMm,
+    const QRectF& bodySilhouette, const ManipulatorStyle& style) {
+  // Bound by the larger of the two projected basis extents. Using only u lets a
+  // near-collapsed u (with a visible v) enlarge the world radius so the
+  // v-extent far exceeds the style ceiling; the larger extent bounds the whole
+  // projected arc/handle envelope to the clamped safe radius.
+  const double uPx = QLineF(origin, uPoint).length();
+  const double vPx = QLineF(origin, vPoint).length();
+  const double requestedPx = std::max(uPx, vPx);
+  const double safePx = safeAngularManipulatorRadius(
+      origin, requestedPx, bodySilhouette, style.angularClearancePx,
+      style.minimumAngularRadiusPx, style.maximumAngularRadiusPx);
+  const double visualRadiusMm =
+      requestedPx > 1e-6 ? radiusMm * safePx / requestedPx : radiusMm;
+  return {visualRadiusMm, safePx};
 }
 
 }  // namespace solidar

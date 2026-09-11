@@ -532,6 +532,24 @@ void MainWindow::buildUi() {
           &MainWindow::acceptRevolveTool);
   connect(cancelRevolve, &QPushButton::clicked, this,
           &MainWindow::cancelRevolveTool);
+  const auto acceptRevolveOnEnter = [this] {
+    if (!revolveDock_->isVisible()) return;
+    revolveAngleSpin_->interpretText();
+    if (revolveAcceptButton_->isEnabled())
+      acceptRevolveTool();
+  };
+  auto* revolveReturnShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Return), revolveDock_);
+  revolveReturnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  revolveReturnShortcut->setAutoRepeat(false);
+  connect(revolveReturnShortcut, &QShortcut::activated, this,
+          acceptRevolveOnEnter);
+  auto* revolveKeypadShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Enter), revolveDock_);
+  revolveKeypadShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  revolveKeypadShortcut->setAutoRepeat(false);
+  connect(revolveKeypadShortcut, &QShortcut::activated, this,
+          acceptRevolveOnEnter);
   connect(reselectProfile, &QPushButton::clicked, this, [this] {
     partDesignTools_.beginReselection(ToolSelectionStage::SelectingInput);
     viewport_->beginExtrusionSurfaceSelection();
@@ -702,23 +720,32 @@ void MainWindow::buildUi() {
             toolParametersPanel_->setParameterValue(draftToolSession_.angleDeg());
             updateDraftToolPreview();
           });
-  auto* acceptToolShortcut = new QShortcut(QKeySequence(Qt::Key_Return),
-                                           toolParametersDock_);
-  acceptToolShortcut->setContext(Qt::WidgetWithChildrenShortcut);
-  connect(acceptToolShortcut, &QShortcut::activated, this,
-          [this] {
-            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
-              acceptChamferTool();
-            else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
-              acceptShellTool();
-            else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
-              acceptDraftTool();
-            else
-              acceptFilletTool();
-          });
+  const auto acceptActiveTool = [this] {
+    toolParametersPanel_->interpretParameterText();
+    if (!toolParametersPanel_->acceptEnabled()) return;
+    if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptChamferTool();
+    else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptShellTool();
+    else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptDraftTool();
+    else
+      acceptFilletTool();
+  };
+  auto* acceptReturnShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Return), toolParametersDock_);
+  acceptReturnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  acceptReturnShortcut->setAutoRepeat(false);
+  connect(acceptReturnShortcut, &QShortcut::activated, this, acceptActiveTool);
+  auto* acceptKeypadShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Enter), toolParametersDock_);
+  acceptKeypadShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  acceptKeypadShortcut->setAutoRepeat(false);
+  connect(acceptKeypadShortcut, &QShortcut::activated, this, acceptActiveTool);
   auto* cancelToolShortcut = new QShortcut(QKeySequence(Qt::Key_Escape),
                                            toolParametersDock_);
   cancelToolShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  cancelToolShortcut->setAutoRepeat(false);
   connect(cancelToolShortcut, &QShortcut::activated, this,
           [this] {
             if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
@@ -764,7 +791,9 @@ void MainWindow::buildUi() {
           });
   connect(acceptExtrusion, &QPushButton::clicked, this, &MainWindow::extrudeSketch);
   const auto applyExtrusionOnEnter = [this] {
-    if (extrusionDock_->isVisible()) extrudeSketch();
+    if (!extrusionDock_->isVisible()) return;
+    extrusionLengthSpin_->interpretText();
+    extrudeSketch();
   };
   auto* returnShortcut = new QShortcut(QKeySequence(Qt::Key_Return), extrusionDock_);
   returnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
