@@ -376,7 +376,7 @@ void Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     selectedBodyEdgeIndices_.clear();
     selectedBodyEdgeReferences_.clear();
-    selectedBodyIds_.clear();
+    clearWholeBodySelection();
   }
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   bodyRenderMesh_.clear();
@@ -593,7 +593,7 @@ void Viewport::resetScene() {
   selectedBodyEdgeIndices_.clear();
   selectedBodyEdgeReferences_.clear();
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
-  selectedBodyIds_.clear();
+  clearWholeBodySelection();
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
   selectedOrigin_ = false;
@@ -764,7 +764,7 @@ std::vector<FaceReference> Viewport::selectedBodyFaces() const {
 }
 
 void Viewport::setSelectedBodyFaces(const std::vector<FaceReference>& faces) {
-  selectedBodyIds_.clear();
+  clearWholeBodySelection();
   selectedBodyFaceIndices_.clear();
   selectedBodyFaceReferences_.clear();
   for (const auto& face : faces)
@@ -817,7 +817,7 @@ std::vector<EdgeReference> Viewport::selectedBodyEdges() const {
 }
 
 void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
-  selectedBodyIds_.clear();
+  clearWholeBodySelection();
   selectedBodyEdgeIndices_.clear();
   selectedBodyEdgeReferences_.clear();
   for (const auto& edge : edges)
@@ -846,6 +846,12 @@ bool Viewport::edgeMultiSelectionMode() const noexcept {
 
 const std::vector<BodyId>& Viewport::selectedBodies() const noexcept {
   return selectedBodyIds_;
+}
+
+void Viewport::clearWholeBodySelection() noexcept {
+  if (selectedBodyIds_.empty()) return;
+  selectedBodyIds_.clear();
+  emit bodiesSelected(selectedBodyIds_);
 }
 
 void Viewport::setSelectedBodies(std::vector<BodyId> ids) {
@@ -900,7 +906,7 @@ void Viewport::setSelectionFilter(SelectionFilter filter) noexcept {
   // body selection cannot coexist with face/edge selection.
   if (filter == SelectionFilter::Edge || filter == SelectionFilter::Face ||
       filter == SelectionFilter::Plane) {
-    selectedBodyIds_.clear();
+    clearWholeBodySelection();
   }
   update();
 }
@@ -918,6 +924,7 @@ std::optional<std::size_t> Viewport::hoveredBodyEdgeIndex() const noexcept {
 }
 
 void Viewport::commitEdgeSelection(std::size_t globalIndex, bool toggle) {
+  clearWholeBodySelection();
   const auto clicked = edgeReferenceForGlobalIndex(globalIndex);
   if (toggle && !selectedBodyEdgeIndices_.empty()) {
     const auto first =
@@ -942,6 +949,7 @@ void Viewport::commitEdgeSelection(std::size_t globalIndex, bool toggle) {
 }
 
 void Viewport::commitFaceSelection(std::size_t globalIndex, bool toggle) {
+  clearWholeBodySelection();
   const auto clicked = faceReferenceForGlobalIndex(globalIndex);
   if (toggle && !selectedBodyFaceIndices_.empty()) {
     const auto first =
@@ -2690,6 +2698,10 @@ void Viewport::updateBodyHover(QPointF position) {
 }
 
 void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) {
+  // Commit the domain change only when the marquee is accepted, so Escape can
+  // still cancel the drag without changing the previous whole-body selection.
+  clearWholeBodySelection();
+
   // Plane filter selects base planes, never body geometry. A marquee in this
   // context must not select body faces/edges; clear any stale body selection.
   if (selectionFilter_ == SelectionFilter::Plane) {
@@ -3538,6 +3550,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
       selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
       selectedBodyEdgeIndices_.clear();
       selectedBodyEdgeReferences_.clear();
+      clearWholeBodySelection();
       emit selectionChanged({});
     }
     event->accept();

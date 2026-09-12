@@ -106,7 +106,8 @@ void MainWindow::updateSketchConstraintPanel() {
   if (entries.empty()) {
     auto* item = new QTreeWidgetItem(sketchConstraintsList_);
     item->setText(0, QString::fromUtf8("Нет ограничений"));
-    item->setForeground(0, QColor("#8795ac"));
+    // Use the disabled palette role from ThemeManager so this placeholder
+    // follows Light/Dark automatically.
     item->setFlags(Qt::NoItemFlags);
     return;
   }
@@ -1387,15 +1388,6 @@ void MainWindow::buildUi() {
                                          ? QString::fromUtf8("Выделение снято")
                                          : text);
           });
-  setStyleSheet(R"(
-    QMainWindow { background:#f7f9fc; }
-    QDockWidget { color:#17356e; font-weight:600; }
-    QDockWidget::title { background:#ffffff; padding:10px; border-bottom:1px solid #dce4f0; }
-    QTreeWidget { background:#ffffff; border:none; color:#274875; padding:8px; }
-    QTreeWidget::item { height:28px; border-radius:5px; }
-    QTreeWidget::item:selected { background:#e5f0ff; color:#075fdd; }
-    QStatusBar { background:#ffffff; color:#657a9b; border-top:1px solid #dce4f0; }
-  )");
   modelDock->setWidget(featureTree_);
   addDockWidget(Qt::LeftDockWidgetArea, modelDock);
 

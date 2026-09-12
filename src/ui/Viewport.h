@@ -210,6 +210,9 @@ class Viewport final : public QOpenGLWidget {
                           bool clearSelection);
   void selectInRect(const QRectF& rect, bool additive, bool singleOnly = false);
   void cancelMarquee();
+  // Clears only whole-body selection and publishes bodiesSelected({}) when the
+  // state actually changes. Face/edge state is intentionally left untouched.
+  void clearWholeBodySelection() noexcept;
   void commitEdgeSelection(std::size_t globalIndex, bool toggle);
   void commitFaceSelection(std::size_t globalIndex, bool toggle);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(

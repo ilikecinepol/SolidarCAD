@@ -22,6 +22,7 @@ QToolButton* commandButton(const QString& commandId, QWidget* parent) {
   button->setAccessibleName(help->title);
   button->setAccessibleDescription(help->detailedDescription);
   button->setProperty("helpId", commandId);
+  button->setProperty("uiRole", "modelCommand");
   button->setIcon(modelCommandIcon(commandId));
   button->setIconSize(QSize(42, 42));
   button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);

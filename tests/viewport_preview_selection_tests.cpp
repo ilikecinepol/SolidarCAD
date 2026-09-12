@@ -575,10 +575,20 @@ int main(int argc, char** argv) {
     const auto faceA = solidar::makeFaceReference(*source, bodyId,
                                                   sourceFeatureId, 0);
     CHECK(faceA.signature);
+    int bodySignals = 0;
+    std::vector<solidar::BodyId> lastBodies;
+    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
+                     [&](const std::vector<solidar::BodyId>& ids) {
+                       ++bodySignals;
+                       lastBodies = ids;
+                     });
     view.setSelectedBodies({bodyId});
     CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    CHECK(bodySignals == 1);
     view.setSelectedBodyFaces({faceA});
     CHECK(view.selectedBodies().empty());
+    CHECK(lastBodies.empty());
+    CHECK(bodySignals == 2);
     CHECK(view.selectedBodyFaces() ==
           std::vector<solidar::FaceReference>{faceA});
   }
@@ -590,10 +600,15 @@ int main(int argc, char** argv) {
     view.resize(800, 600);
     view.setBodyShape(source, bodyId, sourceFeatureId);
     view.setSolidVisible(true);
+    int bodySignals = 0;
+    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
+                     [&](const std::vector<solidar::BodyId>&) { ++bodySignals; });
     view.setSelectedBodies({bodyId});
     CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    CHECK(bodySignals == 1);
     view.setSelectedBodyEdges({edgeA});
     CHECK(view.selectedBodies().empty());
+    CHECK(bodySignals == 2);
     CHECK(view.selectedBodyEdges() ==
           std::vector<solidar::EdgeReference>{edgeA});
   }
@@ -624,16 +639,48 @@ int main(int argc, char** argv) {
     CHECK(view.selectedBodies().empty());
   }
 
-  // resetScene clears the whole-body selection.
+  // resetScene clears the whole-body selection and publishes the transition.
   {
     solidar::Viewport view;
     view.resize(800, 600);
     view.setBodyShape(boxShape, bodyId, sourceFeatureId);
     view.setSolidVisible(true);
+    int bodySignals = 0;
+    std::vector<solidar::BodyId> lastBodies;
+    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
+                     [&](const std::vector<solidar::BodyId>& ids) {
+                       ++bodySignals;
+                       lastBodies = ids;
+                     });
     view.setSelectedBodies({bodyId});
     CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+    CHECK(bodySignals == 1);
     view.resetScene();
     CHECK(view.selectedBodies().empty());
+    CHECK(lastBodies.empty());
+    CHECK(bodySignals == 2);
+  }
+
+  // Marquee commits a sub-element selection and clears prior whole-body state.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+    view.setSolidVisible(true);
+    int bodySignals = 0;
+    std::vector<solidar::BodyId> lastBodies;
+    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
+                     [&](const std::vector<solidar::BodyId>& ids) {
+                       ++bodySignals;
+                       lastBodies = ids;
+                     });
+    view.setSelectedBodies({bodyId});
+    CHECK(bodySignals == 1);
+    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
+    CHECK(view.selectedBodies().empty());
+    CHECK(!view.selectedBodyFaces().empty());
+    CHECK(lastBodies.empty());
+    CHECK(bodySignals == 2);
   }
 
   // Ctrl+A targeted at a HUD field (as when the field has keyboard focus) must

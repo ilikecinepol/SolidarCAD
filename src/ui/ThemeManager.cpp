@@ -232,13 +232,16 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     /* Model / Sketch ribbons */
     QWidget#modelRibbon, QWidget#sketchRibbon { background: $surface;
       border-bottom: 1px solid $border; }
-    QToolButton#modelCommand, QPushButton#toolButton { background: transparent;
+    QToolButton[uiRole="modelCommand"], QPushButton#toolButton {
+      background: transparent;
       color: $textPrimary; border: 1px solid transparent; border-radius: 8px;
       font-size: 13px; padding: 5px 10px; }
-    QToolButton#modelCommand:hover, QPushButton#toolButton:hover { background: $accentSoft; }
-    QToolButton#modelCommand:checked, QPushButton#toolButton:checked {
+    QToolButton[uiRole="modelCommand"]:hover, QPushButton#toolButton:hover {
+      background: $accentSoft; }
+    QToolButton[uiRole="modelCommand"]:checked, QPushButton#toolButton:checked {
       background: $accentSoft; color: $accent; border: 2px solid $accent; font-weight: 600; }
-    QPushButton#toolButton:disabled { color: $textDisabled; background: transparent; }
+    QToolButton[uiRole="modelCommand"]:disabled, QPushButton#toolButton:disabled {
+      color: $textDisabled; background: transparent; }
     QToolButton#modelGroupMenuButton, QToolButton#groupMenuButton {
       color: $textSecondary; background: transparent; border: none; font-size: 10px;
       font-weight: 700; padding: 2px 10px; }
