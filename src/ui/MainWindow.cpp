@@ -2509,6 +2509,7 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
   viewport_->setSelectionFilter(SelectionFilter::Face);
   viewport_->setFaceMultiSelectionMode(false);
   viewport_->setSelectedBodyFaces({face});
+  viewport_->clearLegacyExtrusionPreview();
   toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Extrude),
                                   QString::fromUtf8("Грань"),
                                   QString::fromUtf8("Длина"),
@@ -2604,6 +2605,7 @@ void MainWindow::cancelFaceExtrudeTool() {
   partDesignTools_.deactivate(PartDesignToolKind::Extrude);
   viewport_->clearToolPreviewShape();
   viewport_->clearToolManipulator();
+  viewport_->clearLegacyExtrusionPreview();
   viewport_->setFaceMultiSelectionMode(false);
   viewport_->setSelectionFilter(SelectionFilter::Any);
   viewport_->setSelectedBodyFaces({});
@@ -2629,6 +2631,7 @@ void MainWindow::editFaceExtrudeStep(Body* body, ExtrudeFeature* extrude,
   const FeatureId sourceFeatureId = body->features()[extrudeIndex - 1]->id();
   const FaceReference face = *extrude->faceReference();
   partDesignTools_.activate(PartDesignToolKind::Extrude);
+  viewport_->clearLegacyExtrusionPreview();
   faceExtrudeSession_.begin(body->id(), sourceFeatureId, baseShape, face,
                             extrude->lengthMm(), extrude->operation(),
                             extrude->reversed(), extrude->id());

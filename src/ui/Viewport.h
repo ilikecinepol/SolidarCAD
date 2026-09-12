@@ -87,6 +87,14 @@ class Viewport final : public QOpenGLWidget {
   void beginRevolveAxisSelection(std::size_t sketchIndex);
   void showExtrusionManipulator(double lengthMm);
   void hideExtrusionManipulator();
+  // Clears every piece of the legacy QPainter extrusion preview (sketch
+  // extrude) so it can never overlap the modern Face Extrude native preview.
+  void clearLegacyExtrusionPreview();
+  // True when the active tool manipulator is a directional (Face Extrude)
+  // linear manipulator; paintGL suppresses the legacy prism/arrow/spinbox in
+  // that case so the two preview generations can never render simultaneously.
+  [[nodiscard]] bool legacyExtrusionPreviewSuppressed() const noexcept;
+  [[nodiscard]] bool extrusionManipulatorVisible() const noexcept;
   void setExtrusionPreviewLength(double lengthMm);
   [[nodiscard]] bool hasSelectedFace() const noexcept;
   [[nodiscard]] QString selectedFaceName() const;
@@ -116,6 +124,7 @@ class Viewport final : public QOpenGLWidget {
                            ShapeFeature::ShapePtr shape);  void setToolPreviewPresentation(ToolPreviewPresentation presentation) noexcept;
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
+  [[nodiscard]] double toolManipulatorHudValue() const noexcept;
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
   [[nodiscard]] const std::optional<AngularToolManipulator>&
   angularToolManipulator() const noexcept { return angularToolManipulator_; }

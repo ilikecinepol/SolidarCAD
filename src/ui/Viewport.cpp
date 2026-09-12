@@ -695,6 +695,26 @@ void Viewport::hideExtrusionManipulator() {
   update();
 }
 
+void Viewport::clearLegacyExtrusionPreview() {
+  hideExtrusionManipulator();
+  selectedExtrusionPolygon_.clear();
+  selectedExtrusionPolygons_.clear();
+  selectedExtrusionPaths_.clear();
+  selectedExtrusionRegionSketches_.clear();
+  selectedExtrusionSketch_.clear();
+  extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
+  extrusionManipulatorAnchor_ = {};
+}
+
+bool Viewport::legacyExtrusionPreviewSuppressed() const noexcept {
+  return toolManipulator_ && toolManipulator_->directional;
+}
+
+bool Viewport::extrusionManipulatorVisible() const noexcept {
+  return extrusionManipulatorVisible_;
+}
+
 void Viewport::setExtrusionPreviewLength(double lengthMm) {
   extrusionPreviewLengthMm_ = std::clamp(lengthMm, -100000.0, 100000.0);
   if (extrusionLengthEditor_ &&
@@ -1012,6 +1032,11 @@ void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   toolParameterHud_->show();
   toolParameterHud_->raise();
   update();
+}
+
+double Viewport::toolManipulatorHudValue() const noexcept {
+  if (!toolManipulator_ || !toolParameterHud_) return 0.0;
+  return toolParameterHud_->value("distance");
 }
 
 void Viewport::setAngularToolManipulator(
@@ -2011,7 +2036,7 @@ void Viewport::paintGL() {
       painter.drawPolygon(extrusionHoverPolygon_);
   }
 
-  if (extrusionManipulatorVisible_) {
+  if (extrusionManipulatorVisible_ && !legacyExtrusionPreviewSuppressed()) {
     const QPointF offset = extrusionScreenOffset(extrusionPreviewLengthMm_);
     const QPointF tip = extrusionManipulatorAnchor_ + offset;
     const QColor previewColor = extrusionPreviewLengthMm_ >= 0.0
