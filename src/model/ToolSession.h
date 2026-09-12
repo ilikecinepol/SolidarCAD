@@ -30,6 +30,9 @@ struct LinearToolManipulator {
   // intentionally permit zero so the preview can return to the source shape.
   double minimumMm{0.01};
   double maximumMm{100000.0};
+  // Directional manipulators (Face Extrude) carry a SIGNED valueMm (negative =
+  // inward) and must never flip the drawn arrow against the semantic direction.
+  bool directional{false};
 };
 
 struct AngularToolManipulator {

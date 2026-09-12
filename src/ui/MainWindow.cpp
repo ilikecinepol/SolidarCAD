@@ -70,6 +70,30 @@
 
 namespace solidar {
 
+namespace {
+// Maps stable technical model-layer errors to Russian user messages at the UI
+// boundary. The model keeps technical English strings; only the UI translates.
+QString localizedFaceToolError(const std::string& technical) {
+  const QString error = QString::fromStdString(technical);
+  if (error.contains(QStringLiteral("does not intersect the body")))
+    return QString::fromUtf8("Выдавливание не пересекает тело.");
+  if (error.contains(QStringLiteral("ambiguous")))
+    return QString::fromUtf8("Выбранная грань не может быть однозначно определена.");
+  if (error.contains(QStringLiteral("planar")) ||
+      error.contains(QStringLiteral("must be planar")))
+    return QString::fromUtf8("Для выдавливания выберите плоскую грань.");
+  if (error.contains(QStringLiteral("could not be resolved")) ||
+      error.contains(QStringLiteral("no longer has a geometric match")) ||
+      error.contains(QStringLiteral("legacy fallback failed")) ||
+      error.contains(QStringLiteral("face no longer matches")) ||
+      error.contains(QStringLiteral("unavailable")))
+    return QString::fromUtf8("Не удалось восстановить выбранную грань после изменения модели.");
+  if (error.contains(QStringLiteral("curved surfaces")))
+    return QString::fromUtf8("Создание эскиза на криволинейной поверхности пока не поддерживается.");
+  return QString::fromUtf8("Не удалось определить выбранную поверхность.");
+}
+}  // namespace
+
 MainWindow::MainWindow(AppSettings& settings, QWidget* parent)
     : QMainWindow(parent), settings_(settings) {
   buildUi();
@@ -310,14 +334,16 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   }
   viewport_->setSolidVisible(hasExtrusion_);
   if (hasParametricHistory) refreshBodyViewFromDocument();
-  historyPosition_ = static_cast<int>(sketchHistory_.size()) +
-                     (hasExtrusion_ ? 1 : 0);
   editingSketchIndex_.reset();
   extrudeOperationManuallyChanged_ = false;
   modelUndoStack_.clear();
   sketchCanvas_->resetSketch();
   rebuildFeatureTree();
   rebuildHistoryPanel();
+  // The modern source of truth is buildPartDesignHistory (via historySteps_):
+  // after load/recompute the marker sits at the actual end and the viewport
+  // shows the final Body result.
+  moveHistoryToEnd();
   applyHistoryPosition(historyPosition_);
   workspaceStack_->setCurrentWidget(viewport_);
   setProjectPath(path);
@@ -1259,16 +1285,23 @@ void MainWindow::buildUi() {
                   }
               const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
               if (!shape) {
-                QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
-                                     QStringLiteral("Sketch support face could not be resolved"));
+                QMessageBox::warning(
+                    this, QString::fromUtf8("Sketch on Face"),
+                    QString::fromUtf8("Не удалось восстановить выбранную грань после изменения модели."));
                 return;
               }
               const auto resolved =
                   resolveFacePlacement(*shape, faceReference->topology());
+              if (!resolved.resolved) {
+                QMessageBox::warning(
+                    this, QString::fromUtf8("Sketch on Face"),
+                    QString::fromUtf8("Не удалось восстановить выбранную грань после изменения модели."));
+                return;
+              }
               if (!resolved.planar) {
                 QMessageBox::information(
                     this, QString::fromUtf8("Sketch on Face"),
-                    QStringLiteral("Sketch on curved surfaces is not supported yet"));
+                    QString::fromUtf8("Создание эскиза на криволинейной поверхности пока не поддерживается."));
                 return;
               }
               currentSketchPlacement_ = resolved.placement;
@@ -1564,10 +1597,9 @@ void MainWindow::finishSketch() {
       sketchCanvas_->resetSketch();
       viewport_->setSketch(sketch::Sketch{});
       sketchCount_ = sketchHistory_.size();
-      historyPosition_ = static_cast<int>(sketchHistory_.size()) +
-                         (hasExtrusion_ ? 1 : 0);
       rebuildFeatureTree();
       rebuildHistoryPanel();
+      moveHistoryToEnd();
     });
     viewport_->addSketch(sketch, currentSketchSupport_,
                          currentSketchPlacement_);
@@ -1576,10 +1608,10 @@ void MainWindow::finishSketch() {
     ++sketchCount_;
   }
   editingSketchIndex_.reset();
-  historyPosition_ = static_cast<int>(sketchHistory_.size()) +
-                     (hasExtrusion_ ? 1 : 0);
   rebuildFeatureTree();
   rebuildHistoryPanel();
+  moveHistoryToEnd();
+  applyHistoryPosition(historyPosition_);
   workspaceStack_->setCurrentWidget(viewport_);
   statusBar()->showMessage(completionMessage, 5000);
 }
@@ -1706,10 +1738,9 @@ void MainWindow::extrudeSketch() {
       viewport_->setSolidVisible(true);
       hasExtrusion_ = true;
     }
-    historyPosition_ = static_cast<int>(sketchHistory_.size()) +
-                       (hasExtrusion_ ? 1 : 0);
     rebuildFeatureTree();
     rebuildHistoryPanel();
+    moveHistoryToEnd();
   });
 
   refreshBodyViewFromDocument();
@@ -1728,9 +1759,10 @@ void MainWindow::extrudeSketch() {
   viewport_->hideExtrusionManipulator();
   extrusionDock_->hide();
   modelRibbon_->clearActiveTool();
-  historyPosition_ = static_cast<int>(sketchHistory_.size()) + 1;
   rebuildFeatureTree();
   rebuildHistoryPanel();
+  moveHistoryToEnd();
+  applyHistoryPosition(historyPosition_);
   workspaceStack_->setCurrentWidget(viewport_);
   statusBar()->showMessage(
       QString::fromUtf8("Создано твёрдое тело: выдавливание %1 мм").arg(height), 4000);
@@ -2513,7 +2545,7 @@ void MainWindow::updateFaceExtrudeToolPreview() {
     viewport_->clearToolPreviewShape();
     toolParametersPanel_->setStatus(
         state == ToolLifecycle::PreviewInvalid
-            ? QString::fromStdString(faceExtrudeSession_.error())
+            ? localizedFaceToolError(faceExtrudeSession_.error())
             : QString::fromUtf8("Выберите грань тела"),
         state == ToolLifecycle::PreviewInvalid);
   }
@@ -2522,7 +2554,7 @@ void MainWindow::updateFaceExtrudeToolPreview() {
   else
     viewport_->clearToolManipulator();
   if (state == ToolLifecycle::PreviewInvalid)
-    statusBar()->showMessage(QString::fromStdString(faceExtrudeSession_.error()));
+    statusBar()->showMessage(localizedFaceToolError(faceExtrudeSession_.error()));
 }
 
 void MainWindow::acceptFaceExtrudeTool() {
@@ -2852,11 +2884,20 @@ void MainWindow::rebuildHistoryPanel() {
 }
 
 bool MainWindow::ensureHistoryAtEnd() {
-  if (historyPosition_ >= static_cast<int>(historySteps_.size())) return true;
+  if (isHistoryAtEnd()) return true;
   statusBar()->showMessage(QString::fromUtf8(
       "Вернитесь к последнему шагу истории, чтобы добавить новую операцию."),
       4000);
   return false;
+}
+
+bool MainWindow::isHistoryAtEnd() const {
+  return historyPosition_ >= static_cast<int>(historySteps_.size());
+}
+
+void MainWindow::moveHistoryToEnd() {
+  historyPosition_ = static_cast<int>(historySteps_.size());
+  if (historyTimeline_) historyTimeline_->setPosition(historyPosition_);
 }
 
 void MainWindow::removeHistoryStep(const HistoryStep& step) {
@@ -2979,15 +3020,22 @@ bool MainWindow::configureSketchEditContext() {
       }
   const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
   if (!shape) {
-    QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
-                         QStringLiteral("Sketch support face could not be resolved"));
+    QMessageBox::warning(
+        this, QString::fromUtf8("Sketch on Face"),
+        QString::fromUtf8("Не удалось восстановить выбранную грань после изменения модели."));
     return false;
   }
   const auto resolved = resolveFacePlacement(*shape, reference.topology());
+  if (!resolved.resolved) {
+    QMessageBox::warning(
+        this, QString::fromUtf8("Sketch on Face"),
+        QString::fromUtf8("Не удалось восстановить выбранную грань после изменения модели."));
+    return false;
+  }
   if (!resolved.planar) {
     QMessageBox::information(
         this, QString::fromUtf8("Sketch on Face"),
-        QStringLiteral("Sketch on curved surfaces is not supported yet"));
+        QString::fromUtf8("Создание эскиза на криволинейной поверхности пока не поддерживается."));
     return false;
   }
   currentSketchPlacement_ = resolved.placement;

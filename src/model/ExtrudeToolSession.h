@@ -20,7 +20,8 @@ class ExtrudeToolSession final : public ToolSession {
              std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setFace(FaceReference face);
   void setLengthFromPanel(double lengthMm);
-  void setLengthFromManipulator(double lengthMm);
+  void setLengthFromManipulator(double signedValue);
+  void setSignedLength(double signedValue);
   void setOperation(ExtrudeOperation operation);
   void setReversed(bool reversed);
 
@@ -42,7 +43,8 @@ class ExtrudeToolSession final : public ToolSession {
   void cancel() noexcept override;
 
  private:
-  bool trySetLength(double lengthMm);
+  void applySignedLength(double signedValue);
+  void applyMagnitude(double magnitude);
 
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};

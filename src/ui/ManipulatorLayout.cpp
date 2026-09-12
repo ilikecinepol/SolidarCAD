@@ -50,6 +50,7 @@ ManipulatorLayoutResult computeManipulatorLayout(
   double bestScore = -std::numeric_limits<double>::max();
   ManipulatorLayoutResult result;
   for (double sign : {1.0, -1.0}) {
+    if (!style.allowVisualDirectionFlip && sign < 0.0) continue;
     const double length = std::clamp(std::abs(input.semanticLengthPx),
                                      style.minimumLength,
                                      style.maximumLength);

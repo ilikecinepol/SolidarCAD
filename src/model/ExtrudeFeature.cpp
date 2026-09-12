@@ -4,6 +4,7 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
@@ -242,6 +243,17 @@ bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
     if (operation_ == ExtrudeOperation::Cut && after >= before - tolerance) {
       markError("Extrude Cut does not intersect the body");
       return false;
+    }
+    // Join leaves coplanar seams between the base and the fused prism; unify
+    // only genuine same-domain faces/edges before committing the solid.
+    if (operation_ == ExtrudeOperation::Join) {
+      ShapeUpgrade_UnifySameDomain unify(singleSolid, true, true, false);
+      unify.Build();
+      if (unify.Shape().IsNull()) {
+        markError("Extrude same-domain unification failed");
+        return false;
+      }
+      singleSolid = unify.Shape();
     }
     setShape(std::make_shared<TopoDS_Shape>(singleSolid));
     markValid();

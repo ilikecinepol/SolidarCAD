@@ -28,6 +28,10 @@ struct ManipulatorStyle {
   // Keep the handle at the true angle, but draw at least this much trail so
   // the angular manipulator is obviously interactive.
   double minimumAngularSweepDeg{42.0};
+  // Directional manipulators (e.g. Face Extrude) must never invert the drawn
+  // arrow against the semantic geometry direction. When false the layout keeps
+  // visualSign = +1 (no direction flip) and only moves the HUD independently.
+  bool allowVisualDirectionFlip{true};
 };
 
 struct ManipulatorLayoutInput {

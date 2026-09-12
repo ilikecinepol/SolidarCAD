@@ -91,7 +91,7 @@ target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(solidar_model PUBLIC
   TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKBO TKBool
-  TKFillet TKMesh TKOffset
+  TKFillet TKMesh TKOffset TKShHealing
 )
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)

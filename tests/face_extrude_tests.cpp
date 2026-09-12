@@ -1,17 +1,22 @@
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeWedge.hxx>
+#include <GeomAbs_CurveType.hxx>
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -20,6 +25,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "TestGeometryUtils.h"
 #include "model/Document.h"
@@ -289,6 +296,63 @@ int main(int argc, char** argv) {
                                              ExtrudeOperation::Join, false,
                                              &result, &geometry, &error));
       CHECK(error.find("planar") != std::string::npos);
+    }
+
+    // L. Same-domain unification after Join removes the coplanar side seam at
+    // the FACE level (a clean box: 6 faces) while keeping the volume and real
+    // corners; the holey-box test G exercises hole preservation through the
+    // same unification path.
+    {
+      const TopoDS_Shape box = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape();
+      const auto top = solidar::test::topPlanarFace(box, 20.0);
+      CHECK(top);
+      const auto reference = solidar::makeFaceReference(box, 1, 1, *top);
+      TopoDS_Shape result;
+      solidar::FaceExtrudeGeometry geometry;
+      std::string error;
+      CHECK(solidar::buildExtrusionFromFace(box, reference, 10.0,
+                                            ExtrudeOperation::Join, false,
+                                            &result, &geometry, &error));
+      const double baseVolume = 40.0 * 30.0 * 20.0;
+      const double faceArea = 40.0 * 30.0;
+      CHECK(near(volumeOf(result), baseVolume + faceArea * 10.0, 1e-2));
+      std::size_t faceCount = 0;
+      for (TopExp_Explorer faces(result, TopAbs_FACE); faces.More();
+           faces.Next())
+        ++faceCount;
+      // The coplanar side faces are merged into a single box face each: the
+      // seam is gone as a face boundary (faceCount == 6). ShapeUpgrade_
+      // UnifySameDomain does not collapse the retained seam ring, so the result
+      // carries 24 edges (measured) instead of a clean box's 12; this does not
+      // affect the face-level seam removal or the volume.
+      CHECK(faceCount == 6);
+
+      // Real corners remain: the 4 vertical box corners survive as vertical
+      // lines (each split into two collinear segments by the retained seam
+      // ring). Grouping the vertical edges by their (x, y) position recovers
+      // exactly the 4 corners.
+      std::vector<std::pair<double, double>> verticalCorners;
+      for (TopExp_Explorer edges(result, TopAbs_EDGE); edges.More();
+           edges.Next()) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges.Current());
+        BRepAdaptor_Curve curve(edge);
+        if (curve.GetType() != GeomAbs_Line) continue;
+        const gp_Pnt first = curve.Value(curve.FirstParameter());
+        const gp_Pnt last = curve.Value(curve.LastParameter());
+        const gp_Vec direction(first, last);
+        if (direction.Magnitude() < 1e-6) continue;
+        const gp_Dir normalized(direction);
+        if (std::abs(normalized.Z()) <= 0.999) continue;
+        const double x = first.X();
+        const double y = first.Y();
+        const bool seen = std::any_of(
+            verticalCorners.begin(), verticalCorners.end(), [&](const auto& p) {
+              return std::abs(p.first - x) < 1e-4 &&
+                     std::abs(p.second - y) < 1e-4;
+            });
+        if (!seen) verticalCorners.emplace_back(x, y);
+      }
+      CHECK(verticalCorners.size() == 4);
     }
 
     // I + J + K. Feature-level face extrude: edit length, upstream dimension

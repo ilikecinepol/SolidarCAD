@@ -55,11 +55,15 @@ void ExtrudeToolSession::setFace(FaceReference face) {
 }
 
 void ExtrudeToolSession::setLengthFromPanel(double lengthMm) {
-  trySetLength(lengthMm);
+  applyMagnitude(lengthMm);
 }
 
-void ExtrudeToolSession::setLengthFromManipulator(double lengthMm) {
-  trySetLength(lengthMm);
+void ExtrudeToolSession::setLengthFromManipulator(double signedValue) {
+  setSignedLength(signedValue);
+}
+
+void ExtrudeToolSession::setSignedLength(double signedValue) {
+  applySignedLength(signedValue);
 }
 
 void ExtrudeToolSession::setOperation(ExtrudeOperation operation) {
@@ -177,33 +181,43 @@ std::optional<LinearToolManipulator> ExtrudeToolSession::manipulator() const {
 
   Vector3d direction{geometry.normal.X(), geometry.normal.Y(),
                      geometry.normal.Z()};
-  if (reversed_)
-    direction = {-direction.x, -direction.y, -direction.z};
-
+  // The manipulator direction is always the outward face normal. The drag
+  // value is SIGNED: negative means inward (reversed), so the Viewport can
+  // cross zero without a separate direction flip.
+  const double signedValue = reversed_ ? -length_.value() : length_.value();
   return LinearToolManipulator{{geometry.centroid.X(), geometry.centroid.Y(),
                                 geometry.centroid.Z()},
                                direction,
-                               length_.value(),
-                               minimumMm_,
-                               maximumMm_};
+                               signedValue,
+                               -maximumMm_,
+                               maximumMm_,
+                               true};
 }
 
-bool ExtrudeToolSession::trySetLength(double lengthMm) {
-  const auto candidate = length_.candidate(lengthMm);
-  if (!candidate || !baseShape_ || baseShape_->IsNull()) return false;
-  const double previous = length_.value();
-  const auto previousPreview = previewShape_;
-  const auto previousLifecycle = lifecycle_;
-  const auto previousError = error_;
-  const auto previousGeometry = geometry_;
-  length_.accept(*candidate);
-  if (updatePreview()) return true;
-  length_.accept(previous);
-  previewShape_ = previousPreview;
-  lifecycle_ = previousLifecycle;
-  error_ = previousError;
-  geometry_ = previousGeometry;
-  return false;
+void ExtrudeToolSession::applyMagnitude(double magnitude) {
+  if (!std::isfinite(magnitude)) return;
+  length_.accept(std::clamp(std::abs(magnitude), minimumMm_, maximumMm_));
+  updatePreview();
+}
+
+void ExtrudeToolSession::applySignedLength(double signedValue) {
+  if (!std::isfinite(signedValue)) return;
+  constexpr double epsilon = 1e-6;
+  if (signedValue > epsilon) {
+    reversed_ = false;
+    length_.accept(std::clamp(signedValue, minimumMm_, maximumMm_));
+  } else if (signedValue < -epsilon) {
+    reversed_ = true;
+    length_.accept(std::clamp(-signedValue, minimumMm_, maximumMm_));
+  } else {
+    // Transient zero-crossing: keep the last direction, clamp to the smallest
+    // admissible magnitude so the preview stays editable through the crossing.
+    length_.accept(minimumMm_);
+  }
+  // Never roll back the signed state on a transient invalid preview: keep the
+  // length/reversed as the user set them, mark PreviewInvalid and let the drag
+  // continue (this is the fix vs the old trySetRadius-style rollback).
+  updatePreview();
 }
 
 void ExtrudeToolSession::cancel() noexcept {

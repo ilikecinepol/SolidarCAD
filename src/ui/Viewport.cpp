@@ -983,15 +983,21 @@ void Viewport::commitFaceSelection(std::size_t globalIndex, bool toggle) {
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   toolManipulator_ = manipulator;
   angularToolManipulator_.reset();
+  // The HUD/panel show the ABSOLUTE length for directional manipulators; the
+  // sign only reflects the drag direction, not a separate user-facing control.
+  const double hudValue =
+      manipulator.directional ? std::abs(manipulator.valueMm) : manipulator.valueMm;
+  const double hudMinimum = manipulator.directional ? 0.01 : manipulator.minimumMm;
+  const double hudMaximum = manipulator.maximumMm;
   if (toolHudParameterId_ != "distance") {
     toolParameterHud_->setParameters({
         {"distance", "Distance", ToolParameterType::Distance,
-         manipulator.valueMm, manipulator.minimumMm, manipulator.maximumMm,
+         hudValue, hudMinimum, hudMaximum,
          0.1, "mm", true,
          ToolManipulatorType::Linear}});
     toolHudParameterId_ = "distance";
   } else {
-    toolParameterHud_->setValue("distance", manipulator.valueMm);
+    toolParameterHud_->setValue("distance", hudValue);
   }
   const QPointF tip = cameraPan_ + projectBodyPoint(
       {manipulator.origin.x + manipulator.direction.x * manipulator.valueMm,
@@ -1089,13 +1095,15 @@ std::optional<ManipulatorLayoutResult> Viewport::toolManipulatorLayout() const {
   const QRectF bodyBounds = hasToolPreview
       ? projectedBodyBounds(toolPreviewRenderMesh_, size(), yaw_, pitch_, zoom_)
       : projectedBodyBounds(bodyRenderMesh_, size(), yaw_, pitch_, zoom_);
+  ManipulatorStyle style = manipulatorStyle_;
+  if (toolManipulator_->directional) style.allowVisualDirectionFlip = false;
   return computeManipulatorLayout(
       {start, semanticEnd - start, QLineF(start, semanticEnd).length(),
        bodyBounds, QRectF(QPointF(-cameraPan_.x(), -cameraPan_.y()), size()),
        toolParameterHud_ ? toolParameterHud_->size() : QSizeF(132, 40),
        {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(), 116.0,
                116.0)}},
-      manipulatorStyle_);
+      style);
 }
 
 std::optional<Viewport::AngularVisual> Viewport::angularVisual() const {
@@ -2196,7 +2204,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       QPointF projectedUnitAxis =
           projectBodyPoint(unitWorld, center, size(), yaw_, pitch_, zoom_).screen -
           start;
-      if (layout->visualSign < 0.0) projectedUnitAxis = -projectedUnitAxis;
+      if (layout->visualSign < 0.0 && !toolManipulator_->directional)
+        projectedUnitAxis = -projectedUnitAxis;
       // The drag axis must share the drawn arrow's stable direction. When the
       // true 1 mm projection is end-on, fall back to that direction with
       // bounded gain so the value follows the drawn arrow monotonically.

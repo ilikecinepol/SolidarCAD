@@ -28,7 +28,8 @@ if(SOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK
    AND EXISTS "${_solidar_bootstrap_occt_lib}/TKBool.lib"
    AND EXISTS "${_solidar_bootstrap_occt_lib}/TKFillet.lib"
    AND EXISTS "${_solidar_bootstrap_occt_lib}/TKOffset.lib"
-   AND EXISTS "${_solidar_bootstrap_occt_lib}/TKMesh.lib")
+   AND EXISTS "${_solidar_bootstrap_occt_lib}/TKMesh.lib"
+   AND EXISTS "${_solidar_bootstrap_occt_lib}/TKShHealing.lib")
   set(VCPKG_MANIFEST_MODE OFF CACHE BOOL
       "Use the already-built local OCCT toolkits" FORCE)
 endif()
@@ -90,14 +91,15 @@ if(NOT OpenCASCADE_FOUND AND WIN32
 
   set(_solidar_occt_toolkits
       TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKPrim
-      TKBO TKBool TKFillet TKOffset TKMesh)
+      TKBO TKBool TKFillet TKOffset TKMesh TKShHealing)
   if(EXISTS "${_solidar_occt_build_dir}/include/opencascade/TopoDS_Shape.hxx"
      AND EXISTS "${_solidar_occt_lib_dir}/TKPrim.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKBO.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKBool.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKFillet.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKOffset.lib"
-     AND EXISTS "${_solidar_occt_lib_dir}/TKMesh.lib")
+     AND EXISTS "${_solidar_occt_lib_dir}/TKMesh.lib"
+     AND EXISTS "${_solidar_occt_lib_dir}/TKShHealing.lib")
     set(OpenCASCADE_FOUND TRUE)
     set(OpenCASCADE_INCLUDE_DIR
         "${_solidar_occt_build_dir}/include/opencascade")

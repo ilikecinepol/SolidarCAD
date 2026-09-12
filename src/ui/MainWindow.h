@@ -102,6 +102,8 @@ class MainWindow final : public QMainWindow {
   void editHistoryFeature(BodyId bodyId, FeatureId featureId);
   void removeHistoryStep(const HistoryStep& step);
   bool ensureHistoryAtEnd();
+  void moveHistoryToEnd();
+  [[nodiscard]] bool isHistoryAtEnd() const;
   void editExtrusionStep(BodyId bodyId, FeatureId featureId);
   void editPocketStep(BodyId bodyId, FeatureId featureId);
   void editFilletStep(BodyId bodyId, FeatureId featureId);

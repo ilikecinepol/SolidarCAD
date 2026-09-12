@@ -332,6 +332,32 @@ FaceResolution resolveFaceReference(const TopoDS_Shape& shape,
       if (tagged.size() == 1)
         return resolvedFace(*tagged.front(), TopologyMatchMethod::SemanticTag);
       if (tagged.size() > 1) {
+        // The semantic tag is a strong hint, not an absolute identity: after a
+        // boolean/extrude several coplanar faces can share one auto-tag. When a
+        // saved FaceSignature is available, score ONLY the tagged candidates and
+        // pick a unique best; a tie stays a true ambiguity.
+        if (reference.faceSignature) {
+          std::vector<std::pair<double, const FaceCandidate*>> matches;
+          const double size = diagonal(boundsOf(shape));
+          for (const FaceCandidate* candidate : tagged)
+            if (const auto score = faceScore(*reference.faceSignature,
+                                             candidate->signature, size))
+              matches.emplace_back(*score, candidate);
+          std::sort(matches.begin(), matches.end(),
+                    [](const auto& a, const auto& b) { return a.first < b.first; });
+          if (matches.empty()) {
+            failure.error = "Topology face no longer has a geometric match";
+            return failure;
+          }
+          if (matches.size() > 1 &&
+              matches[1].first - matches[0].first <=
+                  kTopologyAmbiguityScoreTolerance) {
+            failure.error = "Topology face reference is ambiguous";
+            return failure;
+          }
+          return resolvedFace(*matches.front().second,
+                              TopologyMatchMethod::GeometricSignature);
+        }
         failure.error = "Topology face reference is ambiguous by semantic tag";
         return failure;
       }

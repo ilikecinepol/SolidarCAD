@@ -4,6 +4,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <GeomAbs_SurfaceType.hxx>
@@ -108,7 +109,7 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
     TopExp_Explorer solids(booleanResult, TopAbs_SOLID);
     if (!solids.More())
       return fail("Face extrude result does not contain a solid");
-    const TopoDS_Shape singleSolid = solids.Current();
+    TopoDS_Shape singleSolid = solids.Current();
     solids.Next();
     if (solids.More())
       return fail(operation == ExtrudeOperation::Join
@@ -124,6 +125,17 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
       return fail("Face extrude Join does not intersect the body");
     if (operation == ExtrudeOperation::Cut && after >= before - tolerance)
       return fail("Face extrude Cut does not intersect the body");
+
+    // Join leaves coplanar seams between the base and the fused prism. Unify
+    // only genuine same-domain faces/edges (never real geometric boundaries),
+    // then re-validate the healed solid.
+    if (operation == ExtrudeOperation::Join) {
+      ShapeUpgrade_UnifySameDomain unify(singleSolid, true, true, false);
+      unify.Build();
+      if (unify.Shape().IsNull())
+        return fail("Face extrude same-domain unification failed");
+      singleSolid = unify.Shape();
+    }
 
     BRepCheck_Analyzer analyzer(singleSolid);
     if (!analyzer.IsValid())

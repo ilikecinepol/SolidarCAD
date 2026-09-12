@@ -70,31 +70,53 @@ ResolvedFacePlacement resolveFacePlacement(const TopoDS_Shape& shape,
       if (index != faceIndex) continue;
       const TopoDS_Face face = TopoDS::Face(explorer.Current());
       BRepAdaptor_Surface surface(face, true);
-      if (surface.GetType() != GeomAbs_Plane) return {};
+      if (surface.GetType() != GeomAbs_Plane) {
+        ResolvedFacePlacement result;
+        result.resolved = true;
+        result.planar = false;
+        return result;
+      }
 
       const gp_Ax3 axes = surface.Plane().Position();
       const gp_Pnt location = axes.Location();
       gp_Dir x = axes.XDirection();
       gp_Dir y = axes.YDirection();
       if (face.Orientation() == TopAbs_REVERSED) y.Reverse();
-      return {{{location.X(), location.Y(), location.Z()},
-               {x.X(), x.Y(), x.Z()},
-               {y.X(), y.Y(), y.Z()}},
-              true};
+      ResolvedFacePlacement result;
+      result.placement = {{location.X(), location.Y(), location.Z()},
+                          {x.X(), x.Y(), x.Z()},
+                          {y.X(), y.Y(), y.Z()}};
+      result.planar = true;
+      result.resolved = true;
+      return result;
     }
-  } catch (const Standard_Failure&) {
-    return {};
+  } catch (const Standard_Failure& failure) {
+    ResolvedFacePlacement result;
+    result.resolved = false;
+    result.error = failure.GetMessageString();
+    return result;
   } catch (...) {
-    return {};
+    ResolvedFacePlacement result;
+    result.resolved = false;
+    result.error = "Unexpected failure while resolving face placement";
+    return result;
   }
-  return {};
+  ResolvedFacePlacement result;
+  result.resolved = false;
+  result.error = "Face index not found in the source shape";
+  return result;
 }
 
 ResolvedFacePlacement resolveFacePlacement(
     const TopoDS_Shape& shape, const TopologyReference& reference) {
   const auto resolved = resolveFaceReference(shape, reference);
-  return resolved ? resolveFacePlacement(shape, resolved.index)
-                  : ResolvedFacePlacement{};
+  if (!resolved) {
+    ResolvedFacePlacement result;
+    result.resolved = false;
+    result.error = resolved.error;
+    return result;
+  }
+  return resolveFacePlacement(shape, resolved.index);
 }
 
 }  // namespace solidar

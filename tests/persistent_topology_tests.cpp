@@ -1,5 +1,9 @@
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <GProp_GProps.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Pnt.hxx>
 
 #include <cmath>
 #include <cstdlib>
@@ -128,6 +132,59 @@ int main() {
     const auto missing = solidar::resolveEdgeReference(original, impossible);
     CHECK(!missing);
     CHECK(missing.error.find("no longer") != std::string::npos);
+
+    // Face disambiguation: two coplanar max-z faces share one auto-tag after a
+    // boolean fuse. A FaceSignature must select the correct tagged candidate
+    // (GeometricSignature), not fail with "ambiguous by semantic tag".
+    {
+      const TopoDS_Shape boxA = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape();
+      const TopoDS_Shape boxB =
+          BRepPrimAPI_MakeBox(gp_Pnt(10.0, 0.0, 0.0), 10.0, 10.0, 10.0).Shape();
+      BRepAlgoAPI_Fuse fuse(boxA, boxB);
+      fuse.Build();
+      CHECK(fuse.IsDone());
+      const TopoDS_Shape fused = fuse.Shape();
+
+      std::vector<solidar::FaceReference> tops;
+      for (std::size_t index = 0; index < 32; ++index) {
+        auto reference = solidar::makeFaceReference(fused, bodyId, featureId,
+                                                    index);
+        if (reference.persistentTag == "planar:max-z" && reference.signature)
+          tops.push_back(std::move(reference));
+      }
+      CHECK(tops.size() == 2);
+
+      // Unique best: the saved signature resolves to its own face.
+      const solidar::FaceReference& saved = tops[0];
+      const auto resolved =
+          solidar::resolveFaceReference(fused, saved.topology());
+      CHECK(resolved);
+      CHECK(resolved.method ==
+            solidar::TopologyMatchMethod::GeometricSignature);
+      CHECK(resolved.subshape);
+      GProp_GProps properties;
+      BRepGProp::SurfaceProperties(*resolved.subshape, properties);
+      CHECK(std::abs(properties.CentreOfMass().X() -
+                     saved.signature->centroid.x) < 1e-3);
+
+      // True symmetric ambiguity: a midpoint signature scores both equally.
+      solidar::FaceReference ambiguous = tops[0];
+      ambiguous.signature->centroid.x =
+          (tops[0].signature->centroid.x + tops[1].signature->centroid.x) * 0.5;
+      const auto ambiguity =
+          solidar::resolveFaceReference(fused, ambiguous.topology());
+      CHECK(!ambiguity);
+      CHECK(ambiguity.error.find("ambiguous") != std::string::npos);
+
+      // Duplicate tag without a signature keeps the hard semantic-tag failure.
+      solidar::FaceReference noSignature{bodyId, featureId, 0};
+      noSignature.persistentTag = "planar:max-z";
+      const auto noSignatureResolved =
+          solidar::resolveFaceReference(fused, noSignature.topology());
+      CHECK(!noSignatureResolved);
+      CHECK(noSignatureResolved.error.find("ambiguous by semantic tag") !=
+            std::string::npos);
+    }
   } catch (const std::exception& error) {
     std::cerr << "persistent topology regression failure: " << error.what()
               << '\n';

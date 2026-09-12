@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <string>
 
 #include "model/TopologyReference.h"
 
@@ -90,6 +91,10 @@ struct SketchSupport {
 struct ResolvedFacePlacement {
   SketchPlacement placement;
   bool planar{false};
+  // True only when the face reference actually resolved to a face. When false
+  // the resolution itself failed (topology error) and `planar` is meaningless.
+  bool resolved{false};
+  std::string error;
 };
 
 [[nodiscard]] ResolvedFacePlacement resolveFacePlacement(
