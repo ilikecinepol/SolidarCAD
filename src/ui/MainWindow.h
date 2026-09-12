@@ -11,6 +11,7 @@
 #include "model/RevolveToolSession.h"
 #include "model/ShellToolSession.h"
 #include "model/DraftToolSession.h"
+#include "model/ExtrudeToolSession.h"
 #include "ui/tools/PartDesignToolController.h"
 #include "ui/PartDesignHistory.h"
 #include "sketch/Sketch.h"
@@ -86,6 +87,12 @@ class MainWindow final : public QMainWindow {
   void updateDraftToolPreview();
   void acceptDraftTool();
   void cancelDraftTool();
+  void createFaceExtrude(const FaceReference& face);
+  void updateFaceExtrudeToolPreview();
+  void acceptFaceExtrudeTool();
+  void cancelFaceExtrudeTool();
+  void editFaceExtrudeStep(Body* body, ExtrudeFeature* extrude,
+                           std::size_t extrudeIndex);
   void refreshBodyViewFromDocument();
   void rebuildFeatureTree();
   void rebuildHistoryPanel();
@@ -137,6 +144,7 @@ class MainWindow final : public QMainWindow {
   ChamferToolSession chamferToolSession_;
   ShellToolSession shellToolSession_;
   DraftToolSession draftToolSession_;
+  ExtrudeToolSession faceExtrudeSession_;
   RevolveToolSession revolveToolSession_;
   PartDesignToolController partDesignTools_;
   QDockWidget* revolveDock_{nullptr};

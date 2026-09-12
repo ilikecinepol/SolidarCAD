@@ -24,6 +24,10 @@ struct ManipulatorStyle {
   double minimumAngularRadiusPx{34.0};
   double maximumAngularRadiusPx{200.0};
   double angularClearancePx{26.0};
+  // A 5В° Draft angle otherwise produces only a few pixels of visible arc.
+  // Keep the handle at the true angle, but draw at least this much trail so
+  // the angular manipulator is obviously interactive.
+  double minimumAngularSweepDeg{42.0};
 };
 
 struct ManipulatorLayoutInput {

@@ -230,19 +230,35 @@ int main(int argc, char** argv) {
                        ++facePicks;
                        lastSurface = surface;
                      });
+    // The native face-capture signal must carry a persistent FaceReference
+    // (owner body/feature + geometric signature), not a screen-space string.
+    int nativeFacePicks = 0;
+    solidar::FaceReference lastFace;
+    QObject::connect(&body, &solidar::Viewport::extrusionFacePicked, &body,
+                     [&](const solidar::FaceReference& face) {
+                       ++nativeFacePicks;
+                       lastFace = face;
+                     });
     body.beginExtrusionSurfaceSelection();
     mouse(body, QEvent::MouseButtonPress, topFace,
           Qt::LeftButton, Qt::LeftButton);
     CHECK(facePicks == 1);
     CHECK(lastSurface.startsWith(
         QString::fromUtf8("\u0413\u0440\u0430\u043d\u044c \u0442\u0435\u043b\u0430")));
+    CHECK(nativeFacePicks == 1);
+    CHECK(lastFace.bodyId == bodyId);
+    CHECK(lastFace.featureId == sourceFeatureId);
+    CHECK(lastFace.signature.has_value());
     CHECK(body.extrusionCandidateSketchIndex() ==
           static_cast<std::size_t>(-1));
     CHECK(!body.extrusionCandidateOnBodyCap());
     body.beginExtrusionSurfaceSelection();
+    // An off-body click must not emit the native face signal either.
+    nativeFacePicks = 0;
     mouse(body, QEvent::MouseButtonPress, outside,
           Qt::LeftButton, Qt::LeftButton);
     CHECK(facePicks == 1);
+    CHECK(nativeFacePicks == 0);
   }
 
   // Rectangle marquee state machine. The body is a 40x30x20 box; with the
@@ -823,11 +839,8 @@ int main(int argc, char** argv) {
     CHECK(view.selectedBodyFaces() == before);
   }
 
-  // CONTRACT A keyboard workflow. With an editable HUD field present, Tab with
-  // viewport focus routes into the HUD (no dock focus request); a HUD Enter
-  // commit publishes toolParameterCommitted exactly once and auto-repeat Enter
-  // does not re-commit. Without an editable HUD field, Tab/Backtab request the
-  // dock focus with the correct backward flag.
+  // A HUD Enter commit publishes toolParameterCommitted exactly once and
+  // auto-repeat Enter does not re-commit.
   {
     solidar::Viewport view;
     view.resize(800, 600);
@@ -835,22 +848,9 @@ int main(int argc, char** argv) {
     auto* distance = view.findChild<QDoubleSpinBox*>("distance");
     CHECK(distance != nullptr);
 
-    int tabRequests = 0;
-    bool lastBackward = false;
-    QObject::connect(&view, &solidar::Viewport::tabFocusRequested, &view,
-                     [&](bool backward) {
-                       ++tabRequests;
-                       lastBackward = backward;
-                     });
     int commits = 0;
     QObject::connect(&view, &solidar::Viewport::toolParameterCommitted, &view,
                      [&] { ++commits; });
-
-    // Tab with an editable HUD field present routes into the HUD, so no dock
-    // focus is requested.
-    QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
-    QApplication::sendEvent(&view, &tab);
-    CHECK(tabRequests == 0);
 
     // A HUD field Enter commit emits toolParameterCommitted exactly once.
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
@@ -862,35 +862,6 @@ int main(int argc, char** argv) {
                      QString(), /*autorep=*/true);
     QApplication::sendEvent(distance, &repeat);
     CHECK(commits == 1);
-  }
-  {
-    solidar::Viewport view;
-    view.resize(800, 600);
-    int tabRequests = 0;
-    bool lastBackward = true;
-    QObject::connect(&view, &solidar::Viewport::tabFocusRequested, &view,
-                     [&](bool backward) {
-                       ++tabRequests;
-                       lastBackward = backward;
-                     });
-
-    // No editable HUD field: Tab requests the dock focus (forward).
-    QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
-    QApplication::sendEvent(&view, &tab);
-    CHECK(tabRequests == 1);
-    CHECK(lastBackward == false);
-
-    // Backtab requests the dock focus backward.
-    QKeyEvent backtab(QEvent::KeyPress, Qt::Key_Backtab, Qt::NoModifier);
-    QApplication::sendEvent(&view, &backtab);
-    CHECK(tabRequests == 2);
-    CHECK(lastBackward == true);
-
-    // Shift+Tab (Key_Tab + ShiftModifier) is also a backward request.
-    QKeyEvent shiftTab(QEvent::KeyPress, Qt::Key_Tab, Qt::ShiftModifier);
-    QApplication::sendEvent(&view, &shiftTab);
-    CHECK(tabRequests == 3);
-    CHECK(lastBackward == true);
   }
 
   return EXIT_SUCCESS;

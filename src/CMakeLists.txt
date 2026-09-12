@@ -28,8 +28,13 @@ add_library(solidar_model
   model/ChamferToolSession.h
   model/ExtrudeFeature.cpp
   model/ExtrudeFeature.h
+  model/ExtrudeSource.h
+  model/ExtrudeToolSession.cpp
+  model/ExtrudeToolSession.h
   model/ExtrudeOperationDetector.cpp
   model/ExtrudeOperationDetector.h
+  model/FaceExtrudeBuilder.cpp
+  model/FaceExtrudeBuilder.h
   model/FilletFeature.cpp
   model/FilletFeature.h
   model/FilletBuilder.cpp

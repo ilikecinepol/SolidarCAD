@@ -252,6 +252,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   chamferToolSession_.cancel();
   shellToolSession_.cancel();
   draftToolSession_.cancel();
+  faceExtrudeSession_.cancel();
   revolveToolSession_.cancel();
 
   if (modelRibbon_) modelRibbon_->clearActiveTool();
@@ -623,6 +624,9 @@ void MainWindow::buildUi() {
             } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               draftToolSession_.setAngleFromPanel(value);
               updateDraftToolPreview();
+            } else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
+              faceExtrudeSession_.setLengthFromPanel(value);
+              updateFaceExtrudeToolPreview();
             } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               filletToolSession_.setRadiusFromPanel(value);
               updateFilletToolPreview();
@@ -636,6 +640,8 @@ void MainWindow::buildUi() {
               acceptShellTool();
             else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
               acceptDraftTool();
+            else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive)
+              acceptFaceExtrudeTool();
             else
               acceptFilletTool();
           });
@@ -647,6 +653,8 @@ void MainWindow::buildUi() {
               cancelShellTool();
             else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
               cancelDraftTool();
+            else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive)
+              cancelFaceExtrudeTool();
             else
               cancelFilletTool();
           });
@@ -655,7 +663,8 @@ void MainWindow::buildUi() {
             if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 chamferToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 shellToolSession_.lifecycle() == ToolLifecycle::Inactive &&
-                draftToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+                draftToolSession_.lifecycle() == ToolLifecycle::Inactive &&
+                faceExtrudeSession_.lifecycle() == ToolLifecycle::Inactive) return;
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите геометрию непосредственно в viewport"));
             viewport_->setFocus();
@@ -665,7 +674,14 @@ void MainWindow::buildUi() {
             if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 chamferToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 shellToolSession_.lifecycle() == ToolLifecycle::Inactive &&
-                draftToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+                draftToolSession_.lifecycle() == ToolLifecycle::Inactive &&
+                faceExtrudeSession_.lifecycle() == ToolLifecycle::Inactive) return;
+            if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
+              viewport_->setSelectedBodyFaces({});
+              faceExtrudeSession_.setFace(FaceReference{});
+              updateFaceExtrudeToolPreview();
+              return;
+            }
             if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               viewport_->setSelectedBodyFaces({});
               shellToolSession_.setRemovedFaces({});
@@ -697,6 +713,10 @@ void MainWindow::buildUi() {
               shellToolSession_.setThicknessFromManipulator(value);
               toolParametersPanel_->setParameterValue(shellToolSession_.thicknessMm());
               updateShellToolPreview();
+            } else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
+              faceExtrudeSession_.setLengthFromManipulator(value);
+              toolParametersPanel_->setParameterValue(faceExtrudeSession_.lengthMm());
+              updateFaceExtrudeToolPreview();
             } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               filletToolSession_.setRadiusFromManipulator(value);
               toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
@@ -717,17 +737,35 @@ void MainWindow::buildUi() {
     }
   });
   connect(viewport_, &Viewport::bodyFaceSelectionChanged, this, [this] {
-    if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+    if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
+      const auto faces = viewport_->selectedBodyFaces();
+      if (!faces.empty())
+        faceExtrudeSession_.setFace(faces.front());
+      updateFaceExtrudeToolPreview();
+      // Keep keyboard focus in the viewport after face selection so the next
+      // Tab enters the on-canvas distance field, not the right-hand dock.
+      viewport_->setFocus(Qt::OtherFocusReason);
+    } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       shellToolSession_.setRemovedFaces(viewport_->selectedBodyFaces());
       updateShellToolPreview();
+      // Keep keyboard focus in the viewport after face selection so the next
+      // Tab enters the on-canvas thickness field, not the right-hand dock.
+      viewport_->setFocus(Qt::OtherFocusReason);
     } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       draftToolSession_.setFaces(viewport_->selectedBodyFaces());
       updateDraftToolPreview();
+      // Keep keyboard focus in the viewport after face selection so the next
+      // Tab enters the on-canvas angle field.
+      viewport_->setFocus(Qt::OtherFocusReason);
     }
   });
   connect(toolParametersPanel_, &ToolParametersPanel::optionChanged, this,
           [this](bool checked) {
-            if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+            if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
+              faceExtrudeSession_.setOperation(
+                  checked ? ExtrudeOperation::Cut : ExtrudeOperation::Join);
+              updateFaceExtrudeToolPreview();
+            } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               shellToolSession_.setOutside(checked);
               updateShellToolPreview();
             } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
@@ -747,7 +785,15 @@ void MainWindow::buildUi() {
   // like the Готово button. Each accept*Tool guards its own lifecycle, so an
   // invalid preview will not accept and focus stays in the HUD field.
   connect(viewport_, &Viewport::toolParameterCommitted, this, [this] {
-    if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+    // Extrude still uses its dedicated on-canvas spinbox. Treat Enter there
+    // exactly like the Apply button before dispatching ToolSession tools.
+    if (extrusionDock_->isVisible()) {
+      extrudeSketch();
+      return;
+    }
+    if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptFaceExtrudeTool();
+    else if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptChamferTool();
     else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptShellTool();
@@ -758,22 +804,7 @@ void MainWindow::buildUi() {
     else if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptRevolveTool();
   });
-  // Tab with viewport focus and no HUD editable field: focus the active tool's
-  // numeric dock field (extrude/revolve docks, else the tool parameter panel).
-  connect(viewport_, &Viewport::tabFocusRequested, this, [this](bool) {
-    if (extrusionDock_->isVisible()) {
-      extrusionLengthSpin_->setFocus(Qt::TabFocusReason);
-      extrusionLengthSpin_->selectAll();
-      return;
-    }
-    if (revolveDock_->isVisible()) {
-      revolveAngleSpin_->setFocus(Qt::TabFocusReason);
-      revolveAngleSpin_->selectAll();
-      return;
-    }
-    if (toolParametersDock_->isVisible())
-      toolParametersPanel_->focusParameterInput();
-  });
+
   const auto acceptActiveTool = [this] {
     toolParametersPanel_->interpretParameterText();
     if (!toolParametersPanel_->acceptEnabled()) return;
@@ -783,6 +814,8 @@ void MainWindow::buildUi() {
       acceptShellTool();
     else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptDraftTool();
+    else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptFaceExtrudeTool();
     else
       acceptFilletTool();
   };
@@ -808,9 +841,30 @@ void MainWindow::buildUi() {
               cancelShellTool();
             else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive)
               cancelDraftTool();
+            else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive)
+              cancelFaceExtrudeTool();
             else
               cancelFilletTool();
           });
+  // CAD Tab belongs to the on-canvas HUD, not to the controls in the
+  // right-hand Part Design panel. WidgetWithChildrenShortcut catches Tab even
+  // when a spinbox/checkbox inside the dock currently owns keyboard focus.
+  const auto focusViewportHud = [this](bool backward) {
+    viewport_->focusToolParameterField(backward);
+  };
+  auto* hudTabShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Tab), toolParametersDock_);
+  hudTabShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  hudTabShortcut->setAutoRepeat(false);
+  connect(hudTabShortcut, &QShortcut::activated, this,
+          [focusViewportHud] { focusViewportHud(false); });
+
+  auto* hudBacktabShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Backtab), toolParametersDock_);
+  hudBacktabShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  hudBacktabShortcut->setAutoRepeat(false);
+  connect(hudBacktabShortcut, &QShortcut::activated, this,
+          [focusViewportHud] { focusViewportHud(true); });
   connect(extrusionLengthSpin_, &QDoubleSpinBox::valueChanged, this,
           [this](double value) {
             const double signedValue = extrusionReverseCheck_->isChecked()
@@ -1245,6 +1299,10 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::extrusionSurfacePicked, this,
           [this](const QString& surface) {
+            // A native body-face pick now routes to face extrusion via
+            // extrusionFacePicked; the legacy string signal only drives
+            // sketch-contour extrusion from here on.
+            if (surface.startsWith(QString::fromUtf8("Грань тела"))) return;
             if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               const std::size_t index = viewport_->extrusionCandidateSketchIndex();
               if (index >= sketchHistory_.size()) return;
@@ -1272,6 +1330,8 @@ void MainWindow::buildUi() {
             extrusionDock_->show();
             extrusionDock_->raise();
           });
+  connect(viewport_, &Viewport::extrusionFacePicked, this,
+          [this](const FaceReference& face) { createFaceExtrude(face); });
   connect(sketchRibbon_, &SketchRibbon::finishRequested, this,
           &MainWindow::finishSketch);
   connect(sketchCanvas_, &SketchCanvas::geometryChanged, this,
@@ -1362,6 +1422,9 @@ void MainWindow::buildUi() {
   partDesignTools_.registerTool(
       PartDesignToolKind::Draft,
       {&draftToolSession_, [this] { cancelDraftTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::Extrude,
+      {&faceExtrudeSession_, [this] { cancelFaceExtrudeTool(); }, {}});
   connect(featureTree_, &QTreeWidget::itemDoubleClicked, this,
           [this](QTreeWidgetItem* item, int) {
             const auto id = static_cast<FeatureId>(
@@ -2198,6 +2261,9 @@ void MainWindow::createShell() {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateShellToolPreview();
+  // Shell HUD owns CAD Tab focus; do not leave focus on the ribbon button when
+  // the operation starts from a preselected face.
+  viewport_->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::updateShellToolPreview() {
@@ -2213,12 +2279,15 @@ void MainWindow::updateShellToolPreview() {
                                            ToolSelectionStage::SelectingInput)
                   : QString::fromStdString(shellToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
-  if (valid)
+  if (valid) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
     viewport_->setToolPreviewShape(shellToolSession_.bodyId(),
                                    shellToolSession_.sourceFeatureId(),
                                    shellToolSession_.previewShape());
-  else
+  } else {
     viewport_->clearToolPreviewShape();
+  }
   if (const auto manipulator = shellToolSession_.manipulator())
     viewport_->setToolManipulator(*manipulator);
   else
@@ -2304,6 +2373,8 @@ void MainWindow::createDraft() {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateDraftToolPreview();
+  // Draft HUD owns CAD Tab focus for the same preselection workflow as Shell.
+  viewport_->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::updateDraftToolPreview() {
@@ -2319,12 +2390,15 @@ void MainWindow::updateDraftToolPreview() {
                                            ToolSelectionStage::SelectingInput)
                   : QString::fromStdString(draftToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
-  if (valid)
+  if (valid) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
     viewport_->setToolPreviewShape(draftToolSession_.bodyId(),
                                    draftToolSession_.sourceFeatureId(),
                                    draftToolSession_.previewShape());
-  else
+  } else {
     viewport_->clearToolPreviewShape();
+  }
   if (const auto manipulator = draftToolSession_.manipulator())
     viewport_->setAngularToolManipulator(*manipulator);
   else
@@ -2384,6 +2458,170 @@ void MainWindow::acceptDraftTool() {
   modelRibbon_->clearActiveTool();
   rebuildFeatureTree();
   rebuildHistoryPanel();
+}
+
+void MainWindow::createFaceExtrude(const FaceReference& face) {
+  // Native face extrusion shares the Extrude ribbon entry; picking a real
+  // B-Rep body face (rather than a sketch contour) starts this face-source
+  // session. Never interrupt a running revolve profile re-selection.
+  if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive) return;
+  Body* body = document_.findBody(face.bodyId);
+  if (!body || !body->activeFeature() || !body->resultShape()) {
+    statusBar()->showMessage(QString::fromUtf8("Сначала создайте тело."), 3000);
+    return;
+  }
+  partDesignTools_.activate(PartDesignToolKind::Extrude);
+  faceExtrudeSession_.begin(body->id(), body->activeFeature()->id(),
+                            body->resultShape(), face, 10.0,
+                            ExtrudeOperation::Join, false);
+  viewport_->setSelectionFilter(SelectionFilter::Face);
+  viewport_->setFaceMultiSelectionMode(false);
+  viewport_->setSelectedBodyFaces({face});
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Extrude),
+                                  QString::fromUtf8("Грань"),
+                                  QString::fromUtf8("Длина"),
+                                  QStringLiteral(" mm"));
+  const auto parameters = faceExtrudeSession_.parameters();
+  const double minimum = parameters.empty() ? 0.01 : parameters.front().minimum;
+  const double maximum =
+      parameters.empty() ? 100000.0 : parameters.front().maximum;
+  toolParametersPanel_->setParameterRange(minimum, maximum, 2);
+  toolParametersPanel_->setParameterValue(faceExtrudeSession_.lengthMm());
+  toolParametersPanel_->configureOption(QString::fromUtf8("Вырезать"), false);
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateFaceExtrudeToolPreview();
+  viewport_->setFocus(Qt::OtherFocusReason);
+}
+
+void MainWindow::updateFaceExtrudeToolPreview() {
+  const auto state = faceExtrudeSession_.lifecycle();
+  if (state == ToolLifecycle::Inactive) return;
+  const bool valid = state == ToolLifecycle::PreviewValid;
+  toolParametersPanel_->setSelectionCount(
+      faceExtrudeSession_.face().bodyId != kInvalidBodyId ? 1 : 0);
+  toolParametersPanel_->setAcceptEnabled(valid);
+  if (valid) {
+    toolParametersPanel_->setStatus(QString::fromUtf8("Предпросмотр построен"),
+                                    false);
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
+    viewport_->setToolPreviewShape(faceExtrudeSession_.bodyId(),
+                                   faceExtrudeSession_.sourceFeatureId(),
+                                   faceExtrudeSession_.previewShape());
+  } else {
+    viewport_->clearToolPreviewShape();
+    toolParametersPanel_->setStatus(
+        state == ToolLifecycle::PreviewInvalid
+            ? QString::fromStdString(faceExtrudeSession_.error())
+            : QString::fromUtf8("Выберите грань тела"),
+        state == ToolLifecycle::PreviewInvalid);
+  }
+  if (const auto manipulator = faceExtrudeSession_.manipulator())
+    viewport_->setToolManipulator(*manipulator);
+  else
+    viewport_->clearToolManipulator();
+  if (state == ToolLifecycle::PreviewInvalid)
+    statusBar()->showMessage(QString::fromStdString(faceExtrudeSession_.error()));
+}
+
+void MainWindow::acceptFaceExtrudeTool() {
+  if (faceExtrudeSession_.lifecycle() != ToolLifecycle::PreviewValid) return;
+  const Document previous = document_;
+  Body* body = document_.findBody(faceExtrudeSession_.bodyId());
+  if (!body) return;
+  if (const auto editingId = faceExtrudeSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* extrude =
+          dynamic_cast<ExtrudeFeature*>(body->features()[index].get());
+      if (!extrude || extrude->id() != *editingId) continue;
+      extrude->setLengthMm(faceExtrudeSession_.lengthMm());
+      extrude->setOperation(faceExtrudeSession_.operation());
+      extrude->setReversed(faceExtrudeSession_.reversed());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    body->addFeature(std::make_unique<ExtrudeFeature>(
+        faceExtrudeSession_.face(), faceExtrudeSession_.lengthMm(), "Extrude",
+        faceExtrudeSession_.operation(), faceExtrudeSession_.reversed()));
+  }
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    toolParametersPanel_->setStatus(error, true);
+    return;
+  }
+  cancelFaceExtrudeTool();
+  pushUndoAction([this, previous] {
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  modelRibbon_->clearActiveTool();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  statusBar()->showMessage(QString::fromUtf8("Создано выдавливание грани"), 3000);
+}
+
+void MainWindow::cancelFaceExtrudeTool() {
+  if (faceExtrudeSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  faceExtrudeSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Extrude);
+  viewport_->clearToolPreviewShape();
+  viewport_->clearToolManipulator();
+  viewport_->setFaceMultiSelectionMode(false);
+  viewport_->setSelectionFilter(SelectionFilter::Any);
+  viewport_->setSelectedBodyFaces({});
+  toolParametersDock_->hide();
+  refreshBodyViewFromDocument();
+}
+
+void MainWindow::editFaceExtrudeStep(Body* body, ExtrudeFeature* extrude,
+                                     std::size_t extrudeIndex) {
+  if (!extrude->faceReference()) return;
+  if (extrudeIndex == 0) {
+    statusBar()->showMessage(
+        QString::fromUtf8("Выдавливание грани не может быть первой операцией"),
+        3000);
+    return;
+  }
+  ShapeFeature::ShapePtr baseShape = body->features()[extrudeIndex - 1]->shape();
+  if (!baseShape || baseShape->IsNull()) {
+    statusBar()->showMessage(
+        QString::fromUtf8("Не удалось восстановить исходное тело"), 3000);
+    return;
+  }
+  const FeatureId sourceFeatureId = body->features()[extrudeIndex - 1]->id();
+  const FaceReference face = *extrude->faceReference();
+  partDesignTools_.activate(PartDesignToolKind::Extrude);
+  faceExtrudeSession_.begin(body->id(), sourceFeatureId, baseShape, face,
+                            extrude->lengthMm(), extrude->operation(),
+                            extrude->reversed(), extrude->id());
+  viewport_->setSelectionFilter(SelectionFilter::Face);
+  viewport_->setFaceMultiSelectionMode(false);
+  viewport_->setSelectedBodyFaces({face});
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Extrude),
+                                  QString::fromUtf8("Грань"),
+                                  QString::fromUtf8("Длина"),
+                                  QStringLiteral(" mm"));
+  const auto parameters = faceExtrudeSession_.parameters();
+  const double minimum = parameters.empty() ? 0.01 : parameters.front().minimum;
+  const double maximum =
+      parameters.empty() ? 100000.0 : parameters.front().maximum;
+  toolParametersPanel_->setParameterRange(minimum, maximum, 2);
+  toolParametersPanel_->setParameterValue(faceExtrudeSession_.lengthMm());
+  toolParametersPanel_->configureOption(
+      QString::fromUtf8("Вырезать"),
+      faceExtrudeSession_.operation() == ExtrudeOperation::Cut);
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateFaceExtrudeToolPreview();
+  viewport_->setFocus(Qt::OtherFocusReason);
+  statusBar()->showMessage(
+      QString::fromUtf8("Редактирование выдавливания грани"), 3000);
 }
 
 void MainWindow::updateChamferToolPreview() {
@@ -2819,6 +3057,10 @@ void MainWindow::editExtrusionStep(BodyId bodyId, FeatureId featureId) {
         break;
       }
   if (!extrude) return;
+  if (extrude->isFaceSource()) {
+    editFaceExtrudeStep(body, extrude, extrudeIndex);
+    return;
+  }
   QDialog dialog(this);
   dialog.setWindowTitle(QString::fromUtf8("Изменить выдавливание"));
   auto* layout = new QVBoxLayout(&dialog);

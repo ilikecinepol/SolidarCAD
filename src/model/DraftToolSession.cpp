@@ -79,12 +79,17 @@ bool DraftToolSession::updatePreview() {
   return static_cast<bool>(previewShape_);
 }
 std::optional<AngularToolManipulator> DraftToolSession::manipulator() const {
-  if (!baseShape_ || !neutralPlane_ || !pullDirection_ || !document_) return std::nullopt;
+  // Do not advertise an angle handle until geometry/reference selection has
+  // produced a valid Draft preview.
+  if (lifecycle_ != ToolLifecycle::PreviewValid || faces_.empty() ||
+      !baseShape_ || !neutralPlane_ || !pullDirection_ || !document_)
+    return std::nullopt;
   gp_Pln plane; gp_Dir direction; std::string ignored;
   if (!resolveDraftReferences(*document_, *baseShape_, *neutralPlane_, *pullDirection_, &plane, &direction, &ignored)) return std::nullopt;
   Bnd_Box box; BRepBndLib::Add(*baseShape_, box);
   double x0, y0, z0, x1, y1, z1; box.Get(x0, y0, z0, x1, y1, z1);
-  const double radius = std::max({x1 - x0, y1 - y0, z1 - z0, 10.0}) * 0.35;
+  // The previous 0.35 factor produced a tiny, easy-to-miss arc.
+  const double radius = std::max({x1 - x0, y1 - y0, z1 - z0, 10.0}) * 0.60;
   return AngularToolManipulator{{(x0+x1)*0.5, (y0+y1)*0.5, (z0+z1)*0.5},
                                 {direction.X(), direction.Y(), direction.Z()},
                                 radius, angleDeg_};

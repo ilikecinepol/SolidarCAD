@@ -1,6 +1,9 @@
 #pragma once
 
+#include <optional>
+
 #include "model/Document.h"
+#include "model/ExtrudeSource.h"
 #include "model/ShapeFeature.h"
 
 namespace solidar {
@@ -19,8 +22,19 @@ class ExtrudeFeature final : public ShapeFeature {
                  std::string name, ExtrudeOperation operation,
                  bool reversed = false);
 
+  // Native face extrusion constructors. NewBody is not supported for a face
+  // source; use Join or Cut.
+  ExtrudeFeature(FaceReference face, double lengthMm, std::string name,
+                 ExtrudeOperation operation, bool reversed = false);
+  ExtrudeFeature(FeatureId id, FaceReference face, double lengthMm,
+                 std::string name, ExtrudeOperation operation,
+                 bool reversed = false);
+
+  [[nodiscard]] const ExtrudeSource& source() const noexcept;
+  [[nodiscard]] bool isFaceSource() const noexcept;
   [[nodiscard]] SketchId profileSketchId() const noexcept;
   void setProfileSketchId(SketchId id) noexcept;
+  [[nodiscard]] std::optional<FaceReference> faceReference() const noexcept;
   [[nodiscard]] double lengthMm() const noexcept;
   void setLengthMm(double value) noexcept;
   [[nodiscard]] ExtrudeOperation operation() const noexcept;
@@ -34,7 +48,11 @@ class ExtrudeFeature final : public ShapeFeature {
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
 
  private:
-  SketchId profileSketchId_{kInvalidSketchId};
+  bool rebuildFaceSource(const RebuildContext& context,
+                         const FaceExtrudeSource& source);
+  bool rebuildSketchSource(const RebuildContext& context);
+
+  ExtrudeSource source_{SketchExtrudeSource{}};
   double lengthMm_{0.0};
   ExtrudeOperation operation_{ExtrudeOperation::NewBody};
   bool reversed_{false};

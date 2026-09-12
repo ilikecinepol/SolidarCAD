@@ -37,6 +37,12 @@ struct BodyViewShape {
 };
 
 enum class SelectionFilter { Any, Face, Edge, Plane };
+enum class ToolPreviewPresentation {
+  // Keep selected/hovered source topology visible over the preview.
+  OverlaySourceSelection,
+  // The preview is the future body state; do not re-draw source selection over it.
+  ReplaceSource
+};
 
 // Minimum marquee extent on release below which a drag is treated as a click,
 // mirroring the Sketcher selection-box threshold.
@@ -107,13 +113,15 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
   [[nodiscard]] bool marqueeActive() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
-                           ShapeFeature::ShapePtr shape);
+                           ShapeFeature::ShapePtr shape);  void setToolPreviewPresentation(ToolPreviewPresentation presentation) noexcept;
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
   [[nodiscard]] const std::optional<AngularToolManipulator>&
   angularToolManipulator() const noexcept { return angularToolManipulator_; }
-  void clearToolManipulator();
+  void clearToolManipulator();  // CAD keyboard traversal targets only numeric fields rendered in the
+  // viewport. Right-hand tool panels may call this to hand Tab into the HUD.
+  [[nodiscard]] bool focusToolParameterField(bool backward = false);
   void fitAll();
   void viewTop();
   void viewBottom();
@@ -150,6 +158,11 @@ class Viewport final : public QOpenGLWidget {
   void selectionChanged(const QString& description);
   void sketchPlanePicked(const QString& planeName);
   void extrusionSurfacePicked(const QString& surfaceName);
+  // Native FaceReference capture for face extrusion. Emitted alongside the
+  // legacy string signal only when a real B-Rep body face was picked (never
+  // for a base plane or sketch contour). The face is resolved against the
+  // current owning body topology range so bodyId/featureId are authoritative.
+  void extrusionFacePicked(const FaceReference& face);
   void extrusionPreviewLengthChanged(double lengthMm);
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
@@ -163,9 +176,6 @@ class Viewport final : public QOpenGLWidget {
   // to the session preview). MainWindow uses it to perform the active tool's
   // Accept without re-interpreting the already-committed value.
   void toolParameterCommitted();
-  // Emitted when Tab/Backtab is pressed with viewport focus and the HUD has no
-  // editable field, so MainWindow can focus the active tool's dock field.
-  void tabFocusRequested(bool backward);
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
   // values >= 3 encode a sketch line id plus three.
   void revolveAxisPicked(qulonglong axisToken);
@@ -177,7 +187,7 @@ class Viewport final : public QOpenGLWidget {
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
-  void keyPressEvent(QKeyEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;  bool eventFilter(QObject* watched, QEvent* event) override;
   void leaveEvent(QEvent* event) override;
 
  private:
@@ -224,7 +234,8 @@ class Viewport final : public QOpenGLWidget {
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
   ShapeFeature::ShapePtr toolPreviewShape_;
-  BodyRenderMesh toolPreviewRenderMesh_;
+  BodyRenderMesh toolPreviewRenderMesh_;  ToolPreviewPresentation toolPreviewPresentation_{
+      ToolPreviewPresentation::OverlaySourceSelection};
   ViewportRenderer renderer_;
   ViewportDisplayMode displayMode_{ViewportDisplayMode::ShadedWithEdges};
   ViewportMeshQuality meshQuality_{ViewportMeshQuality::Normal};

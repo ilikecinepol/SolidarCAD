@@ -71,6 +71,14 @@ target_link_libraries(extrude_history_regression_tests PRIVATE solidar_model)
 add_test(NAME extrude_history_regression_tests
          COMMAND extrude_history_regression_tests)
 
+add_executable(face_extrude_tests face_extrude_tests.cpp)
+target_link_libraries(face_extrude_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME face_extrude_tests COMMAND face_extrude_tests)
+
+add_executable(extrude_tool_session_tests extrude_tool_session_tests.cpp)
+target_link_libraries(extrude_tool_session_tests PRIVATE solidar_model)
+add_test(NAME extrude_tool_session_tests COMMAND extrude_tool_session_tests)
+
 add_executable(pocket_feature_tests pocket_feature_tests.cpp)
 target_link_libraries(pocket_feature_tests PRIVATE solidar_model)
 add_test(NAME pocket_feature_tests COMMAND pocket_feature_tests)
@@ -258,6 +266,7 @@ set_tests_properties(
   macro_foundation_tests
   fillet_feature_tests
   chamfer_feature_tests
+  extrude_tool_session_tests
   PROPERTIES LABELS "unit"
 )
 
@@ -265,6 +274,8 @@ set_tests_properties(
   extrude_geometry_regression_tests
   extrude_boolean_regression_tests
   extrude_history_regression_tests
+  face_extrude_tests
+  extrude_tool_session_tests
   project_file_tests
   sketch_regression_tests
   body_render_mesh_normals_tests
@@ -338,6 +349,8 @@ if(WIN32)
     extrude_geometry_regression_tests
     extrude_boolean_regression_tests
     extrude_history_regression_tests
+    face_extrude_tests
+    extrude_tool_session_tests
     pocket_feature_tests
     project_file_tests
     editor_smoke_tests

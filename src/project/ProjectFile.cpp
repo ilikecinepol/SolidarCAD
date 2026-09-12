@@ -376,10 +376,17 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
                         {"type", QString::fromStdString(feature->typeName())}};
       if (const auto* extrude =
               dynamic_cast<const ExtrudeFeature*>(feature.get())) {
-        saved["sketchId"] = static_cast<qint64>(extrude->profileSketchId());
         saved["lengthMm"] = extrude->lengthMm();
         saved["operation"] = static_cast<int>(extrude->operation());
         saved["reversed"] = extrude->reversed();
+        if (extrude->isFaceSource()) {
+          saved["sourceKind"] = QStringLiteral("face");
+          if (const auto face = extrude->faceReference())
+            saved["face"] = savedFaceReference(*face);
+        } else {
+          saved["sourceKind"] = QStringLiteral("sketch");
+          saved["sketchId"] = static_cast<qint64>(extrude->profileSketchId());
+        }
       } else if (const auto* revolve =
                      dynamic_cast<const RevolveFeature*>(feature.get())) {
         saved["profileSketchId"] = static_cast<qint64>(revolve->profileSketchId());
@@ -558,11 +565,21 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
       const auto name = saved.value("name").toString().toStdString();
       const auto type = saved.value("type").toString();
       if (type == QStringLiteral("Extrude")) {
-        body.addFeature(std::make_unique<ExtrudeFeature>(
-            id, static_cast<SketchId>(saved.value("sketchId").toInteger()),
-            saved.value("lengthMm").toDouble(), name,
-            static_cast<ExtrudeOperation>(saved.value("operation").toInt()),
-            saved.value("reversed").toBool()));
+        const auto sourceKind = saved.value("sourceKind").toString();
+        const auto lengthMm = saved.value("lengthMm").toDouble();
+        const auto operation =
+            static_cast<ExtrudeOperation>(saved.value("operation").toInt());
+        const auto reversed = saved.value("reversed").toBool();
+        if (sourceKind == QStringLiteral("face")) {
+          body.addFeature(std::make_unique<ExtrudeFeature>(
+              id, loadedFaceReference(saved.value("face")), lengthMm, name,
+              operation, reversed));
+        } else {
+          // Missing "sourceKind" is the pre-face-extrude project format.
+          body.addFeature(std::make_unique<ExtrudeFeature>(
+              id, static_cast<SketchId>(saved.value("sketchId").toInteger()),
+              lengthMm, name, operation, reversed));
+        }
       } else if (type == QStringLiteral("Revolve")) {
         AxisReference axis{
             static_cast<AxisReferenceType>(saved.value("axisType").toInt()),

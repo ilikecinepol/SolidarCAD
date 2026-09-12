@@ -209,6 +209,7 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   // QDoubleSpinBox rule; a local light stylesheet would leave a white field in
   // Dark mode.
   extrusionLengthEditor_->hide();
+  extrusionLengthEditor_->installEventFilter(this);
   connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
           &Viewport::setExtrusionPreviewLength);
   toolParameterHud_ = new ToolParameterHud(this);
@@ -432,12 +433,18 @@ void Viewport::setToolPreviewShape(BodyId bodyId, FeatureId featureId,
     toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
   update();
 }
+void Viewport::setToolPreviewPresentation(
+    ToolPreviewPresentation presentation) noexcept {
+  toolPreviewPresentation_ = presentation;
+  update();
+}
 
 void Viewport::clearToolPreviewShape() {
   toolPreviewShape_.reset();
   toolPreviewRenderMesh_.clear();
   toolPreviewBodyId_ = kInvalidBodyId;
   toolPreviewFeatureId_ = kInvalidFeatureId;
+  toolPreviewPresentation_ = ToolPreviewPresentation::OverlaySourceSelection;
   update();
 }
 
@@ -1040,6 +1047,28 @@ void Viewport::clearToolManipulator() {
   draggingAngularToolManipulator_ = false;
   update();
 }
+bool Viewport::focusToolParameterField(bool backward) {
+  // Legacy Extrude still owns a dedicated on-canvas spinbox.
+  if (extrusionLengthEditor_ && extrusionLengthEditor_->isVisible()) {
+    extrusionLengthEditor_->setFocus(
+        backward ? Qt::BacktabFocusReason : Qt::TabFocusReason);
+    extrusionLengthEditor_->selectAll();
+    return true;
+  }
+
+  // Modern Part Design tools share ToolParameterHud. Multi-field tools cycle
+  // entirely inside that HUD; the right-hand panel never participates.
+  if (toolParameterHud_ && toolParameterHud_->isVisible() &&
+      toolParameterHud_->hasEditableParameters()) {
+    if (backward)
+      toolParameterHud_->focusLastField();
+    else
+      toolParameterHud_->focusFirstField();
+    return true;
+  }
+
+  return false;
+}
 
 std::optional<ManipulatorLayoutResult> Viewport::toolManipulatorLayout() const {
   if (!toolManipulator_) return std::nullopt;
@@ -1445,12 +1474,25 @@ void Viewport::paintGL() {
 
   if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
     painter.beginNativePainting();
-    const std::vector<std::size_t> selectedFaces = effectiveSelectedFaceIndices();
+    const bool replaceSourcePresentation =
+        hasToolPreview &&
+        toolPreviewPresentation_ == ToolPreviewPresentation::ReplaceSource;
+    const std::vector<std::size_t> selectedFaces =
+        replaceSourcePresentation ? std::vector<std::size_t>{}
+                                  : effectiveSelectedFaceIndices();
+    const std::vector<std::size_t> selectedEdges =
+        replaceSourcePresentation ? std::vector<std::size_t>{}
+                                  : selectedBodyEdgeIndices_;
+    const std::size_t hoveredFace =
+        replaceSourcePresentation ? static_cast<std::size_t>(-1)
+                                  : hoveredBodyFaceIndex_;
+    const std::size_t hoveredEdge =
+        replaceSourcePresentation ? static_cast<std::size_t>(-1)
+                                  : hoveredBodyEdgeIndex_;
     renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
                      size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
                      zoom_, cameraPan_, displayMode_, selectedFaces,
-                     hoveredBodyFaceIndex_, selectedBodyEdgeIndices_,
-                     hoveredBodyEdgeIndex_);
+                     hoveredFace, selectedEdges, hoveredEdge);
     painter.endNativePainting();
     if (!renderer_.error().isEmpty()) {
       painter.setPen(QColor("#b42318"));
@@ -1620,12 +1662,19 @@ void Viewport::paintGL() {
 
       const double endRadians =
           manipulator.angleDeg * std::numbers::pi / 180.0;
-      const int segmentCount = std::max(12, static_cast<int>(
-          std::ceil(manipulator.angleDeg / 5.0)));
+      const double minimumSweepRadians =
+          manipulatorStyle_.minimumAngularSweepDeg * std::numbers::pi / 180.0;
+      const double visualSweepRadians =
+          std::max(std::abs(endRadians), minimumSweepRadians);
+      const double startRadians = endRadians - visualSweepRadians;
+      const int segmentCount = std::max(
+          18, static_cast<int>(std::ceil(
+                  visualSweepRadians * 180.0 / std::numbers::pi / 4.0)));
       QPolygonF arc;
       arc.reserve(segmentCount + 1);
       for (int index = 0; index <= segmentCount; ++index) {
-        const double t = endRadians * index / segmentCount;
+        const double t =
+            startRadians + visualSweepRadians * index / segmentCount;
         arc << projectBodyPoint(
                    offsetPoint(manipulator.origin, visual->u,
                                visual->visualRadiusMm * std::cos(t), visual->v,
@@ -1640,7 +1689,7 @@ void Viewport::paintGL() {
                           QColor("#0874f9"));
       painter.setBrush(QColor("#ffffff"));
       painter.setPen(QPen(QColor("#0874f9"), 2.4));
-      painter.drawEllipse(arc.back(), 5.5, 5.5);
+      painter.drawEllipse(arc.back(), 7.0, 7.0);
       if (toolParameterHud_ && toolParameterHud_->isVisible()) {
         const QPointF hud = arc.back() + cameraPan_ + QPointF(12.0, -20.0);
         toolParameterHud_->move(
@@ -2295,6 +2344,9 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       unsetCursor();
     }
     emit extrusionSurfacePicked(hoveredExtrusionSurface_);
+    if (hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1))
+      if (const auto face = faceReferenceForGlobalIndex(hoveredBodyFaceIndex_))
+        emit extrusionFacePicked(*face);
     extrusionHoverPolygon_.clear();
     update();
     return;
@@ -3043,6 +3095,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
   hoveredExtrusionSurface_.clear();
   hoveredExtrusionOnBodyCap_ = false;
   hoveredExtrusionSketchIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
 
   // Resolve one real sketch before splitting regions. Screen overlap does not
   // imply coplanarity, and the parametric feature references one DocumentSketch.
@@ -3308,6 +3361,7 @@ void Viewport::pickFallbackBodyFace(QPointF position) {
       }
     }
     if (faceIndex == static_cast<std::size_t>(-1)) return;
+    hoveredBodyFaceIndex_ = faceIndex;
     QPainterPath facePath;
     for (const auto& triangle : bodyRenderMesh_.triangles()) {
       if (triangle.faceIndex != faceIndex) continue;
@@ -3596,29 +3650,62 @@ void Viewport::wheelEvent(QWheelEvent* event) {
                      0.25F, 5.0F);
   update();
 }
+bool Viewport::eventFilter(QObject* watched, QEvent* event) {
+  if (watched != extrusionLengthEditor_)
+    return QOpenGLWidget::eventFilter(watched, event);
+
+  if (event->type() == QEvent::ShortcutOverride) {
+    const auto* key = static_cast<QKeyEvent*>(event);
+    if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
+        key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+      event->accept();
+      return true;
+    }
+    return QOpenGLWidget::eventFilter(watched, event);
+  }
+
+  if (event->type() != QEvent::KeyPress)
+    return QOpenGLWidget::eventFilter(watched, event);
+
+  const auto* key = static_cast<QKeyEvent*>(event);
+  if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+    // Extrude has one on-canvas numeric field. Keep Tab inside the CAD HUD
+    // instead of escaping to the right-hand tool panel.
+    extrusionLengthEditor_->setFocus(Qt::TabFocusReason);
+    extrusionLengthEditor_->selectAll();
+    return true;
+  }
+
+  if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+    if (key->isAutoRepeat()) return true;
+    extrusionLengthEditor_->interpretText();
+    setExtrusionPreviewLength(extrusionLengthEditor_->value());
+    emit toolParameterCommitted();
+    return true;
+  }
+
+  return QOpenGLWidget::eventFilter(watched, event);
+}
 
 void Viewport::keyPressEvent(QKeyEvent* event) {
-  // Tab/Backtab with viewport focus: if the HUD has an editable field, move
-  // focus into it (Tab → first field, Backtab → last field); otherwise ask
-  // MainWindow to focus the active tool's dock field.
+  // CAD Tab workflow is intentionally restricted to numeric fields drawn in
+  // the viewport. The right-hand tool panel remains mouse-accessible, but it
+  // is not part of this CAD parameter loop.
   if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
       pickMode_ == PickMode::None) {
     const bool backward = event->key() == Qt::Key_Backtab ||
                           event->modifiers().testFlag(Qt::ShiftModifier);
-    if (toolParameterHud_ && toolParameterHud_->hasEditableParameters() &&
-        !toolParameterHud_->hasFieldFocus()) {
-      if (backward)
-        toolParameterHud_->focusLastField();
-      else
-        toolParameterHud_->focusFirstField();
+
+    if (focusToolParameterField(backward)) {
       event->accept();
       return;
     }
-    emit tabFocusRequested(backward);
+
+    // No on-canvas numeric field: consume Tab so focus cannot leak into dock
+    // controls that are outside the manipulator workflow.
     event->accept();
     return;
-  }
-  // Ctrl+A selects the eligible visible domain: edges in the Edge tool, faces
+  }  // Ctrl+A selects the eligible visible domain: edges in the Edge tool, faces
   // in Face/normal mode. Multi-selection is only honored when the matching
   // tool's multi-select mode is on; otherwise only the frontmost entity is
   // selected so SelectAll cannot bypass a single-select tool contract.
