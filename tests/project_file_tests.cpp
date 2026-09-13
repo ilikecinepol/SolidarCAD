@@ -110,6 +110,49 @@ int main(int argc, char* argv[]) {
       solidar::test::volumeOf(*restoredBody->resultShape()), sourceVolume,
       1e-4));
 
+  // Extrude from one selected region of a multi-profile sketch.  The source
+  // sketch remains intact, while the feature stores only the picked region.
+  {
+    solidar::Document selectedProfileDocument;
+    auto& sourceSketch = selectedProfileDocument.addSketch("Multi profile");
+    const auto sourceSketchId = sourceSketch.id;
+    sourceSketch.geometry.addRectangle({0.0, 0.0}, {40.0, 25.0});
+    sourceSketch.geometry.addCircle({70.0, 12.5}, 10.0);
+
+    solidar::sketch::Sketch selectedRegion;
+    selectedRegion.addRectangle({0.0, 0.0}, {40.0, 25.0});
+
+    auto& selectedBody = selectedProfileDocument.addBody("Selected body");
+    auto selectedExtrude = std::make_unique<solidar::ExtrudeFeature>(
+        sourceSketchId, 12.0, "Selected region");
+    selectedExtrude->setProfileOverride(selectedRegion);
+    selectedBody.addFeature(std::move(selectedExtrude));
+
+    assert(selectedProfileDocument.recompute());
+    assert(solidar::test::near(
+        solidar::test::volumeOf(*selectedBody.resultShape()),
+        40.0 * 25.0 * 12.0, 1e-4));
+
+    const QString selectedPath =
+        directory.filePath("selected-profile.solidar");
+    assert(solidar::project::ProjectFile::saveDocument(
+        selectedPath, selectedProfileDocument, &error));
+
+    solidar::Document selectedRestored;
+    assert(solidar::project::ProjectFile::loadDocument(
+        selectedPath, &selectedRestored, &error));
+    const auto* restoredSelectedBody = selectedRestored.activeBody();
+    assert(restoredSelectedBody);
+    assert(restoredSelectedBody->features().size() == 1);
+    const auto* restoredExtrude =
+        dynamic_cast<const solidar::ExtrudeFeature*>(
+            restoredSelectedBody->features().front().get());
+    assert(restoredExtrude);
+    assert(restoredExtrude->profileOverride());
+    assert(solidar::test::near(
+        solidar::test::volumeOf(*restoredSelectedBody->resultShape()),
+        40.0 * 25.0 * 12.0, 1e-4));
+  }
   QFile broken(directory.filePath("broken.solidar"));
   assert(broken.open(QIODevice::WriteOnly));
   broken.write("not json");

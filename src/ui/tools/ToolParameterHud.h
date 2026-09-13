@@ -33,6 +33,7 @@ class ToolParameterHud final : public QWidget {
  signals:
   void valueChanged(const QString& id, double value);
   void valueCommitted(const QString& id, double value);
+  void cancelRequested();
 
  protected:
   bool eventFilter(QObject* watched, QEvent* event) override;

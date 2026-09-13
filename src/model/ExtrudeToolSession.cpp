@@ -29,7 +29,9 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   profile_ = DocumentSketch{};
   profileId_ = kInvalidSketchId;
   sketchGeometry_.reset();
-  operationFollowsDirection_ = false;
+  // Native face push/pull follows the signed manipulator direction:
+  // outward is additive Join, inward is subtractive Cut.
+  operationFollowsDirection_ = true;
   operation_ = operation;
   reversed_ = reversed;
   editingFeatureId_ = editingFeatureId;
@@ -101,6 +103,20 @@ void ExtrudeToolSession::setSignedLength(double signedValue) {
 }
 
 void ExtrudeToolSession::setOperation(ExtrudeOperation operation) {
+  // A face-source extrusion starts exactly on the boundary of the body.
+  // Therefore Cut must go inward and Join must go outward; otherwise the
+  // boolean only touches the body at the source face and has zero volume.
+  if (!sketchSource_ && operationFollowsDirection_ &&
+      (operation == ExtrudeOperation::Join ||
+       operation == ExtrudeOperation::Cut)) {
+    const bool targetReversed = operation == ExtrudeOperation::Cut;
+    if (operation_ == operation && reversed_ == targetReversed) return;
+    operation_ = operation;
+    reversed_ = targetReversed;
+    updatePreview();
+    return;
+  }
+
   if (operation_ == operation) return;
   operation_ = operation;
   updatePreview();
@@ -164,9 +180,15 @@ std::shared_ptr<const TopoDS_Shape> ExtrudeToolSession::previewShape() const {
   return previewShape_;
 }
 
+std::shared_ptr<const TopoDS_Shape>
+ExtrudeToolSession::subtractivePreviewShape() const noexcept {
+  return subtractivePreviewShape_;
+}
+
 const std::string& ExtrudeToolSession::error() const noexcept { return error_; }
 
 bool ExtrudeToolSession::updatePreview() {
+  subtractivePreviewShape_.reset();
   if (sketchSource_) {
     // Sketch source: an invalid candidate must never destroy the last valid
     // preview, so previewShape_/sketchGeometry_ are only replaced on success.
@@ -205,14 +227,18 @@ bool ExtrudeToolSession::updatePreview() {
   }
 
   TopoDS_Shape result;
+  TopoDS_Shape sweptTool;
   FaceExtrudeGeometry geometry;
   if (!buildExtrusionFromFace(*baseShape_, face_, length_.value(), operation_,
-                              reversed_, &result, &geometry, &error_)) {
+                              reversed_, &result, &geometry, &error_,
+                              &sweptTool)) {
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
   previewShape_ = std::make_shared<TopoDS_Shape>(result);
   geometry_ = geometry;
+  if (operation_ == ExtrudeOperation::Cut && !sweptTool.IsNull())
+    subtractivePreviewShape_ = std::make_shared<TopoDS_Shape>(sweptTool);
   lifecycle_ = ToolLifecycle::PreviewValid;
   return true;
 }
@@ -333,6 +359,7 @@ void ExtrudeToolSession::applySignedLength(double signedValue) {
 
 void ExtrudeToolSession::cancel() noexcept {
   previewShape_.reset();
+  subtractivePreviewShape_.reset();
   geometry_.reset();
   sketchGeometry_.reset();
   face_ = FaceReference{};

@@ -67,6 +67,18 @@ SketchId ExtrudeFeature::profileSketchId() const noexcept {
 void ExtrudeFeature::setProfileSketchId(SketchId id) noexcept {
   if (!isFaceSource() && profileSketchId() == id) return;
   source_ = SketchExtrudeSource{id};
+  profileOverride_.reset();
+  setDirty();
+}
+
+const std::optional<sketch::Sketch>&
+ExtrudeFeature::profileOverride() const noexcept {
+  return profileOverride_;
+}
+
+void ExtrudeFeature::setProfileOverride(
+    std::optional<sketch::Sketch> profile) {
+  profileOverride_ = std::move(profile);
   setDirty();
 }
 
@@ -164,17 +176,24 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
 
 bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
   const SketchId profileId = profileSketchId();
-  const auto* profile = context.document.findSketch(profileId);
-  if (!profile) {
+  const auto* sourceProfile = context.document.findSketch(profileId);
+  if (!sourceProfile) {
     markError("Extrude profile sketch was not found");
     return false;
   }
+
+  // The document sketch may contain several closed contours.  A feature made
+  // from one picked region must rebuild from that exact region, not from the
+  // entire sketch.  Placement/support still come from the source DocumentSketch.
+  DocumentSketch selectedProfile = *sourceProfile;
+  if (profileOverride_) selectedProfile.geometry = *profileOverride_;
+
   try {
     std::string profileError;
     TopoDS_Shape result;
-    if (!buildExtrusionFromSketch(*profile, context.previousShape, lengthMm_,
-                                  operation_, reversed_, &result, nullptr,
-                                  &profileError)) {
+    if (!buildExtrusionFromSketch(selectedProfile, context.previousShape,
+                                  lengthMm_, operation_, reversed_, &result,
+                                  nullptr, &profileError)) {
       markError("Extrude " + profileError);
       return false;
     }

@@ -229,6 +229,9 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   // once (the value is already interpreted + preview-synced; do not re-interpret).
   connect(toolParameterHud_, &ToolParameterHud::valueCommitted, this,
           &Viewport::toolParameterCommitted);
+  connect(toolParameterHud_, &ToolParameterHud::cancelRequested, this, [this] {
+    cancelActiveInteraction();
+  });
 }
 
 void Viewport::setBox(BoxParameters parameters) {
@@ -314,6 +317,9 @@ void Viewport::setMeshQuality(ViewportMeshQuality quality) {
   toolPreviewRenderMesh_.clear();
   if (toolPreviewShape_ && !toolPreviewShape_->IsNull())
     toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
+  toolCutPreviewRenderMesh_.clear();
+  if (toolCutPreviewShape_ && !toolCutPreviewShape_->IsNull())
+    toolCutPreviewRenderMesh_.rebuild(*toolCutPreviewShape_, meshQuality_);
   update();
 }
 
@@ -433,6 +439,13 @@ void Viewport::setToolPreviewShape(BodyId bodyId, FeatureId featureId,
     toolPreviewRenderMesh_.rebuild(*toolPreviewShape_, meshQuality_);
   update();
 }
+void Viewport::setToolCutPreviewShape(ShapeFeature::ShapePtr shape) {
+  toolCutPreviewShape_ = std::move(shape);
+  toolCutPreviewRenderMesh_.clear();
+  if (toolCutPreviewShape_ && !toolCutPreviewShape_->IsNull())
+    toolCutPreviewRenderMesh_.rebuild(*toolCutPreviewShape_, meshQuality_);
+  update();
+}
 void Viewport::setToolPreviewPresentation(
     ToolPreviewPresentation presentation) noexcept {
   toolPreviewPresentation_ = presentation;
@@ -442,6 +455,8 @@ void Viewport::setToolPreviewPresentation(
 void Viewport::clearToolPreviewShape() {
   toolPreviewShape_.reset();
   toolPreviewRenderMesh_.clear();
+  toolCutPreviewShape_.reset();
+  toolCutPreviewRenderMesh_.clear();
   toolPreviewBodyId_ = kInvalidBodyId;
   toolPreviewFeatureId_ = kInvalidFeatureId;
   toolPreviewPresentation_ = ToolPreviewPresentation::OverlaySourceSelection;
@@ -681,10 +696,15 @@ void Viewport::beginExtrusionSurfaceSelection() {
 }
 
 void Viewport::showExtrusionManipulator(double lengthMm) {
+  const bool editorWasVisible = extrusionLengthEditor_->isVisible();
   extrusionManipulatorVisible_ = true;
   setExtrusionPreviewLength(lengthMm);
   extrusionLengthEditor_->show();
   extrusionLengthEditor_->raise();
+  if (!editorWasVisible) {
+    extrusionLengthEditor_->setFocus(Qt::OtherFocusReason);
+    extrusionLengthEditor_->selectAll();
+  }
   update();
 }
 
@@ -826,6 +846,7 @@ std::optional<EdgeReference> Viewport::selectedBodyEdge() const noexcept {
 void Viewport::beginRevolveAxisSelection(std::size_t sketchIndex) {
   pickMode_ = PickMode::RevolveAxis;
   revolveAxisSketchIndex_ = sketchIndex;
+  hoveredRevolveAxisToken_ = 0;
   setCursor(Qt::CrossCursor);
   update();
 }
@@ -1001,6 +1022,7 @@ void Viewport::commitFaceSelection(std::size_t globalIndex, bool toggle) {
 }
 
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
+  const bool hudWasVisible = toolParameterHud_->isVisible();
   toolManipulator_ = manipulator;
   angularToolManipulator_.reset();
   // The HUD/panel show the ABSOLUTE length for directional manipulators; the
@@ -1031,6 +1053,7 @@ void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
                  std::max(4, height() - toolParameterHud_->height() - 4)));
   toolParameterHud_->show();
   toolParameterHud_->raise();
+  if (!hudWasVisible) toolParameterHud_->focusFirstField();
   update();
 }
 
@@ -1041,6 +1064,7 @@ double Viewport::toolManipulatorHudValue() const noexcept {
 
 void Viewport::setAngularToolManipulator(
     const AngularToolManipulator& manipulator) {
+  const bool hudWasVisible = toolParameterHud_->isVisible();
   angularToolManipulator_ = manipulator;
   toolManipulator_.reset();
   if (toolHudParameterId_ != "angle") {
@@ -1065,6 +1089,7 @@ void Viewport::setAngularToolManipulator(
                  std::max(4, height() - toolParameterHud_->height() - 4)));
   toolParameterHud_->show();
   toolParameterHud_->raise();
+  if (!hudWasVisible) toolParameterHud_->focusFirstField();
   update();
 }
 
@@ -1483,6 +1508,9 @@ void Viewport::paintGL() {
   const bool hasToolPreview = toolPreviewShape_ &&
                               !toolPreviewShape_->IsNull() &&
                               !toolPreviewRenderMesh_.triangles().empty();
+  const bool hasToolCutPreview = toolCutPreviewShape_ &&
+                                 !toolCutPreviewShape_->IsNull() &&
+                                 !toolCutPreviewRenderMesh_.triangles().empty();
 
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
@@ -1546,7 +1574,8 @@ void Viewport::paintGL() {
     renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
                      size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
                      zoom_, cameraPan_, displayMode_, selectedFaces,
-                     hoveredFace, selectedEdges, hoveredEdge);
+                     hoveredFace, selectedEdges, hoveredEdge,
+                     hasToolCutPreview ? &toolCutPreviewRenderMesh_ : nullptr);
     painter.endNativePainting();
     if (!renderer_.error().isEmpty()) {
       painter.setPen(QColor("#b42318"));
@@ -2050,6 +2079,43 @@ void Viewport::paintGL() {
     painter.drawLine(screenPoint(-1000.0, 0.0), screenPoint(1000.0, 0.0));
     painter.setPen(QPen(QColor("#e34850"), 2.4, Qt::DashLine));
     painter.drawLine(screenPoint(0.0, -1000.0), screenPoint(0.0, 1000.0));
+    // Revolve axis hover: redraw only the candidate in the same cyan language
+    // used by native 3D edge hover. Selection is still committed only on click.
+    if (hoveredRevolveAxisToken_ != 0) {
+      painter.setPen(QPen(QColor("#00a6ff"), 5.0, Qt::SolidLine,
+                          Qt::RoundCap, Qt::RoundJoin));
+      if (hoveredRevolveAxisToken_ == kGlobalXAxisToken) {
+        painter.drawLine(globalScreenPoint(-1000.0, 0.0, 0.0),
+                         globalScreenPoint(1000.0, 0.0, 0.0));
+      } else if (hoveredRevolveAxisToken_ == kGlobalYAxisToken) {
+        painter.drawLine(globalScreenPoint(0.0, -1000.0, 0.0),
+                         globalScreenPoint(0.0, 1000.0, 0.0));
+      } else if (hoveredRevolveAxisToken_ == kGlobalZAxisToken) {
+        painter.drawLine(globalScreenPoint(0.0, 0.0, -1000.0),
+                         globalScreenPoint(0.0, 0.0, 1000.0));
+      } else if (hoveredRevolveAxisToken_ == 1) {
+        painter.drawLine(screenPoint(-1000.0, 0.0),
+                         screenPoint(1000.0, 0.0));
+      } else if (hoveredRevolveAxisToken_ == 2) {
+        painter.drawLine(screenPoint(0.0, -1000.0),
+                         screenPoint(0.0, 1000.0));
+      } else {
+        const auto& hoveredCandidate =
+            displaySketches_[revolveAxisSketchIndex_];
+        for (std::size_t i = 0; i < hoveredCandidate.geometry.lines().size();
+             ++i) {
+          if (static_cast<qulonglong>(
+                  hoveredCandidate.geometry.lineId(i)) + 3 !=
+              hoveredRevolveAxisToken_)
+            continue;
+          const auto& line = hoveredCandidate.geometry.lines()[i];
+          painter.drawLine(
+              screenPoint(line.start.xMm, line.start.yMm),
+              screenPoint(line.end.xMm, line.end.yMm));
+          break;
+        }
+      }
+    }
   }
 
   if ((pickMode_ == PickMode::ExtrusionSurface ||
@@ -2219,6 +2285,59 @@ void Viewport::paintGL() {
   painter.drawText(16, height() - 18, "Drag to orbit  •  Wheel to zoom");
 }
 
+qulonglong Viewport::revolveAxisTokenAt(QPointF scenePosition) const {
+  if (pickMode_ != PickMode::RevolveAxis ||
+      revolveAxisSketchIndex_ >= displaySketches_.size())
+    return 0;
+
+  const auto& candidate = displaySketches_[revolveAxisSketchIndex_];
+  const Point3d center = bodyRenderMesh_.center();
+  double bestDistance = 12.0;
+  qulonglong bestToken = 0;
+
+  const auto considerSegment = [&](const Point3d& aWorld,
+                                   const Point3d& bWorld,
+                                   qulonglong token) {
+    const QPointF a =
+        projectBodyPoint(aWorld, center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF b =
+        projectBodyPoint(bWorld, center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF ab = b - a;
+    const double length2 = QPointF::dotProduct(ab, ab);
+    const double t =
+        length2 > 1e-9
+            ? std::clamp(QPointF::dotProduct(scenePosition - a, ab) / length2,
+                         0.0, 1.0)
+            : 0.0;
+    const double distance = QLineF(scenePosition, a + ab * t).length();
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestToken = token;
+    }
+  };
+
+  considerSegment({-1000.0, 0.0, 0.0}, {1000.0, 0.0, 0.0},
+                  kGlobalXAxisToken);
+  considerSegment({0.0, -1000.0, 0.0}, {0.0, 1000.0, 0.0},
+                  kGlobalYAxisToken);
+  considerSegment({0.0, 0.0, -1000.0}, {0.0, 0.0, 1000.0},
+                  kGlobalZAxisToken);
+
+  considerSegment(candidate.placement.toWorld(-1000.0, 0.0),
+                  candidate.placement.toWorld(1000.0, 0.0), 1);
+  considerSegment(candidate.placement.toWorld(0.0, -1000.0),
+                  candidate.placement.toWorld(0.0, 1000.0), 2);
+
+  for (std::size_t i = 0; i < candidate.geometry.lines().size(); ++i) {
+    const auto& line = candidate.geometry.lines()[i];
+    considerSegment(
+        candidate.placement.toWorld(line.start.xMm, line.start.yMm),
+        candidate.placement.toWorld(line.end.xMm, line.end.yMm),
+        static_cast<qulonglong>(candidate.geometry.lineId(i)) + 3);
+  }
+
+  return bestToken;
+}
 void Viewport::mousePressEvent(QMouseEvent* event) {
   setFocus(Qt::MouseFocusReason);
   lastMousePosition_ = event->position().toPoint();
@@ -2270,52 +2389,16 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       return;
     }
   }
-  if (pickMode_ == PickMode::RevolveAxis &&
-      revolveAxisSketchIndex_ < displaySketches_.size()) {
-    const auto& candidate = displaySketches_[revolveAxisSketchIndex_];
-    const Point3d center = bodyRenderMesh_.center();
-    double bestDistance = 12.0;
-    qulonglong bestToken = 0;
-    const auto considerSegment = [&](const Point3d& aWorld,
-                                     const Point3d& bWorld,
-                                     qulonglong token) {
-      const QPointF a = projectBodyPoint(aWorld, center, size(), yaw_, pitch_, zoom_).screen;
-      const QPointF b = projectBodyPoint(bWorld, center, size(), yaw_, pitch_, zoom_).screen;
-      const QPointF ab = b - a;
-      const double length2 = QPointF::dotProduct(ab, ab);
-      const double t = length2 > 1e-9 ? std::clamp(
-          QPointF::dotProduct(scenePosition - a, ab) / length2, 0.0, 1.0) : 0.0;
-      const double distance = QLineF(scenePosition, a + ab * t).length();
-      if (distance < bestDistance) { bestDistance = distance; bestToken = token; }
-    };
-
-    considerSegment({-1000.0, 0.0, 0.0}, {1000.0, 0.0, 0.0},
-                    kGlobalXAxisToken);
-    considerSegment({0.0, -1000.0, 0.0}, {0.0, 1000.0, 0.0},
-                    kGlobalYAxisToken);
-    considerSegment({0.0, 0.0, -1000.0}, {0.0, 0.0, 1000.0},
-                    kGlobalZAxisToken);
-
-    // The sketch reference axes are valid Revolve axes too.  A generous world
-    // span keeps them directly pickable independently of the current zoom.
-    considerSegment(candidate.placement.toWorld(-1000.0, 0.0),
-                    candidate.placement.toWorld(1000.0, 0.0), 1);
-    considerSegment(candidate.placement.toWorld(0.0, -1000.0),
-                    candidate.placement.toWorld(0.0, 1000.0), 2);
-    for (std::size_t i = 0; i < candidate.geometry.lines().size(); ++i) {
-      const auto& line = candidate.geometry.lines()[i];
-      const auto aWorld = candidate.placement.toWorld(line.start.xMm, line.start.yMm);
-      const auto bWorld = candidate.placement.toWorld(line.end.xMm, line.end.yMm);
-      considerSegment(aWorld, bWorld,
-                      static_cast<qulonglong>(candidate.geometry.lineId(i)) + 3);
-    }
-    if (bestToken != 0) {
+  if (pickMode_ == PickMode::RevolveAxis) {
+    const qulonglong axisToken = revolveAxisTokenAt(scenePosition);
+    if (axisToken != 0) {
+      hoveredRevolveAxisToken_ = 0;
       pickMode_ = PickMode::None;
-      emit revolveAxisPicked(bestToken);
+      unsetCursor();
+      emit revolveAxisPicked(axisToken);
       return;
     }
-  }
-  if (angularToolManipulator_) {
+  }  if (angularToolManipulator_) {
     const auto& manipulator = *angularToolManipulator_;
     if (const auto visual = angularVisual()) {
       const double angle = manipulator.angleDeg * std::numbers::pi / 180.0;
@@ -3615,6 +3698,17 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     }
     return;
   }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::RevolveAxis) {
+    const qulonglong previous = hoveredRevolveAxisToken_;
+    hoveredRevolveAxisToken_ =
+        revolveAxisTokenAt(event->position() - cameraPan_);
+    setCursor(hoveredRevolveAxisToken_ != 0 ? Qt::PointingHandCursor
+                                           : Qt::CrossCursor);
+    if (previous != hoveredRevolveAxisToken_) update();
+    event->accept();
+    return;
+  }
   if (pickMode_ == PickMode::ExtrusionSurface) {
     updateExtrusionHover(event->position() - cameraPan_);
     update();
@@ -3736,7 +3830,8 @@ bool Viewport::eventFilter(QObject* watched, QEvent* event) {
   if (event->type() == QEvent::ShortcutOverride) {
     const auto* key = static_cast<QKeyEvent*>(event);
     if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
-        key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+        key->key() == Qt::Key_Escape || key->key() == Qt::Key_Tab ||
+        key->key() == Qt::Key_Backtab) {
       event->accept();
       return true;
     }
@@ -3747,6 +3842,12 @@ bool Viewport::eventFilter(QObject* watched, QEvent* event) {
     return QOpenGLWidget::eventFilter(watched, event);
 
   const auto* key = static_cast<QKeyEvent*>(event);
+  // The legacy extrusion editor cancels the active tool directly through the
+  // same MainWindow route used by viewport Escape.
+  if (key->key() == Qt::Key_Escape) {
+    if (!key->isAutoRepeat()) cancelActiveInteraction();
+    return true;
+  }
   if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
     // Extrude has one on-canvas numeric field. Keep Tab inside the CAD HUD
     // instead of escaping to the right-hand tool panel.
@@ -3766,6 +3867,18 @@ bool Viewport::eventFilter(QObject* watched, QEvent* event) {
   return QOpenGLWidget::eventFilter(watched, event);
 }
 
+void Viewport::cancelActiveInteraction() {
+  // Escape must cancel the whole transient interaction, regardless of whether
+  // keyboard focus currently belongs to the viewport or an on-canvas editor.
+  pickMode_ = PickMode::None;
+  clearLegacyExtrusionPreview();
+  clearToolPreviewShape();
+  clearToolManipulator();
+  cancelMarquee();
+  unsetCursor();
+  emit selectionChanged(QStringLiteral("__cancel_tools__"));
+  update();
+}
 void Viewport::keyPressEvent(QKeyEvent* event) {
   // CAD Tab workflow is intentionally restricted to numeric fields drawn in
   // the viewport. The right-hand tool panel remains mouse-accessible, but it
@@ -3831,18 +3944,7 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
     return;
   }
   if (event->key() == Qt::Key_Escape) {
-    pickMode_ = PickMode::None;
-    hideExtrusionManipulator();
-    extrusionHoverPolygon_.clear();
-    extrusionHoverPath_ = {};
-    selectedExtrusionPolygons_.clear();
-    selectedExtrusionPaths_.clear();
-    selectedExtrusionRegionSketches_.clear();
-    selectedExtrusionSketch_.clear();
-    cancelMarquee();
-    unsetCursor();
-    emit selectionChanged(QStringLiteral("__cancel_tools__"));
-    update();
+    cancelActiveInteraction();
     event->accept();
     return;
   }
