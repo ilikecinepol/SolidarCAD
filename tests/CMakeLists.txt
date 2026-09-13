@@ -71,6 +71,10 @@ target_link_libraries(extrude_history_regression_tests PRIVATE solidar_model)
 add_test(NAME extrude_history_regression_tests
          COMMAND extrude_history_regression_tests)
 
+add_executable(sketch_extrude_builder_tests sketch_extrude_builder_tests.cpp)
+target_link_libraries(sketch_extrude_builder_tests PRIVATE solidar_model)
+add_test(NAME sketch_extrude_builder_tests COMMAND sketch_extrude_builder_tests)
+
 add_executable(face_extrude_tests face_extrude_tests.cpp)
 target_link_libraries(face_extrude_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME face_extrude_tests COMMAND face_extrude_tests)
@@ -160,6 +164,17 @@ add_executable(viewport_preview_selection_tests
 target_link_libraries(viewport_preview_selection_tests PRIVATE solidar_viewport3d)
 add_test(NAME viewport_preview_selection_tests
          COMMAND viewport_preview_selection_tests)
+
+add_executable(viewport_direct_profile_tests viewport_direct_profile_tests.cpp)
+target_link_libraries(viewport_direct_profile_tests
+                      PRIVATE solidar_viewport3d Qt6::Widgets)
+add_test(NAME viewport_direct_profile_tests
+         COMMAND viewport_direct_profile_tests)
+
+add_executable(interaction_layer_tests interaction_layer_tests.cpp)
+target_link_libraries(interaction_layer_tests
+                      PRIVATE solidar_viewport3d Qt6::Widgets)
+add_test(NAME interaction_layer_tests COMMAND interaction_layer_tests)
 
 add_executable(viewport_reset_tests viewport_reset_tests.cpp)
 target_link_libraries(viewport_reset_tests
@@ -263,10 +278,13 @@ set_tests_properties(
   numeric_parameter_state_tests
   viewport_manipulator_tests
   viewport_preview_selection_tests
+  viewport_direct_profile_tests
+  interaction_layer_tests
   macro_foundation_tests
   fillet_feature_tests
   chamfer_feature_tests
   extrude_tool_session_tests
+  sketch_extrude_builder_tests
   PROPERTIES LABELS "unit"
 )
 
@@ -349,6 +367,7 @@ if(WIN32)
     extrude_geometry_regression_tests
     extrude_boolean_regression_tests
     extrude_history_regression_tests
+    sketch_extrude_builder_tests
     face_extrude_tests
     extrude_tool_session_tests
     pocket_feature_tests
@@ -368,6 +387,8 @@ if(WIN32)
     viewport_picking_tests
     viewport_manipulator_tests
     viewport_preview_selection_tests
+    viewport_direct_profile_tests
+    interaction_layer_tests
     viewport_reset_tests
     view_cube_tests
     world_grid_tests

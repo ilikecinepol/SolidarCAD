@@ -25,10 +25,46 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
   face_ = std::move(face);
+  sketchSource_ = false;
+  profile_ = DocumentSketch{};
+  profileId_ = kInvalidSketchId;
+  sketchGeometry_.reset();
   operation_ = operation;
   reversed_ = reversed;
   editingFeatureId_ = editingFeatureId;
 
+  updateMaximumMmFromBaseShape();
+  length_.reset(lengthMm, minimumMm_, maximumMm_);
+
+  lifecycle_ = ToolLifecycle::EditingParameters;
+  updatePreview();
+}
+
+void ExtrudeToolSession::beginSketch(
+    DocumentSketch profile, SketchId profileId, ShapeFeature::ShapePtr baseShape,
+    double lengthMm, ExtrudeOperation operation, bool reversed,
+    std::optional<FeatureId> editingFeatureId) {
+  sketchSource_ = true;
+  profile_ = std::move(profile);
+  profileId_ = profileId;
+  baseShape_ = std::move(baseShape);
+  face_ = FaceReference{};
+  geometry_.reset();
+  sketchGeometry_.reset();
+  bodyId_ = kInvalidBodyId;
+  sourceFeatureId_ = kInvalidFeatureId;
+  operation_ = operation;
+  reversed_ = reversed;
+  editingFeatureId_ = editingFeatureId;
+
+  updateMaximumMmFromBaseShape();
+  length_.reset(lengthMm, minimumMm_, maximumMm_);
+
+  lifecycle_ = ToolLifecycle::EditingParameters;
+  updatePreview();
+}
+
+void ExtrudeToolSession::updateMaximumMmFromBaseShape() {
   minimumMm_ = 0.01;
   maximumMm_ = 100000.0;
   if (baseShape_ && !baseShape_->IsNull()) {
@@ -43,10 +79,6 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
     if (std::isfinite(diagonal) && diagonal > 0.0)
       maximumMm_ = std::clamp(diagonal * 20.0, 100.0, 100000.0);
   }
-  length_.reset(lengthMm, minimumMm_, maximumMm_);
-
-  lifecycle_ = ToolLifecycle::EditingParameters;
-  updatePreview();
 }
 
 void ExtrudeToolSession::setFace(FaceReference face) {
@@ -86,6 +118,10 @@ std::optional<FeatureId> ExtrudeToolSession::editingFeatureId() const noexcept {
   return editingFeatureId_;
 }
 const FaceReference& ExtrudeToolSession::face() const noexcept { return face_; }
+bool ExtrudeToolSession::isSketchSource() const noexcept { return sketchSource_; }
+SketchId ExtrudeToolSession::profileSketchId() const noexcept {
+  return sketchSource_ ? profileId_ : kInvalidSketchId;
+}
 double ExtrudeToolSession::lengthMm() const noexcept { return length_.value(); }
 ExtrudeOperation ExtrudeToolSession::operation() const noexcept {
   return operation_;
@@ -103,6 +139,8 @@ ToolSelectionStage ExtrudeToolSession::selectionStage() const noexcept {
 
 std::optional<SelectionRequirement> ExtrudeToolSession::selectionRequirement() const {
   if (lifecycle_ == ToolLifecycle::Inactive) return std::nullopt;
+  if (sketchSource_)
+    return SelectionRequirement{SelectionType::Sketch, "Select profile", 1, 1, false};
   return SelectionRequirement{SelectionType::Face, "Select face", 1, 1, false};
 }
 
@@ -119,6 +157,24 @@ std::shared_ptr<const TopoDS_Shape> ExtrudeToolSession::previewShape() const {
 const std::string& ExtrudeToolSession::error() const noexcept { return error_; }
 
 bool ExtrudeToolSession::updatePreview() {
+  if (sketchSource_) {
+    // Sketch source: an invalid candidate must never destroy the last valid
+    // preview, so previewShape_/sketchGeometry_ are only replaced on success.
+    error_.clear();
+    TopoDS_Shape result;
+    SketchExtrudeGeometry geometry;
+    if (!buildExtrusionFromSketch(profile_, baseShape_.get(), length_.value(),
+                                  operation_, reversed_, &result, &geometry,
+                                  &error_)) {
+      lifecycle_ = ToolLifecycle::PreviewInvalid;
+      return false;
+    }
+    previewShape_ = std::make_shared<TopoDS_Shape>(result);
+    sketchGeometry_ = geometry;
+    lifecycle_ = ToolLifecycle::PreviewValid;
+    return true;
+  }
+
   previewShape_.reset();
   geometry_.reset();
   error_.clear();
@@ -153,6 +209,36 @@ bool ExtrudeToolSession::updatePreview() {
 
 std::optional<LinearToolManipulator> ExtrudeToolSession::manipulator() const {
   if (lifecycle_ == ToolLifecycle::Inactive) return std::nullopt;
+
+  if (sketchSource_) {
+    // Origin is the profile centroid when geometry resolved, falling back to
+    // the sketch placement origin; the direction is always the profile normal.
+    gp_Pnt origin;
+    gp_Dir normal;
+    if (sketchGeometry_) {
+      origin = sketchGeometry_->centroid;
+      normal = sketchGeometry_->normal;
+    } else {
+      const auto& placementOrigin = profile_.placement.origin;
+      origin = gp_Pnt(placementOrigin.x, placementOrigin.y, placementOrigin.z);
+      const Vector3d placementNormal = profile_.placement.normal();
+      const double normalLengthSquared =
+          placementNormal.x * placementNormal.x +
+          placementNormal.y * placementNormal.y +
+          placementNormal.z * placementNormal.z;
+      if (!std::isfinite(normalLengthSquared) || normalLengthSquared <= 0.0)
+        return std::nullopt;
+      normal = gp_Dir(placementNormal.x, placementNormal.y, placementNormal.z);
+    }
+    const Vector3d direction{normal.X(), normal.Y(), normal.Z()};
+    const double signedValue = reversed_ ? -length_.value() : length_.value();
+    return LinearToolManipulator{{origin.X(), origin.Y(), origin.Z()},
+                                 direction,
+                                 signedValue,
+                                 -maximumMm_,
+                                 maximumMm_,
+                                 true};
+  }
 
   FaceExtrudeGeometry geometry;
   if (geometry_) {
@@ -223,7 +309,11 @@ void ExtrudeToolSession::applySignedLength(double signedValue) {
 void ExtrudeToolSession::cancel() noexcept {
   previewShape_.reset();
   geometry_.reset();
+  sketchGeometry_.reset();
   face_ = FaceReference{};
+  profile_ = DocumentSketch{};
+  profileId_ = kInvalidSketchId;
+  sketchSource_ = false;
   error_.clear();
   lifecycle_ = ToolLifecycle::Inactive;
 }

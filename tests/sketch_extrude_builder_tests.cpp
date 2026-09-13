@@ -1,0 +1,223 @@
+#include <BRepCheck_Analyzer.hxx>
+#include <TopoDS_Shape.hxx>
+
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <string>
+
+#include "TestGeometryUtils.h"
+#include "model/Document.h"
+#include "model/ExtrudeFeature.h"
+#include "model/SketchExtrudeBuilder.h"
+
+#define CHECK(x)                                                    \
+  do {                                                              \
+    if (!(x)) {                                                     \
+      std::cerr << __LINE__ << ": " #x "\n";                        \
+      return EXIT_FAILURE;                                          \
+    }                                                               \
+  } while (false)
+
+namespace {
+
+solidar::DocumentSketch profileWith(solidar::SketchId id) {
+  solidar::DocumentSketch profile;
+  profile.id = id;
+  return profile;
+}
+
+}  // namespace
+
+int main() {
+  using namespace solidar;
+
+  // One closed line wire is supported.
+  {
+    auto profile = profileWith(1);
+    profile.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+    CHECK(isSupportedSingleSketchProfile(profile));
+  }
+
+  // One circle is supported.
+  {
+    auto profile = profileWith(2);
+    profile.geometry.addCircle({0.0, 0.0}, 5.0);
+    CHECK(isSupportedSingleSketchProfile(profile));
+  }
+
+  // Multiple independent loops are rejected.
+  {
+    auto profile = profileWith(3);
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    profile.geometry.addRectangle({20.0, 0.0}, {30.0, 10.0});
+    std::string error;
+    CHECK(!isSupportedSingleSketchProfile(profile, &error));
+    CHECK(!error.empty());
+  }
+
+  // A hole (nested loop) is rejected.
+  {
+    auto profile = profileWith(4);
+    profile.geometry.addRectangle({0.0, 0.0}, {30.0, 30.0});
+    profile.geometry.addRectangle({10.0, 10.0}, {20.0, 20.0});
+    std::string error;
+    CHECK(!isSupportedSingleSketchProfile(profile, &error));
+    CHECK(!error.empty());
+  }
+
+  // Mixed line + circle profiles are rejected with the committed message.
+  {
+    auto profile = profileWith(5);
+    profile.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    profile.geometry.addCircle({10.0, 10.0}, 3.0);
+    std::string error;
+    CHECK(!isSupportedSingleSketchProfile(profile, &error));
+    CHECK(error.find("one profile") != std::string::npos);
+  }
+
+  // Unresolved support is rejected.
+  {
+    auto profile = profileWith(6);
+    profile.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    profile.supportResolved = false;
+    std::string error;
+    CHECK(!isSupportedSingleSketchProfile(profile, &error));
+    CHECK(!error.empty());
+  }
+
+  // Non-finite coordinates are rejected.
+  {
+    auto profile = profileWith(7);
+    profile.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    profile.geometry.addLine({10.0, 0.0}, {10.0, 10.0});
+    profile.geometry.addLine(
+        {10.0, 10.0}, {std::numeric_limits<double>::quiet_NaN(), 0.0});
+    std::string error;
+    CHECK(!isSupportedSingleSketchProfile(profile, &error));
+    CHECK(!error.empty());
+  }
+
+  // NewBody yields one valid solid with the expected volume and bounds.
+  {
+    auto profile = profileWith(8);
+    profile.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 50.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(!result.IsNull());
+    CHECK(test::solidCount(result) == 1);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    CHECK(test::near(test::volumeOf(result), 80.0 * 35.0 * 50.0, 1e-3));
+    const auto bounds = test::boundsOf(result);
+    CHECK(test::near(bounds.x(), 80.0, 1e-4));
+    CHECK(test::near(bounds.y(), 35.0, 1e-4));
+    CHECK(test::near(bounds.z(), 50.0, 1e-4));
+  }
+
+  // Join increases volume versus the base shape.
+  {
+    auto baseProfile = profileWith(9);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 50.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+    const double before = test::volumeOf(base);
+
+    auto joinProfile = profileWith(10);
+    joinProfile.placement.origin.z = 40.0;
+    joinProfile.geometry.addRectangle({10.0, 10.0}, {20.0, 20.0});
+    TopoDS_Shape joined;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(joinProfile, &base, 20.0,
+                                   ExtrudeOperation::Join, false, &joined,
+                                   nullptr, &error));
+    CHECK(test::volumeOf(joined) > before + 1e-6);
+  }
+
+  // Cut decreases volume versus the base shape.
+  {
+    auto baseProfile = profileWith(11);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 50.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+    const double before = test::volumeOf(base);
+
+    auto cutProfile = profileWith(12);
+    cutProfile.geometry.addRectangle({10.0, 10.0}, {20.0, 20.0});
+    TopoDS_Shape cut;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(cutProfile, &base, 20.0,
+                                   ExtrudeOperation::Cut, false, &cut, nullptr,
+                                   &error));
+    CHECK(test::volumeOf(cut) < before - 1e-6);
+  }
+
+  // Join on a non-intersecting prism fails with a non-empty error.
+  {
+    auto baseProfile = profileWith(13);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+
+    auto remoteProfile = profileWith(14);
+    remoteProfile.placement.origin.z = 100.0;
+    remoteProfile.geometry.addCircle({0.0, 0.0}, 5.0);
+    TopoDS_Shape joined;
+    std::string error;
+    CHECK(!buildExtrusionFromSketch(remoteProfile, &base, 10.0,
+                                    ExtrudeOperation::Join, false, &joined,
+                                    nullptr, &error));
+    CHECK(!error.empty());
+  }
+
+  // Cut on a non-intersecting prism fails with a non-empty error.
+  {
+    auto baseProfile = profileWith(15);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+
+    auto remoteProfile = profileWith(16);
+    remoteProfile.placement.origin.z = 100.0;
+    remoteProfile.geometry.addCircle({0.0, 0.0}, 5.0);
+    TopoDS_Shape cut;
+    std::string error;
+    CHECK(!buildExtrusionFromSketch(remoteProfile, &base, 10.0,
+                                    ExtrudeOperation::Cut, false, &cut,
+                                    nullptr, &error));
+    CHECK(!error.empty());
+  }
+
+  // NewBody with a non-null base shape fails with the committed message.
+  {
+    auto baseProfile = profileWith(17);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+
+    auto profile = profileWith(18);
+    profile.geometry.addCircle({0.0, 0.0}, 5.0);
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(!buildExtrusionFromSketch(profile, &base, 10.0,
+                                    ExtrudeOperation::NewBody, false, &result,
+                                    nullptr, &error));
+    CHECK(error.find("first feature") != std::string::npos);
+  }
+
+  return EXIT_SUCCESS;
+}

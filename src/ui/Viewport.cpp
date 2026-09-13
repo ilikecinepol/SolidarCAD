@@ -1078,6 +1078,27 @@ void Viewport::clearToolManipulator() {
   draggingAngularToolManipulator_ = false;
   update();
 }
+
+void Viewport::seedToolManipulatorDrag(QPointF scenePosition,
+                                       Vector3d worldAxis) {
+  if (!toolManipulator_) return;
+  const Point3d center = toolManipulator_->origin;
+  const QPointF start = projectBodyPoint(
+      toolManipulator_->origin, center, size(), yaw_, pitch_, zoom_).screen;
+  const Point3d axisEnd{toolManipulator_->origin.x + worldAxis.x,
+                        toolManipulator_->origin.y + worldAxis.y,
+                        toolManipulator_->origin.z + worldAxis.z};
+  QPointF projectedUnitAxis = projectBodyPoint(
+      axisEnd, center, size(), yaw_, pitch_, zoom_).screen - start;
+  const auto layout = toolManipulatorLayout();
+  const QPointF dragAxis = robustLinearDragAxis(
+      projectedUnitAxis,
+      layout ? layout->direction * layout->visualSign : projectedUnitAxis,
+      manipulatorStyle_.nearEndOnThresholdPx);
+  linearDragSnapshot_ = {scenePosition, dragAxis, toolManipulator_->valueMm};
+  draggingToolManipulator_ = true;
+  setCursor(Qt::SizeAllCursor);
+}
 bool Viewport::focusToolParameterField(bool backward) {
   // Legacy Extrude still owns a dedicated on-canvas spinbox.
   if (extrusionLengthEditor_ && extrusionLengthEditor_->isVisible()) {
@@ -2495,6 +2516,24 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   }
 
   if (pickMode_ != PickMode::None) return;
+
+  // Direct sketch-profile interaction: in normal mode a visible closed profile
+  // starts the direct Extrude instead of selecting body topology. The hover
+  // machinery already depth-filters, so an occluded profile is not picked.
+  updateExtrusionHover(scenePosition);
+  if (hoveredExtrusionSketchIndex_ != static_cast<std::size_t>(-1)) {
+    selectedExtrusionSketchIndex_ = hoveredExtrusionSketchIndex_;
+    selectedExtrusionSketch_ = hoveredExtrusionSketch_;
+    selectedExtrusionSupport_ = hoveredExtrusionSupport_;
+    emit directProfilePicked(hoveredExtrusionSketchIndex_);
+    // If the synchronous MainWindow slot installed a manipulator, continue this
+    // same press as a drag so the user extrudes without a second click.
+    if (toolManipulator_)
+      seedToolManipulatorDrag(scenePosition, toolManipulator_->direction);
+    update();
+    event->accept();
+    return;
+  }
 
   const bool toggleFace = faceMultiSelectionMode_ ||
                           event->modifiers().testFlag(Qt::ControlModifier);

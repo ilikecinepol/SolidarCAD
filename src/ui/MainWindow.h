@@ -3,6 +3,7 @@
 #include <QMainWindow>
 #include <optional>
 #include <functional>
+#include <utility>
 #include <vector>
 
 #include "model/Document.h"
@@ -88,6 +89,7 @@ class MainWindow final : public QMainWindow {
   void acceptDraftTool();
   void cancelDraftTool();
   void createFaceExtrude(const FaceReference& face);
+  void createSketchExtrude(std::size_t sketchIndex);
   void updateFaceExtrudeToolPreview();
   void acceptFaceExtrudeTool();
   void cancelFaceExtrudeTool();
@@ -111,7 +113,9 @@ class MainWindow final : public QMainWindow {
   void exportPdf();
   void printDrawing();
   void undoLastAction();
+  void redoLastAction();
   void pushUndoAction(std::function<void()> action);
+  void pushUndoRedoAction(std::function<void()> undo, std::function<void()> redo);
   void updateUndoAvailability();
   void updateSketchConstraintPanel();
   bool configureSketchEditContext();
@@ -134,6 +138,7 @@ class MainWindow final : public QMainWindow {
   SketchPlacement currentSketchPlacement_{SketchPlacement::xy()};
   std::optional<FaceReference> currentSketchFaceReference_;
   QAction* undoAction_{nullptr};
+  QAction* redoAction_{nullptr};
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
   QScrollArea* historyScroll_{nullptr};
@@ -172,7 +177,10 @@ class MainWindow final : public QMainWindow {
   };
   std::vector<SketchHistoryEntry> sketchHistory_;
   std::optional<std::size_t> editingSketchIndex_;
-  std::vector<std::function<void()>> modelUndoStack_;
+  std::vector<std::pair<std::function<void()>, std::function<void()>>>
+      modelUndoStack_;
+  std::vector<std::pair<std::function<void()>, std::function<void()>>>
+      modelRedoStack_;
   bool applyingUndo_{false};
 };
 

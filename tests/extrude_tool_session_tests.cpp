@@ -280,6 +280,91 @@ int main() {
       session.setSignedLength(-8.0);
       CHECK(session.manipulator()->valueMm < 0.0);
     }
+
+    // 10. Sketch-source session: NewBody preview, manipulator direction equals
+    //     the profile normal, signed length semantics, invalid candidate
+    //     retention of the last valid preview, and cancel cleanup.
+    {
+      solidar::DocumentSketch profile;
+      profile.id = 1001;
+      profile.supportResolved = true;
+      profile.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+
+      solidar::ExtrudeToolSession session;
+      session.beginSketch(profile, profile.id, nullptr, 10.0,
+                          ExtrudeOperation::NewBody, false);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(session.previewShape() != nullptr);
+      CHECK(session.isSketchSource());
+      CHECK(session.profileSketchId() == profile.id);
+
+      const auto manip = session.manipulator();
+      CHECK(manip.has_value());
+      CHECK(near(manip->valueMm, 10.0));
+      CHECK(manip->directional);
+      CHECK(near(manip->direction.x, 0.0, 1e-6));
+      CHECK(near(manip->direction.y, 0.0, 1e-6));
+      CHECK(near(manip->direction.z, 1.0, 1e-6));
+      CHECK(manip->minimumMm < 0.0);
+
+      session.setSignedLength(-15.0);
+      CHECK(session.reversed());
+      CHECK(near(session.lengthMm(), 15.0));
+      CHECK(near(session.manipulator()->valueMm, -15.0));
+
+      // A disjoint Join candidate must not destroy the last valid preview.
+      const TopoDS_Shape base = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape();
+      solidar::DocumentSketch remote;
+      remote.id = 1002;
+      remote.supportResolved = true;
+      remote.placement.origin.z = 100.0;
+      remote.geometry.addRectangle({0.0, 0.0}, {5.0, 5.0});
+      session.beginSketch(remote, remote.id,
+                          std::make_shared<TopoDS_Shape>(base), 10.0,
+                          ExtrudeOperation::Join, false);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(session.previewShape() != nullptr);
+      CHECK(!session.error().empty());
+
+      // Recover with a valid intersecting candidate.
+      solidar::DocumentSketch intersecting;
+      intersecting.id = 1003;
+      intersecting.supportResolved = true;
+      intersecting.placement.origin.z = 10.0;
+      intersecting.geometry.addRectangle({2.0, 2.0}, {8.0, 8.0});
+      session.beginSketch(intersecting, intersecting.id,
+                          std::make_shared<TopoDS_Shape>(base), 10.0,
+                          ExtrudeOperation::Join, false);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(session.previewShape() != nullptr);
+
+      session.cancel();
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
+      CHECK(session.previewShape() == nullptr);
+      CHECK(session.profileSketchId() == solidar::kInvalidSketchId);
+    }
+
+    // 11. A degenerate (zero-length) profile placement normal fails cleanly in
+    //     the sketch builder: PreviewInvalid, no preview shape, no manipulator,
+    //     and a non-empty error. No zero-length prism reaches OCCT.
+    {
+      solidar::DocumentSketch degenerate;
+      degenerate.id = 1004;
+      degenerate.supportResolved = true;
+      // Collinear axis directions produce a zero cross-product normal.
+      degenerate.placement.xDirection = {1.0, 0.0, 0.0};
+      degenerate.placement.yDirection = {1.0, 0.0, 0.0};
+      degenerate.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+
+      solidar::ExtrudeToolSession session;
+      session.beginSketch(degenerate, degenerate.id, nullptr, 10.0,
+                          ExtrudeOperation::NewBody, false);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(session.previewShape() == nullptr);
+      CHECK(!session.manipulator().has_value());
+      CHECK(!session.error().empty());
+      session.cancel();
+    }
   } catch (const std::exception& error) {
     std::cerr << "extrude tool session regression failure: " << error.what()
               << '\n';

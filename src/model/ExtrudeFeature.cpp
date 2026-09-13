@@ -1,12 +1,6 @@
 #include "model/ExtrudeFeature.h"
 
-#include <BRepAlgoAPI_Cut.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
-#include <BRepGProp.hxx>
-#include <GProp_GProps.hxx>
-#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
-#include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <algorithm>
@@ -16,7 +10,7 @@
 #include <variant>
 
 #include "model/FaceExtrudeBuilder.h"
-#include "model/SketchProfileBuilder.h"
+#include "model/SketchExtrudeBuilder.h"
 
 namespace solidar {
 
@@ -177,85 +171,14 @@ bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
   }
   try {
     std::string profileError;
-    TopoDS_Shape prism;
-    if (!buildExtrusionPrismFromSketch(*profile, lengthMm_, reversed_, &prism,
-                                       &profileError)) {
+    TopoDS_Shape result;
+    if (!buildExtrusionFromSketch(*profile, context.previousShape, lengthMm_,
+                                  operation_, reversed_, &result, nullptr,
+                                  &profileError)) {
       markError("Extrude " + profileError);
       return false;
     }
-    if (operation_ == ExtrudeOperation::NewBody) {
-      if (context.previousShape && !context.previousShape->IsNull()) {
-        markError("Extrude New Body must be the first feature of a Body");
-        return false;
-      }
-      setShape(std::make_shared<TopoDS_Shape>(prism));
-      markValid();
-      return true;
-    }
-    if (!context.previousShape || context.previousShape->IsNull()) {
-      markError(operation_ == ExtrudeOperation::Join
-                    ? "Extrude Join base shape is missing"
-                    : "Extrude Cut base shape is missing");
-      return false;
-    }
-    GProp_GProps beforeProperties;
-    BRepGProp::VolumeProperties(*context.previousShape, beforeProperties);
-    TopoDS_Shape result;
-    if (operation_ == ExtrudeOperation::Join) {
-      BRepAlgoAPI_Fuse fuse(*context.previousShape, prism);
-      fuse.Build();
-      if (!fuse.IsDone() || fuse.Shape().IsNull()) {
-        markError("Extrude Join boolean fuse failed");
-        return false;
-      }
-      result = fuse.Shape();
-    } else {
-      BRepAlgoAPI_Cut cut(*context.previousShape, prism);
-      cut.Build();
-      if (!cut.IsDone() || cut.Shape().IsNull()) {
-        markError("Extrude Cut boolean cut failed");
-        return false;
-      }
-      result = cut.Shape();
-    }
-    TopExp_Explorer solids(result, TopAbs_SOLID);
-    if (!solids.More()) {
-      markError("Extrude result does not contain a solid");
-      return false;
-    }
-    TopoDS_Shape singleSolid = solids.Current();
-    solids.Next();
-    if (solids.More()) {
-      markError(operation_ == ExtrudeOperation::Join
-                    ? "Extrude Join does not intersect the body"
-                    : "Extrude result contains multiple solids");
-      return false;
-    }
-    GProp_GProps afterProperties;
-    BRepGProp::VolumeProperties(singleSolid, afterProperties);
-    const double before = beforeProperties.Mass();
-    const double after = afterProperties.Mass();
-    const double tolerance = std::max(1e-7, std::abs(before) * 1e-10);
-    if (operation_ == ExtrudeOperation::Join && after <= before + tolerance) {
-      markError("Extrude Join does not intersect the body");
-      return false;
-    }
-    if (operation_ == ExtrudeOperation::Cut && after >= before - tolerance) {
-      markError("Extrude Cut does not intersect the body");
-      return false;
-    }
-    // Join leaves coplanar seams between the base and the fused prism; unify
-    // only genuine same-domain faces/edges before committing the solid.
-    if (operation_ == ExtrudeOperation::Join) {
-      ShapeUpgrade_UnifySameDomain unify(singleSolid, true, true, false);
-      unify.Build();
-      if (unify.Shape().IsNull()) {
-        markError("Extrude same-domain unification failed");
-        return false;
-      }
-      singleSolid = unify.Shape();
-    }
-    setShape(std::make_shared<TopoDS_Shape>(singleSolid));
+    setShape(std::make_shared<TopoDS_Shape>(result));
     markValid();
     return true;
   } catch (const Standard_Failure& failure) {

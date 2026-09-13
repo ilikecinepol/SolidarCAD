@@ -57,6 +57,8 @@ add_library(solidar_model
   model/RevolveFeature.h
   model/RevolveToolSession.cpp
   model/RevolveToolSession.h
+  model/SketchExtrudeBuilder.cpp
+  model/SketchExtrudeBuilder.h
   model/SketchProfileBuilder.cpp
   model/SketchProfileBuilder.h
   model/Feature.cpp
@@ -167,6 +169,10 @@ add_library(solidar_viewport3d
   ui/ViewportPicking.h
   ui/ViewportRenderer.cpp
   ui/ViewportRenderer.h
+  ui/interaction/InteractionInputMapper.cpp
+  ui/interaction/InteractionInputMapper.h
+  ui/interaction/ContextActionResolver.cpp
+  ui/interaction/ContextActionResolver.h
   ui/tools/ToolParameterHud.cpp
   ui/tools/ToolParameterHud.h
 )

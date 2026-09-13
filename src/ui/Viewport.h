@@ -131,6 +131,9 @@ class Viewport final : public QOpenGLWidget {
   void clearToolManipulator();  // CAD keyboard traversal targets only numeric fields rendered in the
   // viewport. Right-hand tool panels may call this to hand Tab into the HUD.
   [[nodiscard]] bool focusToolParameterField(bool backward = false);
+  // Seeds the tool-manipulator drag from an arbitrary scene point and world
+  // axis so a direct profile press can continue into the same held-mouse drag.
+  void seedToolManipulatorDrag(QPointF scenePosition, Vector3d worldAxis);
   void fitAll();
   void viewTop();
   void viewBottom();
@@ -188,6 +191,10 @@ class Viewport final : public QOpenGLWidget {
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
   // values >= 3 encode a sketch line id plus three.
   void revolveAxisPicked(qulonglong axisToken);
+  // Direct interaction: a visible closed sketch profile was pressed in normal
+  // mode. MainWindow maps the display index to a SketchId and starts the
+  // sketch Extrude session (contract 4).
+  void directProfilePicked(std::size_t sketchIndex);
 
  protected:
   void initializeGL() override;

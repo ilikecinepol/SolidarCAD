@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "model/ExtrudeFeature.h"
+#include "model/SketchExtrudeBuilder.h"
 #include "model/ChamferFeature.h"
 #include "model/ExtrudeOperationDetector.h"
 #include "model/FilletFeature.h"
@@ -176,6 +177,9 @@ void MainWindow::buildMenus() {
   undoAction_ = editMenu->addAction(QString::fromUtf8("Отменить"));
   undoAction_->setShortcut(QKeySequence::Undo);
   undoAction_->setEnabled(false);
+  redoAction_ = editMenu->addAction(QString::fromUtf8("Повторить"));
+  redoAction_->setShortcut(QKeySequence::Redo);
+  redoAction_->setEnabled(false);
   auto* settingsAction = editMenu->addAction(QString::fromUtf8("Настройки…"));
   settingsAction->setObjectName("settingsAction");
   connect(settingsAction, &QAction::triggered, this, &MainWindow::openSettings);
@@ -190,13 +194,23 @@ void MainWindow::buildMenus() {
   connect(saveAction, &QAction::triggered, this, &MainWindow::saveProject);
   connect(exportStlAction, &QAction::triggered, this, &MainWindow::exportStl);
   connect(undoAction_, &QAction::triggered, this, &MainWindow::undoLastAction);
+  connect(redoAction_, &QAction::triggered, this, &MainWindow::redoLastAction);
   connect(sketchCanvas_, &SketchCanvas::undoAvailable, this,
           [this](bool) { updateUndoAvailability(); });
 }
 
 void MainWindow::pushUndoAction(std::function<void()> action) {
   if (applyingUndo_) return;
-  modelUndoStack_.push_back(std::move(action));
+  modelUndoStack_.push_back({std::move(action), nullptr});
+  if (modelUndoStack_.size() > 100) modelUndoStack_.erase(modelUndoStack_.begin());
+  updateUndoAvailability();
+}
+
+void MainWindow::pushUndoRedoAction(std::function<void()> undo,
+                                    std::function<void()> redo) {
+  if (applyingUndo_) return;
+  modelUndoStack_.push_back({std::move(undo), std::move(redo)});
+  modelRedoStack_.clear();
   if (modelUndoStack_.size() > 100) modelUndoStack_.erase(modelUndoStack_.begin());
   updateUndoAvailability();
 }
@@ -207,6 +221,8 @@ void MainWindow::updateUndoAvailability() {
                           workspaceStack_->currentWidget() == sketchCanvas_ &&
                           sketchCanvas_->canUndo();
   undoAction_->setEnabled(sketchUndo || !modelUndoStack_.empty());
+  if (redoAction_)
+    redoAction_->setEnabled(!sketchUndo && !modelRedoStack_.empty());
 }
 
 void MainWindow::undoLastAction() {
@@ -214,12 +230,24 @@ void MainWindow::undoLastAction() {
       sketchCanvas_->canUndo()) {
     sketchCanvas_->undo();
   } else if (!modelUndoStack_.empty()) {
-    auto action = std::move(modelUndoStack_.back());
+    auto entry = std::move(modelUndoStack_.back());
     modelUndoStack_.pop_back();
     applyingUndo_ = true;
-    action();
+    entry.first();
     applyingUndo_ = false;
+    if (entry.second) modelRedoStack_.push_back(std::move(entry));
   }
+  updateUndoAvailability();
+}
+
+void MainWindow::redoLastAction() {
+  if (modelRedoStack_.empty()) return;
+  auto entry = std::move(modelRedoStack_.back());
+  modelRedoStack_.pop_back();
+  applyingUndo_ = true;
+  entry.second();
+  applyingUndo_ = false;
+  modelUndoStack_.push_back(std::move(entry));
   updateUndoAvailability();
 }
 
@@ -337,6 +365,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   editingSketchIndex_.reset();
   extrudeOperationManuallyChanged_ = false;
   modelUndoStack_.clear();
+  modelRedoStack_.clear();
   sketchCanvas_->resetSketch();
   rebuildFeatureTree();
   rebuildHistoryPanel();
@@ -1365,6 +1394,8 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::extrusionFacePicked, this,
           [this](const FaceReference& face) { createFaceExtrude(face); });
+  connect(viewport_, &Viewport::directProfilePicked, this,
+          [this](std::size_t sketchIndex) { createSketchExtrude(sketchIndex); });
   connect(sketchRibbon_, &SketchRibbon::finishRequested, this,
           &MainWindow::finishSketch);
   connect(sketchCanvas_, &SketchCanvas::geometryChanged, this,
@@ -2492,6 +2523,38 @@ void MainWindow::acceptDraftTool() {
   rebuildHistoryPanel();
 }
 
+void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
+  if (!ensureHistoryAtEnd()) return;
+  if (sketchIndex >= sketchHistory_.size()) return;
+  const SketchId sketchId = sketchHistory_[sketchIndex].documentSketchId;
+  DocumentSketch* profile = document_.findSketch(sketchId);
+  if (!profile) return;
+  std::string profileError;
+  if (!isSupportedSingleSketchProfile(*profile, &profileError)) {
+    statusBar()->showMessage(
+        QString::fromUtf8("Прямое выдавливание: ") +
+            QString::fromStdString(profileError),
+        4000);
+    return;
+  }
+  // Safe v1: standalone profile -> New Body. Join/Cut on a supporting body is
+  // deferred to a later contract.
+  partDesignTools_.activate(PartDesignToolKind::Extrude);
+  faceExtrudeSession_.beginSketch(*profile, sketchId, ShapeFeature::ShapePtr{},
+                                  10.0, ExtrudeOperation::NewBody, false);
+  viewport_->clearLegacyExtrusionPreview();
+  toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Extrude),
+                                  QString::fromUtf8("Профиль"),
+                                  QString::fromUtf8("Длина"),
+                                  QStringLiteral(" mm"));
+  toolParametersPanel_->setParameterRange(0.01, 100000.0, 2);
+  toolParametersPanel_->setParameterValue(faceExtrudeSession_.lengthMm());
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  updateFaceExtrudeToolPreview();
+  viewport_->setFocus(Qt::OtherFocusReason);
+}
+
 void MainWindow::createFaceExtrude(const FaceReference& face) {
   // Native face extrusion shares the Extrude ribbon entry; picking a real
   // B-Rep body face (rather than a sketch contour) starts this face-source
@@ -2532,7 +2595,10 @@ void MainWindow::updateFaceExtrudeToolPreview() {
   if (state == ToolLifecycle::Inactive) return;
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setSelectionCount(
-      faceExtrudeSession_.face().bodyId != kInvalidBodyId ? 1 : 0);
+      faceExtrudeSession_.isSketchSource() ||
+              faceExtrudeSession_.face().bodyId != kInvalidBodyId
+          ? 1
+          : 0);
   toolParametersPanel_->setAcceptEnabled(valid);
   if (valid) {
     toolParametersPanel_->setStatus(QString::fromUtf8("Предпросмотр построен"),
@@ -2561,6 +2627,40 @@ void MainWindow::updateFaceExtrudeToolPreview() {
 void MainWindow::acceptFaceExtrudeTool() {
   if (faceExtrudeSession_.lifecycle() != ToolLifecycle::PreviewValid) return;
   const Document previous = document_;
+  if (faceExtrudeSession_.isSketchSource()) {
+    if (faceExtrudeSession_.operation() != ExtrudeOperation::NewBody) return;
+    Body& newBody = document_.addBody();
+    newBody.addFeature(std::make_unique<ExtrudeFeature>(
+        faceExtrudeSession_.profileSketchId(), faceExtrudeSession_.lengthMm(),
+        "Extrude", ExtrudeOperation::NewBody, faceExtrudeSession_.reversed()));
+    if (!document_.recompute()) {
+      const QString error = QString::fromStdString(document_.rebuildError());
+      document_ = previous;
+      refreshBodyViewFromDocument();
+      toolParametersPanel_->setStatus(error, true);
+      return;
+    }
+    const Document next = document_;
+    cancelFaceExtrudeTool();
+    pushUndoRedoAction(
+        [this, previous] {
+          document_ = previous;
+          refreshBodyViewFromDocument();
+          rebuildFeatureTree();
+          rebuildHistoryPanel();
+        },
+        [this, next] {
+          document_ = next;
+          refreshBodyViewFromDocument();
+          rebuildFeatureTree();
+          rebuildHistoryPanel();
+        });
+    modelRibbon_->clearActiveTool();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+    statusBar()->showMessage(QString::fromUtf8("Создано выдавливание профиля"), 3000);
+    return;
+  }
   Body* body = document_.findBody(faceExtrudeSession_.bodyId());
   if (!body) return;
   if (const auto editingId = faceExtrudeSession_.editingFeatureId()) {
