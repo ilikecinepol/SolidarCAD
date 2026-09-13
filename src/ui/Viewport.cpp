@@ -1672,8 +1672,14 @@ void Viewport::paintGL() {
         }
       }
     }
-  } else if (solidVisible_ && solidSketch_.lines().empty() &&
-             solidSketch_.circles().empty()) {
+  }
+
+  // Legacy box fallback is only valid when there is no parametric B-Rep body
+  // and no native tool preview. Previously this was attached as the `else` of
+  // `if (false && ...)`, so it executed even after a parametric Direct Extrude
+  // had already been rendered, producing a second offset "ghost" solid.
+  if (!hasParametricBody && !hasToolPreview && solidVisible_ &&
+      solidSketch_.lines().empty() && solidSketch_.circles().empty()) {
     for (std::size_t faceIndex = 0; faceIndex < faces.size(); ++faceIndex) {
       QPolygonF polygon;
       for (const int index : faces[faceIndex])

@@ -31,6 +31,11 @@ struct HistoryStep {
     const Document& document, const Body& body);
 [[nodiscard]] std::vector<HistoryStep> buildPartDesignHistory(
     const Document& document, const Body* body);
+// Presentation policy: profile sketches consumed by solid-creating Part Design
+// features are hidden by default, but remain in Document/history and may be
+// shown explicitly by the user.
+[[nodiscard]] bool isSketchConsumedByPartDesign(
+    const Document& document, SketchId sketchId) noexcept;
 void configureHistoryButton(QToolButton& button, const HistoryStep& step,
                             bool selected);
 [[nodiscard]] ShapeFeature* findHistoryFeature(Document& document,

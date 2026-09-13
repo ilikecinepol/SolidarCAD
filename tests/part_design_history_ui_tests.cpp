@@ -28,6 +28,9 @@ int main(int argc, char** argv) {
       sketchOnlyDocument, static_cast<const solidar::Body*>(nullptr));
   CHECK(sketchOnlySteps.size() == 1);
   CHECK(sketchOnlySteps.front().sketchId == sketchOnlyId);
+  CHECK(!solidar::isSketchConsumedByPartDesign(sketchOnlyDocument,
+                                               sketchOnlyId));
+
   solidar::Document document;
   auto& sketch1 = document.addSketch("Sketch 1");
   const auto sketch1Id = sketch1.id;
@@ -75,6 +78,9 @@ int main(int argc, char** argv) {
   CHECK(steps[8].featureId == mirrorId);
   CHECK(steps[9].featureId == linearId);
   CHECK(steps[10].featureId == circularId);
+  CHECK(solidar::isSketchConsumedByPartDesign(document, sketch1Id));
+  CHECK(solidar::isSketchConsumedByPartDesign(document, sketch2Id));
+
   std::set<solidar::FeatureId> ids;
   for (const auto& step : steps) {
     CHECK(!step.icon.isNull()); CHECK(!step.tooltip.isEmpty());
@@ -105,6 +111,7 @@ int main(int argc, char** argv) {
   CHECK(revolveSteps.size() == 2);
   CHECK(revolveSteps[0].sketchId == revolveSketchId);
   CHECK(revolveSteps[1].featureId == revolveId);
+  CHECK(solidar::isSketchConsumedByPartDesign(document, revolveSketchId));
 
   solidar::Document persisted;
   auto& persistedSketch = persisted.addSketch();

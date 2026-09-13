@@ -149,6 +149,34 @@ std::vector<HistoryStep> buildPartDesignHistory(const Document& document,
   return result;
 }
 
+bool isSketchConsumedByPartDesign(const Document& document,
+                                  SketchId sketchId) noexcept {
+  if (sketchId == kInvalidSketchId) return false;
+
+  for (const Body& body : document.bodies()) {
+    for (const auto& feature : body.features()) {
+      if (!feature) continue;
+
+      // "Consumed" is intentionally narrower than dependsOnSketch(): e.g. a
+      // Revolve axis sketch is a dependency but is not the profile that should
+      // be auto-hidden after the solid feature is created.
+      if (const auto* extrude =
+              dynamic_cast<const ExtrudeFeature*>(feature.get())) {
+        if (!extrude->isFaceSource() &&
+            extrude->profileSketchId() == sketchId)
+          return true;
+      } else if (const auto* pocket =
+                     dynamic_cast<const PocketFeature*>(feature.get())) {
+        if (pocket->profileSketchId() == sketchId) return true;
+      } else if (const auto* revolve =
+                     dynamic_cast<const RevolveFeature*>(feature.get())) {
+        if (revolve->profileSketchId() == sketchId) return true;
+      }
+    }
+  }
+  return false;
+}
+
 void configureHistoryButton(QToolButton& button, const HistoryStep& step,
                             bool selected) {
   button.setObjectName(QStringLiteral("historyStep"));

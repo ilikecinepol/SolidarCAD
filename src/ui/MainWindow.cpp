@@ -3417,8 +3417,14 @@ void MainWindow::rebuildFeatureTree() {
   auto* drawings = new QTreeWidgetItem(project, {QString::fromUtf8("Чертежи")});
   const std::size_t activeSketchCount = std::min<std::size_t>(
       static_cast<std::size_t>(std::max(historyPosition_, 0)), sketchCount_);
+  // During a just-committed direct operation rebuildFeatureTree() can run
+  // before rebuildHistoryPanel() has appended the new history step. Treat the
+  // previous end marker as "at end" so the newly created Body is not hidden.
+  const bool historyAtEnd =
+      historyPosition_ >= static_cast<int>(historySteps_.size());
   const bool activeExtrusion = hasExtrusion_ &&
-      historyPosition_ > static_cast<int>(sketchHistory_.size());
+      (historyAtEnd ||
+       historyPosition_ > static_cast<int>(sketchHistory_.size()));
   if (activeSketchCount == 0) {
     new QTreeWidgetItem(drawings, {QString::fromUtf8("Эскизов нет")});
   } else {
@@ -3427,8 +3433,22 @@ void MainWindow::rebuildFeatureTree() {
           drawings, {QString::fromUtf8("⌞  Эскиз %1").arg(index + 1)});
       sketchItem->setData(0, Qt::UserRole, 20 + static_cast<int>(index));
       sketchItem->setFlags(sketchItem->flags() | Qt::ItemIsUserCheckable);
-      const bool visible = !activeExtrusion || !extrusionSourceSketch_.has_value() ||
-                           index != *extrusionSourceSketch_;
+      const SketchId sketchId = sketchHistory_[index].documentSketchId;
+      bool visible = true;
+      if (historyAtEnd) {
+        // Do not use legacy extrusionSourceSketch_ as the source of truth:
+        // direct Join/Cut and multiple downstream Part Design features can
+        // consume several different profile sketches in the same model.
+        visible = !isSketchConsumedByPartDesign(document_, sketchId);
+      } else {
+        // Keep the tree checkbox synchronized with applyHistoryPosition():
+        // when inspecting an earlier history step, only the selected sketch
+        // step is shown; feature steps show no construction sketch by default.
+        visible =
+            historyPosition_ > 0 &&
+            historyPosition_ <= static_cast<int>(historySteps_.size()) &&
+            historySteps_[historyPosition_ - 1].sketchId == sketchId;
+      }
       sketchItem->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
       viewport_->setSketchVisible(index, visible);
     }
