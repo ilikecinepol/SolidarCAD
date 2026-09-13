@@ -32,6 +32,7 @@ class ExtrudeToolSession final : public ToolSession {
   void setSignedLength(double signedValue);
   void setOperation(ExtrudeOperation operation);
   void setReversed(bool reversed);
+  void setOperationFollowsDirection(bool follows) noexcept;
 
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
@@ -42,6 +43,7 @@ class ExtrudeToolSession final : public ToolSession {
   [[nodiscard]] double lengthMm() const noexcept;
   [[nodiscard]] ExtrudeOperation operation() const noexcept;
   [[nodiscard]] bool reversed() const noexcept;
+  [[nodiscard]] bool operationFollowsDirection() const noexcept;
   [[nodiscard]] std::optional<LinearToolManipulator> manipulator() const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -70,6 +72,7 @@ class ExtrudeToolSession final : public ToolSession {
   double maximumMm_{100000.0};
   ExtrudeOperation operation_{ExtrudeOperation::Join};
   bool reversed_{false};
+  bool operationFollowsDirection_{false};
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   std::optional<FaceExtrudeGeometry> geometry_;

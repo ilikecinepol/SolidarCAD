@@ -29,6 +29,7 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   profile_ = DocumentSketch{};
   profileId_ = kInvalidSketchId;
   sketchGeometry_.reset();
+  operationFollowsDirection_ = false;
   operation_ = operation;
   reversed_ = reversed;
   editingFeatureId_ = editingFeatureId;
@@ -53,6 +54,7 @@ void ExtrudeToolSession::beginSketch(
   sketchGeometry_.reset();
   bodyId_ = kInvalidBodyId;
   sourceFeatureId_ = kInvalidFeatureId;
+  operationFollowsDirection_ = false;
   operation_ = operation;
   reversed_ = reversed;
   editingFeatureId_ = editingFeatureId;
@@ -108,6 +110,14 @@ void ExtrudeToolSession::setReversed(bool reversed) {
   if (reversed_ == reversed) return;
   reversed_ = reversed;
   updatePreview();
+}
+
+void ExtrudeToolSession::setOperationFollowsDirection(bool follows) noexcept {
+  operationFollowsDirection_ = follows;
+}
+
+bool ExtrudeToolSession::operationFollowsDirection() const noexcept {
+  return operationFollowsDirection_;
 }
 
 BodyId ExtrudeToolSession::bodyId() const noexcept { return bodyId_; }
@@ -289,7 +299,22 @@ void ExtrudeToolSession::applyMagnitude(double magnitude) {
 void ExtrudeToolSession::applySignedLength(double signedValue) {
   if (!std::isfinite(signedValue)) return;
   constexpr double epsilon = 1e-6;
-  if (signedValue > epsilon) {
+  if (operationFollowsDirection_) {
+    // Face-supported direct sketch extrude: the sign is authoritative — outward
+    // is additive (Join), inward is subtractive (Cut). The pair is atomic so a
+    // drag never produces Join+inward or Cut+outward.
+    if (signedValue > epsilon) {
+      operation_ = ExtrudeOperation::Join;
+      reversed_ = false;
+      length_.accept(std::clamp(signedValue, minimumMm_, maximumMm_));
+    } else if (signedValue < -epsilon) {
+      operation_ = ExtrudeOperation::Cut;
+      reversed_ = true;
+      length_.accept(std::clamp(-signedValue, minimumMm_, maximumMm_));
+    } else {
+      length_.accept(minimumMm_);
+    }
+  } else if (signedValue > epsilon) {
     reversed_ = false;
     length_.accept(std::clamp(signedValue, minimumMm_, maximumMm_));
   } else if (signedValue < -epsilon) {

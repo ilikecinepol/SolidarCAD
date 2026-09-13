@@ -2,6 +2,7 @@
 
 #include "model/ExtrudeFeature.h"
 #include "model/SketchExtrudeBuilder.h"
+#include "ui/interaction/ContextActionResolver.h"
 #include "model/ChamferFeature.h"
 #include "model/ExtrudeOperationDetector.h"
 #include "model/FilletFeature.h"
@@ -2529,19 +2530,27 @@ void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
   const SketchId sketchId = sketchHistory_[sketchIndex].documentSketchId;
   DocumentSketch* profile = document_.findSketch(sketchId);
   if (!profile) return;
-  std::string profileError;
-  if (!isSupportedSingleSketchProfile(*profile, &profileError)) {
+  Body* activeBody = document_.activeBody();
+  SketchProfileSelectionContext context;
+  context.profile = *profile;
+  context.activeBodyId = activeBody ? activeBody->id() : kInvalidBodyId;
+  context.activeFeatureId =
+      activeBody && activeBody->activeFeature() ? activeBody->activeFeature()->id()
+                                                : kInvalidFeatureId;
+  context.activeBodyShape =
+      activeBody ? activeBody->resultShape() : ShapeFeature::ShapePtr{};
+  const auto capability = resolveSketchProfileExtrude(context);
+  if (!capability) {
     statusBar()->showMessage(
-        QString::fromUtf8("Прямое выдавливание: ") +
-            QString::fromStdString(profileError),
+        QString::fromUtf8("Прямое выдавливание: профиль не поддерживается"),
         4000);
     return;
   }
-  // Safe v1: standalone profile -> New Body. Join/Cut on a supporting body is
-  // deferred to a later contract.
   partDesignTools_.activate(PartDesignToolKind::Extrude);
-  faceExtrudeSession_.beginSketch(*profile, sketchId, ShapeFeature::ShapePtr{},
-                                  10.0, ExtrudeOperation::NewBody, false);
+  faceExtrudeSession_.beginSketch(*profile, sketchId, capability->baseShape,
+                                  10.0, capability->operation, false);
+  faceExtrudeSession_.setOperationFollowsDirection(
+      capability->operationFollowsDirection);
   viewport_->clearLegacyExtrusionPreview();
   toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Extrude),
                                   QString::fromUtf8("Профиль"),
@@ -2628,11 +2637,17 @@ void MainWindow::acceptFaceExtrudeTool() {
   if (faceExtrudeSession_.lifecycle() != ToolLifecycle::PreviewValid) return;
   const Document previous = document_;
   if (faceExtrudeSession_.isSketchSource()) {
-    if (faceExtrudeSession_.operation() != ExtrudeOperation::NewBody) return;
-    Body& newBody = document_.addBody();
-    newBody.addFeature(std::make_unique<ExtrudeFeature>(
+    Body* targetBody = nullptr;
+    if (faceExtrudeSession_.operation() == ExtrudeOperation::NewBody) {
+      targetBody = &document_.addBody();
+    } else {
+      targetBody = document_.activeBody();
+      if (!targetBody) return;
+    }
+    targetBody->addFeature(std::make_unique<ExtrudeFeature>(
         faceExtrudeSession_.profileSketchId(), faceExtrudeSession_.lengthMm(),
-        "Extrude", ExtrudeOperation::NewBody, faceExtrudeSession_.reversed()));
+        "Extrude", faceExtrudeSession_.operation(),
+        faceExtrudeSession_.reversed()));
     if (!document_.recompute()) {
       const QString error = QString::fromStdString(document_.rebuildError());
       document_ = previous;

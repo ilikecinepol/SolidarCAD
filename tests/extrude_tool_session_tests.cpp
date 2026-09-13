@@ -365,6 +365,39 @@ int main() {
       CHECK(!session.error().empty());
       session.cancel();
     }
+
+  // operation-follows-direction: a face-supported sketch maps sign to an atomic
+  // Join(+/outward) / Cut(-/inward) pair without a separate toggle.
+  {
+    solidar::DocumentSketch baseProfile;
+    baseProfile.id = 100;
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {40.0, 20.0});
+    TopoDS_Shape base;
+    std::string baseError;
+    CHECK(solidar::buildExtrusionFromSketch(
+        baseProfile, nullptr, 10.0, solidar::ExtrudeOperation::NewBody, false,
+        &base, nullptr, &baseError));
+
+    solidar::DocumentSketch profile;
+    profile.id = 101;
+    profile.geometry.addRectangle({5.0, 5.0}, {15.0, 10.0});
+    profile.placement.origin.z = 10.0;
+    profile.support.type = solidar::SketchSupportType::Face;
+    profile.support.face.bodyId = 1;
+    profile.support.face.featureId = 100;
+    profile.supportResolved = true;
+
+    solidar::ExtrudeToolSession session;
+    session.beginSketch(profile, 101, std::make_shared<TopoDS_Shape>(base),
+                        10.0, solidar::ExtrudeOperation::Join, false);
+    session.setOperationFollowsDirection(true);
+    session.setSignedLength(20.0);
+    CHECK(session.operation() == solidar::ExtrudeOperation::Join);
+    CHECK(!session.reversed());
+    session.setSignedLength(-15.0);
+    CHECK(session.operation() == solidar::ExtrudeOperation::Cut);
+    CHECK(session.reversed());
+  }
   } catch (const std::exception& error) {
     std::cerr << "extrude tool session regression failure: " << error.what()
               << '\n';
