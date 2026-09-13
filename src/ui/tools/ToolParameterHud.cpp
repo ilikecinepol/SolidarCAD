@@ -140,7 +140,7 @@ bool ToolParameterHud::eventFilter(QObject* watched, QEvent* event) {
     // Return/Escape/Tab shortcut cannot preempt the HUD. Standard line-edit
     // editing shortcuts (Ctrl+A/C/V/X/Z) are deliberately left to the editor.
     if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
-        key->key() == Qt::Key_Escape || key->key() == Qt::Key_Tab ||
+        key->key() == Qt::Key_Tab ||
         key->key() == Qt::Key_Backtab) {
       event->accept();
       return true;
@@ -171,6 +171,7 @@ bool ToolParameterHud::eventFilter(QObject* watched, QEvent* event) {
     // Route the rollback through the normal value path so the session and
     // preview re-sync to the last committed value, not just the display.
     if (!id.isEmpty()) emit valueChanged(id, restored);
+    emit cancelRequested();
     return true;
   }
 

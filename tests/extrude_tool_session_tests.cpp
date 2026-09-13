@@ -73,6 +73,7 @@ int main() {
       CHECK(near(session.lengthMm(), 10.0));
       CHECK(session.operation() == ExtrudeOperation::Join);
       CHECK(!session.reversed());
+      CHECK(session.operationFollowsDirection());
 
       const auto manip = session.manipulator();
       CHECK(manip.has_value());
@@ -107,10 +108,12 @@ int main() {
       session.setLengthFromManipulator(-5.0);
       CHECK(near(session.lengthMm(), 5.0));
       CHECK(session.reversed());
-      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(session.operation() == ExtrudeOperation::Cut);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
       CHECK(session.manipulator()->valueMm < 0.0);
 
       session.setLengthFromManipulator(1e12);
+      CHECK(session.operation() == ExtrudeOperation::Join);
       const double cap = session.manipulator()->maximumMm;
       CHECK(near(session.lengthMm(), cap));
       CHECK(!session.reversed());
@@ -182,11 +185,12 @@ int main() {
                     ExtrudeOperation::Join, false);
       CHECK(session.operation() == ExtrudeOperation::Join);
 
-      // Outward Cut on the top face does not intersect the body, so the
-      // preview is recomputed and becomes invalid.
+      // Selecting Cut is a user-level operation change: for a face source it
+      // automatically flips inward so the prism actually intersects the body.
       session.setOperation(ExtrudeOperation::Cut);
       CHECK(session.operation() == ExtrudeOperation::Cut);
-      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(session.reversed());
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
 
       session.setOperation(ExtrudeOperation::NewBody);
       CHECK(session.operation() == ExtrudeOperation::NewBody);
@@ -214,6 +218,27 @@ int main() {
       CHECK(session.previewShape() == nullptr);
     }
 
+    // Visual contract: native face Cut exposes the swept removal volume for
+    // translucent red rendering; outward Join exposes no subtractive overlay.
+    {
+      const TopoDS_Shape box = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape();
+      const auto reference = boxTopFace(box, 20.0);
+      solidar::ExtrudeToolSession session;
+      session.begin(1, 1, std::make_shared<TopoDS_Shape>(box), reference, 10.0,
+                    ExtrudeOperation::Join, false);
+      CHECK(session.subtractivePreviewShape() == nullptr);
+
+      session.setSignedLength(-6.0);
+      CHECK(session.operation() == ExtrudeOperation::Cut);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(session.subtractivePreviewShape() != nullptr);
+      CHECK(near(volumeOf(*session.subtractivePreviewShape()),
+                 40.0 * 30.0 * 6.0, 1e-2));
+
+      session.setSignedLength(6.0);
+      CHECK(session.operation() == ExtrudeOperation::Join);
+      CHECK(session.subtractivePreviewShape() == nullptr);
+    }
     // 7. cancel() -> Inactive, preview null.
     {
       const TopoDS_Shape box = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape();
@@ -268,11 +293,12 @@ int main() {
       CHECK(near(volumeOf(*session.previewShape()),
                  40.0 * 30.0 * 20.0 - 40.0 * 30.0 * 8.0, 1e-2));
 
-      // Back to positive: reversed clears, outward Cut is a no-op again (kept).
+      // Back to positive: the direct-face contract switches to outward Join.
       session.setSignedLength(8.0);
       CHECK(!session.reversed());
+      CHECK(session.operation() == ExtrudeOperation::Join);
       CHECK(near(session.lengthMm(), 8.0));
-      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
 
       // The manipulator valueMm is signed: positive outward, negative inward.
       CHECK(session.manipulator()->directional);

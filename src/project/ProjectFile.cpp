@@ -123,6 +123,48 @@ QJsonObject savedFaceReference(const FaceReference& face) {
   return result;
 }
 
+QJsonObject savedExtrudeProfileGeometry(const sketch::Sketch& geometry) {
+  QJsonArray lines;
+  for (const auto& line : geometry.lines()) {
+    if (line.dashed) continue;
+    lines.append(QJsonObject{{"x1", line.start.xMm},
+                             {"y1", line.start.yMm},
+                             {"x2", line.end.xMm},
+                             {"y2", line.end.yMm},
+                             {"elementId",
+                              static_cast<qint64>(line.elementId)}});
+  }
+
+  QJsonArray circles;
+  for (const auto& circle : geometry.circles()) {
+    if (circle.dashed) continue;
+    circles.append(QJsonObject{{"x", circle.center.xMm},
+                               {"y", circle.center.yMm},
+                               {"radius", circle.radiusMm}});
+  }
+  return QJsonObject{{"lines", lines}, {"circles", circles}};
+}
+
+sketch::Sketch loadedExtrudeProfileGeometry(const QJsonValue& value) {
+  sketch::Sketch geometry;
+  geometry.clear();
+  const auto saved = value.toObject();
+
+  for (const auto lineValue : saved.value("lines").toArray()) {
+    const auto line = lineValue.toObject();
+    geometry.addLine(
+        {line.value("x1").toDouble(), line.value("y1").toDouble()},
+        {line.value("x2").toDouble(), line.value("y2").toDouble()},
+        static_cast<std::size_t>(line.value("elementId").toInteger()));
+  }
+  for (const auto circleValue : saved.value("circles").toArray()) {
+    const auto circle = circleValue.toObject();
+    geometry.addCircle(
+        {circle.value("x").toDouble(), circle.value("y").toDouble()},
+        circle.value("radius").toDouble());
+  }
+  return geometry;
+}
 FaceReference loadedFaceReference(const QJsonValue& value) {
   const auto saved = value.toObject();
   FaceReference result{
@@ -386,6 +428,9 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         } else {
           saved["sourceKind"] = QStringLiteral("sketch");
           saved["sketchId"] = static_cast<qint64>(extrude->profileSketchId());
+          if (extrude->profileOverride())
+            saved["profileOverride"] =
+                savedExtrudeProfileGeometry(*extrude->profileOverride());
         }
       } else if (const auto* revolve =
                      dynamic_cast<const RevolveFeature*>(feature.get())) {
@@ -576,9 +621,13 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
               operation, reversed));
         } else {
           // Missing "sourceKind" is the pre-face-extrude project format.
-          body.addFeature(std::make_unique<ExtrudeFeature>(
+          auto feature = std::make_unique<ExtrudeFeature>(
               id, static_cast<SketchId>(saved.value("sketchId").toInteger()),
-              lengthMm, name, operation, reversed));
+              lengthMm, name, operation, reversed);
+          if (saved.value("profileOverride").isObject())
+            feature->setProfileOverride(
+                loadedExtrudeProfileGeometry(saved.value("profileOverride")));
+          body.addFeature(std::move(feature));
         }
       } else if (type == QStringLiteral("Revolve")) {
         AxisReference axis{

@@ -51,6 +51,7 @@ const char* surfaceFragmentShader = R"(
   uniform int uSelectedCount;
   uniform int uHoveredFace;
   uniform bool uPreview;
+  uniform bool uCutPreview;
   out vec4 color;
   void main() {
     vec3 n = normalize(vNormal);
@@ -59,15 +60,18 @@ const char* surfaceFragmentShader = R"(
     float diffuse = max(dot(n, key), 0.0);
     float fillDiffuse = max(dot(n, fill), 0.0);
     float specular = pow(max(dot(reflect(-key, n), vec3(0, 0, 1)), 0.0), 32.0);
-    vec3 base = uPreview ? vec3(0.73, 0.82, 0.92) : vec3(0.72, 0.77, 0.83);
+    vec3 base = uCutPreview ? vec3(0.878, 0.259, 0.298)
+                            : uPreview ? vec3(0.73, 0.82, 0.92)
+                                       : vec3(0.72, 0.77, 0.83);
     bool selected = false;
     for (int i = 0; i < uSelectedCount; ++i)
       selected = selected || vFaceIndex == uSelectedFaces[i];
     if (selected) base = mix(base, vec3(0.10, 0.43, 0.94), 0.58);
     else if (vFaceIndex == uHoveredFace)
       base = mix(base, vec3(0.25, 0.65, 1.0), 0.38);
+    float alpha = uCutPreview ? 0.439 : 1.0;
     color = vec4(base * (0.46 + 0.38 * diffuse + 0.16 * fillDiffuse) +
-                 vec3(0.10 * specular), 1.0);
+                 vec3(0.10 * specular), alpha);
   })";
 
 const char* edgeVertexShader = R"(
@@ -124,7 +128,8 @@ struct ViewportRenderer::GpuMesh {
 
 ViewportRenderer::ViewportRenderer()
     : source_(std::make_unique<GpuMesh>()),
-      preview_(std::make_unique<GpuMesh>()) {}
+      preview_(std::make_unique<GpuMesh>()),
+      cutPreview_(std::make_unique<GpuMesh>()) {}
 
 ViewportRenderer::~ViewportRenderer() { release(); }
 
@@ -180,7 +185,7 @@ bool ViewportRenderer::initialize() {
 
 void ViewportRenderer::release() {
   if (!initialized_ || !QOpenGLContext::currentContext()) return;
-  for (GpuMesh* gpu : {source_.get(), preview_.get()}) {
+  for (GpuMesh* gpu : {source_.get(), preview_.get(), cutPreview_.get()}) {
     gpu->surfaceVao.destroy();
     gpu->edgeVao.destroy();
     gpu->vertices.destroy();
@@ -273,7 +278,7 @@ QMatrix4x4 ViewportRenderer::projectionMatrix(
 void ViewportRenderer::drawSurfaces(
     GpuMesh& gpu, const QMatrix4x4& matrix, float yawDeg, float pitchDeg,
     const std::vector<std::size_t>& selectedFaces, std::size_t hoveredFace,
-    bool preview) {
+    bool preview, bool cutPreview) {
   if (gpu.indexCount == 0) return;
   const float yaw = yawDeg * std::numbers::pi_v<float> / 180.0F;
   const float pitch = pitchDeg * std::numbers::pi_v<float> / 180.0F;
@@ -293,6 +298,7 @@ void ViewportRenderer::drawSurfaces(
   surfaceProgram_.setUniformValue("uSelectedCount", count);
   surfaceProgram_.setUniformValue("uHoveredFace", hoveredFace == std::size_t(-1) ? -1 : static_cast<int>(hoveredFace));
   surfaceProgram_.setUniformValue("uPreview", preview);
+  surfaceProgram_.setUniformValue("uCutPreview", cutPreview);
   QOpenGLVertexArrayObject::Binder binder(&gpu.surfaceVao);
   gpu.indices.bind();
   QOpenGLContext::currentContext()->functions()->glDrawElements(
@@ -329,10 +335,12 @@ void ViewportRenderer::render(
     const QSize& logicalSize, float dpr, float yawDeg, float pitchDeg,
     float zoom, QPointF pan, ViewportDisplayMode mode,
     const std::vector<std::size_t>& selectedFaces, std::size_t hoveredFace,
-    const std::vector<std::size_t>& selectedEdges, std::size_t hoveredEdge) {
+    const std::vector<std::size_t>& selectedEdges, std::size_t hoveredEdge,
+    const BodyRenderMesh* cutPreview) {
   if (!initialized_ && !initialize()) return;
   upload(*source_, source);
   if (preview) upload(*preview_, *preview);
+  if (cutPreview) upload(*cutPreview_, *cutPreview);
   GpuMesh& gpu = preview ? *preview_ : *source_;
   const auto depthRange = ViewportDepthRange::combined(
       source.center(), source.diagonal(),
@@ -374,6 +382,23 @@ void ViewportRenderer::render(
     if (preview && (!selectedFaces.empty() || hoveredFace != std::size_t(-1)))
       drawSurfaces(*source_, matrix, yawDeg, pitchDeg, selectedFaces, hoveredFace,
                    false);
+
+    // Visual-only subtractive volume. Use the same translucent red palette as
+    // the legacy sketch-extrude Cut preview. The boolean-result preview remains
+    // authoritative; this second pass only shows the material being removed.
+    if (cutPreview) {
+      gl->glEnable(GL_BLEND);
+      gl->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      gl->glDepthMask(GL_FALSE);
+      // Pull coincident cutter faces slightly toward the camera so the red
+      // overlay remains visible on the walls/floor of the resulting cavity.
+      gl->glPolygonOffset(-1.0F, -1.0F);
+      drawSurfaces(*cutPreview_, matrix, yawDeg, pitchDeg, {},
+                   std::size_t(-1), false, true);
+      gl->glDepthMask(GL_TRUE);
+      gl->glDisable(GL_BLEND);
+      gl->glPolygonOffset(1.0F, 1.0F);
+    }
     gl->glDisable(GL_POLYGON_OFFSET_FILL);
   }
   // Ordinary model/preview edges are drawn without interaction coloring.

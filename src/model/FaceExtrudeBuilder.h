@@ -41,6 +41,7 @@ struct FaceExtrudeGeometry {
 [[nodiscard]] bool buildExtrusionFromFace(
     const TopoDS_Shape& baseShape, const FaceReference& source,
     double lengthMm, ExtrudeOperation operation, bool reversed,
-    TopoDS_Shape* result, FaceExtrudeGeometry* geometry, std::string* error);
+    TopoDS_Shape* result, FaceExtrudeGeometry* geometry, std::string* error,
+    TopoDS_Shape* sweptTool = nullptr);
 
 }  // namespace solidar

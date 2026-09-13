@@ -34,6 +34,12 @@ class ExtrudeFeature final : public ShapeFeature {
   [[nodiscard]] bool isFaceSource() const noexcept;
   [[nodiscard]] SketchId profileSketchId() const noexcept;
   void setProfileSketchId(SketchId id) noexcept;
+  // When the user picks one region from a sketch containing several closed
+  // contours, keep only that region as the feature profile while retaining
+  // the original SketchId for placement, support and dependency tracking.
+  [[nodiscard]] const std::optional<sketch::Sketch>&
+  profileOverride() const noexcept;
+  void setProfileOverride(std::optional<sketch::Sketch> profile);
   [[nodiscard]] std::optional<FaceReference> faceReference() const noexcept;
   [[nodiscard]] double lengthMm() const noexcept;
   void setLengthMm(double value) noexcept;
@@ -53,6 +59,7 @@ class ExtrudeFeature final : public ShapeFeature {
   bool rebuildSketchSource(const RebuildContext& context);
 
   ExtrudeSource source_{SketchExtrudeSource{}};
+  std::optional<sketch::Sketch> profileOverride_;
   double lengthMm_{0.0};
   ExtrudeOperation operation_{ExtrudeOperation::NewBody};
   bool reversed_{false};

@@ -50,6 +50,10 @@ class ExtrudeToolSession final : public ToolSession {
   [[nodiscard]] std::optional<SelectionRequirement> selectionRequirement() const override;
   [[nodiscard]] std::vector<ToolParameterDescriptor> parameters() const override;
   [[nodiscard]] std::shared_ptr<const TopoDS_Shape> previewShape() const override;
+  // Visual-only swept volume removed by a native face Cut. Null for Join,
+  // sketch-source extrusion, invalid preview, and inactive sessions.
+  [[nodiscard]] std::shared_ptr<const TopoDS_Shape>
+  subtractivePreviewShape() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept override;
   bool updatePreview() override;
   void cancel() noexcept override;
@@ -75,6 +79,7 @@ class ExtrudeToolSession final : public ToolSession {
   bool operationFollowsDirection_{false};
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
+  ShapeFeature::ShapePtr subtractivePreviewShape_;
   std::optional<FaceExtrudeGeometry> geometry_;
   std::optional<SketchExtrudeGeometry> sketchGeometry_;
   std::string error_;

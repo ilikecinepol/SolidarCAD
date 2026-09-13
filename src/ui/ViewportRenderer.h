@@ -30,7 +30,8 @@ class ViewportRenderer final {
               ViewportDisplayMode mode,
               const std::vector<std::size_t>& selectedFaces,
               std::size_t hoveredFace, const std::vector<std::size_t>& selectedEdges,
-              std::size_t hoveredEdge);
+              std::size_t hoveredEdge,
+              const BodyRenderMesh* cutPreview = nullptr);
 
   [[nodiscard]] QString error() const { return error_; }
   [[nodiscard]] double lastUploadMilliseconds() const noexcept {
@@ -47,7 +48,8 @@ class ViewportRenderer final {
   void drawSurfaces(GpuMesh& gpu, const QMatrix4x4& matrix,
                     float yawDeg, float pitchDeg,
                     const std::vector<std::size_t>& selectedFaces,
-                    std::size_t hoveredFace, bool preview);
+                    std::size_t hoveredFace, bool preview,
+                    bool cutPreview = false);
   void drawEdges(GpuMesh& gpu, const QMatrix4x4& matrix,
                  const std::vector<std::size_t>& selectedEdges,
                  std::size_t hoveredEdge, bool ordinaryEdges,
@@ -55,6 +57,7 @@ class ViewportRenderer final {
 
   std::unique_ptr<GpuMesh> source_;
   std::unique_ptr<GpuMesh> preview_;
+  std::unique_ptr<GpuMesh> cutPreview_;
   QOpenGLShaderProgram surfaceProgram_;
   QOpenGLShaderProgram edgeProgram_;
   QString error_;

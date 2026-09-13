@@ -56,7 +56,8 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
                             const FaceReference& source, double lengthMm,
                             ExtrudeOperation operation, bool reversed,
                             TopoDS_Shape* result,
-                            FaceExtrudeGeometry* geometry, std::string* error) {
+                            FaceExtrudeGeometry* geometry, std::string* error,
+                            TopoDS_Shape* sweptTool) {
   const auto fail = [&](std::string message) {
     if (error) *error = std::move(message);
     return false;
@@ -87,6 +88,7 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
     prism.Build();
     if (!prism.IsDone() || prism.Shape().IsNull())
       return fail("Face extrude could not build a solid prism");
+    if (sweptTool) *sweptTool = prism.Shape();
 
     GProp_GProps beforeProperties;
     BRepGProp::VolumeProperties(baseShape, beforeProperties);

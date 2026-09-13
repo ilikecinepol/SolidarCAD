@@ -629,6 +629,12 @@ void MainWindow::buildUi() {
   revolveKeypadShortcut->setAutoRepeat(false);
   connect(revolveKeypadShortcut, &QShortcut::activated, this,
           acceptRevolveOnEnter);
+  auto* revolveEscapeShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Escape), revolveDock_);
+  revolveEscapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  revolveEscapeShortcut->setAutoRepeat(false);
+  connect(revolveEscapeShortcut, &QShortcut::activated, this,
+          &MainWindow::cancelRevolveTool);
   connect(reselectProfile, &QPushButton::clicked, this, [this] {
     partDesignTools_.beginReselection(ToolSelectionStage::SelectingInput);
     viewport_->beginExtrusionSurfaceSelection();
@@ -772,6 +778,9 @@ void MainWindow::buildUi() {
             } else if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
               faceExtrudeSession_.setLengthFromManipulator(value);
               toolParametersPanel_->setParameterValue(faceExtrudeSession_.lengthMm());
+              if (!faceExtrudeSession_.isSketchSource())
+                toolParametersPanel_->setOptionChecked(
+                    faceExtrudeSession_.operation() == ExtrudeOperation::Cut);
               updateFaceExtrudeToolPreview();
             } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               filletToolSession_.setRadiusFromManipulator(value);
@@ -784,12 +793,12 @@ void MainWindow::buildUi() {
       chamferToolSession_.setEdges(viewport_->selectedBodyEdges());
       updateChamferToolPreview();
       if (!chamferToolSession_.edges().empty())
-        toolParametersPanel_->focusParameterInput();
+        viewport_->focusToolParameterField(false);
     } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       filletToolSession_.setEdges(viewport_->selectedBodyEdges());
       updateFilletToolPreview();
       if (!filletToolSession_.edges().empty())
-        toolParametersPanel_->focusParameterInput();
+        viewport_->focusToolParameterField(false);
     }
   });
   connect(viewport_, &Viewport::bodyFaceSelectionChanged, this, [this] {
@@ -800,19 +809,19 @@ void MainWindow::buildUi() {
       updateFaceExtrudeToolPreview();
       // Keep keyboard focus in the viewport after face selection so the next
       // Tab enters the on-canvas distance field, not the right-hand dock.
-      viewport_->setFocus(Qt::OtherFocusReason);
+      viewport_->focusToolParameterField(false);
     } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       shellToolSession_.setRemovedFaces(viewport_->selectedBodyFaces());
       updateShellToolPreview();
       // Keep keyboard focus in the viewport after face selection so the next
       // Tab enters the on-canvas thickness field, not the right-hand dock.
-      viewport_->setFocus(Qt::OtherFocusReason);
+      viewport_->focusToolParameterField(false);
     } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       draftToolSession_.setFaces(viewport_->selectedBodyFaces());
       updateDraftToolPreview();
       // Keep keyboard focus in the viewport after face selection so the next
       // Tab enters the on-canvas angle field.
-      viewport_->setFocus(Qt::OtherFocusReason);
+      viewport_->focusToolParameterField(false);
     }
   });
   connect(toolParametersPanel_, &ToolParametersPanel::optionChanged, this,
@@ -972,6 +981,17 @@ void MainWindow::buildUi() {
     viewport_->hideExtrusionManipulator();
     extrusionDock_->hide();
     selectedExtrusionSurface_.clear();
+    modelRibbon_->clearActiveTool();
+  });
+  auto* extrusionEscapeShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Escape), extrusionDock_);
+  extrusionEscapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  extrusionEscapeShortcut->setAutoRepeat(false);
+  connect(extrusionEscapeShortcut, &QShortcut::activated, this, [this] {
+    viewport_->hideExtrusionManipulator();
+    extrusionDock_->hide();
+    selectedExtrusionSurface_.clear();
+    modelRibbon_->clearActiveTool();
   });
 
   sketchSettingsDock_ =
@@ -1505,6 +1525,7 @@ void MainWindow::buildUi() {
                     QString::fromUtf8("Повторный выбор отменён"), 2000);
                 return;
               }
+              viewport_->clearLegacyExtrusionPreview();
               selectedExtrusionSurface_.clear();
               if (extrusionDock_) extrusionDock_->hide();
               modelRibbon_->clearActiveTool();
@@ -1670,11 +1691,16 @@ void MainWindow::updateAutomaticExtrudeOperation() {
           ? document_.findSketch(sketchHistory_[index].documentSketchId)
           : nullptr;
   const auto targetShape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
-  if (profile && targetShape)
+  if (profile && targetShape) {
+    DocumentSketch operationProfile = *profile;
+    const auto& pickedProfile = viewport_->extrusionCandidateSketch();
+    if (!pickedProfile.lines().empty() || !pickedProfile.circles().empty())
+      operationProfile.geometry = pickedProfile;
     operation = detectExtrudeOperation(
-        *profile, extrusionLengthSpin_->value(),
+        operationProfile, extrusionLengthSpin_->value(),
         extrusionReverseCheck_->isChecked(), targetShape.get(),
         profile->support.type == SketchSupportType::Face);
+  }
   const QSignalBlocker blocker(extrusionOperationCombo_);
   extrusionOperationCombo_->setCurrentIndex(static_cast<int>(operation));
 }
@@ -1694,13 +1720,15 @@ void MainWindow::extrudeSketch() {
       sourceIndex < sketchHistory_.size()
           ? document_.findSketch(sketchHistory_[sourceIndex].documentSketchId)
           : nullptr;
-  // Parametric creation is driven by the selected DocumentSketch. Viewport
-  // caches are presentation-only and may still contain an earlier extrusion.
-  const sketch::Sketch sketch = modelSketch
-      ? modelSketch->geometry
-      : (pickedSketch.lines().empty() && pickedSketch.circles().empty()
-             ? sketchCanvas_->sketch()
-             : pickedSketch);
+  // The viewport owns the user's exact region pick.  The source DocumentSketch
+  // may contain several independent contours, so preferring the whole sketch
+  // here loses the selection and makes Apply fail with "one profile at a time".
+  const bool hasPickedProfile =
+      !pickedSketch.lines().empty() || !pickedSketch.circles().empty();
+  const sketch::Sketch sketch =
+      hasPickedProfile
+          ? pickedSketch
+          : modelSketch ? modelSketch->geometry : sketchCanvas_->sketch();
   if (sketch.lines().empty() && sketch.circles().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
@@ -1745,10 +1773,15 @@ void MainWindow::extrudeSketch() {
   Body* modelBody = operation == ExtrudeOperation::NewBody
                         ? &document_.addBody()
                         : document_.activeBody();
-  modelBody->addFeature(std::make_unique<ExtrudeFeature>(
+  auto extrudeFeature = std::make_unique<ExtrudeFeature>(
       modelSketch->id, height,
       "Extrude " + std::to_string(modelBody->features().size() + 1),
-      operation, reversed));
+      operation, reversed);
+  // If this feature references an existing sketch, persist the exact selected
+  // region inside the feature.  Do not create a hidden duplicate DocumentSketch.
+  if (hasPickedProfile && sourceIndex < sketchHistory_.size())
+    extrudeFeature->setProfileOverride(sketch);
+  modelBody->addFeature(std::move(extrudeFeature));
   if (!document_.rebuild()) {
     const std::string error = document_.rebuildError();
     document_ = previousDocument;
@@ -2038,7 +2071,7 @@ void MainWindow::createFillet() {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFilletToolPreview();
-  if (!edges.empty()) toolParametersPanel_->focusParameterInput();
+  if (!edges.empty()) viewport_->focusToolParameterField(false);
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
@@ -2295,7 +2328,7 @@ void MainWindow::createChamfer() {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateChamferToolPreview();
-  if (!edges.empty()) toolParametersPanel_->focusParameterInput();
+  if (!edges.empty()) viewport_->focusToolParameterField(false);
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
@@ -2327,7 +2360,7 @@ void MainWindow::createShell() {
   updateShellToolPreview();
   // Shell HUD owns CAD Tab focus; do not leave focus on the ribbon button when
   // the operation starts from a preselected face.
-  viewport_->setFocus(Qt::OtherFocusReason);
+  viewport_->focusToolParameterField(false);
 }
 
 void MainWindow::updateShellToolPreview() {
@@ -2438,7 +2471,7 @@ void MainWindow::createDraft() {
   toolParametersDock_->raise();
   updateDraftToolPreview();
   // Draft HUD owns CAD Tab focus for the same preselection workflow as Shell.
-  viewport_->setFocus(Qt::OtherFocusReason);
+  viewport_->focusToolParameterField(false);
 }
 
 void MainWindow::updateDraftToolPreview() {
@@ -2561,7 +2594,7 @@ void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
-  viewport_->setFocus(Qt::OtherFocusReason);
+  viewport_->focusToolParameterField(false);
 }
 
 void MainWindow::createFaceExtrude(const FaceReference& face) {
@@ -2596,7 +2629,7 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
-  viewport_->setFocus(Qt::OtherFocusReason);
+  viewport_->focusToolParameterField(false);
 }
 
 void MainWindow::updateFaceExtrudeToolPreview() {
@@ -2617,6 +2650,8 @@ void MainWindow::updateFaceExtrudeToolPreview() {
     viewport_->setToolPreviewShape(faceExtrudeSession_.bodyId(),
                                    faceExtrudeSession_.sourceFeatureId(),
                                    faceExtrudeSession_.previewShape());
+    viewport_->setToolCutPreviewShape(
+        faceExtrudeSession_.subtractivePreviewShape());
   } else {
     viewport_->clearToolPreviewShape();
     toolParametersPanel_->setStatus(
@@ -2769,7 +2804,7 @@ void MainWindow::editFaceExtrudeStep(Body* body, ExtrudeFeature* extrude,
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
-  viewport_->setFocus(Qt::OtherFocusReason);
+  viewport_->focusToolParameterField(false);
   statusBar()->showMessage(
       QString::fromUtf8("Редактирование выдавливания грани"), 3000);
 }

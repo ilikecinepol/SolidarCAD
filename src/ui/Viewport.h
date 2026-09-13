@@ -121,7 +121,8 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
   [[nodiscard]] bool marqueeActive() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
-                           ShapeFeature::ShapePtr shape);  void setToolPreviewPresentation(ToolPreviewPresentation presentation) noexcept;
+                           ShapeFeature::ShapePtr shape);
+  void setToolCutPreviewShape(ShapeFeature::ShapePtr shape);  void setToolPreviewPresentation(ToolPreviewPresentation presentation) noexcept;
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
   [[nodiscard]] double toolManipulatorHudValue() const noexcept;
@@ -215,6 +216,7 @@ class Viewport final : public QOpenGLWidget {
   Qt::CursorShape cursorBeforeCube_{Qt::ArrowCursor};
   void updateSketchPlaneHover(QPointF position);
   void updateExtrusionHover(QPointF position);
+  [[nodiscard]] qulonglong revolveAxisTokenAt(QPointF scenePosition) const;
   void pickFallbackBodyFace(QPointF position);
   void refreshSelectedExtrusionPolygon();
   [[nodiscard]] QPointF extrusionScreenOffset(double lengthMm) const;
@@ -236,6 +238,7 @@ class Viewport final : public QOpenGLWidget {
                           bool clearSelection);
   void selectInRect(const QRectF& rect, bool additive, bool singleOnly = false);
   void cancelMarquee();
+  void cancelActiveInteraction();
   // Clears only whole-body selection and publishes bodiesSelected({}) when the
   // state actually changes. Face/edge state is intentionally left untouched.
   void clearWholeBodySelection() noexcept;
@@ -250,7 +253,9 @@ class Viewport final : public QOpenGLWidget {
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
   ShapeFeature::ShapePtr toolPreviewShape_;
-  BodyRenderMesh toolPreviewRenderMesh_;  ToolPreviewPresentation toolPreviewPresentation_{
+  BodyRenderMesh toolPreviewRenderMesh_;
+  ShapeFeature::ShapePtr toolCutPreviewShape_;
+  BodyRenderMesh toolCutPreviewRenderMesh_;  ToolPreviewPresentation toolPreviewPresentation_{
       ToolPreviewPresentation::OverlaySourceSelection};
   ViewportRenderer renderer_;
   ViewportDisplayMode displayMode_{ViewportDisplayMode::ShadedWithEdges};
@@ -317,6 +322,7 @@ class Viewport final : public QOpenGLWidget {
   std::size_t hoveredExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
+  qulonglong hoveredRevolveAxisToken_{0};
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
   ToolParameterHud* toolParameterHud_{nullptr};
   std::string toolHudParameterId_;
