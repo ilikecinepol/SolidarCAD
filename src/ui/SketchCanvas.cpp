@@ -8110,6 +8110,71 @@ void SketchCanvas::commitPoint(sketch::Point point) {
       oldCircleCount,
       8.0 / std::max(0.001, pixelsPerMm_));
 
+  // AUTO ORTHOGONAL LINE CONSTRAINT V2
+  //
+  // A line that the user intentionally draws almost horizontal/vertical
+  // receives a REAL persistent CAD constraint immediately.
+  //
+  // This runs after Coincident / PointOnLine / generic auto-coincidence.
+  // Therefore Sketch::addConstraint() must preserve those older relations.
+  // If H/V would break an existing relation, the transactional constraint
+  // system rejects this automatic constraint instead of detaching geometry.
+  if (tool_ == Tool::Line &&
+      oldLineCount < sketch_.lines().size()) {
+    const std::size_t newLineIndex = oldLineCount;
+    const auto newLineId = sketch_.lineId(newLineIndex);
+
+    if (newLineId != sketch::kInvalidGeometryId) {
+      const auto& newLine = sketch_.lines()[newLineIndex];
+      const double dx =
+          newLine.end.xMm - newLine.start.xMm;
+      const double dy =
+          newLine.end.yMm - newLine.start.yMm;
+      const double length = std::hypot(dx, dy);
+
+      if (length > 1e-9) {
+        constexpr double kAutoOrthogonalAngleDeg = 2.0;
+        constexpr double kPi = 3.14159265358979323846;
+        const double tolerance =
+            std::sin(kAutoOrthogonalAngleDeg * kPi / 180.0);
+
+        sketch::ConstraintType inferredType =
+            sketch::ConstraintType::Horizontal;
+        bool shouldConstrain = false;
+
+        if (std::abs(dy) / length <= tolerance) {
+          inferredType = sketch::ConstraintType::Horizontal;
+          shouldConstrain = true;
+        } else if (std::abs(dx) / length <= tolerance) {
+          inferredType = sketch::ConstraintType::Vertical;
+          shouldConstrain = true;
+        }
+
+        if (shouldConstrain) {
+          const bool duplicate =
+              std::any_of(
+                  sketch_.constraints().begin(),
+                  sketch_.constraints().end(),
+                  [newLineId, inferredType](
+                      const sketch::Constraint& item) {
+                    return item.type == inferredType &&
+                           item.firstGeometry == newLineId;
+                  });
+
+          if (!duplicate) {
+            sketch::Constraint orthogonal;
+            orthogonal.type = inferredType;
+            orthogonal.firstGeometry = newLineId;
+
+            // No manual geometry mutation here. The transactional solver
+            // either satisfies the COMPLETE system or rejects H/V.
+            (void)sketch_.addConstraint(orthogonal);
+          }
+        }
+      }
+    }
+  }
+
   anchor_.reset();
   hideDimensionEditor();
   notifyGeometryChanged();
