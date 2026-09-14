@@ -185,6 +185,14 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   toolGroup->addButton(tangentTool);
   constraintsLayout->addWidget(tangentTool);
 
+  auto* lockTool = toolButton(
+      QString(), QString::fromUtf8("Замок"), this);
+  lockTool->setText(QString::fromUtf8("🔒"));
+  lockTool->setToolTip(
+      QString::fromUtf8("Зафиксировать объект"));
+  toolGroup->addButton(lockTool);
+  constraintsLayout->addWidget(lockTool);
+
   root->addWidget(groupWidget(QString::fromUtf8("ОГРАНИЧЕНИЯ"),
                               constraintsLayout, this));
   root->addStretch();
@@ -229,6 +237,10 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   connect(tangentTool, &QPushButton::clicked, canvas,
           [canvas] {
             canvas->setTool(SketchCanvas::Tool::TangentConstraint);
+          });
+  connect(lockTool, &QPushButton::clicked, canvas,
+          [canvas] {
+            canvas->setTool(SketchCanvas::Tool::LockConstraint);
           });
   connect(canvas, &SketchCanvas::toolChanged, this,
           [toolGroup](SketchCanvas::Tool tool) {

@@ -131,6 +131,14 @@ add_executable(sketch_regression_tests sketch_regression_tests.cpp)
 target_link_libraries(sketch_regression_tests PRIVATE solidar_model)
 add_test(NAME sketch_regression_tests COMMAND sketch_regression_tests)
 
+add_executable(sketch_lock_constraint_tests
+               sketch_lock_constraint_tests.cpp)
+target_link_libraries(sketch_lock_constraint_tests PRIVATE solidar_model)
+add_test(NAME sketch_lock_constraint_tests
+         COMMAND sketch_lock_constraint_tests)
+set_tests_properties(sketch_lock_constraint_tests
+                     PROPERTIES LABELS "unit;regression")
+
 add_executable(body_render_mesh_tests body_render_mesh_tests.cpp)
 target_link_libraries(body_render_mesh_tests PRIVATE solidar_viewport3d)
 add_test(NAME body_render_mesh_tests COMMAND body_render_mesh_tests)

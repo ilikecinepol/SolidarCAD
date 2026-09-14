@@ -148,6 +148,11 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // Applied in the final tangency stabilization pass.
         break;
 
+      case ConstraintType::Lock:
+        // Lock is enforced by model mutators and solveStable's baseline.
+        ++result.applied;
+        break;
+
       default:
         ++result.unsupported;
         break;
@@ -742,6 +747,9 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       if (!index) return std::nullopt;
 
       const auto& line = sketch.lines()[*index];
+      if (sketch.isGeometryLocked(id))
+        return std::hypot(line.end.xMm - line.start.xMm,
+                          line.end.yMm - line.start.yMm);
       const double dx =
           std::abs(line.end.xMm - line.start.xMm);
       const double dy =
@@ -790,6 +798,30 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
     const auto drivingCircleDiameter =
         [&sketch](GeometryId id)
             -> std::optional<double> {
+      if (sketch.isGeometryLocked(id)) {
+        const auto index = sketch.circleIndex(id);
+        if (index)
+          return sketch.circles()[*index].radiusMm * 2.0;
+      }
+
+      if (sketch.isGeometryLocked(id)) {
+        const auto index = sketch.circleIndex(id);
+        if (index)
+          return sketch.circles()[*index].radiusMm * 2.0;
+      }
+
+      if (sketch.isGeometryLocked(id)) {
+        const auto index = sketch.circleIndex(id);
+        if (index)
+          return sketch.circles()[*index].radiusMm * 2.0;
+      }
+
+      if (sketch.isGeometryLocked(id)) {
+        const auto index = sketch.circleIndex(id);
+        if (index)
+          return sketch.circles()[*index].radiusMm * 2.0;
+      }
+
       for (const auto& item : sketch.constraints()) {
         if (item.firstGeometry != id ||
             item.value <= 0.0)
@@ -1781,7 +1813,9 @@ SolveResult BasicSketchSolver::solveStable(
   for (int pass = 0;
        pass < std::max(1, maxPasses);
        ++pass) {
+    const Sketch lockedBaseline = sketch;
     last = solve(sketch);
+    sketch.restoreLockedGeometryFrom(lockedBaseline);
 
     const auto audit =
         analyzeConstraintSystem(sketch, false);

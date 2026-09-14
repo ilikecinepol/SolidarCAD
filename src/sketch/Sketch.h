@@ -82,7 +82,8 @@ enum class ConstraintType {
   DistanceY,
   PointOnCircle,
   Tangent,
-  LineDistance};
+  LineDistance,
+  Lock};
 
 struct Constraint {
   ConstraintId id{kInvalidConstraintId};
@@ -172,6 +173,10 @@ class Sketch final {
   bool removeConstraint(ConstraintId id);
   void clearConstraints();
   [[nodiscard]] const std::vector<Constraint>& constraints() const noexcept;
+  [[nodiscard]] bool isGeometryLocked(GeometryId id) const noexcept;
+  [[nodiscard]] bool isElementLocked(std::size_t elementId) const noexcept;
+  [[nodiscard]] bool isPointReferenceLocked(PointReference reference) const noexcept;
+  void restoreLockedGeometryFrom(const Sketch& baseline);
 
   [[nodiscard]] double widthMm() const noexcept;
   [[nodiscard]] double heightMm() const noexcept;

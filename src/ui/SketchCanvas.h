@@ -39,6 +39,7 @@ class SketchCanvas final : public QWidget {
     Circle,
     Projection,
     AutoDimension,
+    LockConstraint,
     OrthogonalConstraint,
     CoincidentConstraint,
     PerpendicularConstraint,
@@ -149,6 +150,7 @@ signals:
   void commitCirclePoint(sketch::Point point);
   void commitRectanglePoint(sketch::Point point);
   void handleAutoDimensionClick(QPointF position);
+  void handleLockConstraintClick(QPointF position);
   void handleOrthogonalConstraintClick(QPointF position);
   void handleCoincidentConstraintClick(QPointF position);
   void handlePerpendicularConstraintClick(QPointF position);

@@ -860,6 +860,8 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         return QString::fromUtf8("Угол");
       case sketch::ConstraintType::Tangent:
         return QString::fromUtf8("\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xBE");
+      case sketch::ConstraintType::Lock:
+        return QString::fromUtf8("Замок");
     }
     return QString::fromUtf8("Ограничение");
   };
@@ -1701,6 +1703,39 @@ bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
   }
 
   sketch_.setElementDashed(projectedElementId, true);
+
+  // PROJECTION AUTO LOCK
+  // Projection remains usable as reference geometry, but cannot move/resize.
+  sketch::GeometryId projectedLockId =
+      sketch::kInvalidGeometryId;
+
+  for (std::size_t index = 0;
+       index < sketch_.lines().size(); ++index) {
+    if (sketch_.lines()[index].elementId !=
+        projectedElementId)
+      continue;
+
+    projectedLockId = sketch_.lineId(index);
+    if (projectedLockId != sketch::kInvalidGeometryId)
+      break;
+  }
+
+  if (projectedLockId != sketch::kInvalidGeometryId) {
+    sketch::Constraint lock;
+    lock.type = sketch::ConstraintType::Lock;
+    lock.firstGeometry = projectedLockId;
+
+    if (sketch_.addConstraint(lock) ==
+        sketch::kInvalidConstraintId) {
+      sketch_.removeElement(projectedElementId);
+      emit selectionChanged(
+          QString::fromUtf8(
+              "Не удалось зафиксировать проекцию"));
+      update();
+      return false;
+    }
+  }
+
   clearGeometrySelection();
   notifyGeometryChanged();
   emit selectionChanged(
@@ -1923,11 +1958,21 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         (selectedElementIds_.empty() &&
          selectionKind_ == SelectionKind::Line &&
          selectionElementId_ == line.elementId);
-    painter.setPen(QPen(selected ? QColor("#ff8a24") : QColor("#1469d7"),
+    const auto currentLineId = sketch_.lineId(index);
+    const bool locked =
+        sketch_.isGeometryLocked(currentLineId);
+    const QColor baseColor =
+        locked ? QColor("#8b5cf6") : QColor("#1469d7");
+    const QColor selectedColor =
+        locked ? QColor("#a78bfa") : QColor("#ff8a24");
+
+    painter.setPen(QPen(selected ? selectedColor : baseColor,
                         selected ? 3.0 : 2.0,
-                        line.dashed ? Qt::DashLine : Qt::SolidLine));
+                        line.dashed ? Qt::DashLine
+                                    : Qt::SolidLine));
     painter.drawLine(mapPoint(line.start), mapPoint(line.end));
-    painter.setBrush(Qt::white);
+    painter.setBrush(
+        locked ? QColor("#ede9fe") : Qt::white);
     painter.drawEllipse(mapPoint(line.start), 3.5, 3.5);
     painter.drawEllipse(mapPoint(line.end), 3.5, 3.5);
   }
@@ -1939,9 +1984,17 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         (selectedCircleIds_.empty() &&
          selectionKind_ == SelectionKind::Circle &&
          selectionCircleId_ == circleId);
-    painter.setPen(QPen(selected ? QColor("#ff8a24") : QColor("#1469d7"),
+    const bool locked =
+        sketch_.isGeometryLocked(circleId);
+    const QColor baseColor =
+        locked ? QColor("#8b5cf6") : QColor("#1469d7");
+    const QColor selectedColor =
+        locked ? QColor("#a78bfa") : QColor("#ff8a24");
+
+    painter.setPen(QPen(selected ? selectedColor : baseColor,
                         selected ? 3.0 : 2.0,
-                        circle.dashed ? Qt::DashLine : Qt::SolidLine));
+                        circle.dashed ? Qt::DashLine
+                                      : Qt::SolidLine));
     painter.setBrush(Qt::NoBrush);
     const QPointF center = mapPoint(circle.center);
     const double radius = circle.radiusMm * pixelsPerMm_;
@@ -3020,6 +3073,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   setProperty("selectedDimension", QVariant());
   if (tool_ == Tool::AutoDimension) {
     handleAutoDimensionClick(event->position());
+  } else if (tool_ == Tool::LockConstraint) {
+    handleLockConstraintClick(event->position());
   } else if (tool_ == Tool::OrthogonalConstraint) {
     handleOrthogonalConstraintClick(event->position());
   } else if (tool_ == Tool::CoincidentConstraint) {
@@ -7168,6 +7223,98 @@ void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
   update();
 }
 
+void SketchCanvas::handleLockConstraintClick(
+    QPointF position) {
+  constexpr double hitTolerance = 9.0;
+  double bestDistance = hitTolerance;
+  std::optional<std::size_t> lineIndex;
+  std::optional<std::size_t> circleIndex;
+
+  for (std::size_t index = 0;
+       index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const double distance =
+        pointSegmentDistance(
+            position,
+            mapPoint(line.start),
+            mapPoint(line.end));
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      lineIndex = index;
+      circleIndex.reset();
+    }
+  }
+
+  for (std::size_t index = 0;
+       index < sketch_.circles().size(); ++index) {
+    const auto& circle = sketch_.circles()[index];
+    const double distance =
+        std::abs(
+            QLineF(position,
+                   mapPoint(circle.center)).length() -
+            circle.radiusMm * pixelsPerMm_);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      circleIndex = index;
+      lineIndex.reset();
+    }
+  }
+
+  if (!lineIndex && !circleIndex) {
+    emit selectionChanged(
+        QString::fromUtf8(
+            "Замок: выберите объект"));
+    return;
+  }
+
+  sketch::GeometryId target =
+      sketch::kInvalidGeometryId;
+
+  if (lineIndex)
+    target = sketch_.lineId(*lineIndex);
+  else
+    target = sketch_.circleId(*circleIndex);
+
+  if (target == sketch::kInvalidGeometryId)
+    return;
+
+  if (sketch_.isGeometryLocked(target)) {
+    emit selectionChanged(
+        QString::fromUtf8(
+            "Объект уже зафиксирован"));
+    return;
+  }
+
+  pushUndoState();
+
+  sketch::Constraint lock;
+  lock.type = sketch::ConstraintType::Lock;
+  lock.firstGeometry = target;
+
+  if (sketch_.addConstraint(lock) ==
+      sketch::kInvalidConstraintId) {
+    if (!undoStack_.empty()) {
+      sketch_ = undoStack_.back();
+      undoStack_.pop_back();
+      emit undoAvailable(canUndo());
+    }
+
+    emit selectionChanged(
+        QString::fromUtf8(
+            "Не удалось зафиксировать объект"));
+    update();
+    return;
+  }
+
+  emit selectionChanged(
+      QString::fromUtf8(
+          "Ограничение: Замок"));
+  notifyGeometryChanged();
+  update();
+}
+
 void SketchCanvas::handleAutoDimensionClick(QPointF position) {
   // AutoDimension owns mouse movement while it is active. Never allow a
   // stale installed-dimension drag state to intercept its live preview.
@@ -7608,18 +7755,19 @@ void SketchCanvas::commitAutoDimension() {
     }
   } else if (target == "points") {
     const sketch::PointReference first{
-          static_cast<sketch::GeometryId>(
-              property("autoDimensionFirstLine").toULongLong()),
-          property("autoDimensionFirstStart").toBool(),
-          static_cast<sketch::GeometryId>(
+        static_cast<sketch::GeometryId>(
+            property("autoDimensionFirstLine").toULongLong()),
+        property("autoDimensionFirstStart").toBool(),
+        static_cast<sketch::GeometryId>(
             property("autoDimensionFirstCircle").toULongLong()),
         static_cast<std::size_t>(
             property("autoDimensionFirstElementCenter").toULongLong())};
+
     const sketch::PointReference second{
-          static_cast<sketch::GeometryId>(
-              property("autoDimensionSecondLine").toULongLong()),
-          property("autoDimensionSecondStart").toBool(),
-          static_cast<sketch::GeometryId>(
+        static_cast<sketch::GeometryId>(
+            property("autoDimensionSecondLine").toULongLong()),
+        property("autoDimensionSecondStart").toBool(),
+        static_cast<sketch::GeometryId>(
             property("autoDimensionSecondCircle").toULongLong()),
         static_cast<std::size_t>(
             property("autoDimensionSecondElementCenter").toULongLong())};
@@ -7627,62 +7775,150 @@ void SketchCanvas::commitAutoDimension() {
     const QString pointMode =
         property("autoDimensionPointMode").toString();
 
-    sketch::ConstraintType constraintType = sketch::ConstraintType::Distance;
+    sketch::ConstraintType constraintType =
+        sketch::ConstraintType::Distance;
+
     if (pointMode == QStringLiteral("x")) {
-      changed = sketch_.setPointDistanceX(first, second, value);
-      dimension.kind = sketch::DimensionKind::PointDistanceX;
-      constraintType = sketch::ConstraintType::DistanceX;
+      dimension.kind =
+          sketch::DimensionKind::PointDistanceX;
+      constraintType =
+          sketch::ConstraintType::DistanceX;
     } else if (pointMode == QStringLiteral("y")) {
-      changed = sketch_.setPointDistanceY(first, second, value);
-      dimension.kind = sketch::DimensionKind::PointDistanceY;
-      constraintType = sketch::ConstraintType::DistanceY;
+      dimension.kind =
+          sketch::DimensionKind::PointDistanceY;
+      constraintType =
+          sketch::ConstraintType::DistanceY;
     } else {
-      changed = sketch_.setPointDistance(first, second, value);
-      dimension.kind = sketch::DimensionKind::PointDistance;
+      dimension.kind =
+          sketch::DimensionKind::PointDistance;
     }
 
     dimension.firstPoint = first;
     dimension.secondPoint = second;
 
-    if (changed) {
-      // The same point pair may have one driving distance mode at a time.
-      std::vector<sketch::ConstraintId> oldDistanceConstraints;
-      for (const auto& constraint : sketch_.constraints()) {
-        if (constraint.type != sketch::ConstraintType::Distance &&
-            constraint.type != sketch::ConstraintType::DistanceX &&
-            constraint.type != sketch::ConstraintType::DistanceY)
-          continue;
-
-              // CRASH-FREE 09 V2: KEEP INDEPENDENT DISTANCE MODES
-      //
-      // Aligned, X and Y are separate driving constraints. Replacing an
-      // existing dimension must remove only the SAME mode for the SAME pair.
-      if (constraint.type != constraintType)
-        continue;
-const bool sameOrder =
-            constraint.firstPoint.lineId == first.lineId &&
-            constraint.firstPoint.start == first.start &&
-            constraint.secondPoint.lineId == second.lineId &&
-            constraint.secondPoint.start == second.start;
-        const bool reverseOrder =
-            constraint.firstPoint.lineId == second.lineId &&
-            constraint.firstPoint.start == second.start &&
-            constraint.secondPoint.lineId == first.lineId &&
-            constraint.secondPoint.start == first.start;
-
-        if (sameOrder || reverseOrder)
-          oldDistanceConstraints.push_back(constraint.id);
+    // CONSTRAINT-FIRST POINT DIMENSION V5
+    //
+    // A dimension is a constraint first, an annotation second. Do not move
+    // geometry before the new constraint belongs to the full system.
+    const auto samePointReference =
+        [](sketch::PointReference left,
+           sketch::PointReference right) {
+      if (left.elementCenterId != 0 ||
+          right.elementCenterId != 0) {
+        return left.elementCenterId != 0 &&
+               right.elementCenterId != 0 &&
+               left.elementCenterId ==
+                   right.elementCenterId;
       }
 
-      for (const auto constraintId : oldDistanceConstraints)
-        sketch_.removeConstraint(constraintId);
+      if (left.circleId !=
+              sketch::kInvalidGeometryId ||
+          right.circleId !=
+              sketch::kInvalidGeometryId) {
+        return left.circleId !=
+                   sketch::kInvalidGeometryId &&
+               right.circleId !=
+                   sketch::kInvalidGeometryId &&
+               left.circleId == right.circleId;
+      }
 
+      return left.lineId !=
+                 sketch::kInvalidGeometryId &&
+             right.lineId !=
+                 sketch::kInvalidGeometryId &&
+             left.lineId == right.lineId &&
+             left.start == right.start;
+    };
+
+    const auto samePointPair =
+        [&samePointReference](
+            const sketch::Constraint& constraint,
+            sketch::PointReference lhs,
+            sketch::PointReference rhs) {
+      const bool sameOrder =
+          samePointReference(
+              constraint.firstPoint, lhs) &&
+          samePointReference(
+              constraint.secondPoint, rhs);
+
+      const bool reverseOrder =
+          samePointReference(
+              constraint.firstPoint, rhs) &&
+          samePointReference(
+              constraint.secondPoint, lhs);
+
+      return sameOrder || reverseOrder;
+    };
+
+    std::optional<sketch::Sketch> beforePointEdit;
+
+    if (editingExisting) {
+      beforePointEdit = sketch_;
+
+      std::vector<sketch::ConstraintId>
+          oldDistanceConstraints;
+
+      for (const auto& constraint :
+           sketch_.constraints()) {
+        if (constraint.type != constraintType)
+          continue;
+
+        if (samePointPair(
+                constraint, first, second)) {
+          oldDistanceConstraints.push_back(
+              constraint.id);
+        }
+      }
+
+      for (const auto constraintId :
+           oldDistanceConstraints) {
+        sketch_.removeConstraint(
+            constraintId);
+      }
+    }
+
+    const bool duplicateExisting =
+        !editingExisting &&
+        std::any_of(
+            sketch_.constraints().begin(),
+            sketch_.constraints().end(),
+            [constraintType, first, second,
+             &samePointPair](
+                const sketch::Constraint& constraint) {
+              return constraint.type ==
+                         constraintType &&
+                     samePointPair(
+                         constraint,
+                         first,
+                         second);
+            });
+
+    if (!duplicateExisting) {
       sketch::Constraint distanceConstraint;
       distanceConstraint.type = constraintType;
       distanceConstraint.firstPoint = first;
       distanceConstraint.secondPoint = second;
       distanceConstraint.value = value;
-      sketch_.addConstraint(distanceConstraint);
+
+      const auto addedId =
+          sketch_.addConstraint(
+              distanceConstraint);
+
+      changed =
+          addedId !=
+          sketch::kInvalidConstraintId;
+
+      if (!changed && beforePointEdit) {
+        sketch_ = std::move(*beforePointEdit);
+      }
+    } else {
+      changed = false;
+    }
+
+    if (!changed) {
+      emit selectionChanged(
+          QString::fromUtf8(
+              "Размер не добавлен: конфликт ограничений"));
     }
   }
   if (changed && editingExisting) {
@@ -8239,6 +8475,113 @@ void autoCoincidentNewGeometry(
         candidate.reference;
 
     sketch.addConstraint(constraint);
+  }
+
+  // AUTO PROJECTED EDGE SNAP
+  // Projected vertices are handled by Coincident above. When a new point is
+  // created on the BODY of a dashed+locked projection, persist PointOnLine.
+  const auto oldReference =
+      [&oldReferences, &sameReference](sketch::PointReference r) {
+        return std::any_of(
+            oldReferences.begin(), oldReferences.end(),
+            [r, &sameReference](sketch::PointReference old) {
+              return sameReference(r, old);
+            });
+      };
+
+  const auto hasOldCoincident =
+      [&sketch, &sameReference, &oldReference](
+          sketch::PointReference r) {
+        for (const auto& c : sketch.constraints()) {
+          if (c.type != sketch::ConstraintType::Coincident)
+            continue;
+          if (sameReference(c.firstPoint, r) &&
+              oldReference(c.secondPoint))
+            return true;
+          if (sameReference(c.secondPoint, r) &&
+              oldReference(c.firstPoint))
+            return true;
+        }
+        return false;
+      };
+
+  for (const auto& candidate : newReferences) {
+    if (hasOldCoincident(candidate.reference))
+      continue;
+
+    const auto point =
+        sketch.referencedPoint(candidate.reference);
+    if (!point) continue;
+
+    sketch::GeometryId best =
+        sketch::kInvalidGeometryId;
+    double bestDistance = toleranceMm;
+
+    const std::size_t oldCount =
+        std::min(oldLineCount, sketch.lines().size());
+
+    for (std::size_t i = 0; i < oldCount; ++i) {
+      const auto carrierId = sketch.lineId(i);
+      if (carrierId == sketch::kInvalidGeometryId)
+        continue;
+
+      const auto& carrier = sketch.lines()[i];
+      if (!carrier.dashed ||
+          !sketch.isGeometryLocked(carrierId))
+        continue;
+
+      const double dx =
+          carrier.end.xMm - carrier.start.xMm;
+      const double dy =
+          carrier.end.yMm - carrier.start.yMm;
+      const double l2 = dx * dx + dy * dy;
+      if (l2 <= 1e-12) continue;
+
+      const double t =
+          ((point->xMm - carrier.start.xMm) * dx +
+           (point->yMm - carrier.start.yMm) * dy) / l2;
+
+      if (t < 0.0 || t > 1.0)
+        continue;
+
+      const sketch::Point q{
+          carrier.start.xMm + t * dx,
+          carrier.start.yMm + t * dy};
+
+      const double distance =
+          std::hypot(
+              point->xMm - q.xMm,
+              point->yMm - q.yMm);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = carrierId;
+      }
+    }
+
+    if (best == sketch::kInvalidGeometryId)
+      continue;
+
+    const bool duplicate = std::any_of(
+        sketch.constraints().begin(),
+        sketch.constraints().end(),
+        [best, &candidate, &sameReference](
+            const sketch::Constraint& c) {
+          return c.type ==
+                     sketch::ConstraintType::PointOnLine &&
+                 c.firstGeometry == best &&
+                 sameReference(
+                     c.secondPoint,
+                     candidate.reference);
+        });
+
+    if (!duplicate) {
+      sketch::Constraint c;
+      c.type = sketch::ConstraintType::PointOnLine;
+      c.firstGeometry = best;
+      c.secondPoint = candidate.reference;
+      (void)sketch.addConstraint(c);
+    }
   }
 }
 

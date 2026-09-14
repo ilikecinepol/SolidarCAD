@@ -443,6 +443,60 @@ std::vector<Equation> evaluate(const Sketch& sketch,
         break;
       }
 
+      case ConstraintType::Lock: {
+        if (const auto baselineIndex =
+                sketch.lineIndex(constraint.firstGeometry)) {
+          const std::size_t elementId =
+              sketch.lines()[*baselineIndex].elementId;
+
+          for (std::size_t index = 0;
+               index < sketch.lines().size(); ++index) {
+            if (sketch.lines()[index].elementId != elementId)
+              continue;
+
+            const auto id = sketch.lineId(index);
+            const auto current =
+                lineOf(layout, variables, id);
+            if (!current) continue;
+
+            const auto& baseline = sketch.lines()[index];
+            add(current->start.xMm - baseline.start.xMm,
+                kLengthTolerance, constraint);
+            add(current->start.yMm - baseline.start.yMm,
+                kLengthTolerance, constraint);
+            add(current->end.xMm - baseline.end.xMm,
+                kLengthTolerance, constraint);
+            add(current->end.yMm - baseline.end.yMm,
+                kLengthTolerance, constraint);
+          }
+          break;
+        }
+
+        if (const auto baselineIndex =
+                sketch.circleIndex(constraint.firstGeometry)) {
+          const auto current =
+              circleOf(layout, variables,
+                       constraint.firstGeometry);
+          if (!current) {
+            invalidEquation(constraint);
+            break;
+          }
+
+          const auto& baseline =
+              sketch.circles()[*baselineIndex];
+          add(current->center.xMm - baseline.center.xMm,
+              kLengthTolerance, constraint);
+          add(current->center.yMm - baseline.center.yMm,
+              kLengthTolerance, constraint);
+          add(current->radiusMm - baseline.radiusMm,
+              kLengthTolerance, constraint);
+          break;
+        }
+
+        invalidEquation(constraint);
+        break;
+      }
+
       case ConstraintType::LineDistance: {
         const auto first =
             lineOf(layout, variables, constraint.firstGeometry);

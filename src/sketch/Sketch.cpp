@@ -241,6 +241,10 @@ void Sketch::addCircle(Point center, double radiusMm) {
 }
 
 void Sketch::removeLine(std::size_t index) {
+  // LOCK CONSTRAINT: locked geometry cannot be deleted.
+  if (index < lineIds_.size() &&
+      isGeometryLocked(lineIds_[index]))
+    return;
   if (index >= lines_.size()) return;
 
   const GeometryId removedId = lineIds_[index];
@@ -274,6 +278,10 @@ void Sketch::removeLine(std::size_t index) {
 }
 
 void Sketch::removeCircle(std::size_t index) {
+  // LOCK CONSTRAINT: locked geometry cannot be deleted.
+  if (index < circleIds_.size() &&
+      isGeometryLocked(circleIds_[index]))
+    return;
   if (index >= circles_.size()) return;
 
   const GeometryId removedId = circleIds_[index];
@@ -308,6 +316,9 @@ void Sketch::removeCircle(std::size_t index) {
 }
 
 void Sketch::removeElement(std::size_t elementId) {
+  // LOCK CONSTRAINT: one Lock freezes the whole CAD element.
+  if (isElementLocked(elementId))
+    return;
   std::vector<GeometryId> removedIds;
   for (std::size_t index = lines_.size(); index > 0; --index) {
     const std::size_t current = index - 1;
@@ -420,6 +431,9 @@ Sketch::centerNodeElementIds() const noexcept {
 }
 void Sketch::translateElement(std::size_t elementId, double dxMm,
                               double dyMm) {
+  // LOCK CONSTRAINT: direct drag may never move a locked element.
+  if (isElementLocked(elementId))
+    return;
   if (dxMm == 0.0 && dyMm == 0.0) return;
 
   std::vector<GeometryId> movedIds;
@@ -570,6 +584,17 @@ void Sketch::translateSelection(
     const std::vector<std::size_t>& elementIds,
     const std::vector<GeometryId>& circleIds,
     double dxMm, double dyMm) {
+  // LOCK CONSTRAINT: mixed selections do not partially move.
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (std::find(elementIds.begin(), elementIds.end(),
+                  lines_[index].elementId) != elementIds.end() &&
+        isGeometryLocked(lineIds_[index]))
+      return;
+  }
+  for (const auto id : circleIds) {
+    if (isGeometryLocked(id))
+      return;
+  }
   if (dxMm == 0.0 && dyMm == 0.0) return;
   if (elementIds.empty() && circleIds.empty()) return;
 
@@ -733,6 +758,15 @@ void Sketch::translateSelection(
     }
   }
 
+  // LOCK CONSTRAINT: Coincident expansion reaches a locked reference.
+  // Reject the complete drag rather than moving the lock or breaking the link.
+  if (std::any_of(
+          movedReferences.begin(), movedReferences.end(),
+          [this](PointReference reference) {
+            return isPointReferenceLocked(reference);
+          }))
+    return;
+
   const auto referenceMoves =
       [&movedReferences,
        &sameReference](
@@ -825,16 +859,25 @@ void Sketch::translateSelection(
   updateBounds();
 }
 void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
+  // Locked/reference geometry cannot change its construction style.
+  if (isElementLocked(elementId))
+    return;
   for (auto& line : lines_) {
     if (line.elementId == elementId) line.dashed = dashed;
   }
 }
 
 void Sketch::setCircleDashed(std::size_t index, bool dashed) {
+  if (index < circleIds_.size() &&
+      isGeometryLocked(circleIds_[index]))
+    return;
   if (index < circles_.size()) circles_[index].dashed = dashed;
 }
 
 void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
+  if (index < circleIds_.size() &&
+      isGeometryLocked(circleIds_[index]))
+    return;
   if (index >= circles_.size()) return;
   circles_[index].center.xMm += dxMm;
   circles_[index].center.yMm += dyMm;
@@ -860,6 +903,15 @@ void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
 bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
   const auto index = lineIndex(id);
   if (!index || lengthMm <= 0.0) return false;
+  // LOCK CONSTRAINT: locked line length is immutable.
+  // Re-applying the already satisfied value remains idempotently successful.
+  if (isGeometryLocked(id)) {
+    const auto& locked = lines_[*index];
+    const double current =
+        std::hypot(locked.end.xMm - locked.start.xMm,
+                   locked.end.yMm - locked.start.yMm);
+    return std::abs(current - lengthMm) <= 1e-7;
+  }
 
   const std::size_t elementId = lines_[*index].elementId;
 
@@ -971,11 +1023,25 @@ bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
 }
 
 bool Sketch::setCircleDiameterById(GeometryId id, double diameterMm) {
+  // LOCK CONSTRAINT: locked circle diameter is immutable.
+  if (const auto lockedIndex = circleIndex(id);
+      lockedIndex && isGeometryLocked(id)) {
+    return std::abs(circles_[*lockedIndex].radiusMm * 2.0 -
+                    diameterMm) <= 1e-7;
+  }
+
   const auto index = circleIndex(id);
   return index ? setCircleDiameter(*index, diameterMm) : false;
 }
 
 bool Sketch::setLineHorizontalById(GeometryId id) {
+  // LOCK CONSTRAINT: locked H/V geometry is immutable.
+  if (isGeometryLocked(id)) {
+    const auto lockedIndex = lineIndex(id);
+    if (!lockedIndex) return false;
+    return std::abs(lines_[*lockedIndex].end.yMm - lines_[*lockedIndex].start.yMm) <= 1e-7;
+  }
+
   const auto index = lineIndex(id);
   if (!index) return false;
 
@@ -995,6 +1061,13 @@ bool Sketch::setLineHorizontalById(GeometryId id) {
 }
 
 bool Sketch::setLineVerticalById(GeometryId id) {
+  // LOCK CONSTRAINT: locked H/V geometry is immutable.
+  if (isGeometryLocked(id)) {
+    const auto lockedIndex = lineIndex(id);
+    if (!lockedIndex) return false;
+    return std::abs(lines_[*lockedIndex].end.xMm - lines_[*lockedIndex].start.xMm) <= 1e-7;
+  }
+
   const auto index = lineIndex(id);
   if (!index) return false;
 
@@ -1017,6 +1090,12 @@ bool Sketch::setLinesParallelByIds(GeometryId firstId,
                                    GeometryId secondId) {
   const auto firstIndex = lineIndex(firstId);
   const auto secondIndex = lineIndex(secondId);
+  // LOCK CONSTRAINT: locked parallel operand is always the reference.
+  if (isGeometryLocked(secondId)) {
+    if (isGeometryLocked(firstId))
+      return false;
+    return setLinesParallelByIds(secondId, firstId);
+  }
 
   if (!firstIndex || !secondIndex || firstId == secondId)
     return false;
@@ -1158,6 +1237,14 @@ bool Sketch::setParallelLineDistanceByIds(
       !std::isfinite(distanceMm) || distanceMm <= 0.0)
     return false;
 
+  // LOCK CONSTRAINT: locked spacing operand is the reference.
+  if (isGeometryLocked(movingId)) {
+    if (isGeometryLocked(referenceId))
+      return false;
+    return setParallelLineDistanceByIds(
+        movingId, referenceId, distanceMm);
+  }
+
   const auto referenceIndex = lineIndex(referenceId);
   const auto movingIndex = lineIndex(movingId);
   if (!referenceIndex || !movingIndex) return false;
@@ -1245,6 +1332,12 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                                double angleDegrees) {
   const auto firstIndex = lineIndex(firstId);
   const auto secondIndex = lineIndex(secondId);
+  // LOCK CONSTRAINT: locked angle operand is always the reference.
+  if (isGeometryLocked(secondId)) {
+    if (isGeometryLocked(firstId))
+      return false;
+    return setLineAngleByIds(secondId, firstId, angleDegrees);
+  }
 
   if (!firstIndex || !secondIndex || firstId == secondId ||
       angleDegrees <= 0.0 || angleDegrees >= 180.0)
@@ -1607,6 +1700,92 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
   return static_cast<std::size_t>(std::distance(circleIds_.begin(), found));
 }
 
+bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
+  if (id == kInvalidGeometryId) return false;
+
+  if (const auto line = lineIndex(id)) {
+    const std::size_t elementId = lines_[*line].elementId;
+    for (const auto& constraint : constraints_) {
+      if (constraint.type != ConstraintType::Lock ||
+          constraint.firstGeometry == kInvalidGeometryId)
+        continue;
+
+      const auto lockedLine = lineIndex(constraint.firstGeometry);
+      if (lockedLine &&
+          lines_[*lockedLine].elementId == elementId)
+        return true;
+    }
+    return false;
+  }
+
+  if (circleIndex(id)) {
+    return std::any_of(
+        constraints_.begin(), constraints_.end(),
+        [id](const Constraint& constraint) {
+          return constraint.type == ConstraintType::Lock &&
+                 constraint.firstGeometry == id;
+        });
+  }
+
+  return false;
+}
+
+bool Sketch::isElementLocked(std::size_t elementId) const noexcept {
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (lines_[index].elementId == elementId &&
+        isGeometryLocked(lineIds_[index]))
+      return true;
+  }
+  return false;
+}
+
+bool Sketch::isPointReferenceLocked(
+    PointReference reference) const noexcept {
+  if (reference.elementCenterId != 0)
+    return isElementLocked(reference.elementCenterId);
+  if (reference.circleId != kInvalidGeometryId)
+    return isGeometryLocked(reference.circleId);
+  return isGeometryLocked(reference.lineId);
+}
+
+void Sketch::restoreLockedGeometryFrom(const Sketch& baseline) {
+  for (const auto& constraint : constraints_) {
+    if (constraint.type != ConstraintType::Lock ||
+        constraint.firstGeometry == kInvalidGeometryId)
+      continue;
+
+    if (const auto lockedLine = lineIndex(constraint.firstGeometry)) {
+      const std::size_t elementId = lines_[*lockedLine].elementId;
+
+      for (std::size_t index = 0; index < lines_.size(); ++index) {
+        if (lines_[index].elementId != elementId) continue;
+
+        const GeometryId id = lineIds_[index];
+        const auto source = baseline.lineIndex(id);
+        if (!source) continue;
+
+        lines_[index].start = baseline.lines_[*source].start;
+        lines_[index].end = baseline.lines_[*source].end;
+      }
+      continue;
+    }
+
+    if (const auto lockedCircle =
+            circleIndex(constraint.firstGeometry)) {
+      const auto source =
+          baseline.circleIndex(constraint.firstGeometry);
+      if (!source) continue;
+
+      circles_[*lockedCircle].center =
+          baseline.circles_[*source].center;
+      circles_[*lockedCircle].radiusMm =
+          baseline.circles_[*source].radiusMm;
+    }
+  }
+
+  updateBounds();
+}
+
 std::optional<Point> Sketch::referencedPoint(
     PointReference reference) const noexcept {
   if (reference.elementCenterId != 0)
@@ -1628,6 +1807,20 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
   if (!first || !second) return false;
+  // LOCK CONSTRAINT: locked Coincident reference is the anchor.
+  const bool firstLocked =
+      isPointReferenceLocked(firstReference);
+  const bool secondLocked =
+      isPointReferenceLocked(secondReference);
+
+  if (secondLocked) {
+    if (firstLocked) {
+      return std::hypot(first->xMm - second->xMm,
+                        first->yMm - second->yMm) <= 1e-7;
+    }
+    return setPointsCoincident(
+        secondReference, firstReference);
+  }
 
   const auto sameReference =
       [](PointReference a, PointReference b) {
@@ -1705,6 +1898,11 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
   const auto carrierIndex = lineIndex(lineIdValue);
   const auto point = referencedPoint(pointReference);
 
+  // LOCK CONSTRAINT: the constrained point itself is locked.
+  // A locked carrier remains a valid reference.
+  if (isPointReferenceLocked(pointReference))
+    return false;
+
   if (!carrierIndex || !point) return false;
 
   // A line endpoint cannot be constrained onto its own carrier segment:
@@ -1778,6 +1976,11 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
   const auto carrierIndex = circleIndex(circleIdValue);
   const auto point = referencedPoint(pointReference);
 
+  // LOCK CONSTRAINT: the constrained point itself is locked.
+  // A locked carrier remains a valid reference.
+  if (isPointReferenceLocked(pointReference))
+    return false;
+
   if (!carrierIndex || !point) return false;
 
   // The centre of a circle cannot belong to its own circumference.
@@ -1848,6 +2051,9 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
 }
 bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
                                     GeometryId circleIdValue) {
+  // LOCK CONSTRAINT: this primitive solves tangency by moving the circle.
+  if (isGeometryLocked(circleIdValue))
+    return false;
   const auto lineIndexValue = lineIndex(lineIdValue);
   const auto circleIndexValue = circleIndex(circleIdValue);
 
@@ -1985,6 +2191,14 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       }
     }
   }
+
+  // LOCK CONSTRAINT: connected point cluster contains a lock.
+  if (std::any_of(
+          connectedPoints.begin(), connectedPoints.end(),
+          [this](PointReference item) {
+            return isPointReferenceLocked(item);
+          }))
+    return false;
 
   // CRASH-FREE 04: VIRTUAL CENTER MOVEMENT
   //
@@ -2276,6 +2490,15 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
 }
 bool Sketch::setLineLength(std::size_t index, double lengthMm) {
   if (index >= lines_.size() || lengthMm <= 0.0) return false;
+  // LOCK CONSTRAINT: direct indexed length edit is blocked.
+  if (index < lineIds_.size() &&
+      isGeometryLocked(lineIds_[index])) {
+    const auto& locked = lines_[index];
+    const double current =
+        std::hypot(locked.end.xMm - locked.start.xMm,
+                   locked.end.yMm - locked.start.yMm);
+    return std::abs(current - lengthMm) <= 1e-7;
+  }
   const Point start = lines_[index].start;
   const Point oldEnd = lines_[index].end;
   const double dx = oldEnd.xMm - start.xMm;
@@ -2300,6 +2523,12 @@ bool Sketch::setPointDistance(PointReference firstReference,
                               double distanceMm) {
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
+  // LOCK CONSTRAINT: keep the locked point as the reference.
+  if (isPointReferenceLocked(secondReference)) {
+    if (isPointReferenceLocked(firstReference))
+      return false;
+    return setPointDistance(secondReference, firstReference, distanceMm);
+  }
   if (!first || !second || distanceMm <= 0.0) return false;
 
   const double dx = second->xMm - first->xMm;
@@ -2445,34 +2674,33 @@ bool Sketch::setPointDistance(PointReference firstReference,
   return true;
 }
 
-bool Sketch::setPointDistanceX(PointReference firstReference,
-                               PointReference secondReference,
-                               double distanceMm) {
+bool Sketch::setPointDistanceX(
+    PointReference firstReference,
+    PointReference secondReference,
+    double distanceMm) {
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
-  if (!first || !second || distanceMm <= 0.0) return false;
 
-  const double dx = second->xMm - first->xMm;
-  const double direction = dx < 0.0 ? -1.0 : 1.0;
-  const Point moved{first->xMm + direction * distanceMm,
-                    second->yMm};
+  if (!first || !second ||
+      !std::isfinite(distanceMm) ||
+      distanceMm <= 0.0)
+    return false;
 
-  const double moveX = moved.xMm - second->xMm;
-
-  // SAME-RECTANGLE X DISTANCE
-  // Move only the rectangle column containing the second point. This changes
-  // width while preserving the rectangular topology.
-  const auto rectangleElementForPointX =
-      [this](PointReference reference) -> std::optional<std::size_t> {
+  const auto rectangleElementForPoint =
+      [this](PointReference reference)
+          -> std::optional<std::size_t> {
     if (reference.elementCenterId != 0 ||
         reference.circleId != kInvalidGeometryId ||
         reference.lineId == kInvalidGeometryId)
       return std::nullopt;
 
     const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
+    if (!index)
+      return std::nullopt;
 
-    const std::size_t elementId = lines_[*index].elementId;
+    const std::size_t elementId =
+        lines_[*index].elementId;
+
     std::size_t count = 0;
     for (const auto& line : lines_) {
       if (line.elementId == elementId)
@@ -2484,72 +2712,331 @@ bool Sketch::setPointDistanceX(PointReference firstReference,
                : std::nullopt;
   };
 
-  const auto firstRectangleX =
-      rectangleElementForPointX(firstReference);
-  const auto secondRectangleX =
-      rectangleElementForPointX(secondReference);
+  const auto pointBelongsToElement =
+      [this](PointReference reference,
+             std::size_t elementId) {
+    if (reference.elementCenterId != 0 ||
+        reference.circleId != kInvalidGeometryId ||
+        reference.lineId == kInvalidGeometryId)
+      return false;
 
-  if (firstRectangleX && secondRectangleX &&
-      *firstRectangleX == *secondRectangleX) {
+    const auto index = lineIndex(reference.lineId);
+    return index &&
+           lines_[*index].elementId == elementId;
+  };
+
+  const auto firstRectangle =
+      rectangleElementForPoint(firstReference);
+  const auto secondRectangle =
+      rectangleElementForPoint(secondReference);
+
+  const double dx = second->xMm - first->xMm;
+  const double direction = dx < 0.0 ? -1.0 : 1.0;
+  const Point movedSecond{
+      first->xMm + direction * distanceMm,
+      second->yMm};
+  const double moveSecondX =
+      movedSecond.xMm - second->xMm;
+
+  // Internal dimension of one rectangle = explicit driving width.
+  if (firstRectangle && secondRectangle &&
+      *firstRectangle == *secondRectangle) {
+    if (isElementLocked(*secondRectangle))
+      return false;
+
     const double oldSecondX = second->xMm;
 
     for (auto& line : lines_) {
-      if (line.elementId != *secondRectangleX)
+      if (line.elementId != *secondRectangle)
         continue;
 
       if (std::abs(line.start.xMm - oldSecondX) <= 1e-7)
-        line.start.xMm += moveX;
+        line.start.xMm += moveSecondX;
+
       if (std::abs(line.end.xMm - oldSecondX) <= 1e-7)
-        line.end.xMm += moveX;
-    }
-
-    updateBounds();
-    return true;
-  }
-  // CRASH-FREE 07: X DISTANCE TO NON-LINE POINT
-  if (secondReference.elementCenterId != 0) {
-    for (auto& line : lines_) {
-      if (line.elementId != secondReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.end.xMm += moveX;
+        line.end.xMm += moveSecondX;
     }
 
     updateBounds();
     return true;
   }
 
-  if (secondReference.circleId != kInvalidGeometryId) {
-    const auto circle =
-        circleIndex(secondReference.circleId);
+  // COUPLED EXTERNAL RECTANGLE X GAPS V4
+  //
+  // AutoDimension can present either operand order. More importantly, when a
+  // second external gap is entered, the NEW constraint has not yet been
+  // appended to constraints_. Solve the existing gaps + the current request
+  // together before addConstraint() validates the complete system.
+  if (static_cast<bool>(firstRectangle) !=
+      static_cast<bool>(secondRectangle)) {
+    const std::size_t elementId =
+        firstRectangle ? *firstRectangle
+                       : *secondRectangle;
 
-    if (!circle)
-      return false;
+    const PointReference currentRectangleReference =
+        firstRectangle ? firstReference
+                       : secondReference;
+    const PointReference currentExternalReference =
+        firstRectangle ? secondReference
+                       : firstReference;
 
-    circles_[*circle].center.xMm = moved.xMm;
-    updateBounds();
-    return true;
-  }
-  if (secondReference.circleId == kInvalidGeometryId) {
-    const auto secondLineIndex = lineIndex(secondReference.lineId);
-
-    if (secondLineIndex) {
-      const std::size_t elementId =
-          lines_[*secondLineIndex].elementId;
-
-      std::size_t elementLineCount = 0;
-      for (const auto& line : lines_) {
-        if (line.elementId == elementId)
-          ++elementLineCount;
+    if (isPointReferenceLocked(currentExternalReference) &&
+        !isElementLocked(elementId)) {
+      std::vector<std::size_t> members;
+      for (std::size_t index = 0;
+           index < lines_.size(); ++index) {
+        if (lines_[index].elementId == elementId)
+          members.push_back(index);
       }
 
-      if (elementLineCount == 4) {
-        for (auto& line : lines_) {
-          if (line.elementId != elementId) continue;
+      bool axisAligned = members.size() == 4;
+      for (const auto index : members) {
+        const double lineDx =
+            std::abs(lines_[index].end.xMm -
+                     lines_[index].start.xMm);
+        const double lineDy =
+            std::abs(lines_[index].end.yMm -
+                     lines_[index].start.yMm);
 
-          line.start.xMm += moveX;
-          line.end.xMm += moveX;
+        if (lineDx > 1e-7 && lineDy > 1e-7) {
+          axisAligned = false;
+          break;
+        }
+      }
+
+      const auto lineBelongsToElement =
+          [this, elementId](GeometryId id) {
+        const auto index = lineIndex(id);
+        return index &&
+               lines_[*index].elementId == elementId;
+      };
+
+      bool widthDriven = false;
+
+      for (const auto& constraint : constraints_) {
+        if (constraint.type == ConstraintType::Length &&
+            lineBelongsToElement(
+                constraint.firstGeometry)) {
+          const auto index =
+              lineIndex(constraint.firstGeometry);
+
+          if (index) {
+            const double lineDx =
+                std::abs(lines_[*index].end.xMm -
+                         lines_[*index].start.xMm);
+            const double lineDy =
+                std::abs(lines_[*index].end.yMm -
+                         lines_[*index].start.yMm);
+
+            if (lineDx > lineDy + 1e-7) {
+              widthDriven = true;
+              break;
+            }
+          }
+        }
+
+        if (constraint.type != ConstraintType::DistanceX &&
+            constraint.type != ConstraintType::Distance)
+          continue;
+
+        if (!pointBelongsToElement(
+                constraint.firstPoint, elementId) ||
+            !pointBelongsToElement(
+                constraint.secondPoint, elementId))
+          continue;
+
+        const auto p1 =
+            referencedPoint(constraint.firstPoint);
+        const auto p2 =
+            referencedPoint(constraint.secondPoint);
+
+        if (!p1 || !p2)
+          continue;
+
+        const double internalDx =
+            std::abs(p2->xMm - p1->xMm);
+        const double internalDy =
+            std::abs(p2->yMm - p1->yMm);
+
+        if ((constraint.type ==
+                 ConstraintType::DistanceX &&
+             internalDx > 1e-7) ||
+            (constraint.type ==
+                 ConstraintType::Distance &&
+             internalDx > 1e-7 &&
+             internalDy <= 1e-7)) {
+          widthDriven = true;
+          break;
+        }
+      }
+
+      const auto targetForGap =
+          [](double rectangleX,
+             double externalX,
+             double gap) {
+        return rectangleX >= externalX
+                   ? externalX + gap
+                   : externalX - gap;
+      };
+
+      // Explicit width means the rectangle is rigid in X. Satisfy the
+      // current gap by translating it as a whole; a conflicting second gap
+      // will then be rejected transactionally.
+      if (widthDriven || !axisAligned) {
+        const auto rectanglePoint =
+            referencedPoint(
+                currentRectangleReference);
+        const auto externalPoint =
+            referencedPoint(
+                currentExternalReference);
+
+        if (!rectanglePoint || !externalPoint)
+          return false;
+
+        const double targetX =
+            targetForGap(
+                rectanglePoint->xMm,
+                externalPoint->xMm,
+                distanceMm);
+
+        const double moveX =
+            targetX - rectanglePoint->xMm;
+
+        for (const auto index : members) {
+          lines_[index].start.xMm += moveX;
+          lines_[index].end.xMm += moveX;
+        }
+
+        updateBounds();
+        return true;
+      }
+
+      struct GapTarget {
+        double oldX{};
+        double targetX{};
+      };
+
+      std::vector<GapTarget> targets;
+
+      const auto addGapTarget =
+          [this, elementId, &targets,
+           &pointBelongsToElement,
+           &targetForGap](
+              PointReference a,
+              PointReference b,
+              double gap) {
+        const bool aRectangle =
+            pointBelongsToElement(a, elementId);
+        const bool bRectangle =
+            pointBelongsToElement(b, elementId);
+
+        if (aRectangle == bRectangle)
+          return true;
+
+        const PointReference rectangleRef =
+            aRectangle ? a : b;
+        const PointReference externalRef =
+            aRectangle ? b : a;
+
+        if (!isPointReferenceLocked(externalRef))
+          return true;
+
+        const auto rectanglePoint =
+            referencedPoint(rectangleRef);
+        const auto externalPoint =
+            referencedPoint(externalRef);
+
+        if (!rectanglePoint || !externalPoint)
+          return false;
+
+        const double oldX =
+            rectanglePoint->xMm;
+        const double targetX =
+            targetForGap(
+                oldX,
+                externalPoint->xMm,
+                gap);
+
+        for (const auto& existing : targets) {
+          if (std::abs(existing.oldX - oldX) > 1e-7)
+            continue;
+
+          // Two dimensions attempting different positions for the SAME
+          // rectangle column are a real overconstraint.
+          return std::abs(
+                     existing.targetX -
+                     targetX) <= 1e-7;
+        }
+
+        targets.push_back({oldX, targetX});
+        return true;
+      };
+
+      // Existing driving gaps.
+      for (const auto& constraint : constraints_) {
+        if (constraint.type != ConstraintType::DistanceX ||
+            !std::isfinite(constraint.value) ||
+            constraint.value <= 0.0)
+          continue;
+
+        const bool touchesRectangle =
+            pointBelongsToElement(
+                constraint.firstPoint, elementId) ||
+            pointBelongsToElement(
+                constraint.secondPoint, elementId);
+
+        if (!touchesRectangle)
+          continue;
+
+        if (!addGapTarget(
+                constraint.firstPoint,
+                constraint.secondPoint,
+                constraint.value))
+          return false;
+      }
+
+      // Current request is intentionally included even before it becomes a
+      // stored Constraint. This is what makes 7 mm + free width + 7 mm work.
+      if (!addGapTarget(
+              firstReference,
+              secondReference,
+              distanceMm))
+        return false;
+
+      if (!targets.empty()) {
+        struct EndpointSnapshot {
+          double startX{};
+          double endX{};
+        };
+
+        std::vector<EndpointSnapshot> before;
+        before.reserve(members.size());
+
+        for (const auto index : members) {
+          before.push_back({
+              lines_[index].start.xMm,
+              lines_[index].end.xMm});
+        }
+
+        for (std::size_t member = 0;
+             member < members.size();
+             ++member) {
+          auto& line =
+              lines_[members[member]];
+
+          for (const auto& target : targets) {
+            if (std::abs(
+                    before[member].startX -
+                    target.oldX) <= 1e-7)
+              line.start.xMm =
+                  target.targetX;
+
+            if (std::abs(
+                    before[member].endX -
+                    target.oldX) <= 1e-7)
+              line.end.xMm =
+                  target.targetX;
+          }
         }
 
         updateBounds();
@@ -2558,47 +3045,132 @@ bool Sketch::setPointDistanceX(PointReference firstReference,
     }
   }
 
+  // Generic locked reference: move the unlocked operand instead.
+  if (isPointReferenceLocked(secondReference)) {
+    if (isPointReferenceLocked(firstReference)) {
+      return std::abs(
+                 std::abs(dx) -
+                 distanceMm) <= 1e-7;
+    }
+
+    return setPointDistanceX(
+        secondReference,
+        firstReference,
+        distanceMm);
+  }
+
+  if (secondReference.elementCenterId != 0) {
+    if (isElementLocked(
+            secondReference.elementCenterId))
+      return false;
+
+    for (auto& line : lines_) {
+      if (line.elementId !=
+          secondReference.elementCenterId)
+        continue;
+
+      line.start.xMm += moveSecondX;
+      line.end.xMm += moveSecondX;
+    }
+
+    updateBounds();
+    return true;
+  }
+
+  if (secondReference.circleId !=
+      kInvalidGeometryId) {
+    if (isGeometryLocked(
+            secondReference.circleId))
+      return false;
+
+    const auto circle =
+        circleIndex(
+            secondReference.circleId);
+
+    if (!circle)
+      return false;
+
+    circles_[*circle].center.xMm =
+        movedSecond.xMm;
+    updateBounds();
+    return true;
+  }
+
+  const auto secondLineIndex =
+      lineIndex(secondReference.lineId);
+
+  if (secondLineIndex) {
+    const std::size_t elementId =
+        lines_[*secondLineIndex].elementId;
+
+    std::size_t count = 0;
+    for (const auto& line : lines_) {
+      if (line.elementId == elementId)
+        ++count;
+    }
+
+    if (count == 4) {
+      if (isElementLocked(elementId))
+        return false;
+
+      for (auto& line : lines_) {
+        if (line.elementId != elementId)
+          continue;
+
+        line.start.xMm += moveSecondX;
+        line.end.xMm += moveSecondX;
+      }
+
+      updateBounds();
+      return true;
+    }
+  }
+
   const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+    return std::hypot(
+               a.xMm - b.xMm,
+               a.yMm - b.yMm) <= 1e-7;
   };
 
   for (auto& line : lines_) {
-    if (same(line.start, *second)) line.start = moved;
-    if (same(line.end, *second)) line.end = moved;
+    if (same(line.start, *second))
+      line.start = movedSecond;
+
+    if (same(line.end, *second))
+      line.end = movedSecond;
   }
 
   updateBounds();
   return true;
 }
 
-bool Sketch::setPointDistanceY(PointReference firstReference,
-                               PointReference secondReference,
-                               double distanceMm) {
+bool Sketch::setPointDistanceY(
+    PointReference firstReference,
+    PointReference secondReference,
+    double distanceMm) {
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
-  if (!first || !second || distanceMm <= 0.0) return false;
 
-  const double dy = second->yMm - first->yMm;
-  const double direction = dy < 0.0 ? -1.0 : 1.0;
-  const Point moved{second->xMm,
-                    first->yMm + direction * distanceMm};
+  if (!first || !second ||
+      !std::isfinite(distanceMm) ||
+      distanceMm <= 0.0)
+    return false;
 
-  const double moveY = moved.yMm - second->yMm;
-
-  // SAME-RECTANGLE Y DISTANCE
-  // Move only the rectangle row containing the second point. This changes
-  // height while preserving the rectangular topology.
-  const auto rectangleElementForPointY =
-      [this](PointReference reference) -> std::optional<std::size_t> {
+  const auto rectangleElementForPoint =
+      [this](PointReference reference)
+          -> std::optional<std::size_t> {
     if (reference.elementCenterId != 0 ||
         reference.circleId != kInvalidGeometryId ||
         reference.lineId == kInvalidGeometryId)
       return std::nullopt;
 
     const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
+    if (!index)
+      return std::nullopt;
 
-    const std::size_t elementId = lines_[*index].elementId;
+    const std::size_t elementId =
+        lines_[*index].elementId;
+
     std::size_t count = 0;
     for (const auto& line : lines_) {
       if (line.elementId == elementId)
@@ -2610,72 +3182,318 @@ bool Sketch::setPointDistanceY(PointReference firstReference,
                : std::nullopt;
   };
 
-  const auto firstRectangleY =
-      rectangleElementForPointY(firstReference);
-  const auto secondRectangleY =
-      rectangleElementForPointY(secondReference);
+  const auto pointBelongsToElement =
+      [this](PointReference reference,
+             std::size_t elementId) {
+    if (reference.elementCenterId != 0 ||
+        reference.circleId != kInvalidGeometryId ||
+        reference.lineId == kInvalidGeometryId)
+      return false;
 
-  if (firstRectangleY && secondRectangleY &&
-      *firstRectangleY == *secondRectangleY) {
+    const auto index = lineIndex(reference.lineId);
+    return index &&
+           lines_[*index].elementId == elementId;
+  };
+
+  const auto firstRectangle =
+      rectangleElementForPoint(firstReference);
+  const auto secondRectangle =
+      rectangleElementForPoint(secondReference);
+
+  const double dy = second->yMm - first->yMm;
+  const double direction = dy < 0.0 ? -1.0 : 1.0;
+  const Point movedSecond{
+      second->xMm,
+      first->yMm + direction * distanceMm};
+  const double moveSecondY =
+      movedSecond.yMm - second->yMm;
+
+  // Internal dimension of one rectangle = explicit driving height.
+  if (firstRectangle && secondRectangle &&
+      *firstRectangle == *secondRectangle) {
+    if (isElementLocked(*secondRectangle))
+      return false;
+
     const double oldSecondY = second->yMm;
 
     for (auto& line : lines_) {
-      if (line.elementId != *secondRectangleY)
+      if (line.elementId != *secondRectangle)
         continue;
 
       if (std::abs(line.start.yMm - oldSecondY) <= 1e-7)
-        line.start.yMm += moveY;
+        line.start.yMm += moveSecondY;
+
       if (std::abs(line.end.yMm - oldSecondY) <= 1e-7)
-        line.end.yMm += moveY;
-    }
-
-    updateBounds();
-    return true;
-  }
-  // CRASH-FREE 07: Y DISTANCE TO NON-LINE POINT
-  if (secondReference.elementCenterId != 0) {
-    for (auto& line : lines_) {
-      if (line.elementId != secondReference.elementCenterId)
-        continue;
-
-      line.start.yMm += moveY;
-      line.end.yMm += moveY;
+        line.end.yMm += moveSecondY;
     }
 
     updateBounds();
     return true;
   }
 
-  if (secondReference.circleId != kInvalidGeometryId) {
-    const auto circle =
-        circleIndex(secondReference.circleId);
+  // COUPLED EXTERNAL RECTANGLE Y GAPS V4
+  if (static_cast<bool>(firstRectangle) !=
+      static_cast<bool>(secondRectangle)) {
+    const std::size_t elementId =
+        firstRectangle ? *firstRectangle
+                       : *secondRectangle;
 
-    if (!circle)
-      return false;
+    const PointReference currentRectangleReference =
+        firstRectangle ? firstReference
+                       : secondReference;
+    const PointReference currentExternalReference =
+        firstRectangle ? secondReference
+                       : firstReference;
 
-    circles_[*circle].center.yMm = moved.yMm;
-    updateBounds();
-    return true;
-  }
-  if (secondReference.circleId == kInvalidGeometryId) {
-    const auto secondLineIndex = lineIndex(secondReference.lineId);
-
-    if (secondLineIndex) {
-      const std::size_t elementId =
-          lines_[*secondLineIndex].elementId;
-
-      std::size_t elementLineCount = 0;
-      for (const auto& line : lines_) {
-        if (line.elementId == elementId)
-          ++elementLineCount;
+    if (isPointReferenceLocked(currentExternalReference) &&
+        !isElementLocked(elementId)) {
+      std::vector<std::size_t> members;
+      for (std::size_t index = 0;
+           index < lines_.size(); ++index) {
+        if (lines_[index].elementId == elementId)
+          members.push_back(index);
       }
 
-      if (elementLineCount == 4) {
-        for (auto& line : lines_) {
-          if (line.elementId != elementId) continue;
+      bool axisAligned = members.size() == 4;
+      for (const auto index : members) {
+        const double lineDx =
+            std::abs(lines_[index].end.xMm -
+                     lines_[index].start.xMm);
+        const double lineDy =
+            std::abs(lines_[index].end.yMm -
+                     lines_[index].start.yMm);
 
-          line.start.yMm += moveY;
-          line.end.yMm += moveY;
+        if (lineDx > 1e-7 && lineDy > 1e-7) {
+          axisAligned = false;
+          break;
+        }
+      }
+
+      const auto lineBelongsToElement =
+          [this, elementId](GeometryId id) {
+        const auto index = lineIndex(id);
+        return index &&
+               lines_[*index].elementId == elementId;
+      };
+
+      bool heightDriven = false;
+
+      for (const auto& constraint : constraints_) {
+        if (constraint.type == ConstraintType::Length &&
+            lineBelongsToElement(
+                constraint.firstGeometry)) {
+          const auto index =
+              lineIndex(constraint.firstGeometry);
+
+          if (index) {
+            const double lineDx =
+                std::abs(lines_[*index].end.xMm -
+                         lines_[*index].start.xMm);
+            const double lineDy =
+                std::abs(lines_[*index].end.yMm -
+                         lines_[*index].start.yMm);
+
+            if (lineDy > lineDx + 1e-7) {
+              heightDriven = true;
+              break;
+            }
+          }
+        }
+
+        if (constraint.type != ConstraintType::DistanceY &&
+            constraint.type != ConstraintType::Distance)
+          continue;
+
+        if (!pointBelongsToElement(
+                constraint.firstPoint, elementId) ||
+            !pointBelongsToElement(
+                constraint.secondPoint, elementId))
+          continue;
+
+        const auto p1 =
+            referencedPoint(constraint.firstPoint);
+        const auto p2 =
+            referencedPoint(constraint.secondPoint);
+
+        if (!p1 || !p2)
+          continue;
+
+        const double internalDx =
+            std::abs(p2->xMm - p1->xMm);
+        const double internalDy =
+            std::abs(p2->yMm - p1->yMm);
+
+        if ((constraint.type ==
+                 ConstraintType::DistanceY &&
+             internalDy > 1e-7) ||
+            (constraint.type ==
+                 ConstraintType::Distance &&
+             internalDy > 1e-7 &&
+             internalDx <= 1e-7)) {
+          heightDriven = true;
+          break;
+        }
+      }
+
+      const auto targetForGap =
+          [](double rectangleY,
+             double externalY,
+             double gap) {
+        return rectangleY >= externalY
+                   ? externalY + gap
+                   : externalY - gap;
+      };
+
+      if (heightDriven || !axisAligned) {
+        const auto rectanglePoint =
+            referencedPoint(
+                currentRectangleReference);
+        const auto externalPoint =
+            referencedPoint(
+                currentExternalReference);
+
+        if (!rectanglePoint || !externalPoint)
+          return false;
+
+        const double targetY =
+            targetForGap(
+                rectanglePoint->yMm,
+                externalPoint->yMm,
+                distanceMm);
+
+        const double moveY =
+            targetY - rectanglePoint->yMm;
+
+        for (const auto index : members) {
+          lines_[index].start.yMm += moveY;
+          lines_[index].end.yMm += moveY;
+        }
+
+        updateBounds();
+        return true;
+      }
+
+      struct GapTarget {
+        double oldY{};
+        double targetY{};
+      };
+
+      std::vector<GapTarget> targets;
+
+      const auto addGapTarget =
+          [this, elementId, &targets,
+           &pointBelongsToElement,
+           &targetForGap](
+              PointReference a,
+              PointReference b,
+              double gap) {
+        const bool aRectangle =
+            pointBelongsToElement(a, elementId);
+        const bool bRectangle =
+            pointBelongsToElement(b, elementId);
+
+        if (aRectangle == bRectangle)
+          return true;
+
+        const PointReference rectangleRef =
+            aRectangle ? a : b;
+        const PointReference externalRef =
+            aRectangle ? b : a;
+
+        if (!isPointReferenceLocked(externalRef))
+          return true;
+
+        const auto rectanglePoint =
+            referencedPoint(rectangleRef);
+        const auto externalPoint =
+            referencedPoint(externalRef);
+
+        if (!rectanglePoint || !externalPoint)
+          return false;
+
+        const double oldY =
+            rectanglePoint->yMm;
+        const double targetY =
+            targetForGap(
+                oldY,
+                externalPoint->yMm,
+                gap);
+
+        for (const auto& existing : targets) {
+          if (std::abs(existing.oldY - oldY) > 1e-7)
+            continue;
+
+          return std::abs(
+                     existing.targetY -
+                     targetY) <= 1e-7;
+        }
+
+        targets.push_back({oldY, targetY});
+        return true;
+      };
+
+      for (const auto& constraint : constraints_) {
+        if (constraint.type != ConstraintType::DistanceY ||
+            !std::isfinite(constraint.value) ||
+            constraint.value <= 0.0)
+          continue;
+
+        const bool touchesRectangle =
+            pointBelongsToElement(
+                constraint.firstPoint, elementId) ||
+            pointBelongsToElement(
+                constraint.secondPoint, elementId);
+
+        if (!touchesRectangle)
+          continue;
+
+        if (!addGapTarget(
+                constraint.firstPoint,
+                constraint.secondPoint,
+                constraint.value))
+          return false;
+      }
+
+      if (!addGapTarget(
+              firstReference,
+              secondReference,
+              distanceMm))
+        return false;
+
+      if (!targets.empty()) {
+        struct EndpointSnapshot {
+          double startY{};
+          double endY{};
+        };
+
+        std::vector<EndpointSnapshot> before;
+        before.reserve(members.size());
+
+        for (const auto index : members) {
+          before.push_back({
+              lines_[index].start.yMm,
+              lines_[index].end.yMm});
+        }
+
+        for (std::size_t member = 0;
+             member < members.size();
+             ++member) {
+          auto& line =
+              lines_[members[member]];
+
+          for (const auto& target : targets) {
+            if (std::abs(
+                    before[member].startY -
+                    target.oldY) <= 1e-7)
+              line.start.yMm =
+                  target.targetY;
+
+            if (std::abs(
+                    before[member].endY -
+                    target.oldY) <= 1e-7)
+              line.end.yMm =
+                  target.targetY;
+          }
         }
 
         updateBounds();
@@ -2684,13 +3502,98 @@ bool Sketch::setPointDistanceY(PointReference firstReference,
     }
   }
 
+  if (isPointReferenceLocked(secondReference)) {
+    if (isPointReferenceLocked(firstReference)) {
+      return std::abs(
+                 std::abs(dy) -
+                 distanceMm) <= 1e-7;
+    }
+
+    return setPointDistanceY(
+        secondReference,
+        firstReference,
+        distanceMm);
+  }
+
+  if (secondReference.elementCenterId != 0) {
+    if (isElementLocked(
+            secondReference.elementCenterId))
+      return false;
+
+    for (auto& line : lines_) {
+      if (line.elementId !=
+          secondReference.elementCenterId)
+        continue;
+
+      line.start.yMm += moveSecondY;
+      line.end.yMm += moveSecondY;
+    }
+
+    updateBounds();
+    return true;
+  }
+
+  if (secondReference.circleId !=
+      kInvalidGeometryId) {
+    if (isGeometryLocked(
+            secondReference.circleId))
+      return false;
+
+    const auto circle =
+        circleIndex(
+            secondReference.circleId);
+
+    if (!circle)
+      return false;
+
+    circles_[*circle].center.yMm =
+        movedSecond.yMm;
+    updateBounds();
+    return true;
+  }
+
+  const auto secondLineIndex =
+      lineIndex(secondReference.lineId);
+
+  if (secondLineIndex) {
+    const std::size_t elementId =
+        lines_[*secondLineIndex].elementId;
+
+    std::size_t count = 0;
+    for (const auto& line : lines_) {
+      if (line.elementId == elementId)
+        ++count;
+    }
+
+    if (count == 4) {
+      if (isElementLocked(elementId))
+        return false;
+
+      for (auto& line : lines_) {
+        if (line.elementId != elementId)
+          continue;
+
+        line.start.yMm += moveSecondY;
+        line.end.yMm += moveSecondY;
+      }
+
+      updateBounds();
+      return true;
+    }
+  }
+
   const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
+    return std::hypot(
+               a.xMm - b.xMm,
+               a.yMm - b.yMm) <= 1e-7;
   };
 
   for (auto& line : lines_) {
-    if (same(line.start, *second)) line.start = moved;
-    if (same(line.end, *second)) line.end = moved;
+    if (same(line.start, *second))
+      line.start = movedSecond;
+
+    if (same(line.end, *second))
+      line.end = movedSecond;
   }
 
   updateBounds();
@@ -2698,6 +3601,11 @@ bool Sketch::setPointDistanceY(PointReference firstReference,
 }
 bool Sketch::setCircleDiameter(std::size_t index, double diameterMm) {
   if (index >= circles_.size() || diameterMm <= 0.0) return false;
+  // LOCK CONSTRAINT: direct indexed diameter edit is blocked.
+  if (index < circleIds_.size() &&
+      isGeometryLocked(circleIds_[index]))
+    return std::abs(circles_[index].radiusMm * 2.0 -
+                    diameterMm) <= 1e-7;
   circles_[index].radiusMm = diameterMm * 0.5;
   updateBounds();
   return true;
