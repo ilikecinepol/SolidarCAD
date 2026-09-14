@@ -730,6 +730,7 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("twoTangentRadiusPreviewActive", false);
   tool_ = tool;
   anchor_.reset();
+  hoveredProjectionEdge_.reset();
   setProperty("dragPointLineId", QVariant());
   setProperty("dragPointStart", QVariant());
   setProperty("draggingDimensionLine", QVariant());
@@ -776,7 +777,14 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("tangentFirstKind", QVariant());
   setProperty("editingDimensionIndex", QVariant());
   hideDimensionEditor();
-  setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+  setCursor(tool == Tool::Select
+                ? Qt::ArrowCursor
+                : tool == Tool::Projection
+                      ? Qt::PointingHandCursor
+                      : Qt::CrossCursor);
+  if (tool == Tool::Projection)
+    emit selectionChanged(
+        QString::fromUtf8("Проекция: выберите ребро существующей геометрии"));
   emit toolChanged(tool_);
   update();
 }
@@ -1386,6 +1394,7 @@ void SketchCanvas::clearSketchEditContext() {
   referenceBodyMesh_.clear();
   referenceFaceMesh_.clear();
   realReferenceBodyVisible_ = false;
+  hoveredProjectionEdge_.reset();
   update();
 }
 
@@ -1424,6 +1433,7 @@ void SketchCanvas::resetSketch() {
   circleGuideLines_.clear();
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
+  viewQuarterTurns_ = 0;
   setProperty("sketchPanning", false);
   hideDimensionEditor();
   emit undoAvailable(false);
@@ -1441,6 +1451,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   dragging_ = false;
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
+  viewQuarterTurns_ = 0;
   setProperty("sketchPanning", false);
   setTool(Tool::Select);
   notifyGeometryChanged();
@@ -1506,13 +1517,206 @@ void SketchCanvas::deleteSelection() {
   emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
   notifyGeometryChanged();
 }
+sketch::Point SketchCanvas::rotateForView(
+    sketch::Point point) const noexcept {
+  switch ((viewQuarterTurns_ % 4 + 4) % 4) {
+    case 1:
+      return {point.yMm, -point.xMm};
+    case 2:
+      return {-point.xMm, -point.yMm};
+    case 3:
+      return {-point.yMm, point.xMm};
+    default:
+      return point;
+  }
+}
+
+sketch::Point SketchCanvas::rotateFromView(
+    sketch::Point point) const noexcept {
+  switch ((viewQuarterTurns_ % 4 + 4) % 4) {
+    case 1:
+      return {-point.yMm, point.xMm};
+    case 2:
+      return {-point.xMm, -point.yMm};
+    case 3:
+      return {point.yMm, -point.xMm};
+    default:
+      return point;
+  }
+}
+
+void SketchCanvas::rotateViewClockwise() {
+  viewQuarterTurns_ = (viewQuarterTurns_ + 1) % 4;
+  hideDimensionEditor();
+  update();
+}
+
+void SketchCanvas::rotateViewCounterClockwise() {
+  viewQuarterTurns_ = (viewQuarterTurns_ + 3) % 4;
+  hideDimensionEditor();
+  update();
+}
+
+void SketchCanvas::resetViewRotation() {
+  viewQuarterTurns_ = 0;
+  hideDimensionEditor();
+  update();
+}
+
+int SketchCanvas::viewQuarterTurns() const noexcept {
+  return viewQuarterTurns_;
+}
+
+QRectF SketchCanvas::viewCubeBodyRect() const {
+  return QRectF(std::max(kRulerLeft + 8.0,
+                         static_cast<double>(width()) - 92.0),
+                kRulerTop + 14.0, 54.0, 48.0);
+}
+
+QRectF SketchCanvas::viewCubeLeftRect() const {
+  const QRectF body = viewCubeBodyRect();
+  return QRectF(body.left() - 2.0, body.bottom() + 7.0, 26.0, 24.0);
+}
+
+QRectF SketchCanvas::viewCubeRightRect() const {
+  const QRectF body = viewCubeBodyRect();
+  return QRectF(body.right() - 24.0, body.bottom() + 7.0, 26.0, 24.0);
+}
+
+std::optional<std::size_t> SketchCanvas::referenceEdgeAt(
+    QPointF position) const {
+  if (!realReferenceBodyVisible_) return std::nullopt;
+
+  constexpr double kHitTolerancePx = 9.0;
+  double bestDistance = kHitTolerancePx;
+  std::optional<std::size_t> best;
+
+  const auto& edges = referenceBodyMesh_.edges();
+  for (std::size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex) {
+    const auto& edge = edges[edgeIndex];
+    if (edge.points.size() < 2) continue;
+
+    for (std::size_t i = 1; i < edge.points.size(); ++i) {
+      const auto firstLocal =
+          referencePlacement_.toLocal(edge.points[i - 1]);
+      const auto secondLocal =
+          referencePlacement_.toLocal(edge.points[i]);
+
+      const QPointF first =
+          mapPoint({firstLocal.x, firstLocal.y});
+      const QPointF second =
+          mapPoint({secondLocal.x, secondLocal.y});
+
+      const double distance =
+          pointSegmentDistance(position, first, second);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = edgeIndex;
+      }
+    }
+  }
+
+  return best;
+}
+
+bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
+  if (!realReferenceBodyVisible_ ||
+      edgeVectorIndex >= referenceBodyMesh_.edges().size())
+    return false;
+
+  const auto& edge = referenceBodyMesh_.edges()[edgeVectorIndex];
+  if (edge.points.size() < 2) return false;
+
+  struct Segment {
+    sketch::Point first;
+    sketch::Point second;
+  };
+  std::vector<Segment> segments;
+
+  const auto samePoint = [](sketch::Point first, sketch::Point second) {
+    return std::hypot(first.xMm - second.xMm,
+                      first.yMm - second.yMm) <= 1e-6;
+  };
+
+  const auto alreadyExists =
+      [this, &samePoint](const Segment& candidate) {
+        return std::any_of(
+            sketch_.lines().begin(), sketch_.lines().end(),
+            [&candidate, &samePoint](const sketch::Line& line) {
+              if (!line.dashed) return false;
+              return (samePoint(line.start, candidate.first) &&
+                      samePoint(line.end, candidate.second)) ||
+                     (samePoint(line.start, candidate.second) &&
+                      samePoint(line.end, candidate.first));
+            });
+      };
+
+  for (std::size_t i = 1; i < edge.points.size(); ++i) {
+    const auto firstLocal =
+        referencePlacement_.toLocal(edge.points[i - 1]);
+    const auto secondLocal =
+        referencePlacement_.toLocal(edge.points[i]);
+
+    Segment segment{
+        {firstLocal.x, firstLocal.y},
+        {secondLocal.x, secondLocal.y}};
+
+    if (std::hypot(segment.second.xMm - segment.first.xMm,
+                   segment.second.yMm - segment.first.yMm) <= 1e-6)
+      continue;
+    if (alreadyExists(segment))
+      continue;
+
+    const bool duplicateInBatch =
+        std::any_of(
+            segments.begin(), segments.end(),
+            [&segment, &samePoint](const Segment& other) {
+              return (samePoint(other.first, segment.first) &&
+                      samePoint(other.second, segment.second)) ||
+                     (samePoint(other.first, segment.second) &&
+                      samePoint(other.second, segment.first));
+            });
+    if (!duplicateInBatch)
+      segments.push_back(segment);
+  }
+
+  if (segments.empty()) {
+    emit selectionChanged(
+        QString::fromUtf8("Это ребро уже спроецировано"));
+    return false;
+  }
+
+  pushUndoState();
+
+  std::size_t projectedElementId = 0;
+  for (std::size_t i = 0; i < segments.size(); ++i) {
+    if (i == 0) {
+      sketch_.addLine(segments[i].first, segments[i].second);
+      if (sketch_.lines().empty()) return false;
+      projectedElementId = sketch_.lines().back().elementId;
+    } else {
+      sketch_.addLine(segments[i].first, segments[i].second,
+                      projectedElementId);
+    }
+  }
+
+  sketch_.setElementDashed(projectedElementId, true);
+  clearGeometrySelection();
+  notifyGeometryChanged();
+  emit selectionChanged(
+      QString::fromUtf8("Проекция ребра добавлена"));
+  update();
+  return true;
+}
+
 QPointF SketchCanvas::mapPoint(sketch::Point point) const {
   const double centerX = kRulerLeft + (width() - kRulerLeft) * 0.5 +
                          property("sketchPanX").toDouble();
   const double centerY = kRulerTop + (height() - kRulerTop) * 0.5 +
                          property("sketchPanY").toDouble();
-  return {centerX + point.xMm * pixelsPerMm_,
-          centerY - point.yMm * pixelsPerMm_};
+  const auto viewPoint = rotateForView(point);
+  return {centerX + viewPoint.xMm * pixelsPerMm_,
+          centerY - viewPoint.yMm * pixelsPerMm_};
 }
 
 sketch::Point SketchCanvas::unmapPoint(QPointF point) const {
@@ -1520,8 +1724,9 @@ sketch::Point SketchCanvas::unmapPoint(QPointF point) const {
                          property("sketchPanX").toDouble();
   const double centerY = kRulerTop + (height() - kRulerTop) * 0.5 +
                          property("sketchPanY").toDouble();
-  return {(point.x() - centerX) / pixelsPerMm_,
-          (centerY - point.y()) / pixelsPerMm_};
+  return rotateFromView(
+      {(point.x() - centerX) / pixelsPerMm_,
+       (centerY - point.y()) / pixelsPerMm_});
 }
 
 sketch::Point SketchCanvas::snappedPoint(QPointF point) const {
@@ -1560,29 +1765,34 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.drawLine(QPointF(kRulerLeft, kRulerTop), QPointF(kRulerLeft, height()));
   painter.setPen(QColor("#637797"));
   const double rulerStepMm = niceRulerStep(pixelsPerMm_);
-  const double visibleLeftMm = unmapPoint({kRulerLeft, origin.y()}).xMm;
-  const double visibleRightMm = unmapPoint({static_cast<double>(width()),
-                                             origin.y()}).xMm;
+  // Rulers describe the CURRENT VIEW axes. At 90 degrees screen X
+  // represents sketch Y, so labels must use view coordinates directly.
+  const double visibleLeftMm =
+      (kRulerLeft - origin.x()) / pixelsPerMm_;
+  const double visibleRightMm =
+      (static_cast<double>(width()) - origin.x()) / pixelsPerMm_;
   const double firstHorizontalMm =
       std::ceil(visibleLeftMm / rulerStepMm) * rulerStepMm;
   for (double mm = firstHorizontalMm; mm <= visibleRightMm;
        mm += rulerStepMm) {
-    const QPointF xMark = mapPoint({mm, 0});
-    painter.drawLine(QPointF(xMark.x(), 20), QPointF(xMark.x(), kRulerTop));
-    painter.drawText(QRectF(xMark.x() - 24, 2, 48, 17), Qt::AlignCenter,
+    const double x = origin.x() + mm * pixelsPerMm_;
+    painter.drawLine(QPointF(x, 20), QPointF(x, kRulerTop));
+    painter.drawText(QRectF(x - 24, 2, 48, 17), Qt::AlignCenter,
                      QString::number(mm, 'f', 0));
   }
-  const double visibleTopMm = unmapPoint({origin.x(), kRulerTop}).yMm;
+
+  const double visibleTopMm =
+      (origin.y() - kRulerTop) / pixelsPerMm_;
   const double visibleBottomMm =
-      unmapPoint({origin.x(), static_cast<double>(height())}).yMm;
+      (origin.y() - static_cast<double>(height())) / pixelsPerMm_;
   const double firstVerticalMm =
       std::ceil(visibleBottomMm / rulerStepMm) * rulerStepMm;
   for (double mm = firstVerticalMm; mm <= visibleTopMm;
        mm += rulerStepMm) {
-    const QPointF yMark = mapPoint({0, mm});
-    painter.drawLine(QPointF(34, yMark.y()), QPointF(kRulerLeft, yMark.y()));
+    const double y = origin.y() - mm * pixelsPerMm_;
+    painter.drawLine(QPointF(34, y), QPointF(kRulerLeft, y));
     painter.save();
-    painter.translate(3, yMark.y() + 22);
+    painter.translate(3, y + 22);
     painter.rotate(-90);
     painter.drawText(QRectF(0, 0, 44, 17), Qt::AlignCenter,
                      QString::number(mm, 'f', 0));
@@ -1594,10 +1804,14 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
                              width() - kRulerLeft,
                              height() - kRulerTop));
 
+  const double axisExtentMm =
+      2.0 * std::max(width(), height()) / std::max(0.05, pixelsPerMm_);
   painter.setPen(QPen(QColor("#e35c64"), 1.1));
-  painter.drawLine(QPointF(kRulerLeft, origin.y()), QPointF(width(), origin.y()));
+  painter.drawLine(mapPoint({-axisExtentMm, 0.0}),
+                   mapPoint({axisExtentMm, 0.0}));
   painter.setPen(QPen(QColor("#34a26b"), 1.1));
-  painter.drawLine(QPointF(origin.x(), kRulerTop), QPointF(origin.x(), height()));
+  painter.drawLine(mapPoint({0.0, -axisExtentMm}),
+                   mapPoint({0.0, axisExtentMm}));
 
   if (realReferenceBodyVisible_) {
     struct ProjectedTriangle {
@@ -1637,8 +1851,17 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       painter.drawPolygon(triangle.polygon);
     }
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(82, 94, 108, 105), 1.0));
-    for (const auto& edge : referenceBodyMesh_.edges()) {
+    for (std::size_t edgeIndex = 0;
+         edgeIndex < referenceBodyMesh_.edges().size(); ++edgeIndex) {
+      const auto& edge = referenceBodyMesh_.edges()[edgeIndex];
+      const bool hovered =
+          tool_ == Tool::Projection &&
+          hoveredProjectionEdge_ &&
+          *hoveredProjectionEdge_ == edgeIndex;
+      painter.setPen(
+          hovered
+              ? QPen(QColor("#00a6ff"), 3.2, Qt::SolidLine, Qt::RoundCap)
+              : QPen(QColor(82, 94, 108, 105), 1.0));
       QPolygonF curve;
       for (const auto& point : edge.points) curve << projected(point);
       painter.drawPolyline(curve);
@@ -2564,13 +2787,63 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   }
 
   painter.setPen(QColor("#536985"));
-  painter.drawText(QRectF(kRulerLeft + 12, height() - 30, width() - 70, 22),
-                   Qt::AlignLeft | Qt::AlignVCenter,
-                   QString::fromUtf8("Шаг сетки: %1 мм   •   Привязка: %2   •   Масштаб: %3%")
-                       .arg(snapStepMm_)
-                       .arg(snapEnabled_ ? QString::fromUtf8("ВКЛ")
-                                         : QString::fromUtf8("ВЫКЛ"))
-                       .arg(qRound(pixelsPerMm_ / 5.0 * 100.0)));
+  painter.drawText(
+      QRectF(kRulerLeft + 12, height() - 30, width() - 70, 22),
+      Qt::AlignLeft | Qt::AlignVCenter,
+      QString::fromUtf8(
+          "Шаг сетки: %1 мм   •   Привязка: %2   •   Масштаб: %3%   •   Вид: %4°")
+          .arg(snapStepMm_)
+          .arg(snapEnabled_ ? QString::fromUtf8("ВКЛ")
+                            : QString::fromUtf8("ВЫКЛ"))
+          .arg(qRound(pixelsPerMm_ / 5.0 * 100.0))
+          .arg(viewQuarterTurns_ * 90));
+  painter.restore();
+
+  // SKETCH VIEW CUBE
+  // View-only orientation control: geometry and constraints remain untouched.
+  painter.save();
+  painter.setRenderHint(QPainter::Antialiasing);
+
+  const QRectF cubeBody = viewCubeBodyRect();
+  const QRectF leftButton = viewCubeLeftRect();
+  const QRectF rightButton = viewCubeRightRect();
+
+  const QPolygonF topFace{
+      QPointF(cubeBody.left() + 8.0, cubeBody.top() + 8.0),
+      QPointF(cubeBody.left() + 27.0, cubeBody.top()),
+      QPointF(cubeBody.right(), cubeBody.top() + 8.0),
+      QPointF(cubeBody.right() - 19.0, cubeBody.top() + 16.0)};
+  const QPolygonF sideFace{
+      QPointF(cubeBody.right() - 19.0, cubeBody.top() + 16.0),
+      QPointF(cubeBody.right(), cubeBody.top() + 8.0),
+      QPointF(cubeBody.right(), cubeBody.bottom() - 8.0),
+      QPointF(cubeBody.right() - 19.0, cubeBody.bottom())};
+  const QRectF frontFace(cubeBody.left() + 8.0,
+                         cubeBody.top() + 16.0,
+                         cubeBody.width() - 27.0,
+                         cubeBody.height() - 16.0);
+
+  painter.setPen(QPen(QColor("#536985"), 1.1));
+  painter.setBrush(QColor(245, 248, 252, 235));
+  painter.drawPolygon(topFace);
+  painter.setBrush(QColor(205, 216, 231, 235));
+  painter.drawPolygon(sideFace);
+  painter.setBrush(QColor(225, 233, 243, 240));
+  painter.drawRect(frontFace);
+
+  painter.setPen(QColor("#263952"));
+  painter.drawText(frontFace, Qt::AlignCenter,
+                   QString::fromUtf8("XY\n%1°")
+                       .arg(viewQuarterTurns_ * 90));
+
+  painter.setBrush(QColor(245, 248, 252, 235));
+  painter.setPen(QPen(QColor("#536985"), 1.0));
+  painter.drawRoundedRect(leftButton, 5.0, 5.0);
+  painter.drawRoundedRect(rightButton, 5.0, 5.0);
+  painter.setPen(QColor("#2874c9"));
+  painter.drawText(leftButton, Qt::AlignCenter, QString::fromUtf8("↶"));
+  painter.drawText(rightButton, Qt::AlignCenter, QString::fromUtf8("↷"));
+
   painter.restore();
 }
 
@@ -2606,11 +2879,39 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     circlePoints_.clear();
     circleGuideLines_.clear();
     hideDimensionEditor();
-    setCursor(tool_ == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+    setCursor(tool_ == Tool::Select
+                  ? Qt::ArrowCursor
+                  : tool_ == Tool::Projection
+                        ? Qt::PointingHandCursor
+                        : Qt::CrossCursor);
     update();
     return;
   }
   if (event->button() != Qt::LeftButton) return;
+
+  if (tool_ == Tool::Projection) {
+    const auto edge = referenceEdgeAt(event->position());
+    if (edge)
+      (void)projectReferenceEdge(*edge);
+    else
+      emit selectionChanged(
+          QString::fromUtf8("Проекция: наведите курсор на ребро модели"));
+    event->accept();
+    return;
+  }
+
+
+  if (viewCubeLeftRect().contains(event->position())) {
+    rotateViewCounterClockwise();
+    event->accept();
+    return;
+  }
+  if (viewCubeRightRect().contains(event->position()) ||
+      viewCubeBodyRect().contains(event->position())) {
+    rotateViewClockwise();
+    event->accept();
+    return;
+  }
   if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible() &&
       !property("autoDimensionTarget").toString().isEmpty()) {
     const auto directLineId = static_cast<sketch::GeometryId>(
@@ -2917,7 +3218,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
             carrierProperty, QVariant());
         for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
           const auto& carrier = sketch_.lines()[index];
-          if (carrier.dashed) continue;
+          // Dashed construction/projected geometry is valid reference
+          // geometry and participates in PointOnLine snapping.
           const auto carrierId = sketch_.lineId(index);
           if (carrierId == sketch::kInvalidGeometryId) continue;
 
@@ -3125,6 +3427,27 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
+  if (event->buttons() == Qt::NoButton &&
+      (viewCubeBodyRect().contains(event->position()) ||
+       viewCubeLeftRect().contains(event->position()) ||
+       viewCubeRightRect().contains(event->position()))) {
+    setCursor(Qt::PointingHandCursor);
+    event->accept();
+    return;
+  }
+
+  if (event->buttons() == Qt::NoButton &&
+      tool_ == Tool::Projection) {
+    const auto previous = hoveredProjectionEdge_;
+    hoveredProjectionEdge_ = referenceEdgeAt(event->position());
+    setCursor(hoveredProjectionEdge_
+                  ? Qt::PointingHandCursor
+                  : Qt::CrossCursor);
+    if (previous != hoveredProjectionEdge_) update();
+    event->accept();
+    return;
+  }
+
   hoverPoint_ = snappedPoint(event->position());
 
   // Live center-node preview is restricted to creation tools.

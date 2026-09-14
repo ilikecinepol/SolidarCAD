@@ -80,6 +80,11 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
                                QString::fromUtf8("Прямоугольник"), this);
   auto* circle = toolButton(":/icons/sketch/circle.png",
                             QString::fromUtf8("Окружность"), this);
+  auto* projection = toolButton(
+      QString(), QString::fromUtf8("Проекция"), this);
+  projection->setText(QString::fromUtf8("⇩"));
+  projection->setToolTip(
+      QString::fromUtf8("Проекция существующего ребра в эскиз"));
   auto* arc = toolButton(":/icons/sketch/arc.png",
                          QString::fromUtf8("Дуга"), this, false);
   auto* polygon = toolButton(":/icons/sketch/polygon.png",
@@ -90,7 +95,7 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
                           QString::fromUtf8("Текст"), this, false);
   auto* toolGroup = new QButtonGroup(this);
   toolGroup->setExclusive(true);
-  for (auto* button : {line, rectangle, circle})
+  for (auto* button : {line, rectangle, circle, projection})
     toolGroup->addButton(button);
 
   auto* creationLayout = new QHBoxLayout;
@@ -98,13 +103,14 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   creationLayout->addWidget(line);
   creationLayout->addWidget(rectangle);
   creationLayout->addWidget(circle);
+  creationLayout->addWidget(projection);
   creationLayout->addWidget(arc);
   creationLayout->addWidget(polygon);
   creationLayout->addWidget(slot);
   creationLayout->addWidget(text);
   root->addWidget(groupWidget(
       QString::fromUtf8("СОЗДАНИЕ"), creationLayout, this,
-      {line, rectangle, circle, arc, polygon, slot, text}));
+      {line, rectangle, circle, projection, arc, polygon, slot, text}));
 
   auto* separator1 = new QFrame(this);
   separator1->setFrameShape(QFrame::VLine);
@@ -196,6 +202,8 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           [canvas] { canvas->setTool(SketchCanvas::Tool::Rectangle); });
   connect(circle, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::Circle); });
+  connect(projection, &QPushButton::clicked, canvas,
+          [canvas] { canvas->setTool(SketchCanvas::Tool::Projection); });
   connect(dimension, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::AutoDimension); });
   connect(orthogonalTool, &QPushButton::clicked, canvas,

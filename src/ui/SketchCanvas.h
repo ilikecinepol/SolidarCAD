@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QPoint>
+#include <QRectF>
 #include <QStringList>
 #include <QWidget>
 
@@ -36,6 +37,7 @@ class SketchCanvas final : public QWidget {
     Line,
     Rectangle,
     Circle,
+    Projection,
     AutoDimension,
     OrthogonalConstraint,
     CoincidentConstraint,
@@ -69,6 +71,10 @@ class SketchCanvas final : public QWidget {
   void setCircleDiameter(double diameterMm);
   void setRectangleMode(RectangleMode mode);
   void undo();
+  void rotateViewClockwise();
+  void rotateViewCounterClockwise();
+  void resetViewRotation();
+  [[nodiscard]] int viewQuarterTurns() const noexcept;
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
   void setSketchEditContext(const SketchEditContext& context);
   void clearSketchEditContext();
@@ -116,9 +122,16 @@ signals:
  private:
   enum class SelectionKind { None, Line, Circle };
 
+  [[nodiscard]] sketch::Point rotateForView(sketch::Point point) const noexcept;
+  [[nodiscard]] sketch::Point rotateFromView(sketch::Point point) const noexcept;
+  [[nodiscard]] QRectF viewCubeBodyRect() const;
+  [[nodiscard]] QRectF viewCubeLeftRect() const;
+  [[nodiscard]] QRectF viewCubeRightRect() const;
   [[nodiscard]] QPointF mapPoint(sketch::Point point) const;
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
   [[nodiscard]] sketch::Point snappedPoint(QPointF point) const;
+  [[nodiscard]] std::optional<std::size_t> referenceEdgeAt(QPointF position) const;
+  bool projectReferenceEdge(std::size_t edgeVectorIndex);
   void selectAt(QPointF position, bool additive = false,
                 bool preserveExistingIfHit = false);
   void selectInRect(const QRectF& rect, bool additive);
@@ -177,6 +190,8 @@ signals:
   double snapStepMm_{5.0};
   bool snapEnabled_{true};
   bool gridVisible_{true};
+  std::optional<std::size_t> hoveredProjectionEdge_;
+  int viewQuarterTurns_{0};
   CircleMode circleMode_{CircleMode::CenterRadius};
   double circleDiameterMm_{20.0};
   std::vector<sketch::Point> circlePoints_;
