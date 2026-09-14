@@ -91,6 +91,11 @@ add_executable(project_file_tests project_file_tests.cpp)
 target_link_libraries(project_file_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME project_file_tests COMMAND project_file_tests)
 
+add_executable(stl_exporter_tests stl_exporter_tests.cpp)
+target_link_libraries(stl_exporter_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME stl_exporter_tests COMMAND stl_exporter_tests)
+set_tests_properties(stl_exporter_tests PROPERTIES LABELS "regression")
+
 add_executable(editor_smoke_tests editor_smoke_tests.cpp)
 target_link_libraries(editor_smoke_tests PRIVATE solidar_editor solidar_home Qt6::Widgets)
 add_test(NAME editor_smoke_tests COMMAND editor_smoke_tests)
@@ -415,3 +420,17 @@ if(WIN32)
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"
   )
 endif()
+
+
+add_executable(
+  sketch_constraint_integrity_tests
+  sketch_constraint_integrity_tests.cpp)
+target_link_libraries(
+  sketch_constraint_integrity_tests
+  PRIVATE solidar_model)
+add_test(
+  NAME sketch_constraint_integrity_tests
+  COMMAND sketch_constraint_integrity_tests)
+set_tests_properties(
+  sketch_constraint_integrity_tests
+  PROPERTIES LABELS "regression")

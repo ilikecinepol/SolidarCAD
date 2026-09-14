@@ -1,5 +1,6 @@
 #include "sketch/SketchSolver.h"
 
+#include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/Sketch.h"
 
 #include <algorithm>
@@ -110,6 +111,7 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       case ConstraintType::Perpendicular:
       case ConstraintType::Parallel:
       case ConstraintType::Equal:
+      case ConstraintType::LineDistance:
         // Applied in final relationship passes below. This simple solver is
         // sequential, so relative geometry constraints must be last.
         break;
@@ -465,6 +467,28 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
     else
       ++result.invalidReferences;
   }
+  // PARALLEL LINE DISTANCE PASS
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::LineDistance) continue;
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        constraint.secondGeometry == kInvalidGeometryId ||
+        constraint.firstGeometry == constraint.secondGeometry ||
+        !std::isfinite(constraint.value) || constraint.value <= 0.0 ||
+        !sketch.lineIndex(constraint.firstGeometry) ||
+        !sketch.lineIndex(constraint.secondGeometry)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setParallelLineDistanceByIds(
+            constraint.firstGeometry,
+            constraint.secondGeometry,
+            constraint.value))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+
   // Equal makes two primitives of the same kind share size.
   //
   // A driving AutoDimension has priority regardless of click order. Direct
@@ -1744,6 +1768,52 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       break;
   }
   return result;
+}
+
+
+SolveResult BasicSketchSolver::solveStable(
+    Sketch& sketch, int maxPasses) {
+  SolveResult last;
+  double previousResidual =
+      std::numeric_limits<double>::infinity();
+  int stagnantPasses = 0;
+
+  for (int pass = 0;
+       pass < std::max(1, maxPasses);
+       ++pass) {
+    last = solve(sketch);
+
+    const auto audit =
+        analyzeConstraintSystem(sketch, false);
+
+    last.converged = !audit.conflicting;
+    last.violatedConstraints =
+        audit.violations.size();
+    last.maxNormalizedResidual =
+        audit.maxNormalizedResidual;
+
+    if (last.converged)
+      return last;
+
+    const double improvement =
+        previousResidual -
+        audit.maxNormalizedResidual;
+
+    if (improvement <=
+        std::max(1e-6,
+                 previousResidual * 1e-8))
+      ++stagnantPasses;
+    else
+      stagnantPasses = 0;
+
+    previousResidual =
+        audit.maxNormalizedResidual;
+
+    if (stagnantPasses >= 3)
+      break;
+  }
+
+  return last;
 }
 
 }  // namespace solidar::sketch

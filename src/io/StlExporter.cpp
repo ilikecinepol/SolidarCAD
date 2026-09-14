@@ -1,6 +1,18 @@
 #include "io/StlExporter.h"
 
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <BRep_Tool.hxx>
+#include <Poly_Triangulation.hxx>
+#include <TopAbs_Orientation.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Face.hxx>
+
 #include <QFile>
+#include <QLocale>
+#include <QSaveFile>
 #include <QTextStream>
 
 #include <array>
@@ -139,7 +151,148 @@ std::vector<std::vector<sketch::Point>> contours(const sketch::Sketch& sketch) {
   return result;
 }
 
+bool finite(Vec3 value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
+}
+
+bool writeBrepFacets(QTextStream& stream, const TopoDS_Shape& shape,
+                     qsizetype* triangleCount, QString* error) {
+  if (shape.IsNull()) {
+    if (error) *error = QString::fromUtf8("РўРµР»Рѕ РЅРµ СЃРѕРґРµСЂР¶РёС‚ РіРµРѕРјРµС‚СЂРёРё РґР»СЏ STL.");
+    return false;
+  }
+
+  BRepCheck_Analyzer analyzer(shape);
+  if (!analyzer.IsValid()) {
+    if (error)
+      *error = QString::fromUtf8(
+          "B-Rep С‚РµР»Р° РЅРµРєРѕСЂСЂРµРєС‚РµРЅ. STL РЅРµ СЌРєСЃРїРѕСЂС‚РёСЂРѕРІР°РЅ, С‡С‚РѕР±С‹ РЅРµ СЃРѕР·РґР°РІР°С‚СЊ "
+          "РїРѕРІСЂРµР¶РґС‘РЅРЅСѓСЋ СЃРµС‚РєСѓ.");
+    return false;
+  }
+
+  // STL is an approximation of the exact OCCT B-Rep. 0.05 mm gives a useful
+  // default for printing while the angular limit keeps curved faces smooth.
+  BRepMesh_IncrementalMesh mesher(shape, 0.05, false, 0.20, true);
+  if (!mesher.IsDone()) {
+    if (error)
+      *error = QString::fromUtf8("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕСЃС‚СЂРѕРёС‚СЊ STL-СЃРµС‚РєСѓ С‚РµР»Р°.");
+    return false;
+  }
+
+  qsizetype written = 0;
+  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More();
+       explorer.Next()) {
+    const TopoDS_Face face = TopoDS::Face(explorer.Current());
+    TopLoc_Location location;
+    const Handle(Poly_Triangulation) triangulation =
+        BRep_Tool::Triangulation(face, location);
+    if (triangulation.IsNull()) continue;
+
+    const gp_Trsf transform = location.Transformation();
+    for (Standard_Integer index = 1;
+         index <= triangulation->NbTriangles(); ++index) {
+      Standard_Integer n1 = 0;
+      Standard_Integer n2 = 0;
+      Standard_Integer n3 = 0;
+      triangulation->Triangle(index).Get(n1, n2, n3);
+
+      // Poly_Triangulation follows the underlying surface orientation.
+      // Reverse vertex winding for reversed topological faces so STL normals
+      // point outside the solid rather than producing an "inside-out" mesh.
+      if (face.Orientation() == TopAbs_REVERSED) std::swap(n2, n3);
+
+      const gp_Pnt p1 = triangulation->Node(n1).Transformed(transform);
+      const gp_Pnt p2 = triangulation->Node(n2).Transformed(transform);
+      const gp_Pnt p3 = triangulation->Node(n3).Transformed(transform);
+      const Vec3 a{p1.X(), p1.Y(), p1.Z()};
+      const Vec3 b{p2.X(), p2.Y(), p2.Z()};
+      const Vec3 c{p3.X(), p3.Y(), p3.Z()};
+      if (!finite(a) || !finite(b) || !finite(c)) continue;
+
+      const Vec3 u = subtract(b, a);
+      const Vec3 v = subtract(c, a);
+      const Vec3 cross{u.y * v.z - u.z * v.y,
+                       u.z * v.x - u.x * v.z,
+                       u.x * v.y - u.y * v.x};
+      const double area2 =
+          cross.x * cross.x + cross.y * cross.y + cross.z * cross.z;
+      if (!std::isfinite(area2) || area2 <= 1e-24) continue;
+
+      writeTriangle(stream, a, b, c);
+      ++written;
+    }
+  }
+
+  if (written == 0) {
+    if (error)
+      *error = QString::fromUtf8(
+          "OCCT РЅРµ СЃРѕР·РґР°Р» РЅРё РѕРґРЅРѕРіРѕ С‚СЂРµСѓРіРѕР»СЊРЅРёРєР° РґР»СЏ STL.");
+    return false;
+  }
+  if (triangleCount) *triangleCount += written;
+  return true;
+}
 }  // namespace
+
+bool exportDocumentAsciiStl(const QString& path, const Document& document,
+                            QString* error) {
+  std::vector<ShapeFeature::ShapePtr> shapes;
+  shapes.reserve(document.bodies().size());
+  for (const Body& body : document.bodies()) {
+    auto shape = body.resultShape();
+    if (shape && !shape->IsNull()) shapes.push_back(std::move(shape));
+  }
+  if (shapes.empty()) {
+    if (error)
+      *error = QString::fromUtf8(
+          "Р’ РґРѕРєСѓРјРµРЅС‚Рµ РЅРµС‚ РїРѕСЃС‚СЂРѕРµРЅРЅРѕРіРѕ С‚РІС‘СЂРґРѕРіРѕ С‚РµР»Р° РґР»СЏ СЌРєСЃРїРѕСЂС‚Р°.");
+    return false;
+  }
+
+  // QSaveFile prevents a failed mesh/write from leaving a half-written STL.
+  QSaveFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    if (error) *error = file.errorString();
+    return false;
+  }
+
+  QTextStream stream(&file);
+  // STL syntax always requires a dot as the decimal separator, regardless of
+  // Windows/Russian locale.
+  stream.setLocale(QLocale::c());
+  stream.setRealNumberNotation(QTextStream::SmartNotation);
+  stream.setRealNumberPrecision(12);
+  stream << "solid SolidarCAD\n";
+
+  qsizetype triangleCount = 0;
+  for (const auto& shape : shapes) {
+    if (!writeBrepFacets(stream, *shape, &triangleCount, error)) {
+      file.cancelWriting();
+      return false;
+    }
+  }
+
+  stream << "endsolid SolidarCAD\n";
+  stream.flush();
+  if (stream.status() != QTextStream::Ok) {
+    if (error)
+      *error = QString::fromUtf8("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕР»РЅРѕСЃС‚СЊСЋ Р·Р°РїРёСЃР°С‚СЊ STL-С„Р°Р№Р».");
+    file.cancelWriting();
+    return false;
+  }
+  if (triangleCount == 0) {
+    if (error) *error = QString::fromUtf8("STL РЅРµ СЃРѕРґРµСЂР¶РёС‚ С‚СЂРµСѓРіРѕР»СЊРЅРёРєРѕРІ.");
+    file.cancelWriting();
+    return false;
+  }
+  if (!file.commit()) {
+    if (error) *error = file.errorString();
+    return false;
+  }
+  return true;
+}
 
 bool exportAsciiStl(const QString& path, const sketch::Sketch& profile,
                     const QString& support, const BoxParameters& box,
@@ -156,6 +309,7 @@ bool exportAsciiStl(const QString& path, const sketch::Sketch& profile,
     return false;
   }
   QTextStream stream(&file);
+  stream.setLocale(QLocale::c());
   stream.setRealNumberNotation(QTextStream::SmartNotation);
   stream.setRealNumberPrecision(12);
   stream << "solid SolidarCAD\n";

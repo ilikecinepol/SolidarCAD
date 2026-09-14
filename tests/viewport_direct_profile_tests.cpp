@@ -94,5 +94,54 @@ int main(int argc, char** argv) {
         Qt::LeftButton);
   CHECK(picks == 1);
 
+
+  // partitioned-region regression: an internal chain whose endpoints land on
+  // the outer rectangle must split the sketch into selectable bounded faces.
+  {
+    solidar::Viewport partitionView;
+    partitionView.resize(800, 600);
+
+    solidar::sketch::Sketch partition;
+    partition.addRectangle({-20.0, -20.0}, {20.0, 20.0});
+    partition.addLine({0.0, 20.0}, {0.0, 5.0});
+    partition.addLine({0.0, 5.0}, {10.0, 5.0});
+    partition.addLine({10.0, 5.0}, {20.0, -5.0});
+
+    const solidar::SketchPlacement partitionPlacement =
+        solidar::SketchPlacement::xy();
+    partitionView.addSketch(partition, QStringLiteral("XY"),
+                            partitionPlacement);
+
+    const solidar::ViewportCameraState partitionCamera{
+        partitionView.cameraYawDegrees(),
+        partitionView.cameraPitchDegrees(),
+        1.0F, {}, partitionView.size()};
+    const QPointF innerPoint =
+        partitionCamera.worldToScreen(
+            partitionPlacement.toWorld(10.0, 12.0));
+
+    int partitionPicks = 0;
+    QObject::connect(
+        &partitionView, &solidar::Viewport::directProfilePicked,
+        &partitionView, [&](std::size_t) { ++partitionPicks; });
+
+    mouse(partitionView, QEvent::MouseButtonPress, innerPoint,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(partitionPicks == 1);
+    const auto& selected =
+        partitionView.extrusionCandidateSketch();
+    CHECK(!selected.lines().empty());
+
+    double minimumX = 1e9;
+    for (const auto& line : selected.lines()) {
+      minimumX = std::min(minimumX,
+                          std::min(line.start.xMm, line.end.xMm));
+    }
+    // Whole outer rectangle would reach x=-20. The top-right partition starts
+    // at x=0, proving the picked region is the inner bounded face.
+    CHECK(minimumX > -1.0);
+  }
+
   return EXIT_SUCCESS;
 }

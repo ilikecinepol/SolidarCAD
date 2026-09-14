@@ -1,5 +1,6 @@
 #include "sketch/Sketch.h"
 
+#include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/SketchSolver.h"
 
 #include <algorithm>
@@ -255,7 +256,8 @@ void Sketch::removeLine(std::size_t index) {
         dimension.kind == DimensionKind::PointDistanceY)
       return dimension.firstPoint.lineId == removedId ||
              dimension.secondPoint.lineId == removedId;
-    if (dimension.kind == DimensionKind::LineAngle)
+    if (dimension.kind == DimensionKind::LineAngle ||
+        dimension.kind == DimensionKind::LineDistance)
       return dimension.geometryId == removedId ||
              dimension.secondPoint.lineId == removedId;
     return false;
@@ -330,7 +332,8 @@ void Sketch::removeElement(std::size_t elementId) {
           dimension.kind == DimensionKind::PointDistanceY)
         return wasRemoved(dimension.firstPoint.lineId) ||
                wasRemoved(dimension.secondPoint.lineId);
-      if (dimension.kind == DimensionKind::LineAngle)
+      if (dimension.kind == DimensionKind::LineAngle ||
+          dimension.kind == DimensionKind::LineDistance)
         return wasRemoved(dimension.geometryId) ||
                wasRemoved(dimension.secondPoint.lineId);
       return false;
@@ -559,7 +562,7 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
   }
 
   // Re-apply all active constraints after interactive geometry movement.
-  (void)BasicSketchSolver::solve(*this);
+  (void)BasicSketchSolver::solveStable(*this);
   updateBounds();
 }
 
@@ -818,7 +821,7 @@ void Sketch::translateSelection(
     }
   }
 
-  (void)BasicSketchSolver::solve(*this);
+  (void)BasicSketchSolver::solveStable(*this);
   updateBounds();
 }
 void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
@@ -1147,6 +1150,97 @@ bool Sketch::setLinesParallelByIds(GeometryId firstId,
   updateBounds();
   return true;
 }
+bool Sketch::setParallelLineDistanceByIds(
+    GeometryId referenceId, GeometryId movingId, double distanceMm) {
+  if (referenceId == kInvalidGeometryId ||
+      movingId == kInvalidGeometryId ||
+      referenceId == movingId ||
+      !std::isfinite(distanceMm) || distanceMm <= 0.0)
+    return false;
+
+  const auto referenceIndex = lineIndex(referenceId);
+  const auto movingIndex = lineIndex(movingId);
+  if (!referenceIndex || !movingIndex) return false;
+
+  const Line reference = lines_[*referenceIndex];
+  const Line moving = lines_[*movingIndex];
+  const double rx = reference.end.xMm - reference.start.xMm;
+  const double ry = reference.end.yMm - reference.start.yMm;
+  const double mx = moving.end.xMm - moving.start.xMm;
+  const double my = moving.end.yMm - moving.start.yMm;
+  const double rl = std::hypot(rx, ry);
+  const double ml = std::hypot(mx, my);
+  if (rl <= 1e-9 || ml <= 1e-9) return false;
+
+  const double parallelResidual =
+      std::abs(rx * my - ry * mx) / (rl * ml);
+  if (parallelResidual > 1e-6) return false;
+
+  const double nx = -ry / rl;
+  const double ny = rx / rl;
+  const double currentSigned =
+      (moving.start.xMm - reference.start.xMm) * nx +
+      (moving.start.yMm - reference.start.yMm) * ny;
+  const double targetSigned =
+      currentSigned < 0.0 ? -distanceMm : distanceMm;
+  const double delta = targetSigned - currentSigned;
+  if (std::abs(delta) <= 1e-10) return true;
+
+  const std::size_t movingElement = moving.elementId;
+  for (auto& line : lines_) {
+    if (line.elementId != movingElement) continue;
+    line.start.xMm += nx * delta;
+    line.start.yMm += ny * delta;
+    line.end.xMm += nx * delta;
+    line.end.yMm += ny * delta;
+  }
+
+  // Preserve Coincident neighbours of a moving loose line. This is important
+  // for profiles such as the user's internal horizontal segment connected to
+  // a vertical and a diagonal: changing its spacing stretches those neighbour
+  // segments instead of opening gaps.
+  const auto belongsToMoving =
+      [this, movingElement](PointReference reference) {
+        if (reference.lineId == kInvalidGeometryId) return false;
+        const auto index = lineIndex(reference.lineId);
+        return index && lines_[*index].elementId == movingElement;
+      };
+
+  const auto setLooseExternalPoint =
+      [this](PointReference reference, Point target) {
+        if (reference.lineId == kInvalidGeometryId) return;
+        const auto index = lineIndex(reference.lineId);
+        if (!index) return;
+        const std::size_t element = lines_[*index].elementId;
+        const auto members = static_cast<std::size_t>(std::count_if(
+            lines_.begin(), lines_.end(),
+            [element](const Line& line) {
+              return line.elementId == element;
+            }));
+        // Never deform a rectangle/composite to satisfy spacing of a loose line.
+        if (members != 1) return;
+        Point& point = reference.start ? lines_[*index].start
+                                       : lines_[*index].end;
+        point = target;
+      };
+
+  for (const auto& constraint : constraints_) {
+    if (constraint.type != ConstraintType::Coincident) continue;
+    const bool firstMoves = belongsToMoving(constraint.firstPoint);
+    const bool secondMoves = belongsToMoving(constraint.secondPoint);
+    if (firstMoves == secondMoves) continue;
+    const auto movedReference =
+        firstMoves ? constraint.firstPoint : constraint.secondPoint;
+    const auto externalReference =
+        firstMoves ? constraint.secondPoint : constraint.firstPoint;
+    if (const auto point = referencedPoint(movedReference))
+      setLooseExternalPoint(externalReference, *point);
+  }
+
+  updateBounds();
+  return true;
+}
+
 bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
                                double angleDegrees) {
   const auto firstIndex = lineIndex(firstId);
@@ -2176,7 +2270,7 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
     }
   }
 
-  (void)BasicSketchSolver::solve(*this);
+  (void)BasicSketchSolver::solveStable(*this);
   updateBounds();
   return true;
 }
@@ -2634,15 +2728,67 @@ bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
   return true;
 }
 
-ConstraintId Sketch::addConstraint(Constraint constraint) {
+ConstraintId Sketch::addConstraint(
+    Constraint constraint) {
+  // TRANSACTIONAL CONSTRAINT ADD
+  //
+  // A new user constraint may move geometry, but it may NOT make an older
+  // previously-satisfied constraint false. If the complete system cannot be
+  // solved, restore both geometry and the old constraint set.
+  //
+  // Explicit IDs are used by project loading; that path stays permissive so
+  // old files can still be opened and diagnosed.
+  const bool transactional =
+      constraint.id == kInvalidConstraintId;
+
+  Sketch snapshot;
+  ConstraintDiagnostics before;
+
+  if (transactional) {
+    snapshot = *this;
+    before =
+        analyzeConstraintSystem(*this, false);
+  }
+
   if (constraint.id == kInvalidConstraintId)
     constraint.id = nextConstraintId_++;
   else
-    nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
+    nextConstraintId_ =
+        std::max(nextConstraintId_,
+                 constraint.id + 1);
+
+  const ConstraintId addedId =
+      constraint.id;
 
   constraints_.push_back(constraint);
-  (void)BasicSketchSolver::solve(*this);
-  return constraint.id;
+  (void)BasicSketchSolver::solveStable(*this);
+
+  if (transactional) {
+    const auto after =
+        analyzeConstraintSystem(*this, false);
+
+    bool oldConstraintBroken = false;
+
+    for (const auto& old :
+         snapshot.constraints_) {
+      if (!hasConstraintViolation(
+              before, old.id) &&
+          hasConstraintViolation(
+              after, old.id)) {
+        oldConstraintBroken = true;
+        break;
+      }
+    }
+
+    if (hasConstraintViolation(
+            after, addedId) ||
+        oldConstraintBroken) {
+      *this = std::move(snapshot);
+      return kInvalidConstraintId;
+    }
+  }
+
+  return addedId;
 }
 bool Sketch::removeConstraint(ConstraintId id) {
   const auto oldSize = constraints_.size();

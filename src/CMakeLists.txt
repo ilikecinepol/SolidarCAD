@@ -88,6 +88,8 @@ add_library(solidar_model
   sketch/Sketch.h
   sketch/SketchSolver.cpp
   sketch/SketchSolver.h
+  sketch/SketchConstraintDiagnostics.cpp
+  sketch/SketchConstraintDiagnostics.h
 )
 target_include_directories(solidar_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(solidar_model SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})

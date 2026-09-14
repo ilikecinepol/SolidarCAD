@@ -1,6 +1,7 @@
 #include <array>
 #include "ui/SketchCanvas.h"
 #include "model/TopologyReferenceResolver.h"
+#include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/SketchSolver.h"
 
 #include <QKeySequence>
@@ -638,6 +639,59 @@ twoTangentCircleFromCursor(
   return best;
 }
 
+bool parallelLinePair(const sketch::Line& first,
+                      const sketch::Line& second) {
+  const double ax = first.end.xMm - first.start.xMm;
+  const double ay = first.end.yMm - first.start.yMm;
+  const double bx = second.end.xMm - second.start.xMm;
+  const double by = second.end.yMm - second.start.yMm;
+  const double al = std::hypot(ax, ay);
+  const double bl = std::hypot(bx, by);
+  return al > 1e-9 && bl > 1e-9 &&
+         std::abs(ax * by - ay * bx) / (al * bl) <= 1e-6;
+}
+
+std::optional<std::pair<sketch::Point, sketch::Point>>
+parallelLineDistanceWitness(const sketch::Line& first,
+                            const sketch::Line& second) {
+  if (!parallelLinePair(first, second)) return std::nullopt;
+  const double bx = second.end.xMm - second.start.xMm;
+  const double by = second.end.yMm - second.start.yMm;
+  const double length2 = bx * bx + by * by;
+  if (length2 <= 1e-12) return std::nullopt;
+  const sketch::Point middle{
+      (first.start.xMm + first.end.xMm) * 0.5,
+      (first.start.yMm + first.end.yMm) * 0.5};
+  const double t =
+      ((middle.xMm - second.start.xMm) * bx +
+       (middle.yMm - second.start.yMm) * by) / length2;
+  return std::pair{
+      middle,
+      sketch::Point{second.start.xMm + bx * t,
+                    second.start.yMm + by * t}};
+}
+
+double parallelLineDistanceMm(const sketch::Line& first,
+                              const sketch::Line& second) {
+  const auto witness = parallelLineDistanceWitness(first, second);
+  return witness
+             ? std::hypot(witness->second.xMm - witness->first.xMm,
+                          witness->second.yMm - witness->first.yMm)
+             : 0.0;
+}
+
+std::size_t lineElementMemberCount(const sketch::Sketch& geometry,
+                                   sketch::GeometryId id) {
+  const auto index = geometry.lineIndex(id);
+  if (!index) return 0;
+  const auto element = geometry.lines()[*index].elementId;
+  return static_cast<std::size_t>(std::count_if(
+      geometry.lines().begin(), geometry.lines().end(),
+      [element](const sketch::Line& line) {
+        return line.elementId == element;
+      }));
+}
+
 // TWO-TANGENT LIVE DIAMETER PREVIEW
 
 }  // namespace
@@ -708,6 +762,10 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("autoDimensionDirectLineId", QVariant());
   setProperty("autoDimensionAngleFirstLine", QVariant());
   setProperty("autoDimensionAngleSecondLine", QVariant());
+  setProperty("autoDimensionDistanceFirstLine", QVariant());
+  setProperty("autoDimensionDistanceSecondLine", QVariant());
+  setProperty("constructionPointOnLineCarrier", QVariant());
+  setProperty("constructionPointOnLineStartCarrier", QVariant());
   setProperty("pointOnLineCarrier", QVariant());
   setProperty("pointOnCircleCarrier", QVariant());
   setProperty("perpendicularFirstLine", QVariant());
@@ -864,6 +922,12 @@ SketchCanvas::selectedConstraintPanelEntries() const {
                 constraint.secondGeometry == dimension.geometryId;
             return sameOrder || reverseOrder;
           }
+          case sketch::DimensionKind::LineDistance:
+            return constraint.type == sketch::ConstraintType::LineDistance &&
+                   ((constraint.firstGeometry == dimension.geometryId &&
+                     constraint.secondGeometry == dimension.secondPoint.lineId) ||
+                    (constraint.firstGeometry == dimension.secondPoint.lineId &&
+                     constraint.secondGeometry == dimension.geometryId));
         }
         return false;
       };
@@ -873,7 +937,8 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         if (dimension.kind == sketch::DimensionKind::LineLength ||
             dimension.kind == sketch::DimensionKind::CircleDiameter)
           return dimension.geometryId == selectedId;
-        if (dimension.kind == sketch::DimensionKind::LineAngle)
+        if (dimension.kind == sketch::DimensionKind::LineAngle ||
+            dimension.kind == sketch::DimensionKind::LineDistance)
           return dimension.geometryId == selectedId ||
                  dimension.secondPoint.lineId == selectedId;
 
@@ -898,6 +963,14 @@ SketchCanvas::selectedConstraintPanelEntries() const {
           if (!firstIndex || !secondIndex) return std::nullopt;
           return lineAngleDegrees(sketch_.lines()[*firstIndex],
                                   sketch_.lines()[*secondIndex]);
+        }
+        if (dimension.kind == sketch::DimensionKind::LineDistance) {
+          const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+          const auto secondIndex =
+              sketch_.lineIndex(dimension.secondPoint.lineId);
+          if (!firstIndex || !secondIndex) return std::nullopt;
+          return parallelLineDistanceMm(sketch_.lines()[*firstIndex],
+                                        sketch_.lines()[*secondIndex]);
         }
 
         sketch::Point first;
@@ -961,6 +1034,9 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         break;
       case sketch::DimensionKind::LineAngle:
         name = typeName(sketch::ConstraintType::Angle);
+        break;
+      case sketch::DimensionKind::LineDistance:
+        name = QString::fromUtf8("Р Р°СЃСЃС‚РѕСЏРЅРёРµ");
         break;
     }
 
@@ -1075,6 +1151,13 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
       case sketch::DimensionKind::PointDistanceY:
         return constraint.type == sketch::ConstraintType::DistanceY &&
                samePointPair(constraint);
+      case sketch::DimensionKind::LineDistance:
+        return constraint.type == sketch::ConstraintType::LineDistance &&
+               ((constraint.firstGeometry == dimension.geometryId &&
+                 constraint.secondGeometry == dimension.secondPoint.lineId) ||
+                (constraint.firstGeometry == dimension.secondPoint.lineId &&
+                 constraint.secondGeometry == dimension.geometryId));
+
       case sketch::DimensionKind::LineAngle: {
         if (constraint.type != sketch::ConstraintType::Angle) return false;
         const bool sameOrder =
@@ -1153,6 +1236,20 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
 
       constraint.firstPoint = dimension.firstPoint;
       constraint.secondPoint = dimension.secondPoint;
+      break;
+    }
+
+    case sketch::DimensionKind::LineDistance: {
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+      if (!firstIndex || !secondIndex) return false;
+      value = parallelLineDistanceMm(sketch_.lines()[*firstIndex],
+                                     sketch_.lines()[*secondIndex]);
+      if (value <= 1e-9) return false;
+      constraint.type = sketch::ConstraintType::LineDistance;
+      constraint.firstGeometry = dimension.geometryId;
+      constraint.secondGeometry = dimension.secondPoint.lineId;
       break;
     }
 
@@ -1816,8 +1913,27 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     QString label;
     const bool diameterDimension =
         dimension.kind == sketch::DimensionKind::CircleDiameter;
+    const bool lineDistanceDimension =
+        dimension.kind == sketch::DimensionKind::LineDistance;
 
-    if (diameterDimension) {
+    if (lineDistanceDimension) {
+      const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+      const auto secondIndex =
+          sketch_.lineIndex(dimension.secondPoint.lineId);
+      if (!firstIndex || !secondIndex) continue;
+      const auto witness =
+          parallelLineDistanceWitness(sketch_.lines()[*firstIndex],
+                                      sketch_.lines()[*secondIndex]);
+      if (!witness) continue;
+      geometryFirst = mapPoint(witness->first);
+      geometrySecond = mapPoint(witness->second);
+      first = geometryFirst;
+      second = geometrySecond;
+      label = QString::fromUtf8("%1 РјРј").arg(
+          parallelLineDistanceMm(sketch_.lines()[*firstIndex],
+                                 sketch_.lines()[*secondIndex]),
+          0, 'f', 2);
+    } else if (diameterDimension) {
       const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
       if (!circleIndex) continue;
       const auto& circle = sketch_.circles()[*circleIndex];
@@ -2523,11 +2639,36 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         const auto firstIndex = sketch_.lineIndex(directLineId);
         if (firstIndex) {
           const auto secondId = sketch_.lineId(*secondLineIndex);
-          // CRASH-FREE 12: INITIAL VISIBLE ANGLE VALUE
+          const auto& firstLine = sketch_.lines()[*firstIndex];
+          const auto& secondLine = sketch_.lines()[*secondLineIndex];
+
+          if (parallelLinePair(firstLine, secondLine)) {
+            const double distance =
+                parallelLineDistanceMm(firstLine, secondLine);
+            if (distance > 1e-9) {
+              setProperty("autoDimensionTarget", "lineDistance");
+              setProperty("autoDimensionDistanceFirstLine",
+                          static_cast<qulonglong>(directLineId));
+              setProperty("autoDimensionDistanceSecondLine",
+                          static_cast<qulonglong>(secondId));
+              setProperty("autoDimensionOffsetMm", 0.0);
+              primaryDimension_->setPrefix(QString());
+              primaryDimension_->setSuffix(QString::fromUtf8(" РјРј"));
+              primaryDimension_->setRange(0.01, 100000.0);
+              primaryDimension_->setValue(distance);
+              primaryDimension_->move(
+                  (event->position() + QPointF(16, 16)).toPoint());
+              primaryDimension_->show();
+              primaryDimension_->setFocus();
+              primaryDimension_->selectAll();
+              update();
+              event->accept();
+              return;
+            }
+          }
+
           const double angle =
-              visibleLineAngleDegrees(
-                  sketch_.lines()[*firstIndex],
-                  sketch_.lines()[*secondLineIndex]);
+              visibleLineAngleDegrees(firstLine, secondLine);
 
           if (angle > 1e-6 && angle < 180.0 - 1e-6) {
             setProperty("autoDimensionTarget", "angle");
@@ -2758,6 +2899,58 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
 
         if (center)
           considerPoint(*center);
+      }
+
+      // AUTO POINT-ON-LINE SNAP
+      //
+      // Endpoint / centre CAD points above keep priority. If the second point
+      // of a new line is instead dropped on the body of another finite line,
+      // snap to the exact projection and remember the carrier so commitPoint()
+      // can persist a real PointOnLine constraint.
+      if (tool_ == Tool::Line) {
+        const char* carrierProperty =
+            anchor_
+                ? "constructionPointOnLineCarrier"
+                : "constructionPointOnLineStartCarrier";
+
+        setProperty(
+            carrierProperty, QVariant());
+        for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+          const auto& carrier = sketch_.lines()[index];
+          if (carrier.dashed) continue;
+          const auto carrierId = sketch_.lineId(index);
+          if (carrierId == sketch::kInvalidGeometryId) continue;
+
+          const QPointF a = mapPoint(carrier.start);
+          const QPointF b = mapPoint(carrier.end);
+          const QPointF ab = b - a;
+          const double length2 = QPointF::dotProduct(ab, ab);
+          if (length2 <= 1e-9) continue;
+
+          const double t = std::clamp(
+              QPointF::dotProduct(event->position() - a, ab) / length2,
+              0.0, 1.0);
+
+          // Near an existing endpoint Coincident is the stronger relation and
+          // is already handled by the point-snap path above.
+          if (t <= 1e-5 || t >= 1.0 - 1e-5) continue;
+
+          const QPointF projection = a + ab * t;
+          const double distance =
+              QLineF(event->position(), projection).length();
+          if (distance >= bestDistance) continue;
+
+          bestDistance = distance;
+          constructionPoint = {
+              carrier.start.xMm +
+                  (carrier.end.xMm - carrier.start.xMm) * t,
+              carrier.start.yMm +
+                  (carrier.end.yMm - carrier.start.yMm) * t};
+          setProperty(
+              carrierProperty,
+              static_cast<qulonglong>(
+                  carrierId));
+        }
       }
     }
     commitPoint(constructionPoint);
@@ -3811,6 +4004,19 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
                   samePointPair(constraint, dimension);
               break;
 
+            case sketch::DimensionKind::LineDistance: {
+              const bool sameOrder =
+                  constraint.firstGeometry == dimension.geometryId &&
+                  constraint.secondGeometry == dimension.secondPoint.lineId;
+              const bool reverseOrder =
+                  constraint.firstGeometry == dimension.secondPoint.lineId &&
+                  constraint.secondGeometry == dimension.geometryId;
+              matches =
+                  constraint.type == sketch::ConstraintType::LineDistance &&
+                  (sameOrder || reverseOrder);
+              break;
+            }
+
             case sketch::DimensionKind::LineAngle: {
               const bool sameOrder =
                   constraint.firstGeometry == dimension.geometryId &&
@@ -3969,7 +4175,18 @@ bool SketchCanvas::dimensionSegment(std::size_t index, QPointF& first,
   sketch::Point firstPoint;
   sketch::Point secondPoint;
 
-  if (dimension.kind == sketch::DimensionKind::LineLength) {
+  if (dimension.kind == sketch::DimensionKind::LineDistance) {
+    const auto firstIndex = sketch_.lineIndex(dimension.geometryId);
+    const auto secondIndex =
+        sketch_.lineIndex(dimension.secondPoint.lineId);
+    if (!firstIndex || !secondIndex) return false;
+    const auto witness =
+        parallelLineDistanceWitness(sketch_.lines()[*firstIndex],
+                                    sketch_.lines()[*secondIndex]);
+    if (!witness) return false;
+    firstPoint = witness->first;
+    secondPoint = witness->second;
+  } else if (dimension.kind == sketch::DimensionKind::LineLength) {
     const auto lineIndex = sketch_.lineIndex(dimension.geometryId);
     if (!lineIndex) return false;
 
@@ -5888,7 +6105,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     constraint.secondGeometry = hitId;
     sketch_.addConstraint(constraint);
 
-    (void)sketch::BasicSketchSolver::solve(sketch_);
+    (void)sketch::BasicSketchSolver::solveStable(sketch_);
     resetEqualState();
 
     clearGeometrySelection();
@@ -5947,7 +6164,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     constraint.secondGeometry = hitId;
     sketch_.addConstraint(constraint);
 
-    (void)sketch::BasicSketchSolver::solve(sketch_);
+    (void)sketch::BasicSketchSolver::solveStable(sketch_);
 
     resetEqualState();
 
@@ -6018,7 +6235,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     constraint.secondGeometry = hitId;
     sketch_.addConstraint(constraint);
 
-    (void)sketch::BasicSketchSolver::solve(sketch_);
+    (void)sketch::BasicSketchSolver::solveStable(sketch_);
     resetEqualState();
 
     const auto hitIndex = sketch_.lineIndex(hitId);
@@ -6221,7 +6438,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     sketch_.addConstraint(secondEqual);
   }
 
-  (void)sketch::BasicSketchSolver::solve(sketch_);
+  (void)sketch::BasicSketchSolver::solveStable(sketch_);
   resetEqualState();
 
   clearGeometrySelection();
@@ -6376,7 +6593,7 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   constraint.secondGeometry = clickedId;
   sketch_.addConstraint(constraint);
 
-  (void)sketch::BasicSketchSolver::solve(sketch_);
+  (void)sketch::BasicSketchSolver::solveStable(sketch_);
 
   setProperty("parallelFirstLine", QVariant());
 
@@ -6931,6 +7148,68 @@ void SketchCanvas::commitAutoDimension() {
       angleConstraint.value = solverAngle;
       sketch_.addConstraint(angleConstraint);
     }
+  } else if (target == "lineDistance") {
+    auto firstId = static_cast<sketch::GeometryId>(
+        property("autoDimensionDistanceFirstLine").toULongLong());
+    auto secondId = static_cast<sketch::GeometryId>(
+        property("autoDimensionDistanceSecondLine").toULongLong());
+    const auto firstIndex = sketch_.lineIndex(firstId);
+    const auto secondIndex = sketch_.lineIndex(secondId);
+
+    if (firstIndex && secondIndex &&
+        parallelLinePair(sketch_.lines()[*firstIndex],
+                         sketch_.lines()[*secondIndex])) {
+      // Prefer a composite side as the fixed reference.
+      if (lineElementMemberCount(sketch_, firstId) == 1 &&
+          lineElementMemberCount(sketch_, secondId) > 1)
+        std::swap(firstId, secondId);
+
+      const bool parallelExists =
+          std::any_of(sketch_.constraints().begin(),
+                      sketch_.constraints().end(),
+                      [firstId, secondId](const sketch::Constraint& item) {
+                        if (item.type != sketch::ConstraintType::Parallel)
+                          return false;
+                        return (item.firstGeometry == firstId &&
+                                item.secondGeometry == secondId) ||
+                               (item.firstGeometry == secondId &&
+                                item.secondGeometry == firstId);
+                      });
+      if (!parallelExists) {
+        sketch::Constraint parallel;
+        parallel.type = sketch::ConstraintType::Parallel;
+        parallel.firstGeometry = firstId;
+        parallel.secondGeometry = secondId;
+        sketch_.addConstraint(parallel);
+      }
+
+      changed =
+          sketch_.setParallelLineDistanceByIds(firstId, secondId, value);
+      dimension.kind = sketch::DimensionKind::LineDistance;
+      dimension.geometryId = firstId;
+      dimension.secondPoint.lineId = secondId;
+
+      if (changed) {
+        std::vector<sketch::ConstraintId> oldDistances;
+        for (const auto& item : sketch_.constraints()) {
+          if (item.type != sketch::ConstraintType::LineDistance) continue;
+          if ((item.firstGeometry == firstId &&
+               item.secondGeometry == secondId) ||
+              (item.firstGeometry == secondId &&
+               item.secondGeometry == firstId))
+            oldDistances.push_back(item.id);
+        }
+        for (const auto id : oldDistances)
+          sketch_.removeConstraint(id);
+
+        sketch::Constraint spacing;
+        spacing.type = sketch::ConstraintType::LineDistance;
+        spacing.firstGeometry = firstId;
+        spacing.secondGeometry = secondId;
+        spacing.value = value;
+        sketch_.addConstraint(spacing);
+      }
+    }
   } else if (target == "line") {
     const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
@@ -6973,7 +7252,7 @@ void SketchCanvas::commitAutoDimension() {
               });
 
       if (participatesInEqual)
-        (void)sketch::BasicSketchSolver::solve(sketch_);
+        (void)sketch::BasicSketchSolver::solveStable(sketch_);
     }
   } else if (target == "circle") {
     const auto id = static_cast<sketch::GeometryId>(
@@ -7121,6 +7400,8 @@ const bool sameOrder =
   setProperty("autoDimensionDirectLineId", QVariant());
   setProperty("autoDimensionAngleFirstLine", QVariant());
   setProperty("autoDimensionAngleSecondLine", QVariant());
+  setProperty("autoDimensionDistanceFirstLine", QVariant());
+  setProperty("autoDimensionDistanceSecondLine", QVariant());
   setProperty("editingDimensionIndex", QVariant());
 
   // CRASH-FREE 13: EDIT SESSION CLEANUP
@@ -7715,6 +7996,85 @@ void SketchCanvas::commitPoint(sketch::Point point) {
         constraint.secondPoint =
             sketch::PointReference{newLineId, true};
         sketch_.addConstraint(constraint);
+      }
+    }
+
+    // AUTO START POINT-ON-LINE CONSTRAINT
+    //
+    // The first click can lie on the body of an existing segment. Keep that
+    // relation when the second click finally creates the new line, otherwise
+    // a later dimension may detach the visually-snapped start point.
+    const QVariant startCarrierProperty =
+        property(
+            "constructionPointOnLineStartCarrier");
+
+    setProperty(
+        "constructionPointOnLineStartCarrier",
+        QVariant());
+
+    if (startCarrierProperty.isValid() &&
+        newLineIndex < sketch_.lines().size()) {
+      const auto carrierId =
+          static_cast<sketch::GeometryId>(
+              startCarrierProperty.toULongLong());
+
+      const auto newLineId =
+          sketch_.lineId(newLineIndex);
+
+      if (carrierId !=
+              sketch::kInvalidGeometryId &&
+          newLineId !=
+              sketch::kInvalidGeometryId &&
+          carrierId != newLineId &&
+          sketch_.lineIndex(carrierId)) {
+        sketch::Constraint constraint;
+        constraint.type =
+            sketch::ConstraintType::PointOnLine;
+        constraint.firstGeometry = carrierId;
+        constraint.secondPoint =
+            sketch::PointReference{
+                newLineId, true};
+
+        (void)sketch_.addConstraint(
+            constraint);
+      }
+    }
+
+    // AUTO POINT-ON-LINE CONSTRAINT
+    //
+    // The mouse path already projected the new endpoint onto this carrier.
+    // Store the semantic relation so later edits keep the endpoint on it.
+    const QVariant endCarrierProperty =
+        property("constructionPointOnLineCarrier");
+    setProperty("constructionPointOnLineCarrier", QVariant());
+
+    if (endCarrierProperty.isValid() &&
+        newLineIndex < sketch_.lines().size()) {
+      const auto carrierId = static_cast<sketch::GeometryId>(
+          endCarrierProperty.toULongLong());
+      const auto newLineId = sketch_.lineId(newLineIndex);
+
+      if (carrierId != sketch::kInvalidGeometryId &&
+          newLineId != sketch::kInvalidGeometryId &&
+          carrierId != newLineId &&
+          sketch_.lineIndex(carrierId)) {
+        const sketch::PointReference newEnd{newLineId, false};
+        const bool duplicate = std::any_of(
+            sketch_.constraints().begin(), sketch_.constraints().end(),
+            [carrierId, newEnd](const sketch::Constraint& item) {
+              return item.type == sketch::ConstraintType::PointOnLine &&
+                     item.firstGeometry == carrierId &&
+                     item.secondPoint.lineId == newEnd.lineId &&
+                     item.secondPoint.start == newEnd.start;
+            });
+
+        if (!duplicate) {
+          sketch::Constraint constraint;
+          constraint.type = sketch::ConstraintType::PointOnLine;
+          constraint.firstGeometry = carrierId;
+          constraint.secondPoint = newEnd;
+          sketch_.addConstraint(constraint);
+        }
       }
     }
   }
@@ -8888,6 +9248,38 @@ void SketchCanvas::hideDimensionEditor() {
 void SketchCanvas::notifyGeometryChanged() {
   emit geometryChanged(sketch_.widthMm(), sketch_.heightMm());
   update();
+
+  const auto constraintState =
+      sketch::analyzeConstraintSystem(
+          sketch_, true);
+
+  QString constraintText;
+
+  if (sketch_.lines().empty() &&
+      sketch_.circles().empty()) {
+    constraintText =
+        QString::fromUtf8("Эскиз пуст");
+  } else if (constraintState.conflicting) {
+    constraintText =
+        QString::fromUtf8(
+            "Конфликт ограничений · нарушено: %1")
+            .arg(
+                constraintState.violations.size());
+  } else if (
+      constraintState.fullyConstrained) {
+    constraintText =
+        QString::fromUtf8(
+            "Эскиз полностью определён · DOF: 0");
+  } else {
+    constraintText =
+        QString::fromUtf8(
+            "Эскиз недоопределён · DOF: %1")
+            .arg(
+                constraintState.degreesOfFreedom);
+  }
+
+  emit constraintStatusChanged(
+      constraintText);
 }
 
 void SketchCanvas::pushUndoState() {

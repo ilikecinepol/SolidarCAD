@@ -336,6 +336,38 @@ void deletionStressHasNoDanglingReferenceCrash() {
   sketch.translateSelection({}, {sketch.circleId(0)}, 3.0, -2.0);
 }
 
+
+void parallelLineDistanceKeepsRectangleRigid() {
+  Sketch sketch;
+  sketch.addRectangle({0.0, 0.0}, {40.0, 20.0});
+  sketch.addLine({5.0, 35.0}, {30.0, 35.0});
+  const GeometryId rectangleTop = sketch.lineId(2);
+  const GeometryId loose = sketch.lineId(4);
+  const auto rectangleBefore =
+      std::vector<Line>(sketch.lines().begin(), sketch.lines().begin() + 4);
+
+  sketch.addConstraint(
+      geometryConstraint(ConstraintType::Parallel, rectangleTop, loose));
+  sketch.addConstraint(
+      geometryConstraint(ConstraintType::LineDistance,
+                         rectangleTop, loose, 12.0));
+
+  const double topY =
+      (sketch.lines()[2].start.yMm + sketch.lines()[2].end.yMm) * 0.5;
+  const double looseY =
+      (sketch.lines()[4].start.yMm + sketch.lines()[4].end.yMm) * 0.5;
+  expect(near(std::abs(looseY - topY), 12.0),
+         "parallel-line distance must be 12 mm");
+  expect(near(length(sketch.lines()[4]), 25.0),
+         "line distance must preserve loose-line length");
+  for (std::size_t i = 0; i < 4; ++i)
+    expect(near(sketch.lines()[i].start.xMm, rectangleBefore[i].start.xMm) &&
+               near(sketch.lines()[i].start.yMm, rectangleBefore[i].start.yMm) &&
+               near(sketch.lines()[i].end.xMm, rectangleBefore[i].end.xMm) &&
+               near(sketch.lines()[i].end.yMm, rectangleBefore[i].end.yMm),
+           "line-to-rectangle distance must not deform rectangle");
+}
+
 }  // namespace
 
 int main() {
@@ -347,5 +379,6 @@ int main() {
   tangencyAndPointRelationsStayValidAfterMovement();
   pointOnCircleSurvivesFurtherSketchEdits();
   deletionStressHasNoDanglingReferenceCrash();
+  parallelLineDistanceKeepsRectangleRigid();
   return EXIT_SUCCESS;
 }

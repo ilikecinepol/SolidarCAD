@@ -419,10 +419,7 @@ void MainWindow::exportStl() {
     fileName += QStringLiteral(".stl");
 
   QString error;
-  if (!io::exportAsciiStl(fileName, viewport_->solidSketch(),
-                          viewport_->solidSupport(), document_.box(),
-                          viewport_->bodyPosition(), viewport_->solidFeatures(),
-                          &error)) {
+  if (!io::exportDocumentAsciiStl(fileName, document_, &error)) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка экспорта STL"), error);
     return;
   }
@@ -438,6 +435,15 @@ void MainWindow::setProjectPath(const QString& path) {
 void MainWindow::buildUi() {
   workspaceStack_ = new QStackedWidget(this);
   sketchCanvas_ = new SketchCanvas(workspaceStack_);
+
+  connect(
+      sketchCanvas_,
+      &SketchCanvas::constraintStatusChanged,
+      this,
+      [this](const QString& status) {
+        statusBar()->showMessage(status);
+      });
+
   viewport_ = new Viewport(workspaceStack_);
   drawingSheet_ = new DrawingSheetView(this);
   drawingSheet_->hide();

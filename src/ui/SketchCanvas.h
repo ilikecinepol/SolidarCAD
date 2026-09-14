@@ -101,6 +101,7 @@ signals:
   void undoAvailable(bool available);
   void primaryDimensionChanged(double value);
   void lineStyleSelectionChanged(bool lineSelected, bool dashed);
+  void constraintStatusChanged(const QString& status);
 
  protected:
   void paintEvent(QPaintEvent* event) override;

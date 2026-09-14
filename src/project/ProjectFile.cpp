@@ -228,7 +228,8 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
         const auto index = saved.geometry.circleIndex(dimension.geometryId);
         if (!index) continue;
         geometryIndex = static_cast<qint64>(*index);
-      } else if (dimension.kind == sketch::DimensionKind::LineAngle) {
+      } else if (dimension.kind == sketch::DimensionKind::LineAngle ||
+                 dimension.kind == sketch::DimensionKind::LineDistance) {
         const auto firstIndex = saved.geometry.lineIndex(dimension.geometryId);
         const auto secondIndex =
             saved.geometry.lineIndex(dimension.secondPoint.lineId);
@@ -827,7 +828,8 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
             static_cast<std::size_t>(object.value("geometryIndex").toInteger());
         dimension.geometryId = saved.geometry.circleId(index);
         if (dimension.geometryId == sketch::kInvalidGeometryId) continue;
-      } else if (kind == sketch::DimensionKind::LineAngle) {
+      } else if (kind == sketch::DimensionKind::LineAngle ||
+                 kind == sketch::DimensionKind::LineDistance) {
         const auto firstIndex =
             static_cast<std::size_t>(object.value("geometryIndex").toInteger());
         const auto secondIndex = static_cast<std::size_t>(

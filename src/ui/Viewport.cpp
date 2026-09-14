@@ -179,6 +179,194 @@ bool isFrontFacing(const QPolygonF& polygon) {
   return polygon.size() >= 3 && signedArea(polygon) < -0.01;
 }
 
+
+struct SketchFaceHalfEdge {
+  int from{-1};
+  int to{-1};
+  int twin{-1};
+  bool used{false};
+};
+
+double sketchCross(sketch::Point a, sketch::Point b) {
+  return a.xMm * b.yMm - a.yMm * b.xMm;
+}
+
+sketch::Point sketchSubtract(sketch::Point a, sketch::Point b) {
+  return {a.xMm - b.xMm, a.yMm - b.yMm};
+}
+
+std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
+    const sketch::Sketch& geometry, bool* hadInteriorSplit) {
+  struct SourceSegment {
+    sketch::Point a;
+    sketch::Point b;
+    std::vector<double> cuts{0.0, 1.0};
+  };
+
+  std::vector<SourceSegment> source;
+  for (const auto& line : geometry.lines()) {
+    if (line.dashed) continue;
+    if (std::hypot(line.end.xMm - line.start.xMm,
+                   line.end.yMm - line.start.yMm) <= 1e-9)
+      continue;
+    source.push_back({line.start, line.end});
+  }
+
+  bool split = false;
+  constexpr double parameterTolerance = 1e-8;
+  for (std::size_t i = 0; i < source.size(); ++i) {
+    const sketch::Point p = source[i].a;
+    const sketch::Point r = sketchSubtract(source[i].b, source[i].a);
+
+    for (std::size_t j = i + 1; j < source.size(); ++j) {
+      const sketch::Point q = source[j].a;
+      const sketch::Point s = sketchSubtract(source[j].b, source[j].a);
+      const double denominator = sketchCross(r, s);
+
+      // Collinear overlap is not a useful new region boundary here. Ordinary
+      // CAD T-junctions and crossings are handled by the non-parallel branch.
+      if (std::abs(denominator) <= 1e-12) continue;
+
+      const sketch::Point qp = sketchSubtract(q, p);
+      const double t = sketchCross(qp, s) / denominator;
+      const double u = sketchCross(qp, r) / denominator;
+      if (t < -parameterTolerance || t > 1.0 + parameterTolerance ||
+          u < -parameterTolerance || u > 1.0 + parameterTolerance)
+        continue;
+
+      const double tc = std::clamp(t, 0.0, 1.0);
+      const double uc = std::clamp(u, 0.0, 1.0);
+      source[i].cuts.push_back(tc);
+      source[j].cuts.push_back(uc);
+      if ((tc > parameterTolerance && tc < 1.0 - parameterTolerance) ||
+          (uc > parameterTolerance && uc < 1.0 - parameterTolerance))
+        split = true;
+    }
+  }
+
+  if (hadInteriorSplit) *hadInteriorSplit = split;
+  if (!split) return {};
+
+  struct SplitSegment {
+    sketch::Point a;
+    sketch::Point b;
+  };
+  std::vector<SplitSegment> segments;
+  for (auto& item : source) {
+    std::sort(item.cuts.begin(), item.cuts.end());
+    item.cuts.erase(
+        std::unique(item.cuts.begin(), item.cuts.end(),
+                    [](double a, double b) {
+                      return std::abs(a - b) <= 1e-8;
+                    }),
+        item.cuts.end());
+
+    const double dx = item.b.xMm - item.a.xMm;
+    const double dy = item.b.yMm - item.a.yMm;
+    for (std::size_t k = 0; k + 1 < item.cuts.size(); ++k) {
+      const double t0 = item.cuts[k];
+      const double t1 = item.cuts[k + 1];
+      if (t1 - t0 <= 1e-8) continue;
+      const sketch::Point a{item.a.xMm + dx * t0,
+                            item.a.yMm + dy * t0};
+      const sketch::Point b{item.a.xMm + dx * t1,
+                            item.a.yMm + dy * t1};
+      if (std::hypot(b.xMm - a.xMm, b.yMm - a.yMm) > 1e-8)
+        segments.push_back({a, b});
+    }
+  }
+
+  std::vector<sketch::Point> vertices;
+  const auto vertexIndex = [&vertices](sketch::Point point) {
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+      if (std::hypot(vertices[i].xMm - point.xMm,
+                     vertices[i].yMm - point.yMm) <= 1e-7)
+        return static_cast<int>(i);
+    }
+    vertices.push_back(point);
+    return static_cast<int>(vertices.size() - 1);
+  };
+
+  std::vector<SketchFaceHalfEdge> edges;
+  std::vector<std::vector<int>> outgoing;
+  for (const auto& segment : segments) {
+    const int a = vertexIndex(segment.a);
+    const int b = vertexIndex(segment.b);
+    if (a == b) continue;
+    if (outgoing.size() < vertices.size()) outgoing.resize(vertices.size());
+
+    const int forward = static_cast<int>(edges.size());
+    const int reverse = forward + 1;
+    edges.push_back({a, b, reverse, false});
+    edges.push_back({b, a, forward, false});
+    outgoing[a].push_back(forward);
+    outgoing[b].push_back(reverse);
+  }
+  outgoing.resize(vertices.size());
+
+  const auto edgeAngle = [&edges, &vertices](int edgeIndex) {
+    const auto& edge = edges[edgeIndex];
+    const auto& a = vertices[edge.from];
+    const auto& b = vertices[edge.to];
+    return std::atan2(b.yMm - a.yMm, b.xMm - a.xMm);
+  };
+  for (auto& list : outgoing) {
+    std::sort(list.begin(), list.end(),
+              [&edgeAngle](int a, int b) {
+                return edgeAngle(a) < edgeAngle(b);
+              });
+  }
+
+  std::vector<std::vector<sketch::Point>> faces;
+  for (int startEdge = 0; startEdge < static_cast<int>(edges.size());
+       ++startEdge) {
+    if (edges[startEdge].used) continue;
+
+    std::vector<sketch::Point> cycle;
+    int current = startEdge;
+    bool closed = false;
+    for (std::size_t guard = 0; guard <= edges.size() + 2; ++guard) {
+      if (edges[current].used && current != startEdge) break;
+      edges[current].used = true;
+      cycle.push_back(vertices[edges[current].from]);
+
+      const int vertex = edges[current].to;
+      const int reverse = edges[current].twin;
+      const auto& list = outgoing[vertex];
+      const auto found = std::find(list.begin(), list.end(), reverse);
+      if (found == list.end() || list.empty()) break;
+
+      const std::size_t reversePosition =
+          static_cast<std::size_t>(std::distance(list.begin(), found));
+      // Previous CCW edge = clockwise turn from the reverse direction. This
+      // keeps the traversed face on the left side of the half-edge.
+      const std::size_t nextPosition =
+          (reversePosition + list.size() - 1) % list.size();
+      current = list[nextPosition];
+
+      if (current == startEdge) {
+        closed = true;
+        break;
+      }
+    }
+
+    if (!closed || cycle.size() < 3) continue;
+    double area2 = 0.0;
+    for (std::size_t i = 0; i < cycle.size(); ++i) {
+      const auto& a = cycle[i];
+      const auto& b = cycle[(i + 1) % cycle.size()];
+      area2 += a.xMm * b.yMm - b.xMm * a.yMm;
+    }
+
+    // With the traversal rule above bounded faces are CCW (positive area);
+    // the unbounded outside face is clockwise and is discarded.
+    if (area2 > 1e-8) faces.push_back(std::move(cycle));
+  }
+
+  return faces;
+}
+
+
 }  // namespace
 
 Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
@@ -3288,22 +3476,44 @@ void Viewport::updateExtrusionHover(QPointF position) {
                                       offsetX_, offsetY_),
                      size(), yaw_, pitch_, zoom_);
     };
-    std::vector<std::size_t> ids;
-    for (const auto& line : displayed.geometry.lines())
-      if (!line.dashed &&
-          std::find(ids.begin(), ids.end(), line.elementId) == ids.end())
-        ids.push_back(line.elementId);
-    for (const auto id : ids) {
-      QPolygonF polygon;
-      sketch::Sketch candidate;
+    // PLANAR SKETCH REGION GRAPH
+    //
+    // A rectangle side is one primitive. When a newly drawn line terminates
+    // on its middle, elementId-based contour grouping still sees only the
+    // original outer rectangle and therefore highlights the whole square.
+    // Split T-junctions/crossings into a planar graph and enumerate its bounded
+    // faces. The cursor can then select the exact sub-region.
+    bool hadInteriorSplit = false;
+    const auto graphFaces =
+        planarSketchLineFaces(displayed.geometry, &hadInteriorSplit);
+
+    if (hadInteriorSplit && !graphFaces.empty()) {
+      for (const auto& face : graphFaces) {
+        QPolygonF polygon;
+        for (const auto point : face)
+          polygon << projectContourPoint(point);
+        if (polygon.size() >= 3 &&
+            std::abs(signedArea(polygon)) > 1e-6)
+          sketchContours.push_back(std::move(polygon));
+      }
+    } else {
+      std::vector<std::size_t> ids;
       for (const auto& line : displayed.geometry.lines())
-        if (!line.dashed && line.elementId == id) {
-          polygon << projectContourPoint(line.start);
-          candidate.addLine(line.start, line.end);
-        }
-      if (polygon.size() >= 3 && candidate.isClosed() &&
-          std::abs(signedArea(polygon)) > 1e-6)
-        sketchContours.push_back(polygon);
+        if (!line.dashed &&
+            std::find(ids.begin(), ids.end(), line.elementId) == ids.end())
+          ids.push_back(line.elementId);
+      for (const auto id : ids) {
+        QPolygonF polygon;
+        sketch::Sketch candidate;
+        for (const auto& line : displayed.geometry.lines())
+          if (!line.dashed && line.elementId == id) {
+            polygon << projectContourPoint(line.start);
+            candidate.addLine(line.start, line.end);
+          }
+        if (polygon.size() >= 3 && candidate.isClosed() &&
+            std::abs(signedArea(polygon)) > 1e-6)
+          sketchContours.push_back(polygon);
+      }
     }
     for (const auto& circle : displayed.geometry.circles()) {
       if (circle.dashed || !std::isfinite(circle.radiusMm) ||
