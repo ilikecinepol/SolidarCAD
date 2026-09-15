@@ -150,6 +150,21 @@ signals:
 
  private:
   enum class SelectionKind { None, Line, Circle };
+  enum class ConstructionSnapKind {
+    None,
+    LinePoint,
+    CircleCenter,
+    ElementCenter,
+    LineBody,
+    CircleBody
+  };
+
+  struct ConstructionSnap {
+    sketch::Point point{};
+    ConstructionSnapKind kind{ConstructionSnapKind::None};
+    sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
+    std::size_t elementId{};
+  };
 
   [[nodiscard]] sketch::Point rotateForView(sketch::Point point) const noexcept;
   [[nodiscard]] sketch::Point rotateFromView(sketch::Point point) const noexcept;
@@ -159,6 +174,7 @@ signals:
   [[nodiscard]] QPointF mapPoint(sketch::Point point) const;
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
   [[nodiscard]] sketch::Point snappedPoint(QPointF point) const;
+  [[nodiscard]] ConstructionSnap constructionSnapAt(QPointF position) const;
   [[nodiscard]] std::optional<std::size_t> referenceEdgeAt(QPointF position) const;
   bool appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
                            bool reportStatus);
@@ -213,6 +229,7 @@ signals:
   std::optional<sketch::Point> anchor_;
   std::optional<sketch::PointReference> coincidentFirstPoint_;
   sketch::Point hoverPoint_{};
+  std::optional<ConstructionSnap> constructionHover_;
   sketch::Point dragPoint_{};
   bool dragging_{false};
   QDoubleSpinBox* primaryDimension_{nullptr};

@@ -731,6 +731,7 @@ void SketchCanvas::setTool(Tool tool) {
   tool_ = tool;
   anchor_.reset();
   hoveredProjectionEdge_.reset();
+  constructionHover_.reset();
   setProperty("dragPointLineId", QVariant());
   setProperty("dragPointStart", QVariant());
   setProperty("draggingDimensionLine", QVariant());
@@ -1835,6 +1836,172 @@ sketch::Point SketchCanvas::snappedPoint(QPointF point) const {
   }
   return result;
 }
+
+SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
+    QPointF position) const {
+  ConstructionSnap result;
+  result.point = snappedPoint(position);
+
+  const bool creationTool =
+      tool_ == Tool::Line ||
+      tool_ == Tool::Rectangle ||
+      tool_ == Tool::Circle;
+
+  if (!snapEnabled_ || !creationTool)
+    return result;
+
+  constexpr double kSnapTolerancePx = 10.0;
+  double bestPointDistance = kSnapTolerancePx;
+
+  const auto considerPoint =
+      [this, position, &result, &bestPointDistance](
+          sketch::Point candidate,
+          ConstructionSnapKind kind,
+          sketch::GeometryId geometryId,
+          std::size_t elementId = 0) {
+        const double distance =
+            QLineF(position, mapPoint(candidate)).length();
+
+        if (distance >= bestPointDistance)
+          return;
+
+        bestPointDistance = distance;
+        result.point = candidate;
+        result.kind = kind;
+        result.geometryId = geometryId;
+        result.elementId = elementId;
+      };
+
+  // CAD points have priority over carrier bodies.
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto lineId = sketch_.lineId(index);
+    if (lineId == sketch::kInvalidGeometryId)
+      continue;
+
+    const auto& line = sketch_.lines()[index];
+    considerPoint(line.start, ConstructionSnapKind::LinePoint, lineId);
+    considerPoint(line.end, ConstructionSnapKind::LinePoint, lineId);
+  }
+
+  for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+    const auto circleId = sketch_.circleId(index);
+    if (circleId == sketch::kInvalidGeometryId)
+      continue;
+
+    considerPoint(sketch_.circles()[index].center,
+                  ConstructionSnapKind::CircleCenter,
+                  circleId);
+  }
+
+  for (const auto elementId : sketch_.centerNodeElementIds()) {
+    const auto center = sketch_.elementCenterPoint(elementId);
+    if (!center)
+      continue;
+
+    considerPoint(*center, ConstructionSnapKind::ElementCenter,
+                  sketch::kInvalidGeometryId, elementId);
+  }
+
+  if (result.kind != ConstructionSnapKind::None)
+    return result;
+
+  const bool tangentCircleMode =
+      tool_ == Tool::Circle &&
+      (circleMode_ == CircleMode::ThreeTangents ||
+       circleMode_ == CircleMode::TwoTangentsRadius);
+
+  // A body snap is only advertised when the current construction stage can
+  // persist or deliberately consume that relationship.
+  const bool allowLineBody =
+      tool_ == Tool::Line ||
+      tool_ == Tool::Rectangle ||
+      tangentCircleMode ||
+      (tool_ == Tool::Circle &&
+       circleMode_ == CircleMode::CenterRadius &&
+       !anchor_);
+
+  const bool allowCircleBody =
+      tool_ == Tool::Line ||
+      tool_ == Tool::Rectangle ||
+      (tool_ == Tool::Circle &&
+       circleMode_ == CircleMode::CenterRadius &&
+       !anchor_);
+
+  double bestBodyDistance = kSnapTolerancePx;
+
+  if (allowLineBody) {
+    for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+      const auto lineId = sketch_.lineId(index);
+      if (lineId == sketch::kInvalidGeometryId)
+        continue;
+
+      const auto& line = sketch_.lines()[index];
+      const QPointF a = mapPoint(line.start);
+      const QPointF b = mapPoint(line.end);
+      const QPointF ab = b - a;
+      const double length2 = QPointF::dotProduct(ab, ab);
+      if (length2 <= 1e-9)
+        continue;
+
+      const double t = std::clamp(
+          QPointF::dotProduct(position - a, ab) / length2,
+          0.0, 1.0);
+      const QPointF projection = a + ab * t;
+      const double distance =
+          QLineF(position, projection).length();
+
+      if (distance >= bestBodyDistance)
+        continue;
+
+      bestBodyDistance = distance;
+      result.point = {
+          line.start.xMm + (line.end.xMm - line.start.xMm) * t,
+          line.start.yMm + (line.end.yMm - line.start.yMm) * t};
+      result.kind = ConstructionSnapKind::LineBody;
+      result.geometryId = lineId;
+      result.elementId = 0;
+    }
+  }
+
+  if (allowCircleBody) {
+    const auto cursor = unmapPoint(position);
+
+    for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+      const auto circleId = sketch_.circleId(index);
+      if (circleId == sketch::kInvalidGeometryId)
+        continue;
+
+      const auto& circle = sketch_.circles()[index];
+      if (circle.radiusMm <= 1e-9)
+        continue;
+
+      const QPointF centerPx = mapPoint(circle.center);
+      const double radialPx = QLineF(position, centerPx).length();
+      const double distance =
+          std::abs(radialPx - circle.radiusMm * pixelsPerMm_);
+
+      if (distance >= bestBodyDistance)
+        continue;
+
+      const double dx = cursor.xMm - circle.center.xMm;
+      const double dy = cursor.yMm - circle.center.yMm;
+      const double lengthMm = std::hypot(dx, dy);
+      if (lengthMm <= 1e-9)
+        continue;
+
+      bestBodyDistance = distance;
+      result.point = {
+          circle.center.xMm + circle.radiusMm * dx / lengthMm,
+          circle.center.yMm + circle.radiusMm * dy / lengthMm};
+      result.kind = ConstructionSnapKind::CircleBody;
+      result.geometryId = circleId;
+      result.elementId = 0;
+    }
+  }
+
+  return result;
+}
+
 void SketchCanvas::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
@@ -2024,15 +2191,27 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     const auto currentLineId = sketch_.lineId(index);
     const bool locked =
         sketch_.isGeometryLocked(currentLineId);
+    const bool snapHovered =
+        constructionHover_ &&
+        ((constructionHover_->kind == ConstructionSnapKind::LinePoint ||
+          constructionHover_->kind == ConstructionSnapKind::LineBody) &&
+             constructionHover_->geometryId == currentLineId ||
+         constructionHover_->kind == ConstructionSnapKind::ElementCenter &&
+             constructionHover_->elementId != 0 &&
+             constructionHover_->elementId == line.elementId);
     const QColor baseColor =
         locked ? QColor("#8b5cf6") : QColor("#1469d7");
     const QColor selectedColor =
         locked ? QColor("#a78bfa") : QColor("#ff8a24");
+    const QColor snapColor("#00a6ff");
 
-    painter.setPen(QPen(selected ? selectedColor : baseColor,
-                        selected ? 3.0 : 2.0,
+    painter.setPen(QPen(snapHovered
+                            ? snapColor
+                            : selected ? selectedColor : baseColor,
+                        snapHovered ? 3.8 : selected ? 3.0 : 2.0,
                         line.dashed ? Qt::DashLine
-                                    : Qt::SolidLine));
+                                    : Qt::SolidLine,
+                        Qt::RoundCap));
     painter.drawLine(mapPoint(line.start), mapPoint(line.end));
     painter.setBrush(
         locked ? QColor("#ede9fe") : Qt::white);
@@ -2049,13 +2228,21 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
          selectionCircleId_ == circleId);
     const bool locked =
         sketch_.isGeometryLocked(circleId);
+    const bool snapHovered =
+        constructionHover_ &&
+        (constructionHover_->kind == ConstructionSnapKind::CircleCenter ||
+         constructionHover_->kind == ConstructionSnapKind::CircleBody) &&
+        constructionHover_->geometryId == circleId;
     const QColor baseColor =
         locked ? QColor("#8b5cf6") : QColor("#1469d7");
     const QColor selectedColor =
         locked ? QColor("#a78bfa") : QColor("#ff8a24");
+    const QColor snapColor("#00a6ff");
 
-    painter.setPen(QPen(selected ? selectedColor : baseColor,
-                        selected ? 3.0 : 2.0,
+    painter.setPen(QPen(snapHovered
+                            ? snapColor
+                            : selected ? selectedColor : baseColor,
+                        snapHovered ? 3.8 : selected ? 3.0 : 2.0,
                         circle.dashed ? Qt::DashLine
                                       : Qt::SolidLine));
     painter.setBrush(Qt::NoBrush);
@@ -2064,6 +2251,13 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     painter.drawEllipse(center, radius, radius);
     painter.setBrush(Qt::white);
     painter.drawEllipse(center, 3.5, 3.5);
+  }
+
+  if (constructionHover_) {
+    const QPointF snapPoint = mapPoint(constructionHover_->point);
+    painter.setPen(QPen(QColor("#00a6ff"), 1.8));
+    painter.setBrush(QColor(255, 255, 255, 235));
+    painter.drawEllipse(snapPoint, 5.0, 5.0);
   }
 
   const auto drawArrow = [&painter](QPointF tip, QPointF direction) {
@@ -3264,107 +3458,35 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         dragPoint_ = snappedPoint(event->position());
       }
     }  } else {
-    sketch::Point constructionPoint =
-        snappedPoint(event->position());
+    const auto constructionSnap =
+        constructionSnapAt(event->position());
+    const sketch::Point constructionPoint =
+        constructionSnap.point;
 
-    // UNIFIED CONSTRUCTION CAD POINT SNAP
-    //
-    // Every geometry creation tool uses the same first-class CAD points:
-    // line endpoints, circle centres and virtual rectangle centres.
-    // The picked construction point is moved exactly onto the nearest
-    // existing CAD point before commitPoint() sees it.
-    if (snapEnabled_ &&
-        (tool_ == Tool::Line ||
-         tool_ == Tool::Rectangle ||
-         tool_ == Tool::Circle)) {
-      constexpr double cadPointTolerancePx = 10.0;
-      double bestDistance = cadPointTolerancePx;
+    if (constructionSnap.kind != ConstructionSnapKind::None)
+      constructionHover_ = constructionSnap;
+    else
+      constructionHover_.reset();
 
-      const auto considerPoint =
-          [this, &constructionPoint,
-           &bestDistance, event](
-              sketch::Point candidate) {
-            const double distance =
-                QLineF(
-                    event->position(),
-                    mapPoint(candidate)).length();
+    // Preserve the existing direct PointOnLine path for Line. Other creation
+    // tools are persisted by autoCoincidentNewGeometry() after their geometry
+    // has been materialized.
+    if (tool_ == Tool::Line) {
+      const char* carrierProperty =
+          anchor_
+              ? "constructionPointOnLineCarrier"
+              : "constructionPointOnLineStartCarrier";
 
-            if (distance < bestDistance) {
-              bestDistance = distance;
-              constructionPoint = candidate;
-            }
-          };
+      setProperty(carrierProperty, QVariant());
 
-      for (const auto& line : sketch_.lines()) {
-        considerPoint(line.start);
-        considerPoint(line.end);
-      }
-
-      for (const auto& circle : sketch_.circles())
-        considerPoint(circle.center);
-
-      for (const auto elementId :
-           sketch_.centerNodeElementIds()) {
-        const auto center =
-            sketch_.elementCenterPoint(elementId);
-
-        if (center)
-          considerPoint(*center);
-      }
-
-      // AUTO POINT-ON-LINE SNAP
-      //
-      // Endpoint / centre CAD points above keep priority. If the second point
-      // of a new line is instead dropped on the body of another finite line,
-      // snap to the exact projection and remember the carrier so commitPoint()
-      // can persist a real PointOnLine constraint.
-      if (tool_ == Tool::Line) {
-        const char* carrierProperty =
-            anchor_
-                ? "constructionPointOnLineCarrier"
-                : "constructionPointOnLineStartCarrier";
-
+      if (constructionSnap.kind == ConstructionSnapKind::LineBody &&
+          constructionSnap.geometryId != sketch::kInvalidGeometryId) {
         setProperty(
-            carrierProperty, QVariant());
-        for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
-          const auto& carrier = sketch_.lines()[index];
-          // Dashed construction/projected geometry is valid reference
-          // geometry and participates in PointOnLine snapping.
-          const auto carrierId = sketch_.lineId(index);
-          if (carrierId == sketch::kInvalidGeometryId) continue;
-
-          const QPointF a = mapPoint(carrier.start);
-          const QPointF b = mapPoint(carrier.end);
-          const QPointF ab = b - a;
-          const double length2 = QPointF::dotProduct(ab, ab);
-          if (length2 <= 1e-9) continue;
-
-          const double t = std::clamp(
-              QPointF::dotProduct(event->position() - a, ab) / length2,
-              0.0, 1.0);
-
-          // Near an existing endpoint Coincident is the stronger relation and
-          // is already handled by the point-snap path above.
-          if (t <= 1e-5 || t >= 1.0 - 1e-5) continue;
-
-          const QPointF projection = a + ab * t;
-          const double distance =
-              QLineF(event->position(), projection).length();
-          if (distance >= bestDistance) continue;
-
-          bestDistance = distance;
-          constructionPoint = {
-              carrier.start.xMm +
-                  (carrier.end.xMm - carrier.start.xMm) * t,
-              carrier.start.yMm +
-                  (carrier.end.yMm - carrier.start.yMm) * t};
-          setProperty(
-              carrierProperty,
-              static_cast<qulonglong>(
-                  carrierId));
-        }
+            carrierProperty,
+            static_cast<qulonglong>(constructionSnap.geometryId));
       }
     }
+
     commitPoint(constructionPoint);
   }
 }
@@ -3558,33 +3680,29 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
 
-  hoverPoint_ = snappedPoint(event->position());
+  const bool creationTool =
+      tool_ == Tool::Line ||
+      tool_ == Tool::Rectangle ||
+      tool_ == Tool::Circle;
 
-  // Live center-node preview is restricted to creation tools.
-  // Select/drag, AutoDimension and constraint tools retain their original
-  // snapping and cannot be affected by virtual rectangle centers.
-  if (snapEnabled_ &&
-      (tool_ == Tool::Line ||
-       tool_ == Tool::Rectangle ||
-       tool_ == Tool::Circle)) {
-    constexpr double centerNodeTolerancePx = 10.0;
-    double bestDistance = centerNodeTolerancePx;
+  if (creationTool) {
+    const auto constructionSnap =
+        constructionSnapAt(event->position());
+    hoverPoint_ = constructionSnap.point;
 
-    for (const auto elementId : sketch_.centerNodeElementIds()) {
-      const auto center =
-          sketch_.elementCenterPoint(elementId);
-      if (!center) continue;
+    if (constructionSnap.kind != ConstructionSnapKind::None)
+      constructionHover_ = constructionSnap;
+    else
+      constructionHover_.reset();
 
-      const double distance =
-          QLineF(event->position(),
-                 mapPoint(*center)).length();
-
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        hoverPoint_ = *center;
-      }
-    }
+    // Hover highlighting is part of the construction preview even before the
+    // first point has been committed.
+    update();
+  } else {
+    constructionHover_.reset();
+    hoverPoint_ = snappedPoint(event->position());
   }
+
   // TWO-TANGENT MOUSE DIAMETER DRIVE
   if (tool_ == Tool::Circle &&
       circleMode_ ==
@@ -8533,9 +8651,14 @@ void autoCoincidentNewGeometry(
     sketch.addConstraint(constraint);
   }
 
-  // AUTO PROJECTED EDGE SNAP
-  // Projected vertices are handled by Coincident above. When a new point is
-  // created on the BODY of a dashed+locked projection, persist PointOnLine.
+  // BODY SNAP PERSISTENCE
+  //
+  // Coincident above handles discrete CAD points. If a newly-created point was
+  // explicitly projected onto an existing carrier body, retain that semantic
+  // relation as PointOnLine / PointOnCircle so later dimensions cannot detach
+  // it. Projected locked lines keep their historical wider tolerance; ordinary
+  // geometry uses an exact tolerance because constructionSnapAt() already
+  // projects the clicked point onto the carrier.
   const auto oldReference =
       [&oldReferences, &sameReference](sketch::PointReference r) {
         return std::any_of(
@@ -8561,6 +8684,8 @@ void autoCoincidentNewGeometry(
         return false;
       };
 
+  constexpr double kExactBodyToleranceMm = 1e-5;
+
   for (const auto& candidate : newReferences) {
     if (hasOldCoincident(candidate.reference))
       continue;
@@ -8569,23 +8694,22 @@ void autoCoincidentNewGeometry(
         sketch.referencedPoint(candidate.reference);
     if (!point) continue;
 
-    sketch::GeometryId best =
+    sketch::GeometryId bestLine =
         sketch::kInvalidGeometryId;
-    double bestDistance = toleranceMm;
+    sketch::GeometryId bestCircle =
+        sketch::kInvalidGeometryId;
+    double bestDistance =
+        std::numeric_limits<double>::max();
 
-    const std::size_t oldCount =
+    const std::size_t oldLineLimit =
         std::min(oldLineCount, sketch.lines().size());
 
-    for (std::size_t i = 0; i < oldCount; ++i) {
+    for (std::size_t i = 0; i < oldLineLimit; ++i) {
       const auto carrierId = sketch.lineId(i);
       if (carrierId == sketch::kInvalidGeometryId)
         continue;
 
       const auto& carrier = sketch.lines()[i];
-      if (!carrier.dashed ||
-          !sketch.isGeometryLocked(carrierId))
-        continue;
-
       const double dx =
           carrier.end.xMm - carrier.start.xMm;
       const double dy =
@@ -8609,34 +8733,92 @@ void autoCoincidentNewGeometry(
               point->xMm - q.xMm,
               point->yMm - q.yMm);
 
-      if (distance < bestDistance) {
+      const bool projectedReference =
+          carrier.dashed &&
+          sketch.isGeometryLocked(carrierId);
+      const double acceptedDistance =
+          projectedReference
+              ? toleranceMm
+              : kExactBodyToleranceMm;
+
+      if (distance <= acceptedDistance &&
+          distance < bestDistance) {
         bestDistance = distance;
-        best = carrierId;
+        bestLine = carrierId;
+        bestCircle = sketch::kInvalidGeometryId;
       }
     }
 
-    if (best == sketch::kInvalidGeometryId)
+    const std::size_t oldCircleLimit =
+        std::min(oldCircleCount, sketch.circles().size());
+
+    for (std::size_t i = 0; i < oldCircleLimit; ++i) {
+      const auto circleId = sketch.circleId(i);
+      if (circleId == sketch::kInvalidGeometryId)
+        continue;
+
+      const auto& circle = sketch.circles()[i];
+      const double distance =
+          std::abs(
+              std::hypot(
+                  point->xMm - circle.center.xMm,
+                  point->yMm - circle.center.yMm) -
+              circle.radiusMm);
+
+      if (distance <= kExactBodyToleranceMm &&
+          distance < bestDistance) {
+        bestDistance = distance;
+        bestLine = sketch::kInvalidGeometryId;
+        bestCircle = circleId;
+      }
+    }
+
+    if (bestLine != sketch::kInvalidGeometryId) {
+      const bool duplicate = std::any_of(
+          sketch.constraints().begin(),
+          sketch.constraints().end(),
+          [bestLine, &candidate, &sameReference](
+              const sketch::Constraint& c) {
+            return c.type ==
+                       sketch::ConstraintType::PointOnLine &&
+                   c.firstGeometry == bestLine &&
+                   sameReference(
+                       c.secondPoint,
+                       candidate.reference);
+          });
+
+      if (!duplicate) {
+        sketch::Constraint c;
+        c.type = sketch::ConstraintType::PointOnLine;
+        c.firstGeometry = bestLine;
+        c.secondPoint = candidate.reference;
+        (void)sketch.addConstraint(c);
+      }
+
       continue;
+    }
 
-    const bool duplicate = std::any_of(
-        sketch.constraints().begin(),
-        sketch.constraints().end(),
-        [best, &candidate, &sameReference](
-            const sketch::Constraint& c) {
-          return c.type ==
-                     sketch::ConstraintType::PointOnLine &&
-                 c.firstGeometry == best &&
-                 sameReference(
-                     c.secondPoint,
-                     candidate.reference);
-        });
+    if (bestCircle != sketch::kInvalidGeometryId) {
+      const bool duplicate = std::any_of(
+          sketch.constraints().begin(),
+          sketch.constraints().end(),
+          [bestCircle, &candidate, &sameReference](
+              const sketch::Constraint& c) {
+            return c.type ==
+                       sketch::ConstraintType::PointOnCircle &&
+                   c.firstGeometry == bestCircle &&
+                   sameReference(
+                       c.secondPoint,
+                       candidate.reference);
+          });
 
-    if (!duplicate) {
-      sketch::Constraint c;
-      c.type = sketch::ConstraintType::PointOnLine;
-      c.firstGeometry = best;
-      c.secondPoint = candidate.reference;
-      (void)sketch.addConstraint(c);
+      if (!duplicate) {
+        sketch::Constraint c;
+        c.type = sketch::ConstraintType::PointOnCircle;
+        c.firstGeometry = bestCircle;
+        c.secondPoint = candidate.reference;
+        (void)sketch.addConstraint(c);
+      }
     }
   }
 }
