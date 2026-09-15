@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "sketch/Sketch.h"
@@ -103,6 +104,30 @@ class SketchCanvas final : public QWidget {
   selectedConstraintPanelEntries() const;
   bool removeConstraintById(sketch::ConstraintId id);
   bool setDimensionDriving(std::size_t dimensionIndex, bool driving);
+
+  // Screen -> Sketch axis mapping for point AutoDimension. The user chooses a
+  // dimension orientation visually (horizontal or vertical on screen), while
+  // x/y constraints always store Sketch-axis semantics. This single helper
+  // resolves a visual gesture to the Sketch-axis point mode ("x"/"y").
+  [[nodiscard]] static QString pointDimensionModeForScreenAxis(
+      bool horizontalDimensionLine, int viewQuarterTurns);
+
+  // Resolves the full point AutoDimension mode for a cursor gesture. The two
+  // booleans express the requested screen orientation; deltaX/deltaY are the
+  // Sketch-axis separations of the selected points. Returns "x", "y" or
+  // "aligned". The mapped Sketch axis must have a non-zero separation,
+  // otherwise the gesture falls back to aligned.
+  [[nodiscard]] static QString resolvePointDimensionMode(
+      bool horizontalLine, bool verticalLine,
+      double deltaX, double deltaY, int viewQuarterTurns);
+
+  // Witness segment (in Sketch coordinates) that a point dimension actually
+  // measures. PointDistanceX/Y project onto the Sketch X/Y axis; PointDistance
+  // keeps the raw pair. Callers map each endpoint with mapPoint() so that
+  // viewport rotation stays purely visual.
+  [[nodiscard]] static std::pair<sketch::Point, sketch::Point>
+  pointDimensionWitness(sketch::Point first, sketch::Point second,
+                        sketch::DimensionKind kind);
 
 signals:
   void geometryChanged(double widthMm, double heightMm);

@@ -1562,6 +1562,45 @@ sketch::Point SketchCanvas::rotateFromView(
   }
 }
 
+QString SketchCanvas::pointDimensionModeForScreenAxis(
+    bool horizontalDimensionLine, int viewQuarterTurns) {
+  const int normalized = (viewQuarterTurns % 4 + 4) % 4;
+  const bool odd = (normalized & 1) != 0;
+  // Even turns: screen horizontal == Sketch X. Odd turns swap the axes.
+  const bool sketchX = horizontalDimensionLine != odd;
+  return sketchX ? QStringLiteral("x") : QStringLiteral("y");
+}
+
+QString SketchCanvas::resolvePointDimensionMode(
+    bool horizontalLine, bool verticalLine,
+    double deltaX, double deltaY, int viewQuarterTurns) {
+  constexpr double projectionEpsilonMm = 1e-6;
+  if (horizontalLine || verticalLine) {
+    const QString mode = pointDimensionModeForScreenAxis(
+        horizontalLine, viewQuarterTurns);
+    const bool sketchX = mode == QStringLiteral("x");
+    const bool separated = sketchX ? deltaX > projectionEpsilonMm
+                                   : deltaY > projectionEpsilonMm;
+    if (separated)
+      return mode;
+  }
+  return QStringLiteral("aligned");
+}
+
+std::pair<sketch::Point, sketch::Point>
+SketchCanvas::pointDimensionWitness(sketch::Point first,
+                                    sketch::Point second,
+                                    sketch::DimensionKind kind) {
+  switch (kind) {
+    case sketch::DimensionKind::PointDistanceX:
+      return {first, {second.xMm, first.yMm}};
+    case sketch::DimensionKind::PointDistanceY:
+      return {first, {first.xMm, second.yMm}};
+    default:
+      return {first, second};
+  }
+}
+
 void SketchCanvas::rotateViewClockwise() {
   viewQuarterTurns_ = (viewQuarterTurns_ + 1) % 4;
   hideDimensionEditor();
@@ -2260,16 +2299,11 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
         geometryFirst = mapPoint(*firstPoint);
         geometrySecond = mapPoint(*secondPoint);
-        first = geometryFirst;
-        second = geometrySecond;
 
-        if (dimension.kind == sketch::DimensionKind::PointDistanceX) {
-          // Horizontal dimension line: keep the real X positions.
-          second.setY(first.y());
-        } else if (dimension.kind == sketch::DimensionKind::PointDistanceY) {
-          // Vertical dimension line: keep the real Y positions.
-          second.setX(first.x());
-        }
+        const auto witness = pointDimensionWitness(
+            *firstPoint, *secondPoint, dimension.kind);
+        first = mapPoint(witness.first);
+        second = mapPoint(witness.second);
       }
 
       label = QString::fromUtf8("%1 мм").arg(
@@ -2483,6 +2517,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
     std::optional<QPointF> first;
     std::optional<QPointF> second;
+    std::optional<QPointF> rawFirst;
+    std::optional<QPointF> rawSecond;
 
     if (target == "angle") {
       // Angular preview is painted above.
@@ -2533,34 +2569,29 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           sketch_.referencedPoint(secondReference);
 
       if (firstPoint && secondPoint) {
-        first = mapPoint(*firstPoint);
-        second = mapPoint(*secondPoint);
+        rawFirst = mapPoint(*firstPoint);
+        rawSecond = mapPoint(*secondPoint);
+        const QString pointMode =
+            property("autoDimensionPointMode").toString();
+        const sketch::DimensionKind kind =
+            pointMode == QStringLiteral("x")
+                ? sketch::DimensionKind::PointDistanceX
+                : pointMode == QStringLiteral("y")
+                    ? sketch::DimensionKind::PointDistanceY
+                    : sketch::DimensionKind::PointDistance;
+        const auto witness =
+            pointDimensionWitness(*firstPoint, *secondPoint, kind);
+        first = mapPoint(witness.first);
+        second = mapPoint(witness.second);
       }
     }
 
     if (first && second) {
-      const QPointF geometryFirst = *first;
-      const QPointF geometrySecond = *second;
+      const QPointF geometryFirst = rawFirst ? *rawFirst : *first;
+      const QPointF geometrySecond = rawSecond ? *rawSecond : *second;
 
-      QPointF baseFirst = geometryFirst;
-      QPointF baseSecond = geometrySecond;
-
-      const QString pointMode =
-          target == "points"
-              ? property("autoDimensionPointMode").toString()
-              : QString();
-
-      if (pointMode == QStringLiteral("x")) {
-        QPointF projectedSecond = baseSecond;
-        projectedSecond.setY(baseFirst.y());
-        if (QLineF(baseFirst, projectedSecond).length() > 1.0)
-          baseSecond = projectedSecond;
-      } else if (pointMode == QStringLiteral("y")) {
-        QPointF projectedSecond = baseSecond;
-        projectedSecond.setX(baseFirst.x());
-        if (QLineF(baseFirst, projectedSecond).length() > 1.0)
-          baseSecond = projectedSecond;
-      }
+      QPointF baseFirst = *first;
+      QPointF baseSecond = *second;
 
       QPointF direction = baseSecond - baseFirst;
       const double length =
@@ -3917,37 +3948,44 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         const QPointF fromMid = cursor - midpoint;
 
         constexpr double axisBias = 2.20;
-        QString mode = QStringLiteral("aligned");
 
         const double deltaX =
             std::abs(secondPoint->xMm - firstPoint->xMm);
         const double deltaY =
             std::abs(secondPoint->yMm - firstPoint->yMm);
-        constexpr double projectionEpsilonMm = 1e-6;
 
-        if (std::abs(fromMid.y()) >
-                std::abs(fromMid.x()) * axisBias &&
-            deltaX > projectionEpsilonMm) {
-          mode = QStringLiteral("x");
-        } else if (std::abs(fromMid.x()) >
-                       std::abs(fromMid.y()) * axisBias &&
-                   deltaY > projectionEpsilonMm) {
-          mode = QStringLiteral("y");
-        }
+        // The user selects the dimension orientation visually (a horizontal
+        // dimension line vs a vertical one), but x/y constraints store
+        // Sketch-axis semantics. Resolve the gesture through the single
+        // screen -> Sketch mapping; the mapped Sketch axis must have a
+        // non-zero separation, otherwise the dimension stays aligned.
+        const bool horizontalLine =
+            std::abs(fromMid.y()) >
+            std::abs(fromMid.x()) * axisBias;
+        const bool verticalLine =
+            std::abs(fromMid.x()) >
+            std::abs(fromMid.y()) * axisBias;
+
+        const QString mode = resolvePointDimensionMode(
+            horizontalLine, verticalLine,
+            deltaX, deltaY, viewQuarterTurns_);
 
         setProperty("autoDimensionPointMode", mode);
 
-        QPointF baseFirst = first;
-        QPointF baseSecond = second;
+        const auto witness = pointDimensionWitness(
+            *firstPoint, *secondPoint,
+            mode == QStringLiteral("x")
+                ? sketch::DimensionKind::PointDistanceX
+                : mode == QStringLiteral("y")
+                    ? sketch::DimensionKind::PointDistanceY
+                    : sketch::DimensionKind::PointDistance);
+        const QPointF baseFirst = mapPoint(witness.first);
+        const QPointF baseSecond = mapPoint(witness.second);
 
         if (mode == QStringLiteral("x")) {
-          baseSecond.setY(baseFirst.y());
-          primaryDimension_->setValue(
-              std::abs(secondPoint->xMm - firstPoint->xMm));
+          primaryDimension_->setValue(deltaX);
         } else if (mode == QStringLiteral("y")) {
-          baseSecond.setX(baseFirst.x());
-          primaryDimension_->setValue(
-              std::abs(secondPoint->yMm - firstPoint->yMm));
+          primaryDimension_->setValue(deltaY);
         } else {
           primaryDimension_->setValue(
               std::hypot(secondPoint->xMm - firstPoint->xMm,
@@ -4607,19 +4645,13 @@ bool SketchCanvas::dimensionSegment(std::size_t index, QPointF& first,
     secondPoint = *referencedSecond;
   }
 
-  const QPointF geometryFirst = mapPoint(firstPoint);
-  const QPointF geometrySecond = mapPoint(secondPoint);
-
-  first = geometryFirst;
-  second = geometrySecond;
-
   // Hit testing must use exactly the same projected base line that is
-  // painted for the stored dimension.
-  if (dimension.kind == sketch::DimensionKind::PointDistanceX) {
-    second.setY(first.y());
-  } else if (dimension.kind == sketch::DimensionKind::PointDistanceY) {
-    second.setX(first.x());
-  }
+  // painted for the stored dimension: project in Sketch coordinates first,
+  // then map, so viewport rotation stays purely visual.
+  const auto witness =
+      pointDimensionWitness(firstPoint, secondPoint, dimension.kind);
+  first = mapPoint(witness.first);
+  second = mapPoint(witness.second);
 
   QPointF direction = second - first;
   const double length = std::hypot(direction.x(), direction.y());
