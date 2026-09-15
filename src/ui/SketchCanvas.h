@@ -26,6 +26,7 @@ struct SketchEditContext {
   SketchPlacement placement{SketchPlacement::xy()};
   ShapeFeature::ShapePtr supportShape;
   std::optional<FaceReference> supportFace;
+  bool autoProjectSupportFace{false};
 };
 
 class SketchCanvas final : public QWidget {
@@ -85,6 +86,8 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
   [[nodiscard]] bool hasRealReferenceBody() const noexcept;
   [[nodiscard]] std::size_t referenceFaceEdgeCount() const noexcept;
+  [[nodiscard]] std::size_t referenceBodyEdgeCount() const noexcept;
+  bool projectReferenceEdge(std::size_t edgeVectorIndex);
   struct ConstraintPanelEntry {
     QString description;
     sketch::ConstraintId constraintId{sketch::kInvalidConstraintId};
@@ -132,7 +135,8 @@ signals:
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
   [[nodiscard]] sketch::Point snappedPoint(QPointF point) const;
   [[nodiscard]] std::optional<std::size_t> referenceEdgeAt(QPointF position) const;
-  bool projectReferenceEdge(std::size_t edgeVectorIndex);
+  bool appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
+                           bool reportStatus);
   void selectAt(QPointF position, bool additive = false,
                 bool preserveExistingIfHit = false);
   void selectInRect(const QRectF& rect, bool additive);

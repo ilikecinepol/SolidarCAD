@@ -1362,6 +1362,17 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
   realReferenceBodyVisible_ = !referenceBodyMesh_.triangles().empty();
   if (!realReferenceBodyVisible_) return;
 
+  if (resolved && context.autoProjectSupportFace && sketch_.lines().empty() &&
+      sketch_.circles().empty()) {
+    bool projected = false;
+    for (const auto& edge : referenceFaceMesh_.edges())
+      projected = appendProjectedEdge(edge, false, false) || projected;
+    if (projected) {
+      clearGeometrySelection();
+      notifyGeometryChanged();
+    }
+  }
+
   const BodyRenderMesh& fitMesh = referenceFaceMesh_.edges().empty()
                                       ? referenceBodyMesh_
                                       : referenceFaceMesh_;
@@ -1469,6 +1480,10 @@ bool SketchCanvas::hasRealReferenceBody() const noexcept {
 
 std::size_t SketchCanvas::referenceFaceEdgeCount() const noexcept {
   return referenceFaceMesh_.edges().size();
+}
+
+std::size_t SketchCanvas::referenceBodyEdgeCount() const noexcept {
+  return referenceBodyMesh_.edges().size();
 }
 
 void SketchCanvas::undo() {
@@ -1626,7 +1641,12 @@ bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
       edgeVectorIndex >= referenceBodyMesh_.edges().size())
     return false;
 
-  const auto& edge = referenceBodyMesh_.edges()[edgeVectorIndex];
+  return appendProjectedEdge(referenceBodyMesh_.edges()[edgeVectorIndex], true,
+                             true);
+}
+
+bool SketchCanvas::appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
+                                       bool reportStatus) {
   if (edge.points.size() < 2) return false;
 
   struct Segment {
@@ -1683,12 +1703,13 @@ bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
   }
 
   if (segments.empty()) {
-    emit selectionChanged(
-        QString::fromUtf8("Это ребро уже спроецировано"));
+    if (reportStatus)
+      emit selectionChanged(
+          QString::fromUtf8("Это ребро уже спроецировано"));
     return false;
   }
 
-  pushUndoState();
+  if (recordUndo) pushUndoState();
 
   std::size_t projectedElementId = 0;
   for (std::size_t i = 0; i < segments.size(); ++i) {
@@ -1728,18 +1749,21 @@ bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
     if (sketch_.addConstraint(lock) ==
         sketch::kInvalidConstraintId) {
       sketch_.removeElement(projectedElementId);
-      emit selectionChanged(
-          QString::fromUtf8(
-              "Не удалось зафиксировать проекцию"));
+      if (reportStatus)
+        emit selectionChanged(
+            QString::fromUtf8(
+                "Не удалось зафиксировать проекцию"));
       update();
       return false;
     }
   }
 
-  clearGeometrySelection();
-  notifyGeometryChanged();
-  emit selectionChanged(
-      QString::fromUtf8("Проекция ребра добавлена"));
+  if (reportStatus) {
+    clearGeometrySelection();
+    notifyGeometryChanged();
+    emit selectionChanged(
+        QString::fromUtf8("Проекция ребра добавлена"));
+  }
   update();
   return true;
 }
