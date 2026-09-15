@@ -153,6 +153,7 @@ signals:
   enum class ConstructionSnapKind {
     None,
     LinePoint,
+    LineMidpoint,
     CircleCenter,
     ElementCenter,
     LineBody,

@@ -1910,6 +1910,40 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       (circleMode_ == CircleMode::ThreeTangents ||
        circleMode_ == CircleMode::TwoTangentsRadius);
 
+  // MIDPOINT INFERENCE
+  // A line midpoint is a derived CAD snap point. Existing endpoints, circle
+  // centres and element centres above keep priority; otherwise, moving near
+  // the middle of a finite segment exposes its exact geometric centre.
+  constexpr double kMidpointTolerancePx = 14.0;
+  double bestMidpointDistance = kMidpointTolerancePx;
+
+  for (std::size_t index = 0;
+       !tangentCircleMode && index < sketch_.lines().size();
+       ++index) {
+    const auto lineId = sketch_.lineId(index);
+    if (lineId == sketch::kInvalidGeometryId)
+      continue;
+
+    const auto& line = sketch_.lines()[index];
+    const sketch::Point midpoint{
+        (line.start.xMm + line.end.xMm) * 0.5,
+        (line.start.yMm + line.end.yMm) * 0.5};
+    const double distance =
+        QLineF(position, mapPoint(midpoint)).length();
+
+    if (distance >= bestMidpointDistance)
+      continue;
+
+    bestMidpointDistance = distance;
+    result.point = midpoint;
+    result.kind = ConstructionSnapKind::LineMidpoint;
+    result.geometryId = lineId;
+    result.elementId = 0;
+  }
+
+  if (result.kind == ConstructionSnapKind::LineMidpoint)
+    return result;
+
   // A body snap is only advertised when the current construction stage can
   // persist or deliberately consume that relationship.
   const bool allowLineBody =
@@ -2194,6 +2228,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     const bool snapHovered =
         constructionHover_ &&
         ((constructionHover_->kind == ConstructionSnapKind::LinePoint ||
+          constructionHover_->kind == ConstructionSnapKind::LineMidpoint ||
           constructionHover_->kind == ConstructionSnapKind::LineBody) &&
              constructionHover_->geometryId == currentLineId ||
          constructionHover_->kind == ConstructionSnapKind::ElementCenter &&
@@ -2256,8 +2291,16 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   if (constructionHover_) {
     const QPointF snapPoint = mapPoint(constructionHover_->point);
     painter.setPen(QPen(QColor("#00a6ff"), 1.8));
-    painter.setBrush(QColor(255, 255, 255, 235));
-    painter.drawEllipse(snapPoint, 5.0, 5.0);
+
+    if (constructionHover_->kind == ConstructionSnapKind::LineMidpoint) {
+      painter.setBrush(QColor(0, 166, 255, 55));
+      painter.drawEllipse(snapPoint, 6.0, 6.0);
+      painter.setBrush(QColor("#00a6ff"));
+      painter.drawEllipse(snapPoint, 2.0, 2.0);
+    } else {
+      painter.setBrush(QColor(255, 255, 255, 235));
+      painter.drawEllipse(snapPoint, 5.0, 5.0);
+    }
   }
 
   const auto drawArrow = [&painter](QPointF tip, QPointF direction) {
@@ -3479,7 +3522,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
 
       setProperty(carrierProperty, QVariant());
 
-      if (constructionSnap.kind == ConstructionSnapKind::LineBody &&
+      if ((constructionSnap.kind == ConstructionSnapKind::LineBody ||
+           constructionSnap.kind == ConstructionSnapKind::LineMidpoint) &&
           constructionSnap.geometryId != sketch::kInvalidGeometryId) {
         setProperty(
             carrierProperty,
