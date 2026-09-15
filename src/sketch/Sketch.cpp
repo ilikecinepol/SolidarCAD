@@ -2598,6 +2598,189 @@ bool Sketch::setPointDistance(PointReference firstReference,
     updateBounds();
     return true;
   }
+
+  // Two aligned distances from the opposite endpoints of one locked
+  // reference line to opposite vertices of a free axis-aligned rectangle
+  // determine that rectangle's position and size. A sole external distance
+  // continues through the existing rigid-translation path below.
+  if (isPointReferenceLocked(firstReference) && secondRectangle &&
+      !isElementLocked(*secondRectangle) &&
+      firstReference.elementCenterId == 0 &&
+      firstReference.circleId == kInvalidGeometryId &&
+      firstReference.lineId != kInvalidGeometryId) {
+    constexpr double tolerance = 1e-7;
+    const bool xAxis = std::abs(dy) <= tolerance &&
+                       std::abs(dx) > tolerance;
+    const bool yAxis = std::abs(dx) <= tolerance &&
+                       std::abs(dy) > tolerance;
+    const auto externalLine = lineIndex(firstReference.lineId);
+
+    bool referenceAligned = false;
+    if (externalLine) {
+      const Line& line = lines_[*externalLine];
+      const double lineDx = std::abs(line.end.xMm - line.start.xMm);
+      const double lineDy = std::abs(line.end.yMm - line.start.yMm);
+      referenceAligned = (xAxis && lineDy <= tolerance &&
+                          lineDx > tolerance) ||
+                         (yAxis && lineDx <= tolerance &&
+                          lineDy > tolerance);
+    }
+
+    std::vector<std::size_t> rectangleLines;
+    bool rectangleAxisAligned = xAxis || yAxis;
+    for (std::size_t index = 0; index < lines_.size(); ++index) {
+      if (lines_[index].elementId != *secondRectangle)
+        continue;
+      rectangleLines.push_back(index);
+      const double lineDx =
+          std::abs(lines_[index].end.xMm - lines_[index].start.xMm);
+      const double lineDy =
+          std::abs(lines_[index].end.yMm - lines_[index].start.yMm);
+      if (lineDx > tolerance && lineDy > tolerance)
+        rectangleAxisAligned = false;
+    }
+
+    const auto pointBelongsToRectangle =
+        [this, elementId = *secondRectangle](PointReference reference) {
+      if (reference.elementCenterId != 0 ||
+          reference.circleId != kInvalidGeometryId ||
+          reference.lineId == kInvalidGeometryId)
+        return false;
+      const auto index = lineIndex(reference.lineId);
+      return index && lines_[*index].elementId == elementId;
+    };
+
+    bool axisSizeDriven = false;
+    for (const auto& constraint : constraints_) {
+      const auto constrainedLine = lineIndex(constraint.firstGeometry);
+      if (constraint.type == ConstraintType::Length && constrainedLine &&
+          lines_[*constrainedLine].elementId == *secondRectangle) {
+        const Line& line = lines_[*constrainedLine];
+        const double lineDx = std::abs(line.end.xMm - line.start.xMm);
+        const double lineDy = std::abs(line.end.yMm - line.start.yMm);
+        if ((xAxis && lineDx > lineDy + tolerance) ||
+            (yAxis && lineDy > lineDx + tolerance)) {
+          axisSizeDriven = true;
+          break;
+        }
+      }
+
+      if (!pointBelongsToRectangle(constraint.firstPoint) ||
+          !pointBelongsToRectangle(constraint.secondPoint))
+        continue;
+
+      const auto constrainedFirst = referencedPoint(constraint.firstPoint);
+      const auto constrainedSecond = referencedPoint(constraint.secondPoint);
+      if (!constrainedFirst || !constrainedSecond)
+        continue;
+
+      const double internalDx =
+          std::abs(constrainedSecond->xMm - constrainedFirst->xMm);
+      const double internalDy =
+          std::abs(constrainedSecond->yMm - constrainedFirst->yMm);
+      if ((xAxis &&
+           (constraint.type == ConstraintType::DistanceX ||
+            (constraint.type == ConstraintType::Distance &&
+             internalDx > tolerance && internalDy <= tolerance))) ||
+          (yAxis &&
+           (constraint.type == ConstraintType::DistanceY ||
+            (constraint.type == ConstraintType::Distance &&
+             internalDy > tolerance && internalDx <= tolerance)))) {
+        axisSizeDriven = true;
+        break;
+      }
+    }
+
+    struct AxisTarget {
+      double oldCoordinate{};
+      double newCoordinate{};
+    };
+    std::vector<AxisTarget> targets;
+    bool hasOppositeGap = false;
+    const double currentRectangleCoordinate =
+        xAxis ? second->xMm : second->yMm;
+
+    if (referenceAligned && rectangleAxisAligned &&
+        rectangleLines.size() == 4 && !axisSizeDriven) {
+      for (const auto& constraint : constraints_) {
+        if (constraint.type != ConstraintType::Distance ||
+            !std::isfinite(constraint.value) || constraint.value <= 0.0)
+          continue;
+
+        const bool firstIsRectangle =
+            pointBelongsToRectangle(constraint.firstPoint);
+        const bool secondIsRectangle =
+            pointBelongsToRectangle(constraint.secondPoint);
+        if (firstIsRectangle == secondIsRectangle)
+          continue;
+
+        const PointReference rectangleReference =
+            firstIsRectangle ? constraint.firstPoint : constraint.secondPoint;
+        const PointReference externalReference =
+            firstIsRectangle ? constraint.secondPoint : constraint.firstPoint;
+        if (externalReference.elementCenterId != 0 ||
+            externalReference.circleId != kInvalidGeometryId ||
+            externalReference.lineId != firstReference.lineId ||
+            !isPointReferenceLocked(externalReference))
+          continue;
+
+        const auto rectanglePoint = referencedPoint(rectangleReference);
+        const auto externalPoint = referencedPoint(externalReference);
+        if (!rectanglePoint || !externalPoint)
+          continue;
+
+        const double gapDx = rectanglePoint->xMm - externalPoint->xMm;
+        const double gapDy = rectanglePoint->yMm - externalPoint->yMm;
+        if ((xAxis && (std::abs(gapDy) > tolerance ||
+                       std::abs(gapDx) <= tolerance)) ||
+            (yAxis && (std::abs(gapDx) > tolerance ||
+                       std::abs(gapDy) <= tolerance)))
+          continue;
+
+        const double oldCoordinate =
+            xAxis ? rectanglePoint->xMm : rectanglePoint->yMm;
+        const double externalCoordinate =
+            xAxis ? externalPoint->xMm : externalPoint->yMm;
+        const double signedGap = oldCoordinate - externalCoordinate;
+        const double newCoordinate =
+            externalCoordinate + std::copysign(constraint.value, signedGap);
+
+        if (externalReference.start != firstReference.start &&
+            std::abs(oldCoordinate - currentRectangleCoordinate) > tolerance)
+          hasOppositeGap = true;
+
+        const auto existing = std::find_if(
+            targets.begin(), targets.end(),
+            [oldCoordinate](const AxisTarget& target) {
+              return std::abs(target.oldCoordinate - oldCoordinate) <=
+                     tolerance;
+            });
+        if (existing != targets.end()) {
+          if (std::abs(existing->newCoordinate - newCoordinate) > tolerance)
+            return false;
+        } else {
+          targets.push_back({oldCoordinate, newCoordinate});
+        }
+      }
+    }
+
+    if (hasOppositeGap && targets.size() >= 2) {
+      for (const std::size_t index : rectangleLines) {
+        auto& line = lines_[index];
+        for (const auto& target : targets) {
+          double& startCoordinate = xAxis ? line.start.xMm : line.start.yMm;
+          double& endCoordinate = xAxis ? line.end.xMm : line.end.yMm;
+          if (std::abs(startCoordinate - target.oldCoordinate) <= tolerance)
+            startCoordinate = target.newCoordinate;
+          if (std::abs(endCoordinate - target.oldCoordinate) <= tolerance)
+            endCoordinate = target.newCoordinate;
+        }
+      }
+      updateBounds();
+      return true;
+    }
+  }
+
   // A point-distance attached to a rectangle must move the complete
   // composite element. Moving only one corner destroys the rectangle and
   // makes the dimension appear to drift during subsequent solver passes.
