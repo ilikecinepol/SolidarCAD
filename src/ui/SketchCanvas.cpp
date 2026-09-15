@@ -1847,8 +1847,21 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       tool_ == Tool::Rectangle ||
       tool_ == Tool::Circle;
 
+  const bool tangentCircleMode =
+      tool_ == Tool::Circle &&
+      (circleMode_ == CircleMode::ThreeTangents ||
+       circleMode_ == CircleMode::TwoTangentsRadius);
+
   if (!snapEnabled_ || !creationTool)
     return result;
+
+  // Tangent-circle tools select carrier lines, not construction points.
+  // Keep the exact cursor position for nearestLine() and for the live
+  // two-tangent side/radius preview instead of projecting it onto geometry.
+  if (tangentCircleMode) {
+    result.point = unmapPoint(position);
+    return result;
+  }
 
   constexpr double kSnapTolerancePx = 10.0;
   double bestPointDistance = kSnapTolerancePx;
@@ -1904,11 +1917,6 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
 
   if (result.kind != ConstructionSnapKind::None)
     return result;
-
-  const bool tangentCircleMode =
-      tool_ == Tool::Circle &&
-      (circleMode_ == CircleMode::ThreeTangents ||
-       circleMode_ == CircleMode::TwoTangentsRadius);
 
   // MIDPOINT INFERENCE
   // A line midpoint is a derived CAD snap point. Existing endpoints, circle
@@ -9561,13 +9569,28 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
     if (!line)
       return;
 
+    // Composite elements such as rectangles own several distinct line
+    // geometries with one shared elementId. Tangent-circle tools select
+    // carrier segments, so reject only the exact same segment twice.
+    const auto sameGuidePoint = [](sketch::Point first,
+                                   sketch::Point second) {
+      constexpr double epsilon = 1e-7;
+      return std::hypot(first.xMm - second.xMm,
+                        first.yMm - second.yMm) <= epsilon;
+    };
+
     const bool duplicate =
         std::any_of(
             circleGuideLines_.begin(),
             circleGuideLines_.end(),
             [&](const auto& existing) {
-              return existing.elementId ==
-                     line->elementId;
+              const bool sameOrder =
+                  sameGuidePoint(existing.start, line->start) &&
+                  sameGuidePoint(existing.end, line->end);
+              const bool reverseOrder =
+                  sameGuidePoint(existing.start, line->end) &&
+                  sameGuidePoint(existing.end, line->start);
+              return sameOrder || reverseOrder;
             });
 
     if (!duplicate)
