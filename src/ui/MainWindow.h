@@ -118,7 +118,7 @@ class MainWindow final : public QMainWindow {
   void pushUndoRedoAction(std::function<void()> undo, std::function<void()> redo);
   void updateUndoAvailability();
   void updateSketchConstraintPanel();
-  bool configureSketchEditContext();
+  bool configureSketchEditContext(bool autoProjectSupportFace = false);
 
   Document document_;
   AppSettings& settings_;

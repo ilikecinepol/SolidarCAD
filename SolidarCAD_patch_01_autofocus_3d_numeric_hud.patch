@@ -1,0 +1,74 @@
+diff --git a/src/ui/tools/ToolParameterHud.h b/src/ui/tools/ToolParameterHud.h
+--- a/src/ui/tools/ToolParameterHud.h
++++ b/src/ui/tools/ToolParameterHud.h
+@@ -1,5 +1,6 @@
+ class QDoubleSpinBox;
+ class QHBoxLayout;
++class QShowEvent;
+ 
+ namespace solidar {
+ 
+@@ -22,5 +23,6 @@
+ 
+  protected:
+   bool eventFilter(QObject* watched, QEvent* event) override;
++  void showEvent(QShowEvent* event) override;
+ 
+  private:
+diff --git a/src/ui/tools/ToolParameterHud.cpp b/src/ui/tools/ToolParameterHud.cpp
+--- a/src/ui/tools/ToolParameterHud.cpp
++++ b/src/ui/tools/ToolParameterHud.cpp
+@@ -3,7 +3,9 @@
+ #include <QHBoxLayout>
+ #include <QKeyEvent>
+ #include <QPointer>
++#include <QShowEvent>
+ #include <QSignalBlocker>
++#include <QTimer>
+ 
+ #include <algorithm>
+ #include <iterator>
+@@ -18,4 +20,16 @@
+   // rule; a local light stylesheet would leave a white field in Dark mode.
+ }
+ 
++void ToolParameterHud::showEvent(QShowEvent* event) {
++  QWidget::showEvent(event);
++
++  // Numeric entry is the primary interaction once a 3D tool HUD appears:
++  // make the first editable value immediately ready for replacement so the
++  // user can type a number and press Enter without an initial Tab/click.
++  QTimer::singleShot(0, this, [this] {
++    if (!isVisible() || orderedEditors_.empty()) return;
++    focusFirstField();
++  });
++}
++
+ void ToolParameterHud::clearEditors() {
+diff --git a/tests/tool_parameter_hud_tests.cpp b/tests/tool_parameter_hud_tests.cpp
+--- a/tests/tool_parameter_hud_tests.cpp
++++ b/tests/tool_parameter_hud_tests.cpp
+@@ -2,4 +2,23 @@
+   qputenv("QT_QPA_PLATFORM", "offscreen");
+   QApplication application(argc, argv);
+ 
++  // Test 0: opening the viewport HUD immediately focuses the first numeric
++  // editor and selects its value. A tool can therefore be launched and the
++  // user can type a replacement value + Enter without pressing Tab first.
++  {
++    solidar::ToolParameterHud hud;
++    hud.setParameters({distanceParam("distance", 10.0)});
++    auto* editor = hud.findChild<QDoubleSpinBox*>("distance");
++    CHECK(editor != nullptr);
++
++    hud.show();
++    hud.activateWindow();
++    QApplication::processEvents();
++
++    CHECK(QApplication::focusWidget() == editor);
++    auto* line = spinLineEdit(editor);
++    CHECK(line != nullptr);
++    CHECK(line->hasSelectedText());
++  }
++
+   // Test 1: single field — Return commits exactly once.

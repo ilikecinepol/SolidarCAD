@@ -1,0 +1,40 @@
+diff --git a/src/ui/Viewport.cpp b/src/ui/Viewport.cpp
+--- a/src/ui/Viewport.cpp
++++ b/src/ui/Viewport.cpp
+@@ -1,16 +1,23 @@
+ void Viewport::showExtrusionManipulator(double lengthMm) {
++  const bool editorWasVisible = extrusionLengthEditor_->isVisible();
+   extrusionManipulatorVisible_ = true;
+   setExtrusionPreviewLength(lengthMm);
+   extrusionLengthEditor_->show();
+   extrusionLengthEditor_->raise();
++  if (!editorWasVisible) {
++    extrusionLengthEditor_->setFocus(Qt::OtherFocusReason);
++    extrusionLengthEditor_->selectAll();
++  }
+   update();
+ }
+ 
+ void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
++  const bool hudWasVisible = toolParameterHud_->isVisible();
+   toolManipulator_ = manipulator;
+   angularToolManipulator_.reset();
+   toolParameterHud_->show();
+   toolParameterHud_->raise();
++  if (!hudWasVisible) toolParameterHud_->focusFirstField();
+   update();
+ }
+ 
+@@ -18,10 +25,12 @@
+ 
+ void Viewport::setAngularToolManipulator(
+     const AngularToolManipulator& manipulator) {
++  const bool hudWasVisible = toolParameterHud_->isVisible();
+   angularToolManipulator_ = manipulator;
+   toolManipulator_.reset();
+   toolParameterHud_->show();
+   toolParameterHud_->raise();
++  if (!hudWasVisible) toolParameterHud_->focusFirstField();
+   update();
+ }
+ 

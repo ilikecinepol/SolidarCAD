@@ -1,0 +1,342 @@
+diff --git a/src/ui/SketchCanvas.cpp b/src/ui/SketchCanvas.cpp
+index 4b86958..43784ed 100644
+--- a/src/ui/SketchCanvas.cpp
++++ b/src/ui/SketchCanvas.cpp
+@@ -341,6 +341,25 @@ std::optional<sketch::Arc> arcThroughThreePoints(
+                      false};
+ }
+ 
++std::optional<sketch::Arc> arcFromChordSagitta(
++    sketch::Point first, sketch::Point last, double signedSagittaMm) {
++  const double dx = last.xMm - first.xMm;
++  const double dy = last.yMm - first.yMm;
++  const double chord = std::hypot(dx, dy);
++  if (chord <= 1e-9 || std::abs(signedSagittaMm) <= 1e-9)
++    return std::nullopt;
++
++  const sketch::Point midpoint{
++      (first.xMm + last.xMm) * 0.5,
++      (first.yMm + last.yMm) * 0.5};
++  const double nx = -dy / chord;
++  const double ny = dx / chord;
++  const sketch::Point through{
++      midpoint.xMm + nx * signedSagittaMm,
++      midpoint.yMm + ny * signedSagittaMm};
++  return arcThroughThreePoints(first, through, last);
++}
++
+ double pointLineDistance(sketch::Point point, const sketch::Line& line) {
+ 
+ 
+@@ -2333,16 +2352,55 @@ double pointLineDistance(sketch::Point point, const sketch::Line& line) {
+   }
+ 
+   if (tool_ == Tool::Arc && !arcPoints_.empty()) {
+-    painter.setPen(QPen(QColor("#56a0ff"), 1.8, Qt::DashLine,
+-                        Qt::RoundCap));
+-    painter.setBrush(Qt::NoBrush);
++    const sketch::Point first = arcPoints_[0];
++    const sketch::Point last =
++        arcPoints_.size() == 1 ? hoverPoint_ : arcPoints_[1];
++    const double dx = last.xMm - first.xMm;
++    const double dy = last.yMm - first.yMm;
++    const double chord = std::hypot(dx, dy);
++
++    if (chord > 1e-9) {
++      const double nx = -dy / chord;
++      const double ny = dx / chord;
++      double signedSagitta = chord * 0.5;
++
++      if (arcPoints_.size() == 2) {
++        double sign = property("arcSagittaSign").toDouble();
++        if (sign == 0.0) sign = 1.0;
++        signedSagitta =
++            sign * std::max(0.01, primaryDimension_->value());
++      }
+ 
+-    if (arcPoints_.size() == 1) {
+-      painter.drawLine(mapPoint(arcPoints_.front()), mapPoint(hoverPoint_));
+-    } else if (arcPoints_.size() == 2) {
+-      const auto preview = arcThroughThreePoints(
+-          arcPoints_[0], arcPoints_[1], hoverPoint_);
+-      if (preview) drawSketchArc(*preview);
++      const auto preview =
++          arcFromChordSagitta(first, last, signedSagitta);
++
++      painter.save();
++      painter.setPen(
++          QPen(QColor(10, 114, 255, 190), 1.8,
++               Qt::DashLine, Qt::RoundCap));
++      painter.setBrush(QColor(10, 114, 255, 48));
++
++      if (preview)
++        drawSketchArc(*preview);
++
++      painter.setPen(
++          QPen(QColor(10, 114, 255, 145), 1.0,
++               Qt::DashLine, Qt::RoundCap));
++      painter.drawLine(mapPoint(first), mapPoint(last));
++
++      if (arcPoints_.size() == 2) {
++        const sketch::Point midpoint{
++            (first.xMm + last.xMm) * 0.5,
++            (first.yMm + last.yMm) * 0.5};
++        const sketch::Point apex{
++            midpoint.xMm + nx * signedSagitta,
++            midpoint.yMm + ny * signedSagitta};
++        painter.drawLine(mapPoint(midpoint), mapPoint(apex));
++        painter.setBrush(QColor(10, 114, 255, 90));
++        painter.drawEllipse(mapPoint(apex), 3.5, 3.5);
++      }
++
++      painter.restore();
+     }
+   }
+ 
+@@ -3720,6 +3778,75 @@ double pointLineDistance(sketch::Point point, const sketch::Line& line) {
+     hoverPoint_ = snappedPoint(event->position());
+   }
+ 
++  // ARC INTERACTIVE PARAMETERS
++  if (tool_ == Tool::Arc && !arcPoints_.empty()) {
++    primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
++    primaryDimension_->setRange(0.01, 100000.0);
++    primaryDimension_->setDecimals(2);
++
++    if (!primaryDimension_->isVisible()) {
++      primaryDimension_->show();
++      primaryDimension_->raise();
++    }
++
++    if (arcPoints_.size() == 1) {
++      primaryDimension_->setPrefix(QString::fromUtf8("L: "));
++      const auto first = arcPoints_[0];
++      double dx = hoverPoint_.xMm - first.xMm;
++      double dy = hoverPoint_.yMm - first.yMm;
++      double length = std::hypot(dx, dy);
++
++      if (primaryDimension_->hasFocus()) {
++        if (length <= 1e-9) {
++          dx = 1.0;
++          dy = 0.0;
++          length = 1.0;
++        }
++        const double requested =
++            std::max(0.01, primaryDimension_->value());
++        hoverPoint_ = {
++            first.xMm + requested * dx / length,
++            first.yMm + requested * dy / length};
++      } else if (length > 1e-9) {
++        const QSignalBlocker blocker(primaryDimension_);
++        primaryDimension_->setValue(length);
++        primaryDimension_->move(
++            (event->position() + QPointF(18.0, 18.0)).toPoint());
++      }
++    } else if (arcPoints_.size() == 2) {
++      primaryDimension_->setPrefix(QString::fromUtf8("H: "));
++      const auto first = arcPoints_[0];
++      const auto last = arcPoints_[1];
++      const double dx = last.xMm - first.xMm;
++      const double dy = last.yMm - first.yMm;
++      const double chord = std::hypot(dx, dy);
++
++      if (chord > 1e-9) {
++        const sketch::Point midpoint{
++            (first.xMm + last.xMm) * 0.5,
++            (first.yMm + last.yMm) * 0.5};
++        const double nx = -dy / chord;
++        const double ny = dx / chord;
++        const double signedSagitta =
++            (hoverPoint_.xMm - midpoint.xMm) * nx +
++            (hoverPoint_.yMm - midpoint.yMm) * ny;
++
++        if (std::abs(signedSagitta) > 1e-6)
++          setProperty("arcSagittaSign", signedSagitta < 0.0 ? -1.0 : 1.0);
++
++        if (!primaryDimension_->hasFocus()) {
++          const QSignalBlocker blocker(primaryDimension_);
++          primaryDimension_->setValue(
++              std::max(0.01, std::abs(signedSagitta)));
++          primaryDimension_->move(
++              (event->position() + QPointF(18.0, 18.0)).toPoint());
++        }
++      }
++    }
++
++    update();
++  }
++
+   // TWO-TANGENT MOUSE DIAMETER DRIVE
+   if (tool_ == Tool::Circle &&
+ 
+@@ -4816,6 +4943,48 @@ bool SketchCanvas::eventFilter(QObject* watched, QEvent* event) {
+     }
+     if (keyEvent->key() == Qt::Key_Return ||
+         keyEvent->key() == Qt::Key_Enter) {
++      // ARC NUMERIC ENTER: first Enter fixes chord, second fixes sagitta.
++      if (tool_ == Tool::Arc &&
++          watched == primaryDimension_ &&
++          !arcPoints_.empty()) {
++        if (arcPoints_.size() == 1) {
++          const auto first = arcPoints_[0];
++          double dx = hoverPoint_.xMm - first.xMm;
++          double dy = hoverPoint_.yMm - first.yMm;
++          double length = std::hypot(dx, dy);
++          if (length <= 1e-9) {
++            dx = 1.0;
++            dy = 0.0;
++            length = 1.0;
++          }
++          const double requested =
++              std::max(0.01, primaryDimension_->value());
++          commitArcPoint({
++              first.xMm + requested * dx / length,
++              first.yMm + requested * dy / length});
++        } else if (arcPoints_.size() == 2) {
++          const auto first = arcPoints_[0];
++          const auto last = arcPoints_[1];
++          const double dx = last.xMm - first.xMm;
++          const double dy = last.yMm - first.yMm;
++          const double chord = std::hypot(dx, dy);
++          if (chord > 1e-9) {
++            const sketch::Point midpoint{
++                (first.xMm + last.xMm) * 0.5,
++                (first.yMm + last.yMm) * 0.5};
++            const double nx = -dy / chord;
++            const double ny = dx / chord;
++            double sign = property("arcSagittaSign").toDouble();
++            if (sign == 0.0) sign = 1.0;
++            const double sagitta =
++                sign * std::max(0.01, primaryDimension_->value());
++            commitArcPoint({midpoint.xMm + nx * sagitta,
++                            midpoint.yMm + ny * sagitta});
++          }
++        }
++        return true;
++      }
++
+       // TWO-TANGENT NUMERIC ENTER
+       if (tool_ == Tool::Circle &&
+ 
+@@ -9281,24 +9450,103 @@ bool SketchCanvas::eventFilter(QObject* watched, QEvent* event) {
+ }
+ 
+ void SketchCanvas::commitArcPoint(sketch::Point point) {
+-  if (arcPoints_.size() < 2) {
++  if (arcPoints_.empty()) {
+     arcPoints_.push_back(point);
++    hoverPoint_ = point;
++    setProperty("arcSagittaSign", 1.0);
++
++    primaryDimension_->setPrefix(QString::fromUtf8("L: "));
++    primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
++    primaryDimension_->setRange(0.01, 100000.0);
++    primaryDimension_->setDecimals(2);
++    primaryDimension_->setValue(0.01);
++    primaryDimension_->move(
++        (mapPoint(point) + QPointF(18.0, 18.0)).toPoint());
++    primaryDimension_->show();
++    primaryDimension_->raise();
++    primaryDimension_->clearFocus();
++
++    emit selectionChanged(QString::fromUtf8(
++        "Дуга: задайте конец хорды мышью или длиной L"));
++    update();
++    return;
++  }
+ 
+-    emit selectionChanged(
+-        arcPoints_.size() == 1
+-            ? QString::fromUtf8("Дуга: выберите точку на дуге")
+-            : QString::fromUtf8("Дуга: выберите конечную точку"));
++  if (arcPoints_.size() == 1) {
++    const auto first = arcPoints_[0];
++    double dx = point.xMm - first.xMm;
++    double dy = point.yMm - first.yMm;
++    double chord = std::hypot(dx, dy);
++    if (chord <= 1e-9) {
++      emit selectionChanged(
++          QString::fromUtf8("Дуга: длина хорды должна быть больше нуля"));
++      return;
++    }
++
++    if (primaryDimension_->isVisible()) {
++      const double requested =
++          std::max(0.01, primaryDimension_->value());
++      point = {first.xMm + requested * dx / chord,
++               first.yMm + requested * dy / chord};
++      dx = point.xMm - first.xMm;
++      dy = point.yMm - first.yMm;
++      chord = requested;
++    }
++
++    arcPoints_.push_back(point);
++    const sketch::Point midpoint{
++        (first.xMm + point.xMm) * 0.5,
++        (first.yMm + point.yMm) * 0.5};
++    const double nx = -dy / chord;
++    const double ny = dx / chord;
++    const double defaultSagitta = chord * 0.5;
++    hoverPoint_ = {midpoint.xMm + nx * defaultSagitta,
++                   midpoint.yMm + ny * defaultSagitta};
++    setProperty("arcSagittaSign", 1.0);
++
++    primaryDimension_->setPrefix(QString::fromUtf8("H: "));
++    primaryDimension_->setValue(std::max(0.01, defaultSagitta));
++    primaryDimension_->move(
++        (mapPoint(hoverPoint_) + QPointF(18.0, 18.0)).toPoint());
++    primaryDimension_->show();
++    primaryDimension_->raise();
++    primaryDimension_->clearFocus();
++
++    emit selectionChanged(QString::fromUtf8(
++        "Дуга: задайте изгиб мышью или величиной H"));
+     update();
+     return;
+   }
+ 
++  const auto first = arcPoints_[0];
++  const auto last = arcPoints_[1];
++  const double dx = last.xMm - first.xMm;
++  const double dy = last.yMm - first.yMm;
++  const double chord = std::hypot(dx, dy);
++  if (chord <= 1e-9) return;
++
++  const sketch::Point midpoint{
++      (first.xMm + last.xMm) * 0.5,
++      (first.yMm + last.yMm) * 0.5};
++  const double nx = -dy / chord;
++  const double ny = dx / chord;
++  const double cursorSagitta =
++      (point.xMm - midpoint.xMm) * nx +
++      (point.yMm - midpoint.yMm) * ny;
++
++  double sign = property("arcSagittaSign").toDouble();
++  if (std::abs(cursorSagitta) > 1e-6)
++    sign = cursorSagitta < 0.0 ? -1.0 : 1.0;
++  if (sign == 0.0) sign = 1.0;
++
++  const double sagitta =
++      sign * std::max(0.01, primaryDimension_->value());
+   const auto arc =
+-      arcThroughThreePoints(arcPoints_[0], arcPoints_[1], point);
++      arcFromChordSagitta(first, last, sagitta);
+ 
+   if (!arc) {
+     emit selectionChanged(
+-        QString::fromUtf8(
+-            "Дуга не построена: три точки не должны лежать на одной прямой"));
++        QString::fromUtf8("Дуга не построена: некорректный изгиб"));
+     update();
+     return;
+   }
+@@ -9311,6 +9559,9 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
+                  arc->dashed);
+ 
+   arcPoints_.clear();
++  setProperty("arcSagittaSign", QVariant());
++  hideDimensionEditor();
++  setFocus();
+   emit selectionChanged(QString::fromUtf8("Дуга создана"));
+   notifyGeometryChanged();
+   update();

@@ -1,0 +1,681 @@
+diff --git a/src/sketch/Sketch.h b/src/sketch/Sketch.h
+--- a/src/sketch/Sketch.h
++++ b/src/sketch/Sketch.h
+@@ -82,6 +82,7 @@ enum class ConstraintType {
+   PointOnCircle,
+   Tangent,
+   LineDistance,
+-  Lock};
++  Lock,
++  PointOnArc};
+ 
+ struct Constraint {
+@@ -131,6 +132,7 @@ class Sketch final {
+   bool setPointsCoincident(PointReference first, PointReference second);
+   bool setPointOnLine(GeometryId lineId, PointReference pointReference);
+   bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
++  bool setPointOnArc(GeometryId arcId, PointReference pointReference);
+ 
+   bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
+   bool translatePoint(PointReference reference, double dxMm, double dyMm);
+diff --git a/src/sketch/Sketch.cpp b/src/sketch/Sketch.cpp
+--- a/src/sketch/Sketch.cpp
++++ b/src/sketch/Sketch.cpp
+@@ -22,4 +22,81 @@ Point arcEndPoint(const Arc& arc) noexcept {
+           arc.center.yMm + arc.radiusMm * std::sin(angle)};
+ }
+ 
++namespace {
++
++double normalizedArcAngle(double angle) noexcept {
++  constexpr double kTwoPi = 6.28318530717958647692;
++  angle = std::fmod(angle, kTwoPi);
++  if (angle < 0.0) angle += kTwoPi;
++  return angle;
++}
++
++std::optional<Arc> arcThroughConstraintPoints(Point first,
++                                              Point through,
++                                              Point last) {
++  const double determinant = 2.0 *
++      (first.xMm * (through.yMm - last.yMm) +
++       through.xMm * (last.yMm - first.yMm) +
++       last.xMm * (first.yMm - through.yMm));
++  if (std::abs(determinant) <= 1e-12) return std::nullopt;
++
++  const double a = first.xMm * first.xMm + first.yMm * first.yMm;
++  const double b = through.xMm * through.xMm + through.yMm * through.yMm;
++  const double c = last.xMm * last.xMm + last.yMm * last.yMm;
++
++  const Point center{
++      (a * (through.yMm - last.yMm) +
++       b * (last.yMm - first.yMm) +
++       c * (first.yMm - through.yMm)) / determinant,
++      (a * (last.xMm - through.xMm) +
++       b * (first.xMm - last.xMm) +
++       c * (through.xMm - first.xMm)) / determinant};
++
++  const double radius =
++      std::hypot(first.xMm - center.xMm, first.yMm - center.yMm);
++  if (!std::isfinite(radius) || radius <= 1e-9) return std::nullopt;
++
++  constexpr double kTwoPi = 6.28318530717958647692;
++  const double start = normalizedArcAngle(
++      std::atan2(first.yMm - center.yMm, first.xMm - center.xMm));
++  const double middle = normalizedArcAngle(
++      std::atan2(through.yMm - center.yMm, through.xMm - center.xMm));
++  const double end = normalizedArcAngle(
++      std::atan2(last.yMm - center.yMm, last.xMm - center.xMm));
++
++  const double ccwSweep = normalizedArcAngle(end - start);
++  const double middleFromStart = normalizedArcAngle(middle - start);
++  if (ccwSweep > 1e-9 && middleFromStart <= ccwSweep + 1e-9)
++    return Arc{center, radius, start, ccwSweep, false};
++
++  const double reverseSweep = normalizedArcAngle(start - end);
++  if (reverseSweep <= 1e-9 || reverseSweep >= kTwoPi - 1e-9)
++    return std::nullopt;
++  return Arc{center, radius, end, reverseSweep, false};
++}
++
++bool moveArcEndpoint(Arc& arc, bool start, Point target) {
++  const Point current = start ? arcStartPoint(arc) : arcEndPoint(arc);
++  if (std::hypot(current.xMm - target.xMm,
++                 current.yMm - target.yMm) <= 1e-9)
++    return true;
++
++  const Point opposite = start ? arcEndPoint(arc) : arcStartPoint(arc);
++  const double middleAngle = arc.startAngleRad + arc.sweepAngleRad * 0.5;
++  const Point through{
++      arc.center.xMm + arc.radiusMm * std::cos(middleAngle),
++      arc.center.yMm + arc.radiusMm * std::sin(middleAngle)};
++
++  auto rebuilt = start
++      ? arcThroughConstraintPoints(target, through, opposite)
++      : arcThroughConstraintPoints(opposite, through, target);
++  if (!rebuilt) return false;
++
++  rebuilt->dashed = arc.dashed;
++  arc = *rebuilt;
++  return true;
++}
++
++}  // namespace
++
+ Sketch::Sketch() { clear(); }
+@@ -1886,5 +1961,11 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
+                  a.circleId == b.circleId;
+ 
++        if (a.arcId != kInvalidGeometryId ||
++            b.arcId != kInvalidGeometryId)
++          return a.arcId != kInvalidGeometryId &&
++                 b.arcId != kInvalidGeometryId &&
++                 a.arcId == b.arcId && a.start == b.start;
++
+         return a.lineId == b.lineId &&
+                a.start == b.start;
+       };
+@@ -1902,7 +1983,17 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
+       firstReference.lineId == secondReference.lineId)
+     return false;
+ 
++  // The two endpoints of one arc are distinct CAD vertices too.
++  if (firstReference.arcId != kInvalidGeometryId &&
++      firstReference.arcId == secondReference.arcId &&
++      firstReference.start != secondReference.start)
++    return false;
++
+   const Point target = *first;
+   const Point oldSecond = *second;
+ 
++  if (std::hypot(target.xMm - oldSecond.xMm,
++                 target.yMm - oldSecond.yMm) <= 1e-9)
++    return true;
++
+   // A virtual rectangle center is not an independently movable coordinate.
+@@ -1934,4 +2026,8 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
+     const auto index = circleIndex(secondReference.circleId);
+     if (!index) return false;
+     circles_[*index].center = target;
++  } else if (secondReference.arcId != kInvalidGeometryId) {
++    const auto index = arcIndex(secondReference.arcId);
++    if (!index) return false;
++    if (!moveArcEndpoint(arcs_[*index], secondReference.start, target)) return false;
+   } else {
+@@ -2001,4 +2097,8 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
+     const auto circle = circleIndex(pointReference.circleId);
+     if (!circle) return false;
+     circles_[*circle].center = target;
++  } else if (pointReference.arcId != kInvalidGeometryId) {
++    const auto arc = arcIndex(pointReference.arcId);
++    if (!arc) return false;
++    if (!moveArcEndpoint(arcs_[*arc], pointReference.start, target)) return false;
+   } else {
+@@ -2073,4 +2173,8 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
+     if (!movingCircle) return false;
+ 
+     circles_[*movingCircle].center = target;
++  } else if (pointReference.arcId != kInvalidGeometryId) {
++    const auto movingArc = arcIndex(pointReference.arcId);
++    if (!movingArc) return false;
++    if (!moveArcEndpoint(arcs_[*movingArc], pointReference.start, target)) return false;
+   } else {
+@@ -2095,4 +2199,86 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
+   updateBounds();
+   return true;
+ }
++
++bool Sketch::setPointOnArc(GeometryId arcIdValue,
++                           PointReference pointReference) {
++  const auto carrierIndex = arcIndex(arcIdValue);
++  const auto point = referencedPoint(pointReference);
++
++  if (isPointReferenceLocked(pointReference)) return false;
++  if (!carrierIndex || !point) return false;
++
++  // An endpoint already belongs to its own carrier by definition.
++  if (pointReference.arcId == arcIdValue) return false;
++
++  const Arc& carrier = arcs_[*carrierIndex];
++  if (!std::isfinite(carrier.radiusMm) || carrier.radiusMm <= 1e-9 ||
++      carrier.sweepAngleRad <= 1e-9)
++    return false;
++
++  const Point startPoint = arcStartPoint(carrier);
++  const Point endPoint = arcEndPoint(carrier);
++  double dx = point->xMm - carrier.center.xMm;
++  double dy = point->yMm - carrier.center.yMm;
++  const double length = std::hypot(dx, dy);
++
++  Point target{};
++  if (length <= 1e-12) {
++    target = startPoint;
++  } else {
++    const double angle = normalizedArcAngle(std::atan2(dy, dx));
++    const double start = normalizedArcAngle(carrier.startAngleRad);
++    const double delta = normalizedArcAngle(angle - start);
++
++    if (delta <= carrier.sweepAngleRad + 1e-9) {
++      target = {carrier.center.xMm + carrier.radiusMm * dx / length,
++                carrier.center.yMm + carrier.radiusMm * dy / length};
++    } else {
++      const double toStart = std::hypot(point->xMm - startPoint.xMm,
++                                        point->yMm - startPoint.yMm);
++      const double toEnd = std::hypot(point->xMm - endPoint.xMm,
++                                      point->yMm - endPoint.yMm);
++      target = toStart <= toEnd ? startPoint : endPoint;
++    }
++  }
++
++  const Point oldPoint = *point;
++  const double moveX = target.xMm - oldPoint.xMm;
++  const double moveY = target.yMm - oldPoint.yMm;
++
++  if (pointReference.elementCenterId != 0) {
++    for (auto& line : lines_) {
++      if (line.elementId != pointReference.elementCenterId) continue;
++      line.start.xMm += moveX;
++      line.start.yMm += moveY;
++      line.end.xMm += moveX;
++      line.end.yMm += moveY;
++    }
++  } else if (pointReference.circleId != kInvalidGeometryId) {
++    const auto movingCircle = circleIndex(pointReference.circleId);
++    if (!movingCircle) return false;
++    circles_[*movingCircle].center = target;
++  } else if (pointReference.arcId != kInvalidGeometryId) {
++    const auto movingArc = arcIndex(pointReference.arcId);
++    if (!movingArc) return false;
++    if (!moveArcEndpoint(arcs_[*movingArc], pointReference.start, target))
++      return false;
++  } else {
++    const auto same = [](Point first, Point second) {
++      return std::hypot(first.xMm - second.xMm,
++                        first.yMm - second.yMm) <= 1e-7;
++    };
++    for (auto& line : lines_) {
++      if (same(line.start, oldPoint)) line.start = target;
++      if (same(line.end, oldPoint)) line.end = target;
++    }
++    for (auto& circle : circles_) {
++      if (same(circle.center, oldPoint)) circle.center = target;
++    }
++  }
++
++  updateBounds();
++  return true;
++}
++
+ bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
+@@ -2171,4 +2363,12 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
+                  first.circleId == second.circleId;
+         }
+ 
++        if (first.arcId != kInvalidGeometryId ||
++            second.arcId != kInvalidGeometryId) {
++          return first.arcId != kInvalidGeometryId &&
++                 second.arcId != kInvalidGeometryId &&
++                 first.arcId == second.arcId &&
++                 first.start == second.start;
++        }
++
+         if (first.lineId == kInvalidGeometryId ||
+@@ -2259,5 +2458,18 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
+       circles_[*index].center.yMm += dyMm;
+       continue;
+     }
++
++    if (pointReference.arcId != kInvalidGeometryId) {
++      const auto index = arcIndex(pointReference.arcId);
++      if (!index) continue;
++
++      const auto current = referencedPoint(pointReference);
++      if (!current) continue;
++      const Point target{current->xMm + dxMm,
++                         current->yMm + dyMm};
++      (void)moveArcEndpoint(arcs_[*index],
++                            pointReference.start, target);
++      continue;
++    }
+ 
+     const auto index =
+@@ -2293,6 +2504,8 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
+     if (pointReference.elementCenterId != 0 ||
+         pointReference.circleId !=
+             kInvalidGeometryId ||
++        pointReference.arcId !=
++            kInvalidGeometryId ||
+         pointReference.lineId ==
+             kInvalidGeometryId)
+       continue;
+diff --git a/src/sketch/SketchSolver.cpp b/src/sketch/SketchSolver.cpp
+--- a/src/sketch/SketchSolver.cpp
++++ b/src/sketch/SketchSolver.cpp
+@@ -129,4 +129,8 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
+         // Applied after carrier geometry has settled.
+         break;
+ 
++      case ConstraintType::PointOnArc:
++        // Applied after carrier geometry has settled.
++        break;
++
+       case ConstraintType::Tangent:
+@@ -230,5 +234,6 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
+               case ConstraintType::Coincident:
+               case ConstraintType::PointOnLine:
+               case ConstraintType::PointOnCircle:
++              case ConstraintType::PointOnArc:
+                 score += 25;
+                 break;
+@@ -1187,3 +1192,24 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
+       ++result.invalidReferences;
+   }
++
++  // POINT-ON-ARC FINAL PASS
++  // Project onto the finite arc, not the supporting full circle.
++  for (const auto& constraint : sketch.constraints()) {
++    if (constraint.type != ConstraintType::PointOnArc)
++      continue;
++
++    if (constraint.firstGeometry == kInvalidGeometryId ||
++        !sketch.arcIndex(constraint.firstGeometry) ||
++        !sketch.referencedPoint(constraint.secondPoint)) {
++      ++result.invalidReferences;
++      continue;
++    }
++
++    if (sketch.setPointOnArc(constraint.firstGeometry,
++                             constraint.secondPoint))
++      ++result.applied;
++    else
++      ++result.invalidReferences;
++  }
++
+   // CRASH-FREE 10: GROUPED MULTI-TANGENT SOLVER
+diff --git a/src/sketch/SketchConstraintDiagnostics.cpp b/src/sketch/SketchConstraintDiagnostics.cpp
+--- a/src/sketch/SketchConstraintDiagnostics.cpp
++++ b/src/sketch/SketchConstraintDiagnostics.cpp
+@@ -205,4 +205,7 @@ std::optional<Point> pointOf(const Sketch& sketch,
+     return circle ? std::optional<Point>{circle->center} : std::nullopt;
+   }
+ 
++  if (reference.arcId != kInvalidGeometryId)
++    return sketch.referencedPoint(reference);
++
+   const auto line = lineOf(layout, variables, reference.lineId);
+@@ -238,4 +242,33 @@ double segmentDistance(Point p, const Line& line, double* outside = nullptr) {
+   return pointDistance(p, q);
+ }
+ 
++double finiteArcDistance(Point point, const Arc& arc) {
++  if (!std::isfinite(arc.radiusMm) || arc.radiusMm <= 1e-12 ||
++      arc.sweepAngleRad <= 1e-12)
++    return kDegeneratePenalty;
++
++  constexpr double kTwoPi = 6.28318530717958647692;
++  const auto normalize = [](double angle) {
++    constexpr double twoPi = 6.28318530717958647692;
++    angle = std::fmod(angle, twoPi);
++    if (angle < 0.0) angle += twoPi;
++    return angle;
++  };
++
++  const double dx = point.xMm - arc.center.xMm;
++  const double dy = point.yMm - arc.center.yMm;
++  const double length = std::hypot(dx, dy);
++  if (length <= 1e-12) return arc.radiusMm;
++
++  const double angle = normalize(std::atan2(dy, dx));
++  const double delta = normalize(angle - normalize(arc.startAngleRad));
++  if (delta <= arc.sweepAngleRad + 1e-12)
++    return std::abs(length - arc.radiusMm);
++
++  const Point start = arcStartPoint(arc);
++  const Point end = arcEndPoint(arc);
++  return std::min(pointDistance(point, start),
++                  pointDistance(point, end));
++}
++
+ std::vector<Equation> evaluate(const Sketch& sketch,
+@@ -425,4 +459,15 @@ std::vector<Equation> evaluate(const Sketch& sketch,
+         break;
+       }
+ 
++      case ConstraintType::PointOnArc: {
++        const auto index = sketch.arcIndex(constraint.firstGeometry);
++        const auto point =
++            pointOf(sketch, layout, variables, constraint.secondPoint);
++        if (!index || !point) { invalidEquation(constraint); break; }
++
++        add(finiteArcDistance(*point, sketch.arcs()[*index]),
++            kLengthTolerance, constraint);
++        break;
++      }
++
+       case ConstraintType::Tangent: {
+diff --git a/src/ui/SketchCanvas.cpp b/src/ui/SketchCanvas.cpp
+--- a/src/ui/SketchCanvas.cpp
++++ b/src/ui/SketchCanvas.cpp
+@@ -8754,7 +8754,8 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
+ // Current PointReference supports line endpoints and circle centers, so this
+ // automatically covers line endpoints, rectangle vertices and circle centers.
+ void autoCoincidentNewGeometry(
+     sketch::Sketch& sketch,
+     std::size_t oldLineCount,
+     std::size_t oldCircleCount,
++    std::size_t oldArcCount,
+     double toleranceMm) {
+@@ -8779,4 +8780,12 @@ void autoCoincidentNewGeometry(
+                  first.circleId == second.circleId;
+         }
+ 
++        if (first.arcId != sketch::kInvalidGeometryId ||
++            second.arcId != sketch::kInvalidGeometryId) {
++          return first.arcId != sketch::kInvalidGeometryId &&
++                 second.arcId != sketch::kInvalidGeometryId &&
++                 first.arcId == second.arcId &&
++                 first.start == second.start;
++        }
++
+         return first.lineId == second.lineId &&
+@@ -8824,4 +8832,18 @@ void autoCoincidentNewGeometry(
+     addOldReference(center);
+   }
+ 
++  for (std::size_t index = 0;
++       index < std::min(oldArcCount, sketch.arcs().size());
++       ++index) {
++    const auto id = sketch.arcId(index);
++    if (id == sketch::kInvalidGeometryId) continue;
++
++    sketch::PointReference start;
++    start.arcId = id;
++    start.start = true;
++    addOldReference(start);
++    start.start = false;
++    addOldReference(start);
++  }
++
+   // Existing virtual centers of composite elements are CAD points too.
+@@ -8919,4 +8940,17 @@ void autoCoincidentNewGeometry(
+     addNewReference(center);
+   }
+ 
++  for (std::size_t index = oldArcCount;
++       index < sketch.arcs().size(); ++index) {
++    const auto id = sketch.arcId(index);
++    if (id == sketch::kInvalidGeometryId) continue;
++
++    sketch::PointReference endpoint;
++    endpoint.arcId = id;
++    endpoint.start = true;
++    addNewReference(endpoint);
++    endpoint.start = false;
++    addNewReference(endpoint);
++  }
++
+   // Newly created center-based rectangles expose a virtual center node.
+@@ -9040,130 +9074,204 @@ void autoCoincidentNewGeometry(
+     sketch::GeometryId bestLine =
+         sketch::kInvalidGeometryId;
+     sketch::GeometryId bestCircle =
+         sketch::kInvalidGeometryId;
++    sketch::GeometryId bestArc =
++        sketch::kInvalidGeometryId;
+     double bestDistance =
+         std::numeric_limits<double>::max();
+ 
+     const std::size_t oldLineLimit =
+         std::min(oldLineCount, sketch.lines().size());
+ 
+     for (std::size_t i = 0; i < oldLineLimit; ++i) {
+       const auto carrierId = sketch.lineId(i);
+       if (carrierId == sketch::kInvalidGeometryId)
+         continue;
+ 
+       const auto& carrier = sketch.lines()[i];
+       const double dx =
+           carrier.end.xMm - carrier.start.xMm;
+       const double dy =
+           carrier.end.yMm - carrier.start.yMm;
+       const double l2 = dx * dx + dy * dy;
+       if (l2 <= 1e-12) continue;
+ 
+       const double t =
+           ((point->xMm - carrier.start.xMm) * dx +
+            (point->yMm - carrier.start.yMm) * dy) / l2;
+ 
+       if (t < 0.0 || t > 1.0)
+         continue;
+ 
+       const sketch::Point q{
+           carrier.start.xMm + t * dx,
+           carrier.start.yMm + t * dy};
+ 
+       const double distance =
+           std::hypot(
+               point->xMm - q.xMm,
+               point->yMm - q.yMm);
+ 
+       const bool projectedReference =
+           carrier.dashed &&
+           sketch.isGeometryLocked(carrierId);
+       const double acceptedDistance =
+           projectedReference
+               ? toleranceMm
+               : kExactBodyToleranceMm;
+ 
+       if (distance <= acceptedDistance &&
+           distance < bestDistance) {
+         bestDistance = distance;
+         bestLine = carrierId;
+         bestCircle = sketch::kInvalidGeometryId;
++        bestArc = sketch::kInvalidGeometryId;
+       }
+     }
+ 
+     const std::size_t oldCircleLimit =
+         std::min(oldCircleCount, sketch.circles().size());
+ 
+     for (std::size_t i = 0; i < oldCircleLimit; ++i) {
+       const auto circleId = sketch.circleId(i);
+       if (circleId == sketch::kInvalidGeometryId)
+         continue;
+ 
+       const auto& circle = sketch.circles()[i];
+       const double distance =
+           std::abs(
+               std::hypot(
+                   point->xMm - circle.center.xMm,
+                   point->yMm - circle.center.yMm) -
+               circle.radiusMm);
+ 
+       if (distance <= kExactBodyToleranceMm &&
+           distance < bestDistance) {
+         bestDistance = distance;
+         bestLine = sketch::kInvalidGeometryId;
+         bestCircle = circleId;
++        bestArc = sketch::kInvalidGeometryId;
+       }
+     }
++
++    const std::size_t oldArcLimit =
++        std::min(oldArcCount, sketch.arcs().size());
++    constexpr double kTwoPi = 6.28318530717958647692;
++    const auto normalize = [](double angle) {
++      constexpr double twoPi = 6.28318530717958647692;
++      angle = std::fmod(angle, twoPi);
++      if (angle < 0.0) angle += twoPi;
++      return angle;
++    };
++
++    for (std::size_t i = 0; i < oldArcLimit; ++i) {
++      const auto arcId = sketch.arcId(i);
++      if (arcId == sketch::kInvalidGeometryId) continue;
++
++      const auto& arc = sketch.arcs()[i];
++      if (arc.radiusMm <= 1e-9 || arc.sweepAngleRad <= 1e-9 ||
++          arc.sweepAngleRad >= kTwoPi)
++        continue;
++
++      const double dx = point->xMm - arc.center.xMm;
++      const double dy = point->yMm - arc.center.yMm;
++      const double length = std::hypot(dx, dy);
++      if (length <= 1e-12) continue;
++
++      const double angle = normalize(std::atan2(dy, dx));
++      const double delta =
++          normalize(angle - normalize(arc.startAngleRad));
++      if (delta > arc.sweepAngleRad + 1e-9) continue;
++
++      const double distance = std::abs(length - arc.radiusMm);
++      if (distance <= kExactBodyToleranceMm &&
++          distance < bestDistance) {
++        bestDistance = distance;
++        bestLine = sketch::kInvalidGeometryId;
++        bestCircle = sketch::kInvalidGeometryId;
++        bestArc = arcId;
++      }
++    }
+ 
+     if (bestLine != sketch::kInvalidGeometryId) {
+       const bool duplicate = std::any_of(
+           sketch.constraints().begin(),
+           sketch.constraints().end(),
+           [bestLine, &candidate, &sameReference](
+               const sketch::Constraint& c) {
+             return c.type ==
+                        sketch::ConstraintType::PointOnLine &&
+                    c.firstGeometry == bestLine &&
+                    sameReference(
+                        c.secondPoint,
+                        candidate.reference);
+           });
+ 
+       if (!duplicate) {
+         sketch::Constraint c;
+         c.type = sketch::ConstraintType::PointOnLine;
+         c.firstGeometry = bestLine;
+         c.secondPoint = candidate.reference;
+         (void)sketch.addConstraint(c);
+       }
+ 
+       continue;
+     }
+ 
+     if (bestCircle != sketch::kInvalidGeometryId) {
+       const bool duplicate = std::any_of(
+           sketch.constraints().begin(),
+           sketch.constraints().end(),
+           [bestCircle, &candidate, &sameReference](
+               const sketch::Constraint& c) {
+             return c.type ==
+                        sketch::ConstraintType::PointOnCircle &&
+                    c.firstGeometry == bestCircle &&
+                    sameReference(
+                        c.secondPoint,
+                        candidate.reference);
+           });
+ 
+       if (!duplicate) {
+         sketch::Constraint c;
+         c.type = sketch::ConstraintType::PointOnCircle;
+         c.firstGeometry = bestCircle;
+         c.secondPoint = candidate.reference;
+         (void)sketch.addConstraint(c);
+       }
++
++      continue;
++    }
++
++    if (bestArc != sketch::kInvalidGeometryId) {
++      const bool duplicate = std::any_of(
++          sketch.constraints().begin(),
++          sketch.constraints().end(),
++          [bestArc, &candidate, &sameReference](
++              const sketch::Constraint& c) {
++            return c.type == sketch::ConstraintType::PointOnArc &&
++                   c.firstGeometry == bestArc &&
++                   sameReference(c.secondPoint, candidate.reference);
++          });
++
++      if (!duplicate) {
++        sketch::Constraint c;
++        c.type = sketch::ConstraintType::PointOnArc;
++        c.firstGeometry = bestArc;
++        c.secondPoint = candidate.reference;
++        (void)sketch.addConstraint(c);
++      }
+     }
+   }
+ }
++
++void autoCoincidentNewGeometry(
++    sketch::Sketch& sketch,
++    std::size_t oldLineCount,
++    std::size_t oldCircleCount,
++    double toleranceMm) {
++  autoCoincidentNewGeometry(sketch, oldLineCount, oldCircleCount,
++                            sketch.arcs().size(), toleranceMm);
++}
+ 
+ }  // namespace
+@@ -9497,6 +9599,10 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
+   }
+ 
+   pushUndoState();
++  const std::size_t oldLineCount = sketch_.lines().size();
++  const std::size_t oldCircleCount = sketch_.circles().size();
++  const std::size_t oldArcCount = sketch_.arcs().size();
++
+   sketch_.addArc(arc->center,
+                  arc->radiusMm,
+                  arc->startAngleRad,
+@@ -9504,3 +9610,7 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
+                  arc->dashed);
++
++  autoCoincidentNewGeometry(
++      sketch_, oldLineCount, oldCircleCount, oldArcCount,
++      8.0 / std::max(0.001, pixelsPerMm_));
+ 
+   arcPoints_.clear();

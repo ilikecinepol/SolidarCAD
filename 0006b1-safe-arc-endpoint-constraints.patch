@@ -1,0 +1,230 @@
+diff --git a/src/sketch/Sketch.cpp b/src/sketch/Sketch.cpp
+--- a/src/sketch/Sketch.cpp
++++ b/src/sketch/Sketch.cpp
+@@ -22,4 +22,21 @@ Point arcEndPoint(const Arc& arc) noexcept {
+           arc.center.yMm + arc.radiusMm * std::sin(angle)};
+ }
++
++namespace {
++
++// First safe Arc constraint primitive: keep the Arc shape rigid and translate
++// the whole curve when one of its endpoint references has to move. This avoids
++// rebuilding radius/sweep inside the sequential constraint solver.
++bool moveArcEndpointRigid(Arc& arc, bool start, Point target) {
++  const Point current = start ? arcStartPoint(arc) : arcEndPoint(arc);
++  const double dx = target.xMm - current.xMm;
++  const double dy = target.yMm - current.yMm;
++  if (std::abs(dx) <= 1e-12 && std::abs(dy) <= 1e-12) return true;
++  arc.center.xMm += dx;
++  arc.center.yMm += dy;
++  return true;
++}
++
++}  // namespace
+ 
+ Sketch::Sketch() { clear(); }
+@@ -1886,5 +1902,11 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
+                  a.circleId == b.circleId;
+ 
++        if (a.arcId != kInvalidGeometryId ||
++            b.arcId != kInvalidGeometryId)
++          return a.arcId != kInvalidGeometryId &&
++                 b.arcId != kInvalidGeometryId &&
++                 a.arcId == b.arcId && a.start == b.start;
++
+         return a.lineId == b.lineId &&
+                a.start == b.start;
+       };
+@@ -1902,7 +1924,17 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
+       firstReference.lineId == secondReference.lineId)
+     return false;
+ 
++  // Never collapse both endpoints of one Arc onto each other.
++  if (firstReference.arcId != kInvalidGeometryId &&
++      firstReference.arcId == secondReference.arcId &&
++      firstReference.start != secondReference.start)
++    return false;
++
+   const Point target = *first;
+   const Point oldSecond = *second;
+ 
++  if (std::hypot(target.xMm - oldSecond.xMm,
++                 target.yMm - oldSecond.yMm) <= 1e-9)
++    return true;
++
+   // A virtual rectangle center is not an independently movable coordinate.
+@@ -1934,4 +1966,8 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
+     const auto index = circleIndex(secondReference.circleId);
+     if (!index) return false;
+     circles_[*index].center = target;
++  } else if (secondReference.arcId != kInvalidGeometryId) {
++    const auto index = arcIndex(secondReference.arcId);
++    if (!index) return false;
++    if (!moveArcEndpointRigid(arcs_[*index], secondReference.start, target)) return false;
+   } else {
+@@ -2001,4 +2037,8 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
+     const auto circle = circleIndex(pointReference.circleId);
+     if (!circle) return false;
+     circles_[*circle].center = target;
++  } else if (pointReference.arcId != kInvalidGeometryId) {
++    const auto arc = arcIndex(pointReference.arcId);
++    if (!arc) return false;
++    if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target)) return false;
+   } else {
+@@ -2073,4 +2113,8 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
+     if (!movingCircle) return false;
+ 
+     circles_[*movingCircle].center = target;
++  } else if (pointReference.arcId != kInvalidGeometryId) {
++    const auto movingArc = arcIndex(pointReference.arcId);
++    if (!movingArc) return false;
++    if (!moveArcEndpointRigid(arcs_[*movingArc], pointReference.start, target)) return false;
+   } else {
+@@ -2171,4 +2215,12 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
+                  first.circleId == second.circleId;
+         }
+ 
++        if (first.arcId != kInvalidGeometryId ||
++            second.arcId != kInvalidGeometryId) {
++          return first.arcId != kInvalidGeometryId &&
++                 second.arcId != kInvalidGeometryId &&
++                 first.arcId == second.arcId &&
++                 first.start == second.start;
++        }
++
+         if (first.lineId == kInvalidGeometryId ||
+@@ -2259,5 +2311,16 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
+       circles_[*index].center.yMm += dyMm;
+       continue;
+     }
++
++    if (pointReference.arcId != kInvalidGeometryId) {
++      const auto index = arcIndex(pointReference.arcId);
++      if (!index) continue;
++      const auto current = referencedPoint(pointReference);
++      if (!current) continue;
++      const Point target{current->xMm + dxMm,
++                         current->yMm + dyMm};
++      (void)moveArcEndpointRigid(arcs_[*index], pointReference.start, target);
++      continue;
++    }
+ 
+     const auto index =
+@@ -2293,6 +2356,8 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
+     if (pointReference.elementCenterId != 0 ||
+         pointReference.circleId !=
+             kInvalidGeometryId ||
++        pointReference.arcId !=
++            kInvalidGeometryId ||
+         pointReference.lineId ==
+             kInvalidGeometryId)
+       continue;
+diff --git a/src/sketch/SketchConstraintDiagnostics.cpp b/src/sketch/SketchConstraintDiagnostics.cpp
+--- a/src/sketch/SketchConstraintDiagnostics.cpp
++++ b/src/sketch/SketchConstraintDiagnostics.cpp
+@@ -205,6 +205,9 @@ std::optional<Point> pointOf(const Sketch& sketch,
+     return circle ? std::optional<Point>{circle->center} : std::nullopt;
+   }
+ 
++  if (reference.arcId != kInvalidGeometryId)
++    return sketch.referencedPoint(reference);
++
+   const auto line = lineOf(layout, variables, reference.lineId);
+   if (!line) return std::nullopt;
+   return reference.start ? line->start : line->end;
+diff --git a/src/ui/SketchCanvas.cpp b/src/ui/SketchCanvas.cpp
+--- a/src/ui/SketchCanvas.cpp
++++ b/src/ui/SketchCanvas.cpp
+@@ -8754,5 +8754,6 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
+ void autoCoincidentNewGeometry(
+     sketch::Sketch& sketch,
+     std::size_t oldLineCount,
+     std::size_t oldCircleCount,
++    std::size_t oldArcCount,
+     double toleranceMm) {
+@@ -8779,6 +8780,14 @@ void autoCoincidentNewGeometry(
+                  first.circleId == second.circleId;
+         }
+ 
++        if (first.arcId != sketch::kInvalidGeometryId ||
++            second.arcId != sketch::kInvalidGeometryId) {
++          return first.arcId != sketch::kInvalidGeometryId &&
++                 second.arcId != sketch::kInvalidGeometryId &&
++                 first.arcId == second.arcId &&
++                 first.start == second.start;
++        }
++
+         return first.lineId == second.lineId &&
+                first.start == second.start;
+       };
+@@ -8824,4 +8832,18 @@ void autoCoincidentNewGeometry(
+     addOldReference(center);
+   }
+ 
++  for (std::size_t index = 0;
++       index < std::min(oldArcCount, sketch.arcs().size());
++       ++index) {
++    const auto id = sketch.arcId(index);
++    if (id == sketch::kInvalidGeometryId) continue;
++
++    sketch::PointReference endpoint;
++    endpoint.arcId = id;
++    endpoint.start = true;
++    addOldReference(endpoint);
++    endpoint.start = false;
++    addOldReference(endpoint);
++  }
++
+   // Existing virtual centers of composite elements are CAD points too.
+@@ -8919,4 +8941,17 @@ void autoCoincidentNewGeometry(
+     addNewReference(center);
+   }
+ 
++  for (std::size_t index = oldArcCount;
++       index < sketch.arcs().size(); ++index) {
++    const auto id = sketch.arcId(index);
++    if (id == sketch::kInvalidGeometryId) continue;
++
++    sketch::PointReference endpoint;
++    endpoint.arcId = id;
++    endpoint.start = true;
++    addNewReference(endpoint);
++    endpoint.start = false;
++    addNewReference(endpoint);
++  }
++
+   // Newly created center-based rectangles expose a virtual center node.
+@@ -9169,5 +9204,14 @@ void autoCoincidentNewGeometry(
+     }
+   }
+ }
++
++void autoCoincidentNewGeometry(
++    sketch::Sketch& sketch,
++    std::size_t oldLineCount,
++    std::size_t oldCircleCount,
++    double toleranceMm) {
++  autoCoincidentNewGeometry(sketch, oldLineCount, oldCircleCount,
++                            sketch.arcs().size(), toleranceMm);
++}
+ 
+ }  // namespace
+@@ -9497,6 +9541,10 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
+   }
+ 
+   pushUndoState();
++  const std::size_t oldLineCount = sketch_.lines().size();
++  const std::size_t oldCircleCount = sketch_.circles().size();
++  const std::size_t oldArcCount = sketch_.arcs().size();
++
+   sketch_.addArc(arc->center,
+                  arc->radiusMm,
+                  arc->startAngleRad,
+@@ -9504,3 +9552,7 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
+                  arc->dashed);
++
++  autoCoincidentNewGeometry(
++      sketch_, oldLineCount, oldCircleCount, oldArcCount,
++      8.0 / std::max(0.001, pixelsPerMm_));
+ 
+   arcPoints_.clear();

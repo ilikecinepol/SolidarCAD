@@ -1,0 +1,355 @@
+--- a/src/sketch/Sketch.h
++++ b/src/sketch/Sketch.h
+@@ -16,7 +16,8 @@
+   PointOnCircle,
+   Tangent,
+   LineDistance,
+-  Lock};
++  Lock,
++  PointOnArc};
+ 
+ struct Constraint {
+   ConstraintId id{kInvalidConstraintId};
+@@ -37,6 +38,7 @@
+   bool setPointsCoincident(PointReference first, PointReference second);
+   bool setPointOnLine(GeometryId lineId, PointReference pointReference);
+   bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
++  bool setPointOnArc(GeometryId arcId, PointReference pointReference);
+ 
+   bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
+   bool translatePoint(PointReference reference, double dxMm, double dyMm);
+--- a/src/sketch/Sketch.cpp
++++ b/src/sketch/Sketch.cpp
+@@ -1,6 +1,123 @@
+   updateBounds();
+   return true;
+ }
++
++bool Sketch::setPointOnArc(GeometryId arcIdValue,
++                           PointReference pointReference) {
++  const auto carrierIndex = arcIndex(arcIdValue);
++  const auto point = referencedPoint(pointReference);
++  if (!carrierIndex || !point) return false;
++
++  const Arc& carrier = arcs_[*carrierIndex];
++  constexpr double kTwoPi = 6.28318530717958647692;
++  if (!std::isfinite(carrier.center.xMm) ||
++      !std::isfinite(carrier.center.yMm) ||
++      !std::isfinite(carrier.radiusMm) ||
++      !std::isfinite(carrier.startAngleRad) ||
++      !std::isfinite(carrier.sweepAngleRad) ||
++      carrier.radiusMm <= 1e-9 ||
++      carrier.sweepAngleRad <= 1e-9 ||
++      carrier.sweepAngleRad >= kTwoPi - 1e-9)
++    return false;
++
++  // An endpoint already belonging to the carrier is tautologically valid.
++  if (pointReference.arcId == arcIdValue)
++    return true;
++
++  const auto normalizeAngle = [](double angle) {
++    constexpr double twoPi = 6.28318530717958647692;
++    angle = std::fmod(angle, twoPi);
++    if (angle < 0.0) angle += twoPi;
++    return angle;
++  };
++
++  const Point oldPoint = *point;
++  const Point startPoint = arcStartPoint(carrier);
++  const Point endPoint = arcEndPoint(carrier);
++
++  double dx = oldPoint.xMm - carrier.center.xMm;
++  double dy = oldPoint.yMm - carrier.center.yMm;
++  const double radialLength = std::hypot(dx, dy);
++
++  Point target = startPoint;
++
++  if (radialLength > 1e-9) {
++    const double candidateAngle =
++        normalizeAngle(std::atan2(dy, dx));
++    const double startAngle =
++        normalizeAngle(carrier.startAngleRad);
++    const double delta =
++        normalizeAngle(candidateAngle - startAngle);
++
++    if (delta <= carrier.sweepAngleRad + 1e-12) {
++      target = {
++          carrier.center.xMm +
++              dx / radialLength * carrier.radiusMm,
++          carrier.center.yMm +
++              dy / radialLength * carrier.radiusMm};
++    } else {
++      const double startDistance =
++          std::hypot(oldPoint.xMm - startPoint.xMm,
++                     oldPoint.yMm - startPoint.yMm);
++      const double endDistance =
++          std::hypot(oldPoint.xMm - endPoint.xMm,
++                     oldPoint.yMm - endPoint.yMm);
++      target = startDistance <= endDistance
++                   ? startPoint
++                   : endPoint;
++    }
++  }
++
++  const double moveX = target.xMm - oldPoint.xMm;
++  const double moveY = target.yMm - oldPoint.yMm;
++
++  // A locked point may satisfy the relation, but must never be moved.
++  if (isPointReferenceLocked(pointReference))
++    return std::hypot(moveX, moveY) <= 1e-7;
++
++  if (pointReference.elementCenterId != 0) {
++    for (auto& line : lines_) {
++      if (line.elementId != pointReference.elementCenterId)
++        continue;
++      line.start.xMm += moveX;
++      line.start.yMm += moveY;
++      line.end.xMm += moveX;
++      line.end.yMm += moveY;
++    }
++  } else if (pointReference.circleId != kInvalidGeometryId) {
++    const auto movingCircle = circleIndex(pointReference.circleId);
++    if (!movingCircle) return false;
++    circles_[*movingCircle].center = target;
++  } else if (pointReference.arcId != kInvalidGeometryId) {
++    // Move the other arc rigidly. Do not reshape either arc from PointOnArc.
++    const auto movingArc = arcIndex(pointReference.arcId);
++    if (!movingArc) return false;
++    arcs_[*movingArc].center.xMm += moveX;
++    arcs_[*movingArc].center.yMm += moveY;
++  } else {
++    const auto same = [](Point first, Point second) {
++      return std::hypot(first.xMm - second.xMm,
++                        first.yMm - second.yMm) <= 1e-7;
++    };
++
++    // Preserve the existing endpoint-cluster behaviour used by PointOnCircle.
++    for (auto& line : lines_) {
++      if (same(line.start, oldPoint)) line.start = target;
++      if (same(line.end, oldPoint)) line.end = target;
++    }
++
++    for (auto& circle : circles_) {
++      if (same(circle.center, oldPoint))
++        circle.center = target;
++    }
++  }
++
++  // IMPORTANT: do not call translatePoint() here. translatePoint() invokes
++  // solveStable(), while this mutator is itself called from the solver.
++  updateBounds();
++  return true;
++}
++
+ bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
+                                     GeometryId circleIdValue) {
+   // LOCK CONSTRAINT: this primitive solves tangency by moving the circle.
+--- a/src/sketch/SketchSolver.cpp
++++ b/src/sketch/SketchSolver.cpp
+@@ -1,4 +1,8 @@
+       case ConstraintType::PointOnCircle:
++        // Applied after carrier geometry has settled.
++        break;
++
++      case ConstraintType::PointOnArc:
+         // Applied after carrier geometry has settled.
+         break;
+ 
+@@ -45,4 +49,26 @@
+     else
+       ++result.invalidReferences;
+   }
++
++  // POINT-ON-ARC FINAL PASS
++  // The carrier Arc remains fixed. Only the referenced point is projected
++  // onto the finite arc span, including endpoint clamping.
++  for (const auto& constraint : sketch.constraints()) {
++    if (constraint.type != ConstraintType::PointOnArc)
++      continue;
++
++    if (constraint.firstGeometry == kInvalidGeometryId ||
++        !sketch.arcIndex(constraint.firstGeometry) ||
++        !sketch.referencedPoint(constraint.secondPoint)) {
++      ++result.invalidReferences;
++      continue;
++    }
++
++    if (sketch.setPointOnArc(constraint.firstGeometry,
++                             constraint.secondPoint))
++      ++result.applied;
++    else
++      ++result.invalidReferences;
++  }
++
+   // CRASH-FREE 10: GROUPED MULTI-TANGENT SOLVER
+--- a/src/sketch/SketchConstraintDiagnostics.cpp
++++ b/src/sketch/SketchConstraintDiagnostics.cpp
+@@ -1,6 +1,17 @@
+   if (reference.circleId != kInvalidGeometryId) {
+     const auto circle = circleOf(layout, variables, reference.circleId);
+     return circle ? std::optional<Point>{circle->center} : std::nullopt;
++  }
++
++  // Arc variables are not part of the diagnostic layout yet. Endpoint
++  // references are still valid CAD points and are read from the current
++  // fixed Arc geometry.
++  if (reference.arcId != kInvalidGeometryId) {
++    const auto index = sketch.arcIndex(reference.arcId);
++    if (!index) return std::nullopt;
++    return reference.start
++               ? arcStartPoint(sketch.arcs()[*index])
++               : arcEndPoint(sketch.arcs()[*index]);
+   }
+ 
+   const auto line = lineOf(layout, variables, reference.lineId);
+@@ -35,6 +46,45 @@
+   return pointDistance(p, q);
+ }
+ 
++double finiteArcDistance(Point point, const Arc& arc) {
++  constexpr double kTwoPi = 6.28318530717958647692;
++  if (!std::isfinite(arc.center.xMm) ||
++      !std::isfinite(arc.center.yMm) ||
++      !std::isfinite(arc.radiusMm) ||
++      !std::isfinite(arc.startAngleRad) ||
++      !std::isfinite(arc.sweepAngleRad) ||
++      arc.radiusMm <= 1e-12 ||
++      arc.sweepAngleRad <= 1e-12 ||
++      arc.sweepAngleRad >= kTwoPi - 1e-12)
++    return kDegeneratePenalty;
++
++  const auto normalizeAngle = [](double angle) {
++    constexpr double twoPi = 6.28318530717958647692;
++    angle = std::fmod(angle, twoPi);
++    if (angle < 0.0) angle += twoPi;
++    return angle;
++  };
++
++  const double dx = point.xMm - arc.center.xMm;
++  const double dy = point.yMm - arc.center.yMm;
++  const double radialLength = std::hypot(dx, dy);
++
++  if (radialLength > 1e-12) {
++    const double candidateAngle =
++        normalizeAngle(std::atan2(dy, dx));
++    const double delta =
++        normalizeAngle(
++            candidateAngle -
++            normalizeAngle(arc.startAngleRad));
++
++    if (delta <= arc.sweepAngleRad + 1e-12)
++      return std::abs(radialLength - arc.radiusMm);
++  }
++
++  return std::min(pointDistance(point, arcStartPoint(arc)),
++                  pointDistance(point, arcEndPoint(arc)));
++}
++
+ std::vector<Equation> evaluate(const Sketch& sketch,
+                                const Layout& layout,
+                                const std::vector<double>& variables) {
+@@ -58,4 +108,18 @@
+         break;
+       }
+ 
++      case ConstraintType::PointOnArc: {
++        const auto arcIndex =
++            sketch.arcIndex(constraint.firstGeometry);
++        const auto point =
++            pointOf(sketch, layout, variables, constraint.secondPoint);
++        if (!arcIndex || !point) {
++          invalidEquation(constraint);
++          break;
++        }
++        add(finiteArcDistance(*point, sketch.arcs()[*arcIndex]),
++            kLengthTolerance, constraint);
++        break;
++      }
++
+       case ConstraintType::Tangent: {
+--- a/src/ui/SketchCanvas.cpp
++++ b/src/ui/SketchCanvas.cpp
+@@ -2,6 +2,8 @@
+         return QString::fromUtf8("\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xBE");
+       case sketch::ConstraintType::Lock:
+         return QString::fromUtf8("Замок");
++      case sketch::ConstraintType::PointOnArc:
++        return QString::fromUtf8("Принадлежность дуге");
+     }
+     return QString::fromUtf8("Ограничение");
+   };
+@@ -30,6 +32,23 @@
+           constructionSnap.geometryId != sketch::kInvalidGeometryId) {
+         setProperty(
+             carrierProperty,
++            static_cast<qulonglong>(constructionSnap.geometryId));
++      }
++
++      const char* arcCarrierProperty =
++          anchor_
++              ? "constructionPointOnArcCarrier"
++              : "constructionPointOnArcStartCarrier";
++
++      setProperty(arcCarrierProperty, QVariant());
++
++      // constructionSnapAt() reuses CircleBody for curved carrier bodies.
++      // GeometryId tells us whether the hit belongs to a Circle or an Arc.
++      if (constructionSnap.kind == ConstructionSnapKind::CircleBody &&
++          constructionSnap.geometryId != sketch::kInvalidGeometryId &&
++          sketch_.arcIndex(constructionSnap.geometryId)) {
++        setProperty(
++            arcCarrierProperty,
+             static_cast<qulonglong>(constructionSnap.geometryId));
+       }
+     }
+@@ -73,5 +92,50 @@
+         }
+       }
+     }
++
++    const auto addPointOnArc =
++        [this, newLineIndex](const char* propertyName, bool start) {
++          const QVariant carrierProperty = property(propertyName);
++          setProperty(propertyName, QVariant());
++
++          if (!carrierProperty.isValid() ||
++              newLineIndex >= sketch_.lines().size())
++            return;
++
++          const auto carrierId =
++              static_cast<sketch::GeometryId>(
++                  carrierProperty.toULongLong());
++          const auto newLineId = sketch_.lineId(newLineIndex);
++
++          if (carrierId == sketch::kInvalidGeometryId ||
++              newLineId == sketch::kInvalidGeometryId ||
++              !sketch_.arcIndex(carrierId))
++            return;
++
++          const sketch::PointReference endpoint{newLineId, start};
++
++          const bool duplicate = std::any_of(
++              sketch_.constraints().begin(),
++              sketch_.constraints().end(),
++              [carrierId, endpoint](const sketch::Constraint& item) {
++                return item.type ==
++                           sketch::ConstraintType::PointOnArc &&
++                       item.firstGeometry == carrierId &&
++                       item.secondPoint.lineId == endpoint.lineId &&
++                       item.secondPoint.start == endpoint.start;
++              });
++
++          if (duplicate)
++            return;
++
++          sketch::Constraint constraint;
++          constraint.type = sketch::ConstraintType::PointOnArc;
++          constraint.firstGeometry = carrierId;
++          constraint.secondPoint = endpoint;
++          (void)sketch_.addConstraint(constraint);
++        };
++
++    addPointOnArc("constructionPointOnArcStartCarrier", true);
++    addPointOnArc("constructionPointOnArcCarrier", false);
+   }
+   else if (tool_ == Tool::Rectangle) {

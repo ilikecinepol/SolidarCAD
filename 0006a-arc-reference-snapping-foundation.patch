@@ -1,0 +1,327 @@
+diff --git a/src/sketch/Sketch.h b/src/sketch/Sketch.h
+--- a/src/sketch/Sketch.h
++++ b/src/sketch/Sketch.h
+@@ -54,4 +54,9 @@
+   // Optional center node of a composite element (currently a rectangle
+   // created with RectangleMode::FromCenter).
+   std::size_t elementCenterId{0};
++
++  // Optional arc-endpoint reference. `start` selects the first/last endpoint
++  // exactly as it does for line endpoints. Kept as the final aggregate field
++  // so existing PointReference initializers remain source-compatible.
++  GeometryId arcId{kInvalidGeometryId};
+ };
+diff --git a/src/sketch/Sketch.cpp b/src/sketch/Sketch.cpp
+--- a/src/sketch/Sketch.cpp
++++ b/src/sketch/Sketch.cpp
+@@ -360,6 +360,8 @@
+   std::erase_if(constraints_, [removedId](const Constraint& constraint) {
+     return constraint.firstGeometry == removedId ||
+-           constraint.secondGeometry == removedId;
++           constraint.secondGeometry == removedId ||
++           constraint.firstPoint.arcId == removedId ||
++           constraint.secondPoint.arcId == removedId;
+   });
+ 
+   updateBounds();
+@@ -1800,5 +1802,7 @@
+     return isElementLocked(reference.elementCenterId);
+   if (reference.circleId != kInvalidGeometryId)
+     return isGeometryLocked(reference.circleId);
++  if (reference.arcId != kInvalidGeometryId)
++    return isGeometryLocked(reference.arcId);
+   return isGeometryLocked(reference.lineId);
+ }
+@@ -1850,4 +1854,11 @@
+     return circles_[*index].center;
+   }
+ 
++  if (reference.arcId != kInvalidGeometryId) {
++    const auto index = arcIndex(reference.arcId);
++    if (!index) return std::nullopt;
++    return reference.start ? arcStartPoint(arcs_[*index])
++                           : arcEndPoint(arcs_[*index]);
++  }
++
+   const auto index = lineIndex(reference.lineId);
+diff --git a/src/project/ProjectFile.cpp b/src/project/ProjectFile.cpp
+--- a/src/project/ProjectFile.cpp
++++ b/src/project/ProjectFile.cpp
+@@ -210,4 +210,12 @@
+     for (const auto& circle : saved.geometry.circles())
+       circles.append(QJsonObject{{"x", circle.center.xMm}, {"y", circle.center.yMm},
+                                  {"radius", circle.radiusMm}, {"dashed", circle.dashed}});
++    QJsonArray arcs;
++    for (const auto& arc : saved.geometry.arcs())
++      arcs.append(QJsonObject{{"x", arc.center.xMm},
++                              {"y", arc.center.yMm},
++                              {"radius", arc.radiusMm},
++                              {"startAngle", arc.startAngleRad},
++                              {"sweepAngle", arc.sweepAngleRad},
++                              {"dashed", arc.dashed}});
+     QJsonArray dimensions;
+@@ -270,5 +278,7 @@
+       qint64 firstPointCircle = -1;
+       qint64 secondPointCircle = -1;
++      qint64 firstPointArc = -1;
++      qint64 secondPointArc = -1;
+ 
+       auto linePosition = [&saved](sketch::GeometryId id) -> qint64 {
+         const auto index = saved.geometry.lineIndex(id);
+@@ -282,5 +292,9 @@
+         const auto index = saved.geometry.circleIndex(id);
+         return index ? static_cast<qint64>(*index) : -1;
+       };
++      auto arcPosition = [&saved](sketch::GeometryId id) -> qint64 {
++        const auto index = saved.geometry.arcIndex(id);
++        return index ? static_cast<qint64>(*index) : -1;
++      };
+ 
+       QString firstKind;
+@@ -300,6 +314,11 @@
+         } else {
+           firstGeometry = circlePosition(constraint.firstGeometry);
+-          if (firstGeometry >= 0) firstKind = QStringLiteral("circle");
++          if (firstGeometry >= 0) {
++            firstKind = QStringLiteral("circle");
++          } else {
++            firstGeometry = arcPosition(constraint.firstGeometry);
++            if (firstGeometry >= 0) firstKind = QStringLiteral("arc");
++          }
+         }
+       }
+       if (constraint.secondGeometry != sketch::kInvalidGeometryId) {
+@@ -312,6 +331,11 @@
+           secondKind = QStringLiteral("line");
+         } else {
+           secondGeometry = circlePosition(constraint.secondGeometry);
+-          if (secondGeometry >= 0) secondKind = QStringLiteral("circle");
++          if (secondGeometry >= 0) {
++            secondKind = QStringLiteral("circle");
++          } else {
++            secondGeometry = arcPosition(constraint.secondGeometry);
++            if (secondGeometry >= 0) secondKind = QStringLiteral("arc");
++          }
+         }
+       }
+@@ -330,5 +354,9 @@
+         firstPointCircle = circlePosition(constraint.firstPoint.circleId);
+       if (constraint.secondPoint.circleId != sketch::kInvalidGeometryId)
+         secondPointCircle = circlePosition(constraint.secondPoint.circleId);
++      if (constraint.firstPoint.arcId != sketch::kInvalidGeometryId)
++        firstPointArc = arcPosition(constraint.firstPoint.arcId);
++      if (constraint.secondPoint.arcId != sketch::kInvalidGeometryId)
++        secondPointArc = arcPosition(constraint.secondPoint.arcId);
+ 
+       constraints.append(QJsonObject{
+@@ -340,7 +368,9 @@
+           {"firstPointCircle", firstPointCircle},
++          {"firstPointArc", firstPointArc},
+           {"firstPointElementCenter",
+            static_cast<qint64>(constraint.firstPoint.elementCenterId)},
+           {"secondPointLine", secondPointLine},
+           {"secondPointStart", constraint.secondPoint.start},
+           {"secondPointCircle", secondPointCircle},
++          {"secondPointArc", secondPointArc},
+           {"secondPointElementCenter",
+@@ -365,4 +395,5 @@
+     sketches.append(QJsonObject{{"support", saved.support},
+                                 {"lines", lines},
+                                 {"circles", circles},
++                                {"arcs", arcs},
+                                 {"dimensions", dimensions},
+@@ -800,4 +831,13 @@
+       if (circle.value("dashed").toBool())
+         saved.geometry.setCircleDashed(saved.geometry.circles().size() - 1, true);
+     }
++    for (const auto arcValue : savedObject.value("arcs").toArray()) {
++      const auto arc = arcValue.toObject();
++      saved.geometry.addArc(
++          {arc.value("x").toDouble(), arc.value("y").toDouble()},
++          arc.value("radius").toDouble(),
++          arc.value("startAngle").toDouble(),
++          arc.value("sweepAngle").toDouble(),
++          arc.value("dashed").toBool());
++    }
+     // CRASH-FREE 05: RESTORE VIRTUAL CENTER OWNERSHIP
+@@ -900,4 +940,6 @@
+           return saved.geometry.lineId(index);
+         if (kind == QStringLiteral("circle"))
+           return saved.geometry.circleId(index);
++        if (kind == QStringLiteral("arc"))
++          return saved.geometry.arcId(index);
+         return sketch::kInvalidGeometryId;
+@@ -955,4 +997,24 @@
+                 static_cast<std::size_t>(secondPointCircle));
+       }
+ 
++      const qint64 firstPointArc =
++          object.value("firstPointArc").toInteger(-1);
++      if (firstPointArc >= 0) {
++        constraint.firstPoint.arcId =
++            saved.geometry.arcId(
++                static_cast<std::size_t>(firstPointArc));
++        constraint.firstPoint.start =
++            object.value("firstPointStart").toBool(true);
++      }
++
++      const qint64 secondPointArc =
++          object.value("secondPointArc").toInteger(-1);
++      if (secondPointArc >= 0) {
++        constraint.secondPoint.arcId =
++            saved.geometry.arcId(
++                static_cast<std::size_t>(secondPointArc));
++        constraint.secondPoint.start =
++            object.value("secondPointStart").toBool(true);
++      }
++
+       const qint64 firstPointElementCenter =
+diff --git a/src/ui/SketchCanvas.h b/src/ui/SketchCanvas.h
+--- a/src/ui/SketchCanvas.h
++++ b/src/ui/SketchCanvas.h
+@@ -150,5 +150,7 @@
+     LineMidpoint,
+     CircleCenter,
++    ArcPoint,
+     ElementCenter,
+     LineBody,
+-    CircleBody
++    CircleBody,
++    ArcBody
+diff --git a/src/ui/SketchCanvas.cpp b/src/ui/SketchCanvas.cpp
+--- a/src/ui/SketchCanvas.cpp
++++ b/src/ui/SketchCanvas.cpp
+@@ -1925,6 +1925,7 @@
+   const bool creationTool =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
+-      tool_ == Tool::Circle;
++      tool_ == Tool::Circle ||
++      tool_ == Tool::Arc;
+ 
+   const bool tangentCircleMode =
+@@ -1990,4 +1991,18 @@
+                   circleId);
+   }
+ 
++  for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
++    const auto arcId = sketch_.arcId(index);
++    if (arcId == sketch::kInvalidGeometryId)
++      continue;
++
++    const auto& arc = sketch_.arcs()[index];
++    considerPoint(sketch::arcStartPoint(arc),
++                  ConstructionSnapKind::ArcPoint,
++                  arcId);
++    considerPoint(sketch::arcEndPoint(arc),
++                  ConstructionSnapKind::ArcPoint,
++                  arcId);
++  }
++
+   for (const auto elementId : sketch_.centerNodeElementIds()) {
+@@ -2050,6 +2065,7 @@
+   const bool allowLineBody =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
++      tool_ == Tool::Arc ||
+       tangentCircleMode ||
+       (tool_ == Tool::Circle &&
+        circleMode_ == CircleMode::CenterRadius &&
+@@ -2060,8 +2076,15 @@
+   const bool allowCircleBody =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
++      tool_ == Tool::Arc ||
+       (tool_ == Tool::Circle &&
+        circleMode_ == CircleMode::CenterRadius &&
+        !anchor_);
+ 
++  const bool allowArcBody =
++      tool_ == Tool::Line ||
++      tool_ == Tool::Rectangle ||
++      tool_ == Tool::Circle ||
++      tool_ == Tool::Arc;
++
+   double bestBodyDistance = kSnapTolerancePx;
+@@ -2140,5 +2163,53 @@
+     }
+   }
+ 
++  if (allowArcBody) {
++    constexpr double kTwoPi = 6.28318530717958647692;
++    const auto normalize = [](double angle) {
++      constexpr double twoPi = 6.28318530717958647692;
++      angle = std::fmod(angle, twoPi);
++      if (angle < 0.0) angle += twoPi;
++      return angle;
++    };
++    const auto cursor = unmapPoint(position);
++
++    for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
++      const auto arcId = sketch_.arcId(index);
++      if (arcId == sketch::kInvalidGeometryId)
++        continue;
++
++      const auto& arc = sketch_.arcs()[index];
++      if (arc.radiusMm <= 1e-9 ||
++          arc.sweepAngleRad <= 1e-9 ||
++          arc.sweepAngleRad >= kTwoPi)
++        continue;
++
++      const double dx = cursor.xMm - arc.center.xMm;
++      const double dy = cursor.yMm - arc.center.yMm;
++      const double lengthMm = std::hypot(dx, dy);
++      if (lengthMm <= 1e-9)
++        continue;
++
++      const double candidateAngle = normalize(std::atan2(dy, dx));
++      const double delta =
++          normalize(candidateAngle - normalize(arc.startAngleRad));
++      if (delta > arc.sweepAngleRad + 1e-9)
++        continue;
++
++      const double distance =
++          std::abs(lengthMm - arc.radiusMm) * pixelsPerMm_;
++      if (distance >= bestBodyDistance)
++        continue;
++
++      bestBodyDistance = distance;
++      result.point = {
++          arc.center.xMm + arc.radiusMm * dx / lengthMm,
++          arc.center.yMm + arc.radiusMm * dy / lengthMm};
++      result.kind = ConstructionSnapKind::ArcBody;
++      result.geometryId = arcId;
++      result.elementId = 0;
++    }
++  }
++
+   return result;
+ }
+@@ -2410,9 +2481,16 @@
+     const auto& arc = sketch_.arcs()[index];
+     const auto arcId = sketch_.arcId(index);
+     const bool locked = sketch_.isGeometryLocked(arcId);
++    const bool snapHovered =
++        constructionHover_ &&
++        (constructionHover_->kind == ConstructionSnapKind::ArcPoint ||
++         constructionHover_->kind == ConstructionSnapKind::ArcBody) &&
++        constructionHover_->geometryId == arcId;
+ 
+     painter.setPen(
+-        QPen(locked ? QColor("#8b5cf6") : QColor("#1469d7"),
+-             2.0,
++        QPen(snapHovered
++                 ? QColor("#00a6ff")
++                 : locked ? QColor("#8b5cf6") : QColor("#1469d7"),
++             snapHovered ? 3.8 : 2.0,
+              arc.dashed ? Qt::DashLine : Qt::SolidLine,
+              Qt::RoundCap));
+@@ -3910,6 +3988,7 @@
+   const bool creationTool =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
+-      tool_ == Tool::Circle;
++      tool_ == Tool::Circle ||
++      tool_ == Tool::Arc;
+ 
+   if (creationTool) {

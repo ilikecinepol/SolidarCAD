@@ -1,0 +1,241 @@
+diff --git a/src/ui/Viewport.h b/src/ui/Viewport.h
+--- a/src/ui/Viewport.h
++++ b/src/ui/Viewport.h
+@@ -32,1 +32,8 @@
+ enum class SelectionFilter { Any, Face, Edge, Plane };
++
++enum class ToolPreviewPresentation {
++  // Keep selected/hovered source topology visible over the preview.
++  OverlaySourceSelection,
++  // The preview is the future body state; do not re-draw source selection over it.
++  ReplaceSource
++};
+@@ -104,3 +104,4 @@
+   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
+                            ShapeFeature::ShapePtr shape);
++  void setToolPreviewPresentation(ToolPreviewPresentation presentation) noexcept;
+   void clearToolPreviewShape();
+@@ -181,3 +181,4 @@
+   void wheelEvent(QWheelEvent* event) override;
+   void keyPressEvent(QKeyEvent* event) override;
++  bool eventFilter(QObject* watched, QEvent* event) override;
+   void leaveEvent(QEvent* event) override;
+@@ -225,3 +225,5 @@
+   ShapeFeature::ShapePtr toolPreviewShape_;
+   BodyRenderMesh toolPreviewRenderMesh_;
++  ToolPreviewPresentation toolPreviewPresentation_{
++      ToolPreviewPresentation::OverlaySourceSelection};
+   ViewportRenderer renderer_;
+diff --git a/src/ui/Viewport.cpp b/src/ui/Viewport.cpp
+--- a/src/ui/Viewport.cpp
++++ b/src/ui/Viewport.cpp
+@@ -213,4 +213,5 @@
+   extrusionLengthEditor_->hide();
++  extrusionLengthEditor_->installEventFilter(this);
+   connect(extrusionLengthEditor_, &QDoubleSpinBox::valueChanged, this,
+           &Viewport::setExtrusionPreviewLength);
+   toolParameterHud_ = new ToolParameterHud(this);
+@@ -425,10 +425,17 @@
+   update();
+ }
+ 
++void Viewport::setToolPreviewPresentation(
++    ToolPreviewPresentation presentation) noexcept {
++  toolPreviewPresentation_ = presentation;
++  update();
++}
++
+ void Viewport::clearToolPreviewShape() {
+   toolPreviewShape_.reset();
+   toolPreviewRenderMesh_.clear();
+   toolPreviewBodyId_ = kInvalidBodyId;
+   toolPreviewFeatureId_ = kInvalidFeatureId;
++  toolPreviewPresentation_ = ToolPreviewPresentation::OverlaySourceSelection;
+   update();
+ }
+@@ -1398,9 +1398,22 @@
+   if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
+     painter.beginNativePainting();
+-    const std::vector<std::size_t> selectedFaces = effectiveSelectedFaceIndices();
++    const bool replaceSourcePresentation =
++        hasToolPreview &&
++        toolPreviewPresentation_ == ToolPreviewPresentation::ReplaceSource;
++    const std::vector<std::size_t> selectedFaces =
++        replaceSourcePresentation ? std::vector<std::size_t>{}
++                                  : effectiveSelectedFaceIndices();
++    const std::vector<std::size_t> selectedEdges =
++        replaceSourcePresentation ? std::vector<std::size_t>{}
++                                  : selectedBodyEdgeIndices_;
++    const std::size_t hoveredFace =
++        replaceSourcePresentation ? static_cast<std::size_t>(-1)
++                                  : hoveredBodyFaceIndex_;
++    const std::size_t hoveredEdge =
++        replaceSourcePresentation ? static_cast<std::size_t>(-1)
++                                  : hoveredBodyEdgeIndex_;
+     renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
+                      size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
+                      zoom_, cameraPan_, displayMode_, selectedFaces,
+-                     hoveredBodyFaceIndex_, selectedBodyEdgeIndices_,
+-                     hoveredBodyEdgeIndex_);
++                     hoveredFace, selectedEdges, hoveredEdge);
+     painter.endNativePainting();
+@@ -3582,16 +3582,61 @@
+   update();
+ }
+ 
++bool Viewport::eventFilter(QObject* watched, QEvent* event) {
++  if (watched != extrusionLengthEditor_)
++    return QOpenGLWidget::eventFilter(watched, event);
++
++  if (event->type() == QEvent::ShortcutOverride) {
++    const auto* key = static_cast<QKeyEvent*>(event);
++    if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
++        key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
++      event->accept();
++      return true;
++    }
++    return QOpenGLWidget::eventFilter(watched, event);
++  }
++
++  if (event->type() != QEvent::KeyPress)
++    return QOpenGLWidget::eventFilter(watched, event);
++
++  const auto* key = static_cast<QKeyEvent*>(event);
++  if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
++    // Extrude currently has one on-canvas numeric field. Keep Tab inside the
++    // on-canvas HUD loop instead of letting QWidget focus traversal escape to
++    // the right-hand tool dock.
++    extrusionLengthEditor_->setFocus(Qt::TabFocusReason);
++    extrusionLengthEditor_->selectAll();
++    return true;
++  }
++
++  if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
++    if (key->isAutoRepeat()) return true;
++    extrusionLengthEditor_->interpretText();
++    setExtrusionPreviewLength(extrusionLengthEditor_->value());
++    emit toolParameterCommitted();
++    return true;
++  }
++
++  return QOpenGLWidget::eventFilter(watched, event);
++}
++
+ void Viewport::keyPressEvent(QKeyEvent* event) {
+-  // Tab/Backtab with viewport focus: if the HUD has an editable field, move
+-  // focus into it (Tab → first field, Backtab → last field); otherwise ask
+-  // MainWindow to focus the active tool's dock field.
++  // CAD Tab workflow is intentionally restricted to numeric fields drawn in
++  // the viewport. The right-hand tool dock remains mouse-accessible but is not
++  // part of this focus cycle.
+   if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
+       pickMode_ == PickMode::None) {
+     const bool backward = event->key() == Qt::Key_Backtab ||
+                           event->modifiers().testFlag(Qt::ShiftModifier);
+-    if (toolParameterHud_ && toolParameterHud_->hasEditableParameters() &&
+-        !toolParameterHud_->hasFieldFocus()) {
++
++    if (extrusionLengthEditor_ && extrusionLengthEditor_->isVisible()) {
++      extrusionLengthEditor_->setFocus(Qt::TabFocusReason);
++      extrusionLengthEditor_->selectAll();
++      event->accept();
++      return;
++    }
++
++    if (toolParameterHud_ && toolParameterHud_->hasEditableParameters()) {
+       if (backward)
+         toolParameterHud_->focusLastField();
+       else
+@@ -22,7 +67,9 @@
+       event->accept();
+       return;
+     }
+-    emit tabFocusRequested(backward);
++
++    // Active tools without an on-canvas numeric field do not hand Tab to the
++    // dock panel. Consume it so focus cannot leak into unrelated controls.
+     event->accept();
+     return;
+   }
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -2500,6 +2500,9 @@
+-  if (valid)
++  if (valid) {
++    viewport_->setToolPreviewPresentation(
++        ToolPreviewPresentation::ReplaceSource);
+     viewport_->setToolPreviewShape(shellToolSession_.bodyId(),
+                                    shellToolSession_.sourceFeatureId(),
+                                    shellToolSession_.previewShape());
+-  else
++  } else {
+     viewport_->clearToolPreviewShape();
++  }
+@@ -2600,6 +2600,9 @@
+-  if (valid)
++  if (valid) {
++    viewport_->setToolPreviewPresentation(
++        ToolPreviewPresentation::ReplaceSource);
+     viewport_->setToolPreviewShape(draftToolSession_.bodyId(),
+                                    draftToolSession_.sourceFeatureId(),
+                                    draftToolSession_.previewShape());
+-  else
++  } else {
+     viewport_->clearToolPreviewShape();
++  }
+@@ -1020,4 +1020,10 @@
+   connect(viewport_, &Viewport::toolParameterCommitted, this, [this] {
++    // Extrude still uses its dedicated on-canvas spinbox. Treat its Enter
++    // commit exactly like the Apply button before dispatching ToolSession tools.
++    if (extrusionDock_->isVisible()) {
++      extrudeSketch();
++      return;
++    }
+     if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+       acceptChamferTool();
+     else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
+@@ -10,19 +16,3 @@
+     else if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive)
+       acceptRevolveTool();
+   });
+-  // Tab with viewport focus and no HUD editable field: focus the active tool's
+-  // numeric dock field (extrude/revolve docks, else the tool parameter panel).
+-  connect(viewport_, &Viewport::tabFocusRequested, this, [this](bool) {
+-    if (extrusionDock_->isVisible()) {
+-      extrusionLengthSpin_->setFocus(Qt::TabFocusReason);
+-      extrusionLengthSpin_->selectAll();
+-      return;
+-    }
+-    if (revolveDock_->isVisible()) {
+-      revolveAngleSpin_->setFocus(Qt::TabFocusReason);
+-      revolveAngleSpin_->selectAll();
+-      return;
+-    }
+-    if (toolParametersDock_->isVisible())
+-      toolParametersPanel_->focusParameterInput();
+-  });
+diff --git a/src/model/DraftToolSession.cpp b/src/model/DraftToolSession.cpp
+--- a/src/model/DraftToolSession.cpp
++++ b/src/model/DraftToolSession.cpp
+@@ -74,10 +74,18 @@
+ std::optional<AngularToolManipulator> DraftToolSession::manipulator() const {
+-  if (!baseShape_ || !neutralPlane_ || !pullDirection_ || !document_) return std::nullopt;
++  // Do not advertise an angle handle before the user has actually selected a
++  // draft face and OCCT has produced a valid preview. This makes the tool's
++  // sequence explicit: select geometry first, then edit the angle.
++  if (lifecycle_ != ToolLifecycle::PreviewValid || faces_.empty() ||
++      !baseShape_ || !neutralPlane_ || !pullDirection_ || !document_)
++    return std::nullopt;
+   gp_Pln plane; gp_Dir direction; std::string ignored;
+   if (!resolveDraftReferences(*document_, *baseShape_, *neutralPlane_, *pullDirection_, &plane, &direction, &ignored)) return std::nullopt;
+   Bnd_Box box; BRepBndLib::Add(*baseShape_, box);
+   double x0, y0, z0, x1, y1, z1; box.Get(x0, y0, z0, x1, y1, z1);
+-  const double radius = std::max({x1 - x0, y1 - y0, z1 - z0, 10.0}) * 0.35;
++  // The previous 0.35 factor produced a tiny, easy-to-miss arc. Keep the
++  // manipulator proportional to the body but large enough to read as an
++  // interactive control at normal CAD zoom levels.
++  const double radius = std::max({x1 - x0, y1 - y0, z1 - z0, 10.0}) * 0.60;
+   return AngularToolManipulator{{(x0+x1)*0.5, (y0+y1)*0.5, (z0+z1)*0.5},
+                                 {direction.X(), direction.Y(), direction.Z()},
+                                 radius, angleDeg_};

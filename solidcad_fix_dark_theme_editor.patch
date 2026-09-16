@@ -1,0 +1,55 @@
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -1384,15 +1384,6 @@ void MainWindow::buildUi() {
+             statusBar()->showMessage(text.isEmpty()
+                                          ? QString::fromUtf8("Выделение снято")
+                                          : text);
+           });
+-  setStyleSheet(R"(
+-    QMainWindow { background:#f7f9fc; }
+-    QDockWidget { color:#17356e; font-weight:600; }
+-    QDockWidget::title { background:#ffffff; padding:10px; border-bottom:1px solid #dce4f0; }
+-    QTreeWidget { background:#ffffff; border:none; color:#274875; padding:8px; }
+-    QTreeWidget::item { height:28px; border-radius:5px; }
+-    QTreeWidget::item:selected { background:#e5f0ff; color:#075fdd; }
+-    QStatusBar { background:#ffffff; color:#657a9b; border-top:1px solid #dce4f0; }
+-  )");
+   modelDock->setWidget(featureTree_);
+   addDockWidget(Qt::LeftDockWidgetArea, modelDock);
+
+diff --git a/src/ui/ModelRibbon.cpp b/src/ui/ModelRibbon.cpp
+--- a/src/ui/ModelRibbon.cpp
++++ b/src/ui/ModelRibbon.cpp
+@@ -21,6 +21,7 @@ QToolButton* commandButton(const QString& commandId, QWidget* parent) {
+   button->setAccessibleName(help->title);
+   button->setAccessibleDescription(help->detailedDescription);
+   button->setProperty("helpId", commandId);
++  button->setProperty("uiRole", "modelCommand");
+   button->setIcon(modelCommandIcon(commandId));
+   button->setIconSize(QSize(42, 42));
+   button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+diff --git a/src/ui/ThemeManager.cpp b/src/ui/ThemeManager.cpp
+--- a/src/ui/ThemeManager.cpp
++++ b/src/ui/ThemeManager.cpp
+@@ -226,14 +226,16 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
+     /* Model / Sketch ribbons */
+     QWidget#modelRibbon, QWidget#sketchRibbon { background: $surface;
+       border-bottom: 1px solid $border; }
+-    QToolButton#modelCommand, QPushButton#toolButton { background: transparent;
++    QToolButton[uiRole="modelCommand"], QPushButton#toolButton {
++      background: transparent;
+       color: $textPrimary; border: 1px solid transparent; border-radius: 8px;
+       font-size: 13px; padding: 5px 10px; }
+-    QToolButton#modelCommand:hover, QPushButton#toolButton:hover { background: $accentSoft; }
+-    QToolButton#modelCommand:checked, QPushButton#toolButton:checked {
++    QToolButton[uiRole="modelCommand"]:hover, QPushButton#toolButton:hover {
++      background: $accentSoft; }
++    QToolButton[uiRole="modelCommand"]:checked, QPushButton#toolButton:checked {
+       background: $accentSoft; color: $accent; border: 2px solid $accent; font-weight: 600; }
+-    QPushButton#toolButton:disabled { color: $textDisabled; background: transparent; }
++    QToolButton[uiRole="modelCommand"]:disabled, QPushButton#toolButton:disabled {
++      color: $textDisabled; background: transparent; }
+     QToolButton#modelGroupMenuButton, QToolButton#groupMenuButton {
+       color: $textSecondary; background: transparent; border: none; font-size: 10px;
+       font-weight: 700; padding: 2px 10px; }

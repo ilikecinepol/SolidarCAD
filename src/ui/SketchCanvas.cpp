@@ -266,6 +266,71 @@ double visibleLineAngleDegrees(const sketch::Line& first,
   return std::acos(cosine) *
          180.0 / 3.14159265358979323846;
 }
+
+// ANGLE SECTOR RAY DIRECTIONS
+//
+// Returns the two unit ray directions (screen space) that define the angle
+// sector between two segments, oriented away from their shared vertex along
+// each finite segment. Returns nullopt when the segments are degenerate or
+// share no screen vertex. A negative offsetMm flips both rays so the angle
+// arc is drawn in the opposite vertical sector (the side the user placed it).
+template <typename MapPointFn>
+std::optional<std::pair<QPointF, QPointF>> angleSectorRays(
+    const sketch::Line& firstLine,
+    const sketch::Line& secondLine,
+    QPointF center,
+    double offsetMm,
+    MapPointFn&& mapPointFn) {
+  QPointF firstDirection = angleRayTowardSegment(
+      center, mapPointFn(firstLine.start), mapPointFn(firstLine.end));
+  QPointF secondDirection = angleRayTowardSegment(
+      center, mapPointFn(secondLine.start), mapPointFn(secondLine.end));
+
+  const auto sameScreenVertex = [&mapPointFn](sketch::Point a,
+                                              sketch::Point b) {
+    return QLineF(mapPointFn(a), mapPointFn(b)).length() <= 0.5;
+  };
+
+  if (sameScreenVertex(firstLine.start, secondLine.start)) {
+    firstDirection =
+        mapPointFn(firstLine.end) - mapPointFn(firstLine.start);
+    secondDirection =
+        mapPointFn(secondLine.end) - mapPointFn(secondLine.start);
+  } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
+    firstDirection =
+        mapPointFn(firstLine.end) - mapPointFn(firstLine.start);
+    secondDirection =
+        mapPointFn(secondLine.start) - mapPointFn(secondLine.end);
+  } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
+    firstDirection =
+        mapPointFn(firstLine.start) - mapPointFn(firstLine.end);
+    secondDirection =
+        mapPointFn(secondLine.end) - mapPointFn(secondLine.start);
+  } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
+    firstDirection =
+        mapPointFn(firstLine.start) - mapPointFn(firstLine.end);
+    secondDirection =
+        mapPointFn(secondLine.start) - mapPointFn(secondLine.end);
+  }
+
+  const double firstLength =
+      std::hypot(firstDirection.x(), firstDirection.y());
+  const double secondLength =
+      std::hypot(secondDirection.x(), secondDirection.y());
+  if (firstLength <= 1.0 || secondLength <= 1.0)
+    return std::nullopt;
+
+  firstDirection /= firstLength;
+  secondDirection /= secondLength;
+
+  if (offsetMm < 0.0) {
+    firstDirection = -firstDirection;
+    secondDirection = -secondDirection;
+  }
+
+  return std::pair{firstDirection, secondDirection};
+}
+
 std::optional<QPointF> nearestSegmentEndpointTo(
     QPointF point, QPointF start, QPointF end) {
   const double firstDistance = QLineF(point, start).length();
@@ -2594,50 +2659,12 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           [this](sketch::Point point) { return mapPoint(point); });
       if (!center) continue;
 
-      QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
-      QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
-
-      const auto sameScreenVertex = [this](sketch::Point a,
-                                           sketch::Point b) {
-        return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
-      };
-
-      if (sameScreenVertex(firstLine.start, secondLine.start)) {
-        firstDirection =
-            mapPoint(firstLine.end) - mapPoint(firstLine.start);
-        secondDirection =
-            mapPoint(secondLine.end) - mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
-        firstDirection =
-            mapPoint(firstLine.end) - mapPoint(firstLine.start);
-        secondDirection =
-            mapPoint(secondLine.start) - mapPoint(secondLine.end);
-      } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
-        firstDirection =
-            mapPoint(firstLine.start) - mapPoint(firstLine.end);
-        secondDirection =
-            mapPoint(secondLine.end) - mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
-        firstDirection =
-            mapPoint(firstLine.start) - mapPoint(firstLine.end);
-        secondDirection =
-            mapPoint(secondLine.start) - mapPoint(secondLine.end);
-      }
-      const double firstLength =
-          std::hypot(firstDirection.x(), firstDirection.y());
-      const double secondLength =
-          std::hypot(secondDirection.x(), secondDirection.y());
-      if (firstLength <= 1.0 || secondLength <= 1.0) continue;
-      firstDirection /= firstLength;
-      secondDirection /= secondLength;
+      const auto rays = angleSectorRays(
+          firstLine, secondLine, *center, dimension.offsetMm,
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!rays) continue;
+      QPointF firstDirection = rays->first;
+      QPointF secondDirection = rays->second;
 
       const double radius =
           std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
@@ -2904,54 +2931,14 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
             [this](sketch::Point point) { return mapPoint(point); });
 
         if (center) {
-          QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
-      QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
+          const auto rays = angleSectorRays(
+              firstLine, secondLine, *center,
+              property("autoDimensionOffsetMm").toDouble(),
+              [this](sketch::Point point) { return mapPoint(point); });
 
-          const auto sameScreenVertex = [this](sketch::Point a,
-                                               sketch::Point b) {
-            return QLineF(mapPoint(a), mapPoint(b)).length() <= 0.5;
-          };
-
-          // Preview must use the exact same sector semantics as the stored
-          // angular dimension: both rays leave the common CAD vertex.
-          if (sameScreenVertex(firstLine.start, secondLine.start)) {
-            firstDirection =
-                mapPoint(firstLine.end) - mapPoint(firstLine.start);
-            secondDirection =
-                mapPoint(secondLine.end) - mapPoint(secondLine.start);
-          } else if (sameScreenVertex(firstLine.start, secondLine.end)) {
-            firstDirection =
-                mapPoint(firstLine.end) - mapPoint(firstLine.start);
-            secondDirection =
-                mapPoint(secondLine.start) - mapPoint(secondLine.end);
-          } else if (sameScreenVertex(firstLine.end, secondLine.start)) {
-            firstDirection =
-                mapPoint(firstLine.start) - mapPoint(firstLine.end);
-            secondDirection =
-                mapPoint(secondLine.end) - mapPoint(secondLine.start);
-          } else if (sameScreenVertex(firstLine.end, secondLine.end)) {
-            firstDirection =
-                mapPoint(firstLine.start) - mapPoint(firstLine.end);
-            secondDirection =
-                mapPoint(secondLine.start) - mapPoint(secondLine.end);
-          }
-
-          const double firstLength =
-              std::hypot(firstDirection.x(), firstDirection.y());
-          const double secondLength =
-              std::hypot(secondDirection.x(), secondDirection.y());
-
-          if (firstLength > 1.0 && secondLength > 1.0) {
-            firstDirection /= firstLength;
-            secondDirection /= secondLength;
+          if (rays) {
+            const QPointF firstDirection = rays->first;
+            const QPointF secondDirection = rays->second;
 
             const double radius =
                 std::max(16.0,
@@ -4402,8 +4389,25 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         if (center) {
           const double radiusPixels =
               QLineF(*center, event->position()).length();
+
+          // Preserve the side the user places the dimension on: the sign of
+          // offsetMm flips the angle arc between the two vertical sectors.
+          const auto rays = angleSectorRays(
+              sketch_.lines()[*firstIndex],
+              sketch_.lines()[*secondIndex],
+              *center, 0.0,
+              [this](sketch::Point point) { return mapPoint(point); });
+          double sideSign = 1.0;
+          if (rays) {
+            const QPointF bisector =
+                rays->first + rays->second;
+            const QPointF cursorDir = event->position() - *center;
+            if (QPointF::dotProduct(cursorDir, bisector) < 0.0)
+              sideSign = -1.0;
+          }
+
           setProperty("autoDimensionOffsetMm",
-                      std::max(3.0, radiusPixels / pixelsPerMm_));
+                      sideSign * std::max(3.0, radiusPixels / pixelsPerMm_));
           primaryDimension_->move(
               (event->position() + QPointF(16, 16)).toPoint());
         }
@@ -5281,71 +5285,14 @@ bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
 
       // ANGLE LABEL HIT GEOMETRY
       // Keep this exactly aligned with stored LineAngle rendering.
-      QPointF firstDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(firstLine.start),
-              mapPoint(firstLine.end));
-
-      QPointF secondDirection =
-          angleRayTowardSegment(
-              *center,
-              mapPoint(secondLine.start),
-              mapPoint(secondLine.end));
-
-      const auto sameScreenVertex =
-          [this](sketch::Point a, sketch::Point b) {
-            return QLineF(mapPoint(a),
-                          mapPoint(b)).length() <= 0.5;
-          };
-
-      if (sameScreenVertex(firstLine.start,
-                           secondLine.start)) {
-        firstDirection =
-            mapPoint(firstLine.end) -
-            mapPoint(firstLine.start);
-        secondDirection =
-            mapPoint(secondLine.end) -
-            mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.start,
-                                  secondLine.end)) {
-        firstDirection =
-            mapPoint(firstLine.end) -
-            mapPoint(firstLine.start);
-        secondDirection =
-            mapPoint(secondLine.start) -
-            mapPoint(secondLine.end);
-      } else if (sameScreenVertex(firstLine.end,
-                                  secondLine.start)) {
-        firstDirection =
-            mapPoint(firstLine.start) -
-            mapPoint(firstLine.end);
-        secondDirection =
-            mapPoint(secondLine.end) -
-            mapPoint(secondLine.start);
-      } else if (sameScreenVertex(firstLine.end,
-                                  secondLine.end)) {
-        firstDirection =
-            mapPoint(firstLine.start) -
-            mapPoint(firstLine.end);
-        secondDirection =
-            mapPoint(secondLine.start) -
-            mapPoint(secondLine.end);
-      }
-
-      const double firstLength =
-          std::hypot(firstDirection.x(),
-                     firstDirection.y());
-      const double secondLength =
-          std::hypot(secondDirection.x(),
-                     secondDirection.y());
-
-      if (firstLength <= 1.0 ||
-          secondLength <= 1.0)
+      const auto rays = angleSectorRays(
+          firstLine, secondLine, *center, dimension.offsetMm,
+          [this](sketch::Point point) { return mapPoint(point); });
+      if (!rays)
         continue;
 
-      firstDirection /= firstLength;
-      secondDirection /= secondLength;
+      QPointF firstDirection = rays->first;
+      QPointF secondDirection = rays->second;
 
       double startDeg =
           -std::atan2(firstDirection.y(),

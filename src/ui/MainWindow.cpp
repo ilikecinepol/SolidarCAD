@@ -1380,7 +1380,8 @@ void MainWindow::buildUi() {
                   plane.contains(QString::fromUtf8("Нижняя"))));
             sketchCanvas_->setReferenceProfile(viewport_->solidSketch(),
                                                hasExtrusion_ && capFace);
-            if (currentSketchFaceReference_ && !configureSketchEditContext())
+            if (currentSketchFaceReference_ &&
+                !configureSketchEditContext(true))
               return;
             workspaceStack_->setCurrentWidget(sketchCanvas_);
             ribbonStack_->setCurrentWidget(sketchRibbon_);
@@ -3166,7 +3167,7 @@ void MainWindow::applyHistoryPosition(int position) {
       2500);
 }
 
-bool MainWindow::configureSketchEditContext() {
+bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
   if (!currentSketchFaceReference_) return true;
   const FaceReference reference = *currentSketchFaceReference_;
   const Body* body = document_.findBody(reference.bodyId);
@@ -3199,7 +3200,8 @@ bool MainWindow::configureSketchEditContext() {
   }
   currentSketchPlacement_ = resolved.placement;
   sketchCanvas_->setSketchEditContext(
-      {kInvalidSketchId, currentSketchPlacement_, shape, reference});
+      {kInvalidSketchId, currentSketchPlacement_, shape, reference,
+       autoProjectSupportFace});
   return true;
 }
 

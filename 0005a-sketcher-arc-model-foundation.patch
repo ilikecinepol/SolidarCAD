@@ -1,0 +1,289 @@
+diff --git a/src/sketch/Sketch.cpp b/src/sketch/Sketch.cpp
+index 5510e53..86d0db0 100644
+--- a/src/sketch/Sketch.cpp
++++ b/src/sketch/Sketch.cpp
+@@ -7,17 +7,31 @@
+ #include <cmath>
+ #include <limits>
+ #include <stdexcept>
++#include <utility>
+ 
+ namespace solidar::sketch {
+ 
++Point arcStartPoint(const Arc& arc) noexcept {
++  return {arc.center.xMm + arc.radiusMm * std::cos(arc.startAngleRad),
++          arc.center.yMm + arc.radiusMm * std::sin(arc.startAngleRad)};
++}
++
++Point arcEndPoint(const Arc& arc) noexcept {
++  const double angle = arc.startAngleRad + arc.sweepAngleRad;
++  return {arc.center.xMm + arc.radiusMm * std::cos(angle),
++          arc.center.yMm + arc.radiusMm * std::sin(angle)};
++}
++
+ Sketch::Sketch() { clear(); }
+ 
+ void Sketch::clear() {
+   centerNodeElementIds_.clear();
+   lines_.clear();
+   circles_.clear();
++  arcs_.clear();
+   lineIds_.clear();
+   circleIds_.clear();
++  arcIds_.clear();
+   dimensions_.clear();
+   constraints_.clear();
+   widthMm_ = 0.0;
+@@ -249,6 +263,20 @@ void Sketch::addCircle(Point center, double radiusMm) {
+   updateBounds();
+ }
+ 
++void Sketch::addArc(Point center, double radiusMm, double startAngleRad,
++                    double sweepAngleRad, bool dashed) {
++  constexpr double kTwoPi = 6.28318530717958647692;
++  if (!std::isfinite(center.xMm) || !std::isfinite(center.yMm) ||
++      !std::isfinite(radiusMm) || !std::isfinite(startAngleRad) ||
++      !std::isfinite(sweepAngleRad) || radiusMm <= 0.0 ||
++      sweepAngleRad <= 1e-9 || sweepAngleRad >= kTwoPi - 1e-9)
++    return;
++
++  arcs_.push_back({center, radiusMm, startAngleRad, sweepAngleRad, dashed});
++  arcIds_.push_back(nextGeometryId_++);
++  updateBounds();
++}
++
+ void Sketch::removeLine(std::size_t index) {
+   // LOCK CONSTRAINT: locked geometry cannot be deleted.
+   if (index < lineIds_.size() &&
+@@ -322,6 +350,27 @@ void Sketch::removeLine(std::size_t index) {
+   updateBounds();
+ }
+ 
++void Sketch::removeArc(std::size_t index) {
++  if (index < arcIds_.size() && isGeometryLocked(arcIds_[index]))
++    return;
++  if (index >= arcs_.size()) return;
++
++  const GeometryId removedId = arcIds_[index];
++  arcs_.erase(arcs_.begin() + index);
++  arcIds_.erase(arcIds_.begin() + index);
++
++  std::erase_if(dimensions_, [removedId](const Dimension& dimension) {
++    return dimension.geometryId == removedId;
++  });
++
++  std::erase_if(constraints_, [removedId](const Constraint& constraint) {
++    return constraint.firstGeometry == removedId ||
++           constraint.secondGeometry == removedId;
++  });
++
++  updateBounds();
++}
++
+ void Sketch::removeElement(std::size_t elementId) {
+   // LOCK CONSTRAINT: one Lock freezes the whole CAD element.
+   if (isElementLocked(elementId))
+@@ -1685,6 +1734,10 @@ GeometryId Sketch::circleId(std::size_t index) const noexcept {
+   return index < circleIds_.size() ? circleIds_[index] : kInvalidGeometryId;
+ }
+ 
++GeometryId Sketch::arcId(std::size_t index) const noexcept {
++  return index < arcIds_.size() ? arcIds_[index] : kInvalidGeometryId;
++}
++
+ std::optional<std::size_t> Sketch::lineIndex(GeometryId id) const noexcept {
+   if (id == kInvalidGeometryId) return std::nullopt;
+   const auto found = std::find(lineIds_.begin(), lineIds_.end(), id);
+@@ -1699,6 +1752,13 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
+   return static_cast<std::size_t>(std::distance(circleIds_.begin(), found));
+ }
+ 
++std::optional<std::size_t> Sketch::arcIndex(GeometryId id) const noexcept {
++  if (id == kInvalidGeometryId) return std::nullopt;
++  const auto found = std::find(arcIds_.begin(), arcIds_.end(), id);
++  if (found == arcIds_.end()) return std::nullopt;
++  return static_cast<std::size_t>(std::distance(arcIds_.begin(), found));
++}
++
+ bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
+   if (id == kInvalidGeometryId) return false;
+ 
+@@ -1717,7 +1777,7 @@ bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
+     return false;
+   }
+ 
+-  if (circleIndex(id)) {
++  if (circleIndex(id) || arcIndex(id)) {
+     return std::any_of(
+         constraints_.begin(), constraints_.end(),
+         [id](const Constraint& constraint) {
+@@ -1779,6 +1839,14 @@ void Sketch::restoreLockedGeometryFrom(const Sketch& baseline) {
+           baseline.circles_[*source].center;
+       circles_[*lockedCircle].radiusMm =
+           baseline.circles_[*source].radiusMm;
++      continue;
++    }
++
++    if (const auto lockedArc = arcIndex(constraint.firstGeometry)) {
++      const auto source = baseline.arcIndex(constraint.firstGeometry);
++      if (!source) continue;
++
++      arcs_[*lockedArc] = baseline.arcs_[*source];
+     }
+   }
+ 
+@@ -3899,12 +3967,13 @@ double Sketch::widthMm() const noexcept { return widthMm_; }
+ double Sketch::heightMm() const noexcept { return heightMm_; }
+ const std::vector<Line>& Sketch::lines() const noexcept { return lines_; }
+ const std::vector<Circle>& Sketch::circles() const noexcept { return circles_; }
++const std::vector<Arc>& Sketch::arcs() const noexcept { return arcs_; }
+ const std::vector<Dimension>& Sketch::dimensions() const {
+   return dimensions_;
+ }
+ 
+ void Sketch::updateBounds() noexcept {
+-  if (lines_.empty() && circles_.empty()) {
++  if (lines_.empty() && circles_.empty() && arcs_.empty()) {
+     widthMm_ = 0.0;
+     heightMm_ = 0.0;
+     return;
+@@ -3929,28 +3998,61 @@ void Sketch::updateBounds() noexcept {
+     include({circle.center.xMm + circle.radiusMm,
+              circle.center.yMm + circle.radiusMm});
+   }
++
++  constexpr double kPi = 3.14159265358979323846;
++  const auto normalizedAngle = [](double angle) {
++    constexpr double twoPi = 6.28318530717958647692;
++    angle = std::fmod(angle, twoPi);
++    if (angle < 0.0) angle += twoPi;
++    return angle;
++  };
++  const auto angleOnArc = [&](double angle, const Arc& arc) {
++    const double start = normalizedAngle(arc.startAngleRad);
++    const double delta = normalizedAngle(normalizedAngle(angle) - start);
++    return delta <= arc.sweepAngleRad + 1e-12;
++  };
++
++  for (const auto& arc : arcs_) {
++    include(arcStartPoint(arc));
++    include(arcEndPoint(arc));
++    for (const double angle : {0.0, 0.5 * kPi, kPi, 1.5 * kPi}) {
++      if (!angleOnArc(angle, arc)) continue;
++      include({arc.center.xMm + arc.radiusMm * std::cos(angle),
++               arc.center.yMm + arc.radiusMm * std::sin(angle)});
++    }
++  }
+   widthMm_ = maxX - minX;
+   heightMm_ = maxY - minY;
+ }
+ 
+ bool Sketch::isClosed() const noexcept {
+-  if (std::none_of(lines_.begin(), lines_.end(),
+-                   [](const Line& line) { return !line.dashed; }))
+-    return false;
+   const auto samePoint = [](Point first, Point second) {
+     return std::abs(first.xMm - second.xMm) <= 1e-7 &&
+            std::abs(first.yMm - second.yMm) <= 1e-7;
+   };
+-  // Every vertex of one or several independent closed loops has degree two.
+-  // This also permits Ctrl-selection of multiple extrusion regions.
++
++  std::vector<std::pair<Point, Point>> edges;
+   for (const auto& line : lines_) {
+-    if (line.dashed) continue;
+-    for (const Point vertex : {line.start, line.end}) {
++    if (!line.dashed) edges.push_back({line.start, line.end});
++  }
++  for (const auto& arc : arcs_) {
++    if (!arc.dashed) edges.push_back({arcStartPoint(arc), arcEndPoint(arc)});
++  }
++
++  const std::size_t solidCircles = static_cast<std::size_t>(std::count_if(
++      circles_.begin(), circles_.end(),
++      [](const Circle& circle) { return !circle.dashed; }));
++
++  if (edges.empty()) return solidCircles == 1;
++  if (solidCircles != 0) return false;
++
++  // Every vertex of one or several independent closed loops has degree two.
++  for (const auto& edge : edges) {
++    for (const Point vertex : {edge.first, edge.second}) {
+       std::size_t degree = 0;
+-      for (const auto& candidate : lines_) {
+-        if (candidate.dashed) continue;
+-        if (samePoint(vertex, candidate.start)) ++degree;
+-        if (samePoint(vertex, candidate.end)) ++degree;
++      for (const auto& candidate : edges) {
++        if (samePoint(vertex, candidate.first)) ++degree;
++        if (samePoint(vertex, candidate.second)) ++degree;
+       }
+       if (degree != 2) return false;
+     }
+diff --git a/src/sketch/Sketch.h b/src/sketch/Sketch.h
+index 4c03492..ab91b9a 100644
+--- a/src/sketch/Sketch.h
++++ b/src/sketch/Sketch.h
+@@ -30,6 +30,17 @@ struct Circle {
+   bool dashed{false};
+ };
+ 
++struct Arc {
++  Point center;
++  double radiusMm{};
++  double startAngleRad{};
++  double sweepAngleRad{};
++  bool dashed{false};
++};
++
++[[nodiscard]] Point arcStartPoint(const Arc& arc) noexcept;
++[[nodiscard]] Point arcEndPoint(const Arc& arc) noexcept;
++
+ struct PointReference {
+   // Line endpoint reference. Existing code and project files use these.
+   GeometryId lineId{kInvalidGeometryId};
+@@ -92,8 +103,11 @@ struct PointReference {
+   void addRectangle(Point firstCorner, Point oppositeCorner);
+   void addRectangle(Point first, Point second, Point third, Point fourth);
+   void addCircle(Point center, double radiusMm);
++  void addArc(Point center, double radiusMm, double startAngleRad,
++              double sweepAngleRad, bool dashed = false);
+   void removeLine(std::size_t index);
+   void removeCircle(std::size_t index);
++  void removeArc(std::size_t index);
+   void removeElement(std::size_t elementId);
+   void translateElement(std::size_t elementId, double dxMm, double dyMm);
+ 
+@@ -147,10 +161,13 @@ struct PointReference {
+ 
+   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
+   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;
++  [[nodiscard]] GeometryId arcId(std::size_t index) const noexcept;
+   [[nodiscard]] std::optional<std::size_t> lineIndex(
+       GeometryId id) const noexcept;
+   [[nodiscard]] std::optional<std::size_t> circleIndex(
+       GeometryId id) const noexcept;
++  [[nodiscard]] std::optional<std::size_t> arcIndex(
++      GeometryId id) const noexcept;
+ 
+   bool setLineLength(std::size_t index, double lengthMm);
+   bool setPointDistance(PointReference first, PointReference second,
+@@ -193,6 +210,7 @@ struct PointReference {
+   [[nodiscard]] double heightMm() const noexcept;
+   [[nodiscard]] const std::vector<Line>& lines() const noexcept;
+   [[nodiscard]] const std::vector<Circle>& circles() const noexcept;
++  [[nodiscard]] const std::vector<Arc>& arcs() const noexcept;
+   [[nodiscard]] const std::vector<Dimension>& dimensions() const;
+   [[nodiscard]] std::optional<Point> referencedPoint(
+       PointReference reference) const noexcept;
+@@ -204,8 +222,10 @@ struct PointReference {
+   double heightMm_{40.0};
+   std::vector<Line> lines_;
+   std::vector<Circle> circles_;
++  std::vector<Arc> arcs_;
+   std::vector<GeometryId> lineIds_;
+   std::vector<GeometryId> circleIds_;
++  std::vector<GeometryId> arcIds_;
+   std::vector<Dimension> dimensions_;
+   std::vector<Constraint> constraints_;
+ 

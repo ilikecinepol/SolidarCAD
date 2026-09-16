@@ -139,6 +139,15 @@ add_test(NAME sketch_lock_constraint_tests
 set_tests_properties(sketch_lock_constraint_tests
                      PROPERTIES LABELS "unit;regression")
 
+add_executable(sketch_canvas_axis_mapping_tests
+               sketch_canvas_axis_mapping_tests.cpp)
+target_link_libraries(sketch_canvas_axis_mapping_tests
+                      PRIVATE solidar_sketch_ui solidar_viewport3d)
+add_test(NAME sketch_canvas_axis_mapping_tests
+         COMMAND sketch_canvas_axis_mapping_tests)
+set_tests_properties(sketch_canvas_axis_mapping_tests
+                     PROPERTIES LABELS "unit;regression")
+
 add_executable(body_render_mesh_tests body_render_mesh_tests.cpp)
 target_link_libraries(body_render_mesh_tests PRIVATE solidar_viewport3d)
 add_test(NAME body_render_mesh_tests COMMAND body_render_mesh_tests)
@@ -423,6 +432,7 @@ if(WIN32)
     multi_solid_edge_feature_tests
     project_lifecycle_tests
     project_switch_ui_tests
+    sketch_canvas_axis_mapping_tests
     PROPERTIES
       ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${SOLIDAR_QT_BIN_DIRECTORY};PATH=path_list_prepend:${OpenCASCADE_BINARY_DIR}"

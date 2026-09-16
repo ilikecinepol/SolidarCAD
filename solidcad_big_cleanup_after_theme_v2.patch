@@ -1,0 +1,169 @@
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -91,7 +91,8 @@
+   if (entries.empty()) {
+     auto* item = new QTreeWidgetItem(sketchConstraintsList_);
+     item->setText(0, QString::fromUtf8("Нет ограничений"));
+-    item->setForeground(0, QColor("#8795ac"));
++    // Use the disabled palette role from ThemeManager so this placeholder
++    // follows Light/Dark automatically.
+     item->setFlags(Qt::NoItemFlags);
+     return;
+   }
+diff --git a/src/ui/Viewport.h b/src/ui/Viewport.h
+--- a/src/ui/Viewport.h
++++ b/src/ui/Viewport.h
+@@ -188,4 +188,7 @@
+   void selectInRect(const QRectF& rect, bool additive, bool singleOnly = false);
+   void cancelMarquee();
++  // Clears only whole-body selection and publishes bodiesSelected({}) when the
++  // state actually changes. Face/edge state is intentionally left untouched.
++  void clearWholeBodySelection() noexcept;
+   void commitEdgeSelection(std::size_t globalIndex, bool toggle);
+   void commitFaceSelection(std::size_t globalIndex, bool toggle);
+diff --git a/src/ui/Viewport.cpp b/src/ui/Viewport.cpp
+--- a/src/ui/Viewport.cpp
++++ b/src/ui/Viewport.cpp
+@@ -376,5 +376,5 @@
+     selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+     selectedBodyEdgeIndices_.clear();
+     selectedBodyEdgeReferences_.clear();
+-    selectedBodyIds_.clear();
++    clearWholeBodySelection();
+   }
+@@ -548,5 +548,5 @@
+   selectedBodyEdgeIndices_.clear();
+   selectedBodyEdgeReferences_.clear();
+   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+-  selectedBodyIds_.clear();
++  clearWholeBodySelection();
+   selectedBasePlane_ = -1;
+@@ -763,3 +763,3 @@
+ void Viewport::setSelectedBodyFaces(const std::vector<FaceReference>& faces) {
+-  selectedBodyIds_.clear();
++  clearWholeBodySelection();
+   selectedBodyFaceIndices_.clear();
+@@ -820,3 +820,3 @@
+ void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
+-  selectedBodyIds_.clear();
++  clearWholeBodySelection();
+   selectedBodyEdgeIndices_.clear();
+@@ -851,4 +851,10 @@
+   return selectedBodyIds_;
+ }
+ 
++void Viewport::clearWholeBodySelection() noexcept {
++  if (selectedBodyIds_.empty()) return;
++  selectedBodyIds_.clear();
++  emit bodiesSelected(selectedBodyIds_);
++}
++
+ void Viewport::setSelectedBodies(std::vector<BodyId> ids) {
+@@ -898,5 +898,5 @@
+   if (filter == SelectionFilter::Edge || filter == SelectionFilter::Face ||
+       filter == SelectionFilter::Plane) {
+-    selectedBodyIds_.clear();
++    clearWholeBodySelection();
+   }
+   update();
+@@ -918,2 +918,3 @@
+ void Viewport::commitEdgeSelection(std::size_t globalIndex, bool toggle) {
++  clearWholeBodySelection();
+   const auto clicked = edgeReferenceForGlobalIndex(globalIndex);
+@@ -946,2 +946,3 @@
+ void Viewport::commitFaceSelection(std::size_t globalIndex, bool toggle) {
++  clearWholeBodySelection();
+   const auto clicked = faceReferenceForGlobalIndex(globalIndex);
+@@ -2680,2 +2680,6 @@
+ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) {
++  // Commit the domain change only when the marquee is accepted, so Escape can
++  // still cancel the drag without changing the previous whole-body selection.
++  clearWholeBodySelection();
++
+   // Plane filter selects base planes, never body geometry. A marquee in this
+@@ -3532,4 +3532,5 @@
+       selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+       selectedBodyEdgeIndices_.clear();
+       selectedBodyEdgeReferences_.clear();
++      clearWholeBodySelection();
+       emit selectionChanged({});
+diff --git a/tests/viewport_preview_selection_tests.cpp b/tests/viewport_preview_selection_tests.cpp
+--- a/tests/viewport_preview_selection_tests.cpp
++++ b/tests/viewport_preview_selection_tests.cpp
+@@ -575,6 +575,16 @@
++    int bodySignals = 0;
++    std::vector<solidar::BodyId> lastBodies;
++    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
++                     [&](const std::vector<solidar::BodyId>& ids) {
++                       ++bodySignals;
++                       lastBodies = ids;
++                     });
+     view.setSelectedBodies({bodyId});
+     CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
++    CHECK(bodySignals == 1);
+     view.setSelectedBodyFaces({faceA});
+     CHECK(view.selectedBodies().empty());
++    CHECK(lastBodies.empty());
++    CHECK(bodySignals == 2);
+     CHECK(view.selectedBodyFaces() ==
+           std::vector<solidar::FaceReference>{faceA});
+@@ -596,6 +596,11 @@
++    int bodySignals = 0;
++    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
++                     [&](const std::vector<solidar::BodyId>&) { ++bodySignals; });
+     view.setSelectedBodies({bodyId});
+     CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
++    CHECK(bodySignals == 1);
+     view.setSelectedBodyEdges({edgeA});
+     CHECK(view.selectedBodies().empty());
++    CHECK(bodySignals == 2);
+     CHECK(view.selectedBodyEdges() ==
+           std::vector<solidar::EdgeReference>{edgeA});
+@@ -631,13 +631,45 @@
+-  // resetScene clears the whole-body selection.
++  // resetScene clears the whole-body selection and publishes the transition.
+   {
+     solidar::Viewport view;
+     view.resize(800, 600);
+     view.setBodyShape(boxShape, bodyId, sourceFeatureId);
+     view.setSolidVisible(true);
++    int bodySignals = 0;
++    std::vector<solidar::BodyId> lastBodies;
++    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
++                     [&](const std::vector<solidar::BodyId>& ids) {
++                       ++bodySignals;
++                       lastBodies = ids;
++                     });
+     view.setSelectedBodies({bodyId});
+     CHECK(view.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
++    CHECK(bodySignals == 1);
+     view.resetScene();
+     CHECK(view.selectedBodies().empty());
++    CHECK(lastBodies.empty());
++    CHECK(bodySignals == 2);
++  }
++
++  // Marquee commits a sub-element selection and clears prior whole-body state.
++  {
++    solidar::Viewport view;
++    view.resize(800, 600);
++    view.setBodyShape(boxShape, bodyId, sourceFeatureId);
++    view.setSolidVisible(true);
++    int bodySignals = 0;
++    std::vector<solidar::BodyId> lastBodies;
++    QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
++                     [&](const std::vector<solidar::BodyId>& ids) {
++                       ++bodySignals;
++                       lastBodies = ids;
++                     });
++    view.setSelectedBodies({bodyId});
++    CHECK(bodySignals == 1);
++    marqueeDrag(view, {1.0, 1.0}, {799.0, 599.0});
++    CHECK(view.selectedBodies().empty());
++    CHECK(!view.selectedBodyFaces().empty());
++    CHECK(lastBodies.empty());
++    CHECK(bodySignals == 2);
+   }
+ 
+   // Ctrl+A targeted at a HUD field (as when the field has keyboard focus) must

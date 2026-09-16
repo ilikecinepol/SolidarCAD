@@ -1,0 +1,186 @@
+diff --git a/src/sketch/Sketch.h b/src/sketch/Sketch.h
+--- a/src/sketch/Sketch.h
++++ b/src/sketch/Sketch.h
+@@ -54,4 +54,9 @@ struct PointReference {
+   // Optional center node of a composite element (currently a rectangle
+   // created with RectangleMode::FromCenter).
+   std::size_t elementCenterId{0};
++
++  // Optional arc-endpoint reference. `start` selects the first/last endpoint
++  // exactly as it does for line endpoints. Kept as the final aggregate field
++  // so existing PointReference initializers remain source-compatible.
++  GeometryId arcId{kInvalidGeometryId};
+ };
+diff --git a/src/sketch/Sketch.cpp b/src/sketch/Sketch.cpp
+--- a/src/sketch/Sketch.cpp
++++ b/src/sketch/Sketch.cpp
+@@ -360,6 +360,8 @@ void Sketch::removeArc(std::size_t index) {
+   std::erase_if(constraints_, [removedId](const Constraint& constraint) {
+     return constraint.firstGeometry == removedId ||
+-           constraint.secondGeometry == removedId;
++           constraint.secondGeometry == removedId ||
++           constraint.firstPoint.arcId == removedId ||
++           constraint.secondPoint.arcId == removedId;
+   });
+ 
+   updateBounds();
+@@ -1800,5 +1802,7 @@ bool Sketch::isPointReferenceLocked(
+     return isElementLocked(reference.elementCenterId);
+   if (reference.circleId != kInvalidGeometryId)
+     return isGeometryLocked(reference.circleId);
++  if (reference.arcId != kInvalidGeometryId)
++    return isGeometryLocked(reference.arcId);
+   return isGeometryLocked(reference.lineId);
+ }
+@@ -1850,4 +1854,11 @@ std::optional<Point> Sketch::referencedPoint(
+     return circles_[*index].center;
+   }
+ 
++  if (reference.arcId != kInvalidGeometryId) {
++    const auto index = arcIndex(reference.arcId);
++    if (!index) return std::nullopt;
++    return reference.start ? arcStartPoint(arcs_[*index])
++                           : arcEndPoint(arcs_[*index]);
++  }
++
+   const auto index = lineIndex(reference.lineId);
+   if (!index) return std::nullopt;
+diff --git a/src/ui/SketchCanvas.cpp b/src/ui/SketchCanvas.cpp
+--- a/src/ui/SketchCanvas.cpp
++++ b/src/ui/SketchCanvas.cpp
+@@ -1925,6 +1925,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
+   const bool creationTool =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
+-      tool_ == Tool::Circle;
++      tool_ == Tool::Circle ||
++      tool_ == Tool::Arc;
+ 
+   const bool tangentCircleMode =
+@@ -1990,4 +1991,19 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
+                   circleId);
+   }
+ 
++  // Arc endpoints are first-class construction points. Reuse the existing
++  // point snap kind; GeometryId is globally unique, so an arc cannot be
++  // confused with a line by the highlight code.
++  for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
++    const auto arcId = sketch_.arcId(index);
++    if (arcId == sketch::kInvalidGeometryId)
++      continue;
++
++    const auto& arc = sketch_.arcs()[index];
++    considerPoint(sketch::arcStartPoint(arc),
++                  ConstructionSnapKind::LinePoint, arcId);
++    considerPoint(sketch::arcEndPoint(arc),
++                  ConstructionSnapKind::LinePoint, arcId);
++  }
++
+   for (const auto elementId : sketch_.centerNodeElementIds()) {
+@@ -2050,6 +2065,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
+   const bool allowLineBody =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
++      tool_ == Tool::Arc ||
+       tangentCircleMode ||
+       (tool_ == Tool::Circle &&
+        circleMode_ == CircleMode::CenterRadius &&
+@@ -2060,8 +2076,15 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
+   const bool allowCircleBody =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
++      tool_ == Tool::Arc ||
+       (tool_ == Tool::Circle &&
+        circleMode_ == CircleMode::CenterRadius &&
+        !anchor_);
+ 
++  const bool allowArcBody =
++      tool_ == Tool::Line ||
++      tool_ == Tool::Rectangle ||
++      tool_ == Tool::Circle ||
++      tool_ == Tool::Arc;
++
+   double bestBodyDistance = kSnapTolerancePx;
+@@ -2140,5 +2163,54 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
+     }
+   }
+ 
++  if (allowArcBody) {
++    constexpr double kTwoPi = 6.28318530717958647692;
++    const auto normalize = [](double angle) {
++      constexpr double twoPi = 6.28318530717958647692;
++      angle = std::fmod(angle, twoPi);
++      if (angle < 0.0) angle += twoPi;
++      return angle;
++    };
++    const auto cursor = unmapPoint(position);
++
++    for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
++      const auto arcId = sketch_.arcId(index);
++      if (arcId == sketch::kInvalidGeometryId)
++        continue;
++
++      const auto& arc = sketch_.arcs()[index];
++      if (arc.radiusMm <= 1e-9 ||
++          arc.sweepAngleRad <= 1e-9 ||
++          arc.sweepAngleRad >= kTwoPi)
++        continue;
++
++      const double dx = cursor.xMm - arc.center.xMm;
++      const double dy = cursor.yMm - arc.center.yMm;
++      const double lengthMm = std::hypot(dx, dy);
++      if (lengthMm <= 1e-9)
++        continue;
++
++      const double candidateAngle = normalize(std::atan2(dy, dx));
++      const double delta =
++          normalize(candidateAngle - normalize(arc.startAngleRad));
++      if (delta > arc.sweepAngleRad + 1e-9)
++        continue;
++
++      const double distance =
++          std::abs(lengthMm - arc.radiusMm) * pixelsPerMm_;
++      if (distance >= bestBodyDistance)
++        continue;
++
++      bestBodyDistance = distance;
++      result.point = {
++          arc.center.xMm + arc.radiusMm * dx / lengthMm,
++          arc.center.yMm + arc.radiusMm * dy / lengthMm};
++      // Reuse curved-body snap kind. GeometryId distinguishes Arc/Circle.
++      result.kind = ConstructionSnapKind::CircleBody;
++      result.geometryId = arcId;
++      result.elementId = 0;
++    }
++  }
++
+   return result;
+ }
+@@ -2410,9 +2481,16 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
+     const auto& arc = sketch_.arcs()[index];
+     const auto arcId = sketch_.arcId(index);
+     const bool locked = sketch_.isGeometryLocked(arcId);
++    const bool snapHovered =
++        constructionHover_ &&
++        (constructionHover_->kind == ConstructionSnapKind::LinePoint ||
++         constructionHover_->kind == ConstructionSnapKind::CircleBody) &&
++        constructionHover_->geometryId == arcId;
+ 
+     painter.setPen(
+-        QPen(locked ? QColor("#8b5cf6") : QColor("#1469d7"),
+-             2.0,
++        QPen(snapHovered
++                 ? QColor("#00a6ff")
++                 : locked ? QColor("#8b5cf6") : QColor("#1469d7"),
++             snapHovered ? 3.8 : 2.0,
+              arc.dashed ? Qt::DashLine : Qt::SolidLine,
+              Qt::RoundCap));
+@@ -3910,6 +3988,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
+   const bool creationTool =
+       tool_ == Tool::Line ||
+       tool_ == Tool::Rectangle ||
+-      tool_ == Tool::Circle;
++      tool_ == Tool::Circle ||
++      tool_ == Tool::Arc;
+ 
+   if (creationTool) {

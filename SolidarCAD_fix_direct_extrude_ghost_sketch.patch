@@ -1,0 +1,130 @@
+diff --git a/src/ui/PartDesignHistory.h b/src/ui/PartDesignHistory.h
+--- a/src/ui/PartDesignHistory.h
++++ b/src/ui/PartDesignHistory.h
+@@ -35,6 +35,9 @@ struct HistoryStep {
+ [[nodiscard]] std::vector<HistoryStep> buildPartDesignHistory(
+     const Document& document, const Body& body);
+ [[nodiscard]] std::vector<HistoryStep> buildPartDesignHistory(
+     const Document& document, const Body* body);
++// Presentation policy: profile sketches consumed by solid-creating Part Design
++// features are hidden by default, but remain in Document/history and may be
++// shown explicitly by the user.
++[[nodiscard]] bool isSketchConsumedByPartDesign(
++    const Document& document, SketchId sketchId) noexcept;
+ void configureHistoryButton(QToolButton& button, const HistoryStep& step,
+                             bool selected);
+ [[nodiscard]] ShapeFeature* findHistoryFeature(Document& document,
+diff --git a/src/ui/PartDesignHistory.cpp b/src/ui/PartDesignHistory.cpp
+--- a/src/ui/PartDesignHistory.cpp
++++ b/src/ui/PartDesignHistory.cpp
+@@ -161,6 +161,31 @@ std::vector<HistoryStep> buildPartDesignHistory(const Document& document,
+   return result;
+ }
+
++bool isSketchConsumedByPartDesign(const Document& document,
++                                  SketchId sketchId) noexcept {
++  if (sketchId == kInvalidSketchId) return false;
++
++  for (const Body& body : document.bodies()) {
++    for (const auto& feature : body.features()) {
++      if (!feature) continue;
++
++      // "Consumed" is intentionally narrower than dependsOnSketch(): e.g. a
++      // Revolve axis sketch is a dependency but is not the profile that should
++      // be auto-hidden after the solid feature is created.
++      if (const auto* extrude =
++              dynamic_cast<const ExtrudeFeature*>(feature.get())) {
++        if (!extrude->isFaceSource() &&
++            extrude->profileSketchId() == sketchId)
++          return true;
++      } else if (const auto* pocket =
++                     dynamic_cast<const PocketFeature*>(feature.get())) {
++        if (pocket->profileSketchId() == sketchId) return true;
++      } else if (const auto* revolve =
++                     dynamic_cast<const RevolveFeature*>(feature.get())) {
++        if (revolve->profileSketchId() == sketchId) return true;
++      }
++    }
++  }
++  return false;
++}
++
+ void configureHistoryButton(QToolButton& button, const HistoryStep& step,
+                             bool selected) {
+   button.setObjectName(QStringLiteral("historyStep"));
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -3417,8 +3417,12 @@ void MainWindow::rebuildFeatureTree() {
+   auto* drawings = new QTreeWidgetItem(project, {QString::fromUtf8("Чертежи")});
+   const std::size_t activeSketchCount = std::min<std::size_t>(
+       static_cast<std::size_t>(std::max(historyPosition_, 0)), sketchCount_);
++  // During a just-committed direct operation rebuildFeatureTree() can run
++  // before rebuildHistoryPanel() has appended the new history step. Treat the
++  // previous end marker as "at end" so the newly created Body is not hidden.
++  const bool historyAtEnd =
++      historyPosition_ >= static_cast<int>(historySteps_.size());
+   const bool activeExtrusion = hasExtrusion_ &&
+-      historyPosition_ > static_cast<int>(sketchHistory_.size());
++      (historyAtEnd ||
++       historyPosition_ > static_cast<int>(sketchHistory_.size()));
+   if (activeSketchCount == 0) {
+     new QTreeWidgetItem(drawings, {QString::fromUtf8("Эскизов нет")});
+   } else {
+@@ -3429,8 +3433,19 @@ void MainWindow::rebuildFeatureTree() {
+           drawings, {QString::fromUtf8("⌞  Эскиз %1").arg(index + 1)});
+       sketchItem->setData(0, Qt::UserRole, 20 + static_cast<int>(index));
+       sketchItem->setFlags(sketchItem->flags() | Qt::ItemIsUserCheckable);
+-      const bool visible = !activeExtrusion || !extrusionSourceSketch_.has_value() ||
+-                           index != *extrusionSourceSketch_;
++      const SketchId sketchId = sketchHistory_[index].documentSketchId;
++      bool visible = true;
++      if (historyAtEnd) {
++        // Do not use legacy extrusionSourceSketch_ as the source of truth:
++        // direct Join/Cut and multiple downstream Part Design features can
++        // consume several different profile sketches in the same model.
++        visible = !isSketchConsumedByPartDesign(document_, sketchId);
++      } else {
++        // Keep the tree checkbox synchronized with applyHistoryPosition():
++        // when inspecting an earlier history step, only the selected sketch
++        // step is shown; feature steps show no construction sketch by default.
++        visible =
++            historyPosition_ > 0 &&
++            historyPosition_ <= static_cast<int>(historySteps_.size()) &&
++            historySteps_[historyPosition_ - 1].sketchId == sketchId;
++      }
+       sketchItem->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+       viewport_->setSketchVisible(index, visible);
+     }
+diff --git a/tests/part_design_history_ui_tests.cpp b/tests/part_design_history_ui_tests.cpp
+--- a/tests/part_design_history_ui_tests.cpp
++++ b/tests/part_design_history_ui_tests.cpp
+@@ -23,6 +23,8 @@ int main(int argc, char** argv) {
+   const auto sketchOnlySteps = solidar::buildPartDesignHistory(
+       sketchOnlyDocument, static_cast<const solidar::Body*>(nullptr));
+   CHECK(sketchOnlySteps.size() == 1);
+   CHECK(sketchOnlySteps.front().sketchId == sketchOnlyId);
++  CHECK(!solidar::isSketchConsumedByPartDesign(sketchOnlyDocument,
++                                               sketchOnlyId));
++
+   solidar::Document document;
+   auto& sketch1 = document.addSketch("Sketch 1");
+   const auto sketch1Id = sketch1.id;
+@@ -75,6 +77,10 @@ int main(int argc, char** argv) {
+   CHECK(steps[8].featureId == mirrorId);
+   CHECK(steps[9].featureId == linearId);
+   CHECK(steps[10].featureId == circularId);
++  CHECK(solidar::isSketchConsumedByPartDesign(document, sketch1Id));
++  CHECK(solidar::isSketchConsumedByPartDesign(document, sketch2Id));
++
+   std::set<solidar::FeatureId> ids;
+   for (const auto& step : steps) {
+     CHECK(!step.icon.isNull()); CHECK(!step.tooltip.isEmpty());
+@@ -101,6 +107,8 @@ int main(int argc, char** argv) {
+   CHECK(revolveSteps.size() == 2);
+   CHECK(revolveSteps[0].sketchId == revolveSketchId);
+   CHECK(revolveSteps[1].featureId == revolveId);
++  CHECK(solidar::isSketchConsumedByPartDesign(document, revolveSketchId));
+
+   solidar::Document persisted;
+   auto& persistedSketch = persisted.addSketch();

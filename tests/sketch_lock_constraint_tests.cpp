@@ -18,6 +18,8 @@ void require(bool condition, const char* message) {
   }
 }
 
+#define CHECK(condition) require((condition), #condition)
+
 ConstraintId lockGeometry(Sketch& sketch, GeometryId id) {
   Constraint lock;
   lock.type = ConstraintType::Lock;
@@ -495,6 +497,217 @@ void incompatibleAxisSizeRejectsSecondGap(GapAxis axis) {
   requireStructuralConstraintsRetained(fixture);
 }
 
+void pointDistanceMovesLooseDiagonalEndpoint(bool diagonalFirst) {
+  Sketch sketch;
+  sketch.addRectangle({0.0, 0.0}, {40.0, 30.0});
+  const GeometryId profileTop = sketch.lineId(2);
+  const GeometryId profileRight = sketch.lineId(1);
+  const PointReference bottomRight{sketch.lineId(0), false};
+
+  sketch.addLine({0.0, 30.0}, {40.0, 18.0});
+  const GeometryId diagonal = sketch.lineId(4);
+  const PointReference diagonalTop{diagonal, true};
+  const PointReference diagonalBottom{diagonal, false};
+
+  Constraint upperOnTop;
+  upperOnTop.type = ConstraintType::PointOnLine;
+  upperOnTop.firstGeometry = profileTop;
+  upperOnTop.secondPoint = diagonalTop;
+  CHECK(sketch.addConstraint(upperOnTop) != kInvalidConstraintId);
+
+  Constraint lowerOnRight;
+  lowerOnRight.type = ConstraintType::PointOnLine;
+  lowerOnRight.firstGeometry = profileRight;
+  lowerOnRight.secondPoint = diagonalBottom;
+  CHECK(sketch.addConstraint(lowerOnRight) != kInvalidConstraintId);
+
+  const auto anchorBefore = sketch.referencedPoint(bottomRight);
+  const auto topBefore = sketch.referencedPoint(diagonalTop);
+  const auto bottomBefore = sketch.referencedPoint(diagonalBottom);
+  CHECK(anchorBefore && topBefore && bottomBefore);
+  const double lengthBefore = std::hypot(bottomBefore->xMm - topBefore->xMm,
+                                         bottomBefore->yMm - topBefore->yMm);
+  const double angleBefore = std::atan2(bottomBefore->yMm - topBefore->yMm,
+                                        bottomBefore->xMm - topBefore->xMm);
+
+  Constraint distance;
+  distance.type = ConstraintType::Distance;
+  distance.firstPoint = diagonalFirst ? diagonalBottom : bottomRight;
+  distance.secondPoint = diagonalFirst ? bottomRight : diagonalBottom;
+  distance.value = 12.0;
+  CHECK(sketch.addConstraint(distance) != kInvalidConstraintId);
+
+  const auto anchorAfter = sketch.referencedPoint(bottomRight);
+  const auto topAfter = sketch.referencedPoint(diagonalTop);
+  const auto bottomAfter = sketch.referencedPoint(diagonalBottom);
+  CHECK(anchorAfter && topAfter && bottomAfter);
+  CHECK(std::abs(std::hypot(bottomAfter->xMm - anchorAfter->xMm,
+                            bottomAfter->yMm - anchorAfter->yMm) - 12.0) <= 1e-7);
+  CHECK(std::abs(anchorAfter->xMm - anchorBefore->xMm) <= 1e-9);
+  CHECK(std::abs(anchorAfter->yMm - anchorBefore->yMm) <= 1e-9);
+  const double lengthAfter = std::hypot(bottomAfter->xMm - topAfter->xMm,
+                                        bottomAfter->yMm - topAfter->yMm);
+  const double angleAfter = std::atan2(bottomAfter->yMm - topAfter->yMm,
+                                       bottomAfter->xMm - topAfter->xMm);
+  CHECK(std::abs(lengthAfter - lengthBefore) > 1e-6);
+  CHECK(std::abs(angleAfter - angleBefore) > 1e-6);
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+}
+
+void projectedRectangleBottomGap(bool rectangleSelectedFirst,
+                                 ConstraintType type) {
+  Sketch sketch;
+  sketch.addLine({0.0, 60.0}, {0.0, 0.0});
+  sketch.addLine({100.0, 60.0}, {100.0, 0.0});
+  sketch.addLine({0.0, 0.0}, {100.0, 0.0});
+  sketch.addLine({0.0, 50.0}, {100.0, 50.0});
+  const GeometryId leftProjection = sketch.lineId(0);
+  const GeometryId rightProjection = sketch.lineId(1);
+  const GeometryId bottomProjection = sketch.lineId(2);
+  const GeometryId topProjection = sketch.lineId(3);
+  for (const GeometryId id : {leftProjection, rightProjection,
+                              bottomProjection, topProjection}) {
+    sketch.setElementDashed(sketch.lines()[*sketch.lineIndex(id)].elementId,
+                            true);
+    CHECK(lockGeometry(sketch, id) != kInvalidConstraintId);
+  }
+  const std::vector<Line> projectionBefore(sketch.lines().begin(),
+                                           sketch.lines().end());
+
+  sketch.addRectangle({20.0, 50.0}, {80.0, 20.0});
+  const std::size_t rectangleFirstIndex = 4;
+  const PointReference rectangleLeft{sketch.lineId(rectangleFirstIndex), true};
+  const PointReference rectangleRight{sketch.lineId(rectangleFirstIndex), false};
+  const PointReference rectangleBottomRight{
+      sketch.lineId(rectangleFirstIndex + 2), true};
+  const PointReference projectedLeft{topProjection, true};
+  const PointReference projectedRight{topProjection, false};
+  const PointReference projectedBottomRight{bottomProjection, false};
+
+  Constraint topLeftOnProjection;
+  topLeftOnProjection.type = ConstraintType::PointOnLine;
+  topLeftOnProjection.firstGeometry = topProjection;
+  topLeftOnProjection.secondPoint = rectangleLeft;
+  CHECK(sketch.addConstraint(topLeftOnProjection) != kInvalidConstraintId);
+  Constraint topRightOnProjection = topLeftOnProjection;
+  topRightOnProjection.id = kInvalidConstraintId;
+  topRightOnProjection.secondPoint = rectangleRight;
+  CHECK(sketch.addConstraint(topRightOnProjection) != kInvalidConstraintId);
+
+  Constraint leftGap;
+  leftGap.type = ConstraintType::Distance;
+  leftGap.firstPoint = projectedLeft;
+  leftGap.secondPoint = rectangleLeft;
+  leftGap.value = 7.0;
+  CHECK(sketch.addConstraint(leftGap) != kInvalidConstraintId);
+  Constraint rightGap;
+  rightGap.type = ConstraintType::Distance;
+  rightGap.firstPoint = projectedRight;
+  rightGap.secondPoint = rectangleRight;
+  rightGap.value = 7.0;
+  CHECK(sketch.addConstraint(rightGap) != kInvalidConstraintId);
+
+  const double topBefore = sketch.lines()[rectangleFirstIndex].start.yMm;
+  Constraint bottomGap;
+  bottomGap.type = type;
+  bottomGap.firstPoint = rectangleSelectedFirst ? rectangleBottomRight
+                                                : projectedBottomRight;
+  bottomGap.secondPoint = rectangleSelectedFirst ? projectedBottomRight
+                                                 : rectangleBottomRight;
+  bottomGap.value = 12.0;
+  CHECK(sketch.addConstraint(bottomGap) != kInvalidConstraintId);
+
+  const auto bottom = sketch.referencedPoint(rectangleBottomRight);
+  CHECK(bottom.has_value());
+  CHECK(std::abs(bottom->yMm - 12.0) <= 1e-7);
+  CHECK(std::abs(sketch.lines()[rectangleFirstIndex].start.yMm - topBefore) <= 1e-7);
+  CHECK(std::abs(sketch.referencedPoint(rectangleLeft)->xMm - 7.0) <= 1e-7);
+  CHECK(std::abs(sketch.referencedPoint(rectangleRight)->xMm - 93.0) <= 1e-7);
+  for (std::size_t index = 0; index < projectionBefore.size(); ++index) {
+    CHECK(std::abs(sketch.lines()[index].start.xMm -
+                   projectionBefore[index].start.xMm) <= 1e-9);
+    CHECK(std::abs(sketch.lines()[index].start.yMm -
+                   projectionBefore[index].start.yMm) <= 1e-9);
+    CHECK(std::abs(sketch.lines()[index].end.xMm -
+                   projectionBefore[index].end.xMm) <= 1e-9);
+    CHECK(std::abs(sketch.lines()[index].end.yMm -
+                   projectionBefore[index].end.yMm) <= 1e-9);
+  }
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+}
+
+void incompatiblePointDistanceRestoresSnapshot() {
+  Sketch sketch;
+  sketch.addLine({0.0, 0.0}, {0.0, 20.0});
+  const PointReference first{sketch.lineId(0), true};
+  const PointReference second{sketch.lineId(0), false};
+
+  Constraint original;
+  original.type = ConstraintType::Distance;
+  original.firstPoint = first;
+  original.secondPoint = second;
+  original.value = 20.0;
+  CHECK(sketch.addConstraint(original) != kInvalidConstraintId);
+
+  const auto geometryBefore = sketch.lines();
+  const std::size_t constraintCount = sketch.constraints().size();
+  Constraint incompatible = original;
+  incompatible.id = kInvalidConstraintId;
+  incompatible.value = 12.0;
+  CHECK(sketch.addConstraint(incompatible) == kInvalidConstraintId);
+  CHECK(sketch.constraints().size() == constraintCount);
+  CHECK(sketch.lines().size() == geometryBefore.size());
+  for (std::size_t index = 0; index < geometryBefore.size(); ++index) {
+    CHECK(std::abs(sketch.lines()[index].start.xMm -
+                   geometryBefore[index].start.xMm) <= 1e-9);
+    CHECK(std::abs(sketch.lines()[index].start.yMm -
+                   geometryBefore[index].start.yMm) <= 1e-9);
+    CHECK(std::abs(sketch.lines()[index].end.xMm -
+                   geometryBefore[index].end.xMm) <= 1e-9);
+    CHECK(std::abs(sketch.lines()[index].end.yMm -
+                   geometryBefore[index].end.yMm) <= 1e-9);
+  }
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+}
+
+void rotatedViewOrthogonalPointGaps(bool rectangleSelectedFirst) {
+  Sketch sketch;
+  sketch.addLine({11.0, 0.0}, {11.0, 58.0});
+  sketch.addLine({-24.0, 0.0}, {-24.0, 58.0});
+  const GeometryId rightProjection = sketch.lineId(0);
+  const GeometryId leftProjection = sketch.lineId(1);
+  CHECK(lockGeometry(sketch, rightProjection) != kInvalidConstraintId);
+  CHECK(lockGeometry(sketch, leftProjection) != kInvalidConstraintId);
+
+  sketch.addRectangle({11.0, 51.0}, {-12.0, 7.0});
+  const PointReference rectangleBottomLeft{sketch.lineId(4), true};
+  const PointReference projectedBottomLeft{leftProjection, true};
+
+  Constraint existingScreenHorizontal;
+  existingScreenHorizontal.type = ConstraintType::DistanceY;
+  existingScreenHorizontal.firstPoint = rectangleBottomLeft;
+  existingScreenHorizontal.secondPoint = projectedBottomLeft;
+  existingScreenHorizontal.value = 7.0;
+  CHECK(sketch.addConstraint(existingScreenHorizontal) != kInvalidConstraintId);
+
+  Constraint screenVertical;
+  screenVertical.type = ConstraintType::DistanceX;
+  screenVertical.firstPoint = rectangleSelectedFirst ? rectangleBottomLeft
+                                                     : projectedBottomLeft;
+  screenVertical.secondPoint = rectangleSelectedFirst ? projectedBottomLeft
+                                                      : rectangleBottomLeft;
+  screenVertical.value = 12.0;
+  CHECK(sketch.addConstraint(screenVertical) != kInvalidConstraintId);
+  const auto rectanglePoint = sketch.referencedPoint(rectangleBottomLeft);
+  const auto projectedPoint = sketch.referencedPoint(projectedBottomLeft);
+  CHECK(rectanglePoint && projectedPoint);
+  CHECK(std::abs(std::abs(rectanglePoint->xMm - projectedPoint->xMm) - 12.0) <=
+        1e-7);
+  CHECK(std::abs(std::abs(rectanglePoint->yMm - projectedPoint->yMm) - 7.0) <=
+        1e-7);
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+}
+
 }  // namespace
 
 int main() {
@@ -511,5 +724,12 @@ int main() {
   alignedDistancesToOneLockedProjectionLine(GapAxis::Y, true);
   incompatibleAxisSizeRejectsSecondGap(GapAxis::X);
   incompatibleAxisSizeRejectsSecondGap(GapAxis::Y);
+  pointDistanceMovesLooseDiagonalEndpoint(false);
+  pointDistanceMovesLooseDiagonalEndpoint(true);
+  projectedRectangleBottomGap(false, ConstraintType::DistanceY);
+  projectedRectangleBottomGap(true, ConstraintType::DistanceY);
+  incompatiblePointDistanceRestoresSnapshot();
+  rotatedViewOrthogonalPointGaps(false);
+  rotatedViewOrthogonalPointGaps(true);
   return EXIT_SUCCESS;
 }
