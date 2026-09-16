@@ -205,6 +205,17 @@ std::optional<Point> pointOf(const Sketch& sketch,
     return circle ? std::optional<Point>{circle->center} : std::nullopt;
   }
 
+  // Arc variables are not part of the diagnostic layout yet. Endpoint
+  // references are still valid CAD points and are read from the current
+  // fixed Arc geometry.
+  if (reference.arcId != kInvalidGeometryId) {
+    const auto index = sketch.arcIndex(reference.arcId);
+    if (!index) return std::nullopt;
+    return reference.start
+               ? arcStartPoint(sketch.arcs()[*index])
+               : arcEndPoint(sketch.arcs()[*index]);
+  }
+
   const auto line = lineOf(layout, variables, reference.lineId);
   if (!line) return std::nullopt;
   return reference.start ? line->start : line->end;
@@ -235,6 +246,45 @@ double segmentDistance(Point p, const Line& line, double* outside = nullptr) {
   const Point q{line.start.xMm + t * dx,
                 line.start.yMm + t * dy};
   return pointDistance(p, q);
+}
+
+double finiteArcDistance(Point point, const Arc& arc) {
+  constexpr double kTwoPi = 6.28318530717958647692;
+  if (!std::isfinite(arc.center.xMm) ||
+      !std::isfinite(arc.center.yMm) ||
+      !std::isfinite(arc.radiusMm) ||
+      !std::isfinite(arc.startAngleRad) ||
+      !std::isfinite(arc.sweepAngleRad) ||
+      arc.radiusMm <= 1e-12 ||
+      arc.sweepAngleRad <= 1e-12 ||
+      arc.sweepAngleRad >= kTwoPi - 1e-12)
+    return kDegeneratePenalty;
+
+  const auto normalizeAngle = [](double angle) {
+    constexpr double twoPi = 6.28318530717958647692;
+    angle = std::fmod(angle, twoPi);
+    if (angle < 0.0) angle += twoPi;
+    return angle;
+  };
+
+  const double dx = point.xMm - arc.center.xMm;
+  const double dy = point.yMm - arc.center.yMm;
+  const double radialLength = std::hypot(dx, dy);
+
+  if (radialLength > 1e-12) {
+    const double candidateAngle =
+        normalizeAngle(std::atan2(dy, dx));
+    const double delta =
+        normalizeAngle(
+            candidateAngle -
+            normalizeAngle(arc.startAngleRad));
+
+    if (delta <= arc.sweepAngleRad + 1e-12)
+      return std::abs(radialLength - arc.radiusMm);
+  }
+
+  return std::min(pointDistance(point, arcStartPoint(arc)),
+                  pointDistance(point, arcEndPoint(arc)));
 }
 
 std::vector<Equation> evaluate(const Sketch& sketch,
@@ -428,6 +478,20 @@ std::vector<Equation> evaluate(const Sketch& sketch,
             pointOf(sketch, layout, variables, constraint.secondPoint);
         if (!circle || !point) { invalidEquation(constraint); break; }
         add(pointDistance(circle->center, *point) - circle->radiusMm,
+            kLengthTolerance, constraint);
+        break;
+      }
+
+      case ConstraintType::PointOnArc: {
+        const auto arcIndex =
+            sketch.arcIndex(constraint.firstGeometry);
+        const auto point =
+            pointOf(sketch, layout, variables, constraint.secondPoint);
+        if (!arcIndex || !point) {
+          invalidEquation(constraint);
+          break;
+        }
+        add(finiteArcDistance(*point, sketch.arcs()[*arcIndex]),
             kLengthTolerance, constraint);
         break;
       }

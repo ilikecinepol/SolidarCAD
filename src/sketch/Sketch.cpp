@@ -22,6 +22,23 @@ Point arcEndPoint(const Arc& arc) noexcept {
           arc.center.yMm + arc.radiusMm * std::sin(angle)};
 }
 
+namespace {
+
+// First safe Arc constraint primitive: keep the Arc shape rigid and translate
+// the whole curve when one of its endpoint references has to move. This avoids
+// rebuilding radius/sweep inside the sequential constraint solver.
+bool moveArcEndpointRigid(Arc& arc, bool start, Point target) {
+  const Point current = start ? arcStartPoint(arc) : arcEndPoint(arc);
+  const double dx = target.xMm - current.xMm;
+  const double dy = target.yMm - current.yMm;
+  if (std::abs(dx) <= 1e-12 && std::abs(dy) <= 1e-12) return true;
+  arc.center.xMm += dx;
+  arc.center.yMm += dy;
+  return true;
+}
+
+}  // namespace
+
 Sketch::Sketch() { clear(); }
 
 void Sketch::clear() {
@@ -1912,6 +1929,12 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
           return a.circleId != kInvalidGeometryId &&
                  a.circleId == b.circleId;
 
+        if (a.arcId != kInvalidGeometryId ||
+            b.arcId != kInvalidGeometryId)
+          return a.arcId != kInvalidGeometryId &&
+                 b.arcId != kInvalidGeometryId &&
+                 a.arcId == b.arcId && a.start == b.start;
+
         return a.lineId == b.lineId &&
                a.start == b.start;
       };
@@ -1928,8 +1951,18 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
       firstReference.lineId == secondReference.lineId)
     return false;
 
+  // Never collapse both endpoints of one Arc onto each other.
+  if (firstReference.arcId != kInvalidGeometryId &&
+      firstReference.arcId == secondReference.arcId &&
+      firstReference.start != secondReference.start)
+    return false;
+
   const Point target = *first;
   const Point oldSecond = *second;
+
+  if (std::hypot(target.xMm - oldSecond.xMm,
+                 target.yMm - oldSecond.yMm) <= 1e-9)
+    return true;
 
   // A virtual rectangle center is not an independently movable coordinate.
   // Moving it means translating the complete owning rectangle.
@@ -1955,6 +1988,10 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
     const auto index = circleIndex(secondReference.circleId);
     if (!index) return false;
     circles_[*index].center = target;
+  } else if (secondReference.arcId != kInvalidGeometryId) {
+    const auto index = arcIndex(secondReference.arcId);
+    if (!index) return false;
+    if (!moveArcEndpointRigid(arcs_[*index], secondReference.start, target)) return false;
   } else {
     const auto same = [](Point a, Point b) {
       return std::hypot(a.xMm - b.xMm,
@@ -2029,6 +2066,10 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
     const auto circle = circleIndex(pointReference.circleId);
     if (!circle) return false;
     circles_[*circle].center = target;
+  } else if (pointReference.arcId != kInvalidGeometryId) {
+    const auto arc = arcIndex(pointReference.arcId);
+    if (!arc) return false;
+    if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target)) return false;
   } else {
     const auto same = [](Point first, Point second) {
       return std::hypot(first.xMm - second.xMm,
@@ -2107,6 +2148,10 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
     if (!movingCircle) return false;
 
     circles_[*movingCircle].center = target;
+  } else if (pointReference.arcId != kInvalidGeometryId) {
+    const auto movingArc = arcIndex(pointReference.arcId);
+    if (!movingArc) return false;
+    if (!moveArcEndpointRigid(arcs_[*movingArc], pointReference.start, target)) return false;
   } else {
     const auto same = [](Point first, Point second) {
       return std::hypot(first.xMm - second.xMm,
@@ -2128,6 +2173,123 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
   updateBounds();
   return true;
 }
+
+bool Sketch::setPointOnArc(GeometryId arcIdValue,
+                           PointReference pointReference) {
+  const auto carrierIndex = arcIndex(arcIdValue);
+  const auto point = referencedPoint(pointReference);
+  if (!carrierIndex || !point) return false;
+
+  const Arc& carrier = arcs_[*carrierIndex];
+  constexpr double kTwoPi = 6.28318530717958647692;
+  if (!std::isfinite(carrier.center.xMm) ||
+      !std::isfinite(carrier.center.yMm) ||
+      !std::isfinite(carrier.radiusMm) ||
+      !std::isfinite(carrier.startAngleRad) ||
+      !std::isfinite(carrier.sweepAngleRad) ||
+      carrier.radiusMm <= 1e-9 ||
+      carrier.sweepAngleRad <= 1e-9 ||
+      carrier.sweepAngleRad >= kTwoPi - 1e-9)
+    return false;
+
+  // An endpoint already belonging to the carrier is tautologically valid.
+  if (pointReference.arcId == arcIdValue)
+    return true;
+
+  const auto normalizeAngle = [](double angle) {
+    constexpr double twoPi = 6.28318530717958647692;
+    angle = std::fmod(angle, twoPi);
+    if (angle < 0.0) angle += twoPi;
+    return angle;
+  };
+
+  const Point oldPoint = *point;
+  const Point startPoint = arcStartPoint(carrier);
+  const Point endPoint = arcEndPoint(carrier);
+
+  double dx = oldPoint.xMm - carrier.center.xMm;
+  double dy = oldPoint.yMm - carrier.center.yMm;
+  const double radialLength = std::hypot(dx, dy);
+
+  Point target = startPoint;
+
+  if (radialLength > 1e-9) {
+    const double candidateAngle =
+        normalizeAngle(std::atan2(dy, dx));
+    const double startAngle =
+        normalizeAngle(carrier.startAngleRad);
+    const double delta =
+        normalizeAngle(candidateAngle - startAngle);
+
+    if (delta <= carrier.sweepAngleRad + 1e-12) {
+      target = {
+          carrier.center.xMm +
+              dx / radialLength * carrier.radiusMm,
+          carrier.center.yMm +
+              dy / radialLength * carrier.radiusMm};
+    } else {
+      const double startDistance =
+          std::hypot(oldPoint.xMm - startPoint.xMm,
+                     oldPoint.yMm - startPoint.yMm);
+      const double endDistance =
+          std::hypot(oldPoint.xMm - endPoint.xMm,
+                     oldPoint.yMm - endPoint.yMm);
+      target = startDistance <= endDistance
+                   ? startPoint
+                   : endPoint;
+    }
+  }
+
+  const double moveX = target.xMm - oldPoint.xMm;
+  const double moveY = target.yMm - oldPoint.yMm;
+
+  // A locked point may satisfy the relation, but must never be moved.
+  if (isPointReferenceLocked(pointReference))
+    return std::hypot(moveX, moveY) <= 1e-7;
+
+  if (pointReference.elementCenterId != 0) {
+    for (auto& line : lines_) {
+      if (line.elementId != pointReference.elementCenterId)
+        continue;
+      line.start.xMm += moveX;
+      line.start.yMm += moveY;
+      line.end.xMm += moveX;
+      line.end.yMm += moveY;
+    }
+  } else if (pointReference.circleId != kInvalidGeometryId) {
+    const auto movingCircle = circleIndex(pointReference.circleId);
+    if (!movingCircle) return false;
+    circles_[*movingCircle].center = target;
+  } else if (pointReference.arcId != kInvalidGeometryId) {
+    // Move the other arc rigidly. Do not reshape either arc from PointOnArc.
+    const auto movingArc = arcIndex(pointReference.arcId);
+    if (!movingArc) return false;
+    arcs_[*movingArc].center.xMm += moveX;
+    arcs_[*movingArc].center.yMm += moveY;
+  } else {
+    const auto same = [](Point first, Point second) {
+      return std::hypot(first.xMm - second.xMm,
+                        first.yMm - second.yMm) <= 1e-7;
+    };
+
+    // Preserve the existing endpoint-cluster behaviour used by PointOnCircle.
+    for (auto& line : lines_) {
+      if (same(line.start, oldPoint)) line.start = target;
+      if (same(line.end, oldPoint)) line.end = target;
+    }
+
+    for (auto& circle : circles_) {
+      if (same(circle.center, oldPoint))
+        circle.center = target;
+    }
+  }
+
+  // IMPORTANT: do not call translatePoint() here. translatePoint() invokes
+  // solveStable(), while this mutator is itself called from the solver.
+  updateBounds();
+  return true;
+}
+
 bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
                                     GeometryId circleIdValue) {
   // LOCK CONSTRAINT: this primitive solves tangency by moving the circle.
@@ -2215,6 +2377,14 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
           return first.circleId != kInvalidGeometryId &&
                  second.circleId != kInvalidGeometryId &&
                  first.circleId == second.circleId;
+        }
+
+        if (first.arcId != kInvalidGeometryId ||
+            second.arcId != kInvalidGeometryId) {
+          return first.arcId != kInvalidGeometryId &&
+                 second.arcId != kInvalidGeometryId &&
+                 first.arcId == second.arcId &&
+                 first.start == second.start;
         }
 
         if (first.lineId == kInvalidGeometryId ||
@@ -2332,6 +2502,17 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       continue;
     }
 
+    if (pointReference.arcId != kInvalidGeometryId) {
+      const auto index = arcIndex(pointReference.arcId);
+      if (!index) continue;
+      const auto current = referencedPoint(pointReference);
+      if (!current) continue;
+      const Point target{current->xMm + dxMm,
+                         current->yMm + dyMm};
+      (void)moveArcEndpointRigid(arcs_[*index], pointReference.start, target);
+      continue;
+    }
+
     const auto index =
         lineIndex(pointReference.lineId);
 
@@ -2362,6 +2543,8 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
        connectedPoints) {
     if (pointReference.elementCenterId != 0 ||
         pointReference.circleId !=
+            kInvalidGeometryId ||
+        pointReference.arcId !=
             kInvalidGeometryId ||
         pointReference.lineId ==
             kInvalidGeometryId)

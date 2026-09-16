@@ -99,7 +99,8 @@ enum class ConstraintType {
   PointOnCircle,
   Tangent,
   LineDistance,
-  Lock};
+  Lock,
+  PointOnArc};
 
 struct Constraint {
   ConstraintId id{kInvalidConstraintId};
@@ -161,6 +162,7 @@ class Sketch final {
   bool setPointsCoincident(PointReference first, PointReference second);
   bool setPointOnLine(GeometryId lineId, PointReference pointReference);
   bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
+  bool setPointOnArc(GeometryId arcId, PointReference pointReference);
 
   bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);

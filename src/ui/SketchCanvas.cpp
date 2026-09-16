@@ -947,6 +947,8 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         return QString::fromUtf8("\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xBE");
       case sketch::ConstraintType::Lock:
         return QString::fromUtf8("Замок");
+      case sketch::ConstraintType::PointOnArc:
+        return QString::fromUtf8("Принадлежность дуге");
     }
     return QString::fromUtf8("Ограничение");
   };
@@ -3792,6 +3794,23 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
           constructionSnap.geometryId != sketch::kInvalidGeometryId) {
         setProperty(
             carrierProperty,
+            static_cast<qulonglong>(constructionSnap.geometryId));
+      }
+
+      const char* arcCarrierProperty =
+          anchor_
+              ? "constructionPointOnArcCarrier"
+              : "constructionPointOnArcStartCarrier";
+
+      setProperty(arcCarrierProperty, QVariant());
+
+      // constructionSnapAt() reuses CircleBody for curved carrier bodies.
+      // GeometryId tells us whether the hit belongs to a Circle or an Arc.
+      if (constructionSnap.kind == ConstructionSnapKind::CircleBody &&
+          constructionSnap.geometryId != sketch::kInvalidGeometryId &&
+          sketch_.arcIndex(constructionSnap.geometryId)) {
+        setProperty(
+            arcCarrierProperty,
             static_cast<qulonglong>(constructionSnap.geometryId));
       }
     }
@@ -8834,6 +8853,7 @@ void autoCoincidentNewGeometry(
     sketch::Sketch& sketch,
     std::size_t oldLineCount,
     std::size_t oldCircleCount,
+    std::size_t oldArcCount,
     double toleranceMm) {
   struct ReferenceCandidate {
     sketch::PointReference reference;
@@ -8854,6 +8874,14 @@ void autoCoincidentNewGeometry(
             second.circleId != sketch::kInvalidGeometryId) {
           return first.circleId != sketch::kInvalidGeometryId &&
                  first.circleId == second.circleId;
+        }
+
+        if (first.arcId != sketch::kInvalidGeometryId ||
+            second.arcId != sketch::kInvalidGeometryId) {
+          return first.arcId != sketch::kInvalidGeometryId &&
+                 second.arcId != sketch::kInvalidGeometryId &&
+                 first.arcId == second.arcId &&
+                 first.start == second.start;
         }
 
         return first.lineId == second.lineId &&
@@ -8899,6 +8927,20 @@ void autoCoincidentNewGeometry(
     sketch::PointReference center;
     center.circleId = id;
     addOldReference(center);
+  }
+
+  for (std::size_t index = 0;
+       index < std::min(oldArcCount, sketch.arcs().size());
+       ++index) {
+    const auto id = sketch.arcId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    sketch::PointReference endpoint;
+    endpoint.arcId = id;
+    endpoint.start = true;
+    addOldReference(endpoint);
+    endpoint.start = false;
+    addOldReference(endpoint);
   }
 
   // Existing virtual centers of composite elements are CAD points too.
@@ -8982,6 +9024,19 @@ void autoCoincidentNewGeometry(
     sketch::PointReference center;
     center.circleId = id;
     addNewReference(center);
+  }
+
+  for (std::size_t index = oldArcCount;
+       index < sketch.arcs().size(); ++index) {
+    const auto id = sketch.arcId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+
+    sketch::PointReference endpoint;
+    endpoint.arcId = id;
+    endpoint.start = true;
+    addNewReference(endpoint);
+    endpoint.start = false;
+    addNewReference(endpoint);
   }
 
   // Newly created center-based rectangles expose a virtual center node.
@@ -9252,6 +9307,15 @@ void autoCoincidentNewGeometry(
   }
 }
 
+void autoCoincidentNewGeometry(
+    sketch::Sketch& sketch,
+    std::size_t oldLineCount,
+    std::size_t oldCircleCount,
+    double toleranceMm) {
+  autoCoincidentNewGeometry(sketch, oldLineCount, oldCircleCount,
+                            sketch.arcs().size(), toleranceMm);
+}
+
 }  // namespace
 void SketchCanvas::commitPoint(sketch::Point point) {
   if (tool_ == Tool::Rectangle && rectangleMode_ == RectangleMode::ThreePoints) {
@@ -9414,6 +9478,51 @@ void SketchCanvas::commitPoint(sketch::Point point) {
         }
       }
     }
+
+    const auto addPointOnArc =
+        [this, newLineIndex](const char* propertyName, bool start) {
+          const QVariant carrierProperty = property(propertyName);
+          setProperty(propertyName, QVariant());
+
+          if (!carrierProperty.isValid() ||
+              newLineIndex >= sketch_.lines().size())
+            return;
+
+          const auto carrierId =
+              static_cast<sketch::GeometryId>(
+                  carrierProperty.toULongLong());
+          const auto newLineId = sketch_.lineId(newLineIndex);
+
+          if (carrierId == sketch::kInvalidGeometryId ||
+              newLineId == sketch::kInvalidGeometryId ||
+              !sketch_.arcIndex(carrierId))
+            return;
+
+          const sketch::PointReference endpoint{newLineId, start};
+
+          const bool duplicate = std::any_of(
+              sketch_.constraints().begin(),
+              sketch_.constraints().end(),
+              [carrierId, endpoint](const sketch::Constraint& item) {
+                return item.type ==
+                           sketch::ConstraintType::PointOnArc &&
+                       item.firstGeometry == carrierId &&
+                       item.secondPoint.lineId == endpoint.lineId &&
+                       item.secondPoint.start == endpoint.start;
+              });
+
+          if (duplicate)
+            return;
+
+          sketch::Constraint constraint;
+          constraint.type = sketch::ConstraintType::PointOnArc;
+          constraint.firstGeometry = carrierId;
+          constraint.secondPoint = endpoint;
+          (void)sketch_.addConstraint(constraint);
+        };
+
+    addPointOnArc("constructionPointOnArcStartCarrier", true);
+    addPointOnArc("constructionPointOnArcCarrier", false);
   }
   else if (tool_ == Tool::Rectangle) {
     if (rectangleMode_ == RectangleMode::FromCenter) {
@@ -9603,11 +9712,19 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
   }
 
   pushUndoState();
+  const std::size_t oldLineCount = sketch_.lines().size();
+  const std::size_t oldCircleCount = sketch_.circles().size();
+  const std::size_t oldArcCount = sketch_.arcs().size();
+
   sketch_.addArc(arc->center,
                  arc->radiusMm,
                  arc->startAngleRad,
                  arc->sweepAngleRad,
                  arc->dashed);
+
+  autoCoincidentNewGeometry(
+      sketch_, oldLineCount, oldCircleCount, oldArcCount,
+      8.0 / std::max(0.001, pixelsPerMm_));
 
   arcPoints_.clear();
   setProperty("arcChordAngleRad", QVariant());

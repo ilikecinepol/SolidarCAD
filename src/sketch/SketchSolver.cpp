@@ -144,6 +144,10 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // Applied after carrier geometry has settled.
         break;
 
+      case ConstraintType::PointOnArc:
+        // Applied after carrier geometry has settled.
+        break;
+
       case ConstraintType::Tangent:
         // Applied in the final tangency stabilization pass.
         break;
@@ -1208,6 +1212,28 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
     else
       ++result.invalidReferences;
   }
+
+  // POINT-ON-ARC FINAL PASS
+  // The carrier Arc remains fixed. Only the referenced point is projected
+  // onto the finite arc span, including endpoint clamping.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::PointOnArc)
+      continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        !sketch.arcIndex(constraint.firstGeometry) ||
+        !sketch.referencedPoint(constraint.secondPoint)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setPointOnArc(constraint.firstGeometry,
+                             constraint.secondPoint))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+
   // CRASH-FREE 10: GROUPED MULTI-TANGENT SOLVER
   //
   // Sequentially projecting one circle onto Tangent A, then B, then C makes
