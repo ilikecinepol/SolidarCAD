@@ -39,6 +39,7 @@ class SketchCanvas final : public QWidget {
     Line,
     Rectangle,
     Circle,
+    Arc,
     Projection,
     AutoDimension,
     LockConstraint,
@@ -194,6 +195,7 @@ signals:
   void notifyGeometryChanged();
   void pushUndoState();
   void commitCirclePoint(sketch::Point point);
+  void commitArcPoint(sketch::Point point);
   void commitRectanglePoint(sketch::Point point);
   void handleAutoDimensionClick(QPointF position);
   void handleLockConstraintClick(QPointF position);
@@ -244,6 +246,7 @@ signals:
   CircleMode circleMode_{CircleMode::CenterRadius};
   double circleDiameterMm_{20.0};
   std::vector<sketch::Point> circlePoints_;
+  std::vector<sketch::Point> arcPoints_;
   std::vector<sketch::Line> circleGuideLines_;
   RectangleMode rectangleMode_{RectangleMode::TwoPoints};
   std::vector<sketch::Point> rectanglePoints_;

@@ -7,8 +7,20 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace solidar::sketch {
+
+Point arcStartPoint(const Arc& arc) noexcept {
+  return {arc.center.xMm + arc.radiusMm * std::cos(arc.startAngleRad),
+          arc.center.yMm + arc.radiusMm * std::sin(arc.startAngleRad)};
+}
+
+Point arcEndPoint(const Arc& arc) noexcept {
+  const double angle = arc.startAngleRad + arc.sweepAngleRad;
+  return {arc.center.xMm + arc.radiusMm * std::cos(angle),
+          arc.center.yMm + arc.radiusMm * std::sin(angle)};
+}
 
 Sketch::Sketch() { clear(); }
 
@@ -16,8 +28,10 @@ void Sketch::clear() {
   centerNodeElementIds_.clear();
   lines_.clear();
   circles_.clear();
+  arcs_.clear();
   lineIds_.clear();
   circleIds_.clear();
+  arcIds_.clear();
   dimensions_.clear();
   constraints_.clear();
   widthMm_ = 0.0;
@@ -240,6 +254,20 @@ void Sketch::addCircle(Point center, double radiusMm) {
   updateBounds();
 }
 
+void Sketch::addArc(Point center, double radiusMm, double startAngleRad,
+                    double sweepAngleRad, bool dashed) {
+  constexpr double kTwoPi = 6.28318530717958647692;
+  if (!std::isfinite(center.xMm) || !std::isfinite(center.yMm) ||
+      !std::isfinite(radiusMm) || !std::isfinite(startAngleRad) ||
+      !std::isfinite(sweepAngleRad) || radiusMm <= 0.0 ||
+      sweepAngleRad <= 1e-9 || sweepAngleRad >= kTwoPi - 1e-9)
+    return;
+
+  arcs_.push_back({center, radiusMm, startAngleRad, sweepAngleRad, dashed});
+  arcIds_.push_back(nextGeometryId_++);
+  updateBounds();
+}
+
 void Sketch::removeLine(std::size_t index) {
   // LOCK CONSTRAINT: locked geometry cannot be deleted.
   if (index < lineIds_.size() &&
@@ -310,6 +338,27 @@ void Sketch::removeCircle(std::size_t index) {
            constraint.secondGeometry == removedId ||
            constraint.firstPoint.circleId == removedId ||
            constraint.secondPoint.circleId == removedId;
+  });
+
+  updateBounds();
+}
+
+void Sketch::removeArc(std::size_t index) {
+  if (index < arcIds_.size() && isGeometryLocked(arcIds_[index]))
+    return;
+  if (index >= arcs_.size()) return;
+
+  const GeometryId removedId = arcIds_[index];
+  arcs_.erase(arcs_.begin() + index);
+  arcIds_.erase(arcIds_.begin() + index);
+
+  std::erase_if(dimensions_, [removedId](const Dimension& dimension) {
+    return dimension.geometryId == removedId;
+  });
+
+  std::erase_if(constraints_, [removedId](const Constraint& constraint) {
+    return constraint.firstGeometry == removedId ||
+           constraint.secondGeometry == removedId;
   });
 
   updateBounds();
@@ -1686,6 +1735,10 @@ GeometryId Sketch::circleId(std::size_t index) const noexcept {
   return index < circleIds_.size() ? circleIds_[index] : kInvalidGeometryId;
 }
 
+GeometryId Sketch::arcId(std::size_t index) const noexcept {
+  return index < arcIds_.size() ? arcIds_[index] : kInvalidGeometryId;
+}
+
 std::optional<std::size_t> Sketch::lineIndex(GeometryId id) const noexcept {
   if (id == kInvalidGeometryId) return std::nullopt;
   const auto found = std::find(lineIds_.begin(), lineIds_.end(), id);
@@ -1698,6 +1751,13 @@ std::optional<std::size_t> Sketch::circleIndex(GeometryId id) const noexcept {
   const auto found = std::find(circleIds_.begin(), circleIds_.end(), id);
   if (found == circleIds_.end()) return std::nullopt;
   return static_cast<std::size_t>(std::distance(circleIds_.begin(), found));
+}
+
+std::optional<std::size_t> Sketch::arcIndex(GeometryId id) const noexcept {
+  if (id == kInvalidGeometryId) return std::nullopt;
+  const auto found = std::find(arcIds_.begin(), arcIds_.end(), id);
+  if (found == arcIds_.end()) return std::nullopt;
+  return static_cast<std::size_t>(std::distance(arcIds_.begin(), found));
 }
 
 bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
@@ -1718,7 +1778,7 @@ bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
     return false;
   }
 
-  if (circleIndex(id)) {
+  if (circleIndex(id) || arcIndex(id)) {
     return std::any_of(
         constraints_.begin(), constraints_.end(),
         [id](const Constraint& constraint) {
@@ -1780,6 +1840,14 @@ void Sketch::restoreLockedGeometryFrom(const Sketch& baseline) {
           baseline.circles_[*source].center;
       circles_[*lockedCircle].radiusMm =
           baseline.circles_[*source].radiusMm;
+      continue;
+    }
+
+    if (const auto lockedArc = arcIndex(constraint.firstGeometry)) {
+      const auto source = baseline.arcIndex(constraint.firstGeometry);
+      if (!source) continue;
+
+      arcs_[*lockedArc] = baseline.arcs_[*source];
     }
   }
 
@@ -2521,6 +2589,37 @@ bool Sketch::setLineLength(std::size_t index, double lengthMm) {
 bool Sketch::setPointDistance(PointReference firstReference,
                               PointReference secondReference,
                               double distanceMm) {
+  const auto rectangleElementForPoint =
+      [this](PointReference reference) -> std::optional<std::size_t> {
+    if (reference.elementCenterId != 0 ||
+        reference.circleId != kInvalidGeometryId ||
+        reference.lineId == kInvalidGeometryId)
+      return std::nullopt;
+
+    const auto index = lineIndex(reference.lineId);
+    if (!index) return std::nullopt;
+
+    const std::size_t elementId = lines_[*index].elementId;
+    const std::size_t count = static_cast<std::size_t>(std::count_if(
+        lines_.begin(), lines_.end(), [elementId](const Line& line) {
+          return line.elementId == elementId;
+        }));
+    return count == 4 ? std::optional<std::size_t>{elementId}
+                      : std::nullopt;
+  };
+
+  const auto firstRectangle = rectangleElementForPoint(firstReference);
+  const auto secondRectangle = rectangleElementForPoint(secondReference);
+
+  // Click order is not a mobility rule. When an unconstrained standalone
+  // endpoint is paired with a composite rectangle point, keep the composite
+  // as the reference and move the endpoint with the smaller CAD footprint.
+  if (!isPointReferenceLocked(firstReference) &&
+      !isPointReferenceLocked(secondReference) && !firstRectangle &&
+      secondRectangle) {
+    return setPointDistance(secondReference, firstReference, distanceMm);
+  }
+
   const auto first = referencedPoint(firstReference);
   const auto second = referencedPoint(secondReference);
   // LOCK CONSTRAINT: keep the locked point as the reference.
@@ -2547,33 +2646,6 @@ bool Sketch::setPointDistance(PointReference firstReference,
   // translating the whole element cannot change their internal distance.
   // Resize the rectangle instead: move the vertex column/row that contains
   // the second point while keeping the first side anchored.
-  const auto rectangleElementForPoint =
-      [this](PointReference reference) -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
-
-    const std::size_t elementId = lines_[*index].elementId;
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    return count == 4
-               ? std::optional<std::size_t>{elementId}
-               : std::nullopt;
-  };
-
-  const auto firstRectangle =
-      rectangleElementForPoint(firstReference);
-  const auto secondRectangle =
-      rectangleElementForPoint(secondReference);
-
   if (firstRectangle && secondRectangle &&
       *firstRectangle == *secondRectangle) {
     const double oldSecondX = second->xMm;
@@ -2778,6 +2850,33 @@ bool Sketch::setPointDistance(PointReference firstReference,
       }
       updateBounds();
       return true;
+    }
+
+    // Once a rectangle is already positioned by multiple external driving
+    // dimensions, another aligned gap must use the remaining row/column DOF
+    // instead of translating the complete composite and disturbing its
+    // established placement. The stored constraint remains Euclidean
+    // Distance; the axis-specific mutator is only a motion candidate.
+    std::size_t externalDrivingCount = 0;
+    for (const auto& constraint : constraints_) {
+      if (constraint.type != ConstraintType::Distance &&
+          constraint.type != ConstraintType::DistanceX &&
+          constraint.type != ConstraintType::DistanceY)
+        continue;
+      const bool firstIsRectangle =
+          pointBelongsToRectangle(constraint.firstPoint);
+      const bool secondIsRectangle =
+          pointBelongsToRectangle(constraint.secondPoint);
+      if (firstIsRectangle != secondIsRectangle)
+        ++externalDrivingCount;
+    }
+
+    if (rectangleAxisAligned && rectangleLines.size() == 4 &&
+        !axisSizeDriven && externalDrivingCount >= 3) {
+      if (xAxis)
+        return setPointDistanceX(firstReference, secondReference, distanceMm);
+      if (yAxis)
+        return setPointDistanceY(firstReference, secondReference, distanceMm);
     }
   }
 
@@ -3899,12 +3998,13 @@ double Sketch::widthMm() const noexcept { return widthMm_; }
 double Sketch::heightMm() const noexcept { return heightMm_; }
 const std::vector<Line>& Sketch::lines() const noexcept { return lines_; }
 const std::vector<Circle>& Sketch::circles() const noexcept { return circles_; }
+const std::vector<Arc>& Sketch::arcs() const noexcept { return arcs_; }
 const std::vector<Dimension>& Sketch::dimensions() const {
   return dimensions_;
 }
 
 void Sketch::updateBounds() noexcept {
-  if (lines_.empty() && circles_.empty()) {
+  if (lines_.empty() && circles_.empty() && arcs_.empty()) {
     widthMm_ = 0.0;
     heightMm_ = 0.0;
     return;
@@ -3929,28 +4029,61 @@ void Sketch::updateBounds() noexcept {
     include({circle.center.xMm + circle.radiusMm,
              circle.center.yMm + circle.radiusMm});
   }
+
+  constexpr double kPi = 3.14159265358979323846;
+  const auto normalizedAngle = [](double angle) {
+    constexpr double twoPi = 6.28318530717958647692;
+    angle = std::fmod(angle, twoPi);
+    if (angle < 0.0) angle += twoPi;
+    return angle;
+  };
+  const auto angleOnArc = [&](double angle, const Arc& arc) {
+    const double start = normalizedAngle(arc.startAngleRad);
+    const double delta = normalizedAngle(normalizedAngle(angle) - start);
+    return delta <= arc.sweepAngleRad + 1e-12;
+  };
+
+  for (const auto& arc : arcs_) {
+    include(arcStartPoint(arc));
+    include(arcEndPoint(arc));
+    for (const double angle : {0.0, 0.5 * kPi, kPi, 1.5 * kPi}) {
+      if (!angleOnArc(angle, arc)) continue;
+      include({arc.center.xMm + arc.radiusMm * std::cos(angle),
+               arc.center.yMm + arc.radiusMm * std::sin(angle)});
+    }
+  }
   widthMm_ = maxX - minX;
   heightMm_ = maxY - minY;
 }
 
 bool Sketch::isClosed() const noexcept {
-  if (std::none_of(lines_.begin(), lines_.end(),
-                   [](const Line& line) { return !line.dashed; }))
-    return false;
   const auto samePoint = [](Point first, Point second) {
     return std::abs(first.xMm - second.xMm) <= 1e-7 &&
            std::abs(first.yMm - second.yMm) <= 1e-7;
   };
-  // Every vertex of one or several independent closed loops has degree two.
-  // This also permits Ctrl-selection of multiple extrusion regions.
+
+  std::vector<std::pair<Point, Point>> edges;
   for (const auto& line : lines_) {
-    if (line.dashed) continue;
-    for (const Point vertex : {line.start, line.end}) {
+    if (!line.dashed) edges.push_back({line.start, line.end});
+  }
+  for (const auto& arc : arcs_) {
+    if (!arc.dashed) edges.push_back({arcStartPoint(arc), arcEndPoint(arc)});
+  }
+
+  const std::size_t solidCircles = static_cast<std::size_t>(std::count_if(
+      circles_.begin(), circles_.end(),
+      [](const Circle& circle) { return !circle.dashed; }));
+
+  if (edges.empty()) return solidCircles == 1;
+  if (solidCircles != 0) return false;
+
+  // Every vertex of one or several independent closed loops has degree two.
+  for (const auto& edge : edges) {
+    for (const Point vertex : {edge.first, edge.second}) {
       std::size_t degree = 0;
-      for (const auto& candidate : lines_) {
-        if (candidate.dashed) continue;
-        if (samePoint(vertex, candidate.start)) ++degree;
-        if (samePoint(vertex, candidate.end)) ++degree;
+      for (const auto& candidate : edges) {
+        if (samePoint(vertex, candidate.first)) ++degree;
+        if (samePoint(vertex, candidate.second)) ++degree;
       }
       if (degree != 2) return false;
     }

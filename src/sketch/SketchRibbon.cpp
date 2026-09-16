@@ -86,7 +86,7 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   projection->setToolTip(
       QString::fromUtf8("Проекция существующего ребра в эскиз"));
   auto* arc = toolButton(":/icons/sketch/arc.png",
-                         QString::fromUtf8("Дуга"), this, false);
+                         QString::fromUtf8("Дуга по 3 точкам"), this);
   auto* polygon = toolButton(":/icons/sketch/polygon.png",
                              QString::fromUtf8("Полигон"), this, false);
   auto* slot = toolButton(":/icons/sketch/slot.png",
@@ -95,7 +95,7 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
                           QString::fromUtf8("Текст"), this, false);
   auto* toolGroup = new QButtonGroup(this);
   toolGroup->setExclusive(true);
-  for (auto* button : {line, rectangle, circle, projection})
+  for (auto* button : {line, rectangle, circle, arc, projection})
     toolGroup->addButton(button);
 
   auto* creationLayout = new QHBoxLayout;
@@ -210,6 +210,8 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           [canvas] { canvas->setTool(SketchCanvas::Tool::Rectangle); });
   connect(circle, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::Circle); });
+  connect(arc, &QPushButton::clicked, canvas,
+          [canvas] { canvas->setTool(SketchCanvas::Tool::Arc); });
   connect(projection, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::Projection); });
   connect(dimension, &QPushButton::clicked, canvas,

@@ -321,6 +321,45 @@ std::optional<std::pair<sketch::Point, double>> circleThroughThreePoints(
                                       center.yMm - first.yMm)};
 }
 
+std::optional<sketch::Arc> arcThroughThreePoints(
+    sketch::Point first, sketch::Point through, sketch::Point last) {
+  const auto circle = circleThroughThreePoints(first, through, last);
+  if (!circle || circle->second <= 1e-9)
+    return std::nullopt;
+
+  constexpr double kTwoPi = 6.28318530717958647692;
+  const auto normalize = [](double angle) {
+    constexpr double twoPi = 6.28318530717958647692;
+    angle = std::fmod(angle, twoPi);
+    if (angle < 0.0) angle += twoPi;
+    return angle;
+  };
+
+  const auto& center = circle->first;
+  const double start = std::atan2(first.yMm - center.yMm,
+                                  first.xMm - center.xMm);
+  const double middle = std::atan2(through.yMm - center.yMm,
+                                   through.xMm - center.xMm);
+  const double end = std::atan2(last.yMm - center.yMm,
+                                last.xMm - center.xMm);
+
+  const double ccwSweep = normalize(end - start);
+  const double middleFromStart = normalize(middle - start);
+
+  if (ccwSweep > 1e-9 &&
+      middleFromStart <= ccwSweep + 1e-9) {
+    return sketch::Arc{center, circle->second, normalize(start), ccwSweep,
+                       false};
+  }
+
+  const double reverseSweep = normalize(start - end);
+  if (reverseSweep <= 1e-9 || reverseSweep >= kTwoPi - 1e-9)
+    return std::nullopt;
+
+  return sketch::Arc{center, circle->second, normalize(end), reverseSweep,
+                     false};
+}
+
 double pointLineDistance(sketch::Point point, const sketch::Line& line) {
   const QPointF p(point.xMm, point.yMm);
   return pointSegmentDistance(p, QPointF(line.start.xMm, line.start.yMm),
@@ -738,6 +777,7 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("draggingDimensionLabel", QVariant());
   coincidentFirstPoint_.reset();
   circlePoints_.clear();
+  arcPoints_.clear();
   circleGuideLines_.clear();
   rectanglePoints_.clear();
   selectionBoxActive_ = false;
@@ -2296,6 +2336,65 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     painter.drawEllipse(center, 3.5, 3.5);
   }
 
+  const auto drawSketchArc =
+      [this, &painter](const sketch::Arc& arc) {
+        constexpr int kSegments = 72;
+        const int segmentCount = std::max(
+            8,
+            static_cast<int>(std::ceil(
+                static_cast<double>(kSegments) *
+                arc.sweepAngleRad /
+                6.28318530717958647692)));
+
+        QPolygonF polyline;
+        polyline.reserve(segmentCount + 1);
+
+        for (int segment = 0; segment <= segmentCount; ++segment) {
+          const double t =
+              static_cast<double>(segment) /
+              static_cast<double>(segmentCount);
+          const double angle =
+              arc.startAngleRad + arc.sweepAngleRad * t;
+          polyline << mapPoint(
+              {arc.center.xMm + arc.radiusMm * std::cos(angle),
+               arc.center.yMm + arc.radiusMm * std::sin(angle)});
+        }
+
+        painter.drawPolyline(polyline);
+      };
+
+  for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
+    const auto& arc = sketch_.arcs()[index];
+    const auto arcId = sketch_.arcId(index);
+    const bool locked = sketch_.isGeometryLocked(arcId);
+
+    painter.setPen(
+        QPen(locked ? QColor("#8b5cf6") : QColor("#1469d7"),
+             2.0,
+             arc.dashed ? Qt::DashLine : Qt::SolidLine,
+             Qt::RoundCap));
+    painter.setBrush(Qt::NoBrush);
+    drawSketchArc(arc);
+
+    painter.setBrush(locked ? QColor("#ede9fe") : Qt::white);
+    painter.drawEllipse(mapPoint(sketch::arcStartPoint(arc)), 3.5, 3.5);
+    painter.drawEllipse(mapPoint(sketch::arcEndPoint(arc)), 3.5, 3.5);
+  }
+
+  if (tool_ == Tool::Arc && !arcPoints_.empty()) {
+    painter.setPen(QPen(QColor("#56a0ff"), 1.8, Qt::DashLine,
+                        Qt::RoundCap));
+    painter.setBrush(Qt::NoBrush);
+
+    if (arcPoints_.size() == 1) {
+      painter.drawLine(mapPoint(arcPoints_.front()), mapPoint(hoverPoint_));
+    } else if (arcPoints_.size() == 2) {
+      const auto preview = arcThroughThreePoints(
+          arcPoints_[0], arcPoints_[1], hoverPoint_);
+      if (preview) drawSketchArc(*preview);
+    }
+  }
+
   if (constructionHover_) {
     const QPointF snapPoint = mapPoint(constructionHover_->point);
     painter.setPen(QPen(QColor("#00a6ff"), 1.8));
@@ -3230,6 +3329,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
 
     rectanglePoints_.clear();
     circlePoints_.clear();
+    arcPoints_.clear();
     circleGuideLines_.clear();
     hideDimensionEditor();
     setCursor(tool_ == Tool::Select
@@ -8885,6 +8985,10 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     commitCirclePoint(point);
     return;
   }
+  if (tool_ == Tool::Arc) {
+    commitArcPoint(point);
+    return;
+  }
   if (!anchor_) {
     anchor_ = point;
     hoverPoint_ = point;
@@ -9134,6 +9238,42 @@ void SketchCanvas::commitPoint(sketch::Point point) {
   anchor_.reset();
   hideDimensionEditor();
   notifyGeometryChanged();
+}
+
+void SketchCanvas::commitArcPoint(sketch::Point point) {
+  if (arcPoints_.size() < 2) {
+    arcPoints_.push_back(point);
+
+    emit selectionChanged(
+        arcPoints_.size() == 1
+            ? QString::fromUtf8("Дуга: выберите точку на дуге")
+            : QString::fromUtf8("Дуга: выберите конечную точку"));
+    update();
+    return;
+  }
+
+  const auto arc =
+      arcThroughThreePoints(arcPoints_[0], arcPoints_[1], point);
+
+  if (!arc) {
+    emit selectionChanged(
+        QString::fromUtf8(
+            "Дуга не построена: три точки не должны лежать на одной прямой"));
+    update();
+    return;
+  }
+
+  pushUndoState();
+  sketch_.addArc(arc->center,
+                 arc->radiusMm,
+                 arc->startAngleRad,
+                 arc->sweepAngleRad,
+                 arc->dashed);
+
+  arcPoints_.clear();
+  emit selectionChanged(QString::fromUtf8("Дуга создана"));
+  notifyGeometryChanged();
+  update();
 }
 
 void SketchCanvas::commitRectanglePoint(sketch::Point point) {

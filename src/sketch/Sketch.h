@@ -31,6 +31,17 @@ struct Circle {
   bool dashed{false};
 };
 
+struct Arc {
+  Point center;
+  double radiusMm{};
+  double startAngleRad{};
+  double sweepAngleRad{};
+  bool dashed{false};
+};
+
+[[nodiscard]] Point arcStartPoint(const Arc& arc) noexcept;
+[[nodiscard]] Point arcEndPoint(const Arc& arc) noexcept;
+
 struct PointReference {
   // Line endpoint reference. Existing code and project files use these.
   GeometryId lineId{kInvalidGeometryId};
@@ -106,8 +117,11 @@ class Sketch final {
   void addRectangle(Point firstCorner, Point oppositeCorner);
   void addRectangle(Point first, Point second, Point third, Point fourth);
   void addCircle(Point center, double radiusMm);
+  void addArc(Point center, double radiusMm, double startAngleRad,
+              double sweepAngleRad, bool dashed = false);
   void removeLine(std::size_t index);
   void removeCircle(std::size_t index);
+  void removeArc(std::size_t index);
   void removeElement(std::size_t elementId);
   void translateElement(std::size_t elementId, double dxMm, double dyMm);
 
@@ -148,9 +162,12 @@ class Sketch final {
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;
+  [[nodiscard]] GeometryId arcId(std::size_t index) const noexcept;
   [[nodiscard]] std::optional<std::size_t> lineIndex(
       GeometryId id) const noexcept;
   [[nodiscard]] std::optional<std::size_t> circleIndex(
+      GeometryId id) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> arcIndex(
       GeometryId id) const noexcept;
 
   bool setLineLength(std::size_t index, double lengthMm);
@@ -182,6 +199,7 @@ class Sketch final {
   [[nodiscard]] double heightMm() const noexcept;
   [[nodiscard]] const std::vector<Line>& lines() const noexcept;
   [[nodiscard]] const std::vector<Circle>& circles() const noexcept;
+  [[nodiscard]] const std::vector<Arc>& arcs() const noexcept;
   [[nodiscard]] const std::vector<Dimension>& dimensions() const;
   [[nodiscard]] std::optional<Point> referencedPoint(
       PointReference reference) const noexcept;
@@ -193,8 +211,10 @@ class Sketch final {
   double heightMm_{40.0};
   std::vector<Line> lines_;
   std::vector<Circle> circles_;
+  std::vector<Arc> arcs_;
   std::vector<GeometryId> lineIds_;
   std::vector<GeometryId> circleIds_;
+  std::vector<GeometryId> arcIds_;
   std::vector<Dimension> dimensions_;
   std::vector<Constraint> constraints_;
 
