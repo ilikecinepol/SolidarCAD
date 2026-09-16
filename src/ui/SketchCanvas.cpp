@@ -821,6 +821,7 @@ void SketchCanvas::setTool(Tool tool) {
   arcPoints_.clear();
   setProperty("arcChordAngleRad", QVariant());
   setProperty("arcSagittaSign", QVariant());
+  setProperty("arcDimensionKeyboardEdit", false);
   circleGuideLines_.clear();
   rectanglePoints_.clear();
   selectionBoxActive_ = false;
@@ -3958,7 +3959,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         setProperty("arcChordAngleRad", std::atan2(dy, dx));
       }
 
-      if (primaryDimension_->hasFocus()) {
+      if (property("arcDimensionKeyboardEdit").toBool()) {
         const double angle = property("arcChordAngleRad").isValid()
                                  ? property("arcChordAngleRad").toDouble()
                                  : 0.0;
@@ -3971,6 +3972,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         primaryDimension_->setValue(length);
         primaryDimension_->move(
             (event->position() + QPointF(18.0, 18.0)).toPoint());
+        if (primaryDimension_->hasFocus())
+          primaryDimension_->selectAll();
       }
     } else if (arcPoints_.size() == 2) {
       primaryDimension_->setPrefix(QString::fromUtf8("H: "));
@@ -3978,7 +3981,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
       const auto first = arcPoints_[0];
       const auto last = arcPoints_[1];
 
-      if (primaryDimension_->hasFocus()) {
+      if (property("arcDimensionKeyboardEdit").toBool()) {
         const double sign =
             property("arcSagittaSign").isValid()
                 ? property("arcSagittaSign").toDouble()
@@ -4000,6 +4003,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         primaryDimension_->setValue(magnitude);
         primaryDimension_->move(
             (event->position() + QPointF(18.0, 18.0)).toPoint());
+        if (primaryDimension_->hasFocus())
+          primaryDimension_->selectAll();
       }
     }
 
@@ -4950,6 +4955,17 @@ bool SketchCanvas::eventFilter(QObject* watched, QEvent* event) {
   if ((watched == primaryDimension_ || watched == secondaryDimension_) &&
       event->type() == QEvent::KeyPress) {
     const auto* keyEvent = static_cast<QKeyEvent*>(event);
+
+    if (tool_ == Tool::Arc &&
+        watched == primaryDimension_ &&
+        primaryDimension_->isVisible() &&
+        keyEvent->key() != Qt::Key_Tab &&
+        keyEvent->key() != Qt::Key_Backtab &&
+        keyEvent->key() != Qt::Key_Return &&
+        keyEvent->key() != Qt::Key_Enter &&
+        keyEvent->key() != Qt::Key_Escape) {
+      setProperty("arcDimensionKeyboardEdit", true);
+    }
     if (keyEvent->key() == Qt::Key_Tab ||
         keyEvent->key() == Qt::Key_Backtab) {
       if (secondaryDimension_->isVisible()) {
@@ -9426,6 +9442,7 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
     hoverPoint_ = point;
     setProperty("arcChordAngleRad", 0.0);
     setProperty("arcSagittaSign", 1.0);
+    setProperty("arcDimensionKeyboardEdit", false);
 
     primaryDimension_->setPrefix(QString::fromUtf8("L: "));
     primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
@@ -9437,7 +9454,8 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
         (mapPoint(point) + QPointF(18.0, 18.0)).toPoint());
     primaryDimension_->show();
     primaryDimension_->raise();
-    primaryDimension_->clearFocus();
+    primaryDimension_->setFocus();
+    primaryDimension_->selectAll();
 
     emit selectionChanged(
         QString::fromUtf8(
@@ -9460,6 +9478,7 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
     arcPoints_.push_back(point);
     const double sagitta = chord * 0.5;
     setProperty("arcSagittaSign", 1.0);
+    setProperty("arcDimensionKeyboardEdit", false);
     hoverPoint_ = arcSagittaPoint(first, point, sagitta);
 
     primaryDimension_->setPrefix(QString::fromUtf8("H: "));
@@ -9471,7 +9490,8 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
         (mapPoint(hoverPoint_) + QPointF(18.0, 18.0)).toPoint());
     primaryDimension_->show();
     primaryDimension_->raise();
-    primaryDimension_->clearFocus();
+    primaryDimension_->setFocus();
+    primaryDimension_->selectAll();
 
     emit selectionChanged(
         QString::fromUtf8(
@@ -9511,6 +9531,7 @@ void SketchCanvas::commitArcPoint(sketch::Point point) {
   arcPoints_.clear();
   setProperty("arcChordAngleRad", QVariant());
   setProperty("arcSagittaSign", QVariant());
+  setProperty("arcDimensionKeyboardEdit", false);
   hideDimensionEditor();
   setFocus();
   emit selectionChanged(QString::fromUtf8("Дуга создана"));
