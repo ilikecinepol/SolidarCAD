@@ -54,6 +54,11 @@ struct PointReference {
   // Optional center node of a composite element (currently a rectangle
   // created with RectangleMode::FromCenter).
   std::size_t elementCenterId{0};
+
+  // Optional arc-endpoint reference. `start` selects the first/last endpoint
+  // exactly as it does for line endpoints. Kept as the final aggregate field
+  // so existing PointReference initializers remain source-compatible.
+  GeometryId arcId{kInvalidGeometryId};
 };
 
 enum class DimensionKind {

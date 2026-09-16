@@ -358,7 +358,9 @@ void Sketch::removeArc(std::size_t index) {
 
   std::erase_if(constraints_, [removedId](const Constraint& constraint) {
     return constraint.firstGeometry == removedId ||
-           constraint.secondGeometry == removedId;
+           constraint.secondGeometry == removedId ||
+           constraint.firstPoint.arcId == removedId ||
+           constraint.secondPoint.arcId == removedId;
   });
 
   updateBounds();
@@ -1805,6 +1807,8 @@ bool Sketch::isPointReferenceLocked(
     return isElementLocked(reference.elementCenterId);
   if (reference.circleId != kInvalidGeometryId)
     return isGeometryLocked(reference.circleId);
+  if (reference.arcId != kInvalidGeometryId)
+    return isGeometryLocked(reference.arcId);
   return isGeometryLocked(reference.lineId);
 }
 
@@ -1863,6 +1867,13 @@ std::optional<Point> Sketch::referencedPoint(
     const auto index = circleIndex(reference.circleId);
     if (!index) return std::nullopt;
     return circles_[*index].center;
+  }
+
+  if (reference.arcId != kInvalidGeometryId) {
+    const auto index = arcIndex(reference.arcId);
+    if (!index) return std::nullopt;
+    return reference.start ? arcStartPoint(arcs_[*index])
+                           : arcEndPoint(arcs_[*index]);
   }
 
   const auto index = lineIndex(reference.lineId);

@@ -212,6 +212,14 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
     for (const auto& circle : saved.geometry.circles())
       circles.append(QJsonObject{{"x", circle.center.xMm}, {"y", circle.center.yMm},
                                  {"radius", circle.radiusMm}, {"dashed", circle.dashed}});
+    QJsonArray arcs;
+    for (const auto& arc : saved.geometry.arcs())
+      arcs.append(QJsonObject{{"x", arc.center.xMm},
+                              {"y", arc.center.yMm},
+                              {"radius", arc.radiusMm},
+                              {"startAngle", arc.startAngleRad},
+                              {"sweepAngle", arc.sweepAngleRad},
+                              {"dashed", arc.dashed}});
     QJsonArray dimensions;
     for (const auto& dimension : saved.geometry.dimensions()) {
       // Project format v1 stores geometry positions as vector indices.
@@ -272,6 +280,8 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
       qint64 secondPointLine = -1;
       qint64 firstPointCircle = -1;
       qint64 secondPointCircle = -1;
+      qint64 firstPointArc = -1;
+      qint64 secondPointArc = -1;
 
       auto linePosition = [&saved](sketch::GeometryId id) -> qint64 {
         const auto index = saved.geometry.lineIndex(id);
@@ -279,6 +289,10 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
       };
       auto circlePosition = [&saved](sketch::GeometryId id) -> qint64 {
         const auto index = saved.geometry.circleIndex(id);
+        return index ? static_cast<qint64>(*index) : -1;
+      };
+      auto arcPosition = [&saved](sketch::GeometryId id) -> qint64 {
+        const auto index = saved.geometry.arcIndex(id);
         return index ? static_cast<qint64>(*index) : -1;
       };
 
@@ -291,7 +305,12 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
           firstKind = QStringLiteral("line");
         } else {
           firstGeometry = circlePosition(constraint.firstGeometry);
-          if (firstGeometry >= 0) firstKind = QStringLiteral("circle");
+          if (firstGeometry >= 0) {
+            firstKind = QStringLiteral("circle");
+          } else {
+            firstGeometry = arcPosition(constraint.firstGeometry);
+            if (firstGeometry >= 0) firstKind = QStringLiteral("arc");
+          }
         }
       }
       if (constraint.secondGeometry != sketch::kInvalidGeometryId) {
@@ -300,7 +319,12 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
           secondKind = QStringLiteral("line");
         } else {
           secondGeometry = circlePosition(constraint.secondGeometry);
-          if (secondGeometry >= 0) secondKind = QStringLiteral("circle");
+          if (secondGeometry >= 0) {
+            secondKind = QStringLiteral("circle");
+          } else {
+            secondGeometry = arcPosition(constraint.secondGeometry);
+            if (secondGeometry >= 0) secondKind = QStringLiteral("arc");
+          }
         }
       }
 
@@ -312,6 +336,10 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
         firstPointCircle = circlePosition(constraint.firstPoint.circleId);
       if (constraint.secondPoint.circleId != sketch::kInvalidGeometryId)
         secondPointCircle = circlePosition(constraint.secondPoint.circleId);
+      if (constraint.firstPoint.arcId != sketch::kInvalidGeometryId)
+        firstPointArc = arcPosition(constraint.firstPoint.arcId);
+      if (constraint.secondPoint.arcId != sketch::kInvalidGeometryId)
+        secondPointArc = arcPosition(constraint.secondPoint.arcId);
 
       constraints.append(QJsonObject{
           {"id", static_cast<qint64>(constraint.id)},
@@ -323,11 +351,13 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
           {"firstPointLine", firstPointLine},
           {"firstPointStart", constraint.firstPoint.start},
           {"firstPointCircle", firstPointCircle},
+          {"firstPointArc", firstPointArc},
           {"firstPointElementCenter",
            static_cast<qint64>(constraint.firstPoint.elementCenterId)},
           {"secondPointLine", secondPointLine},
           {"secondPointStart", constraint.secondPoint.start},
           {"secondPointCircle", secondPointCircle},
+          {"secondPointArc", secondPointArc},
           {"secondPointElementCenter",
            static_cast<qint64>(constraint.secondPoint.elementCenterId)},
           {"value", constraint.value}});
@@ -343,6 +373,7 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
     sketches.append(QJsonObject{{"support", saved.support},
                                 {"lines", lines},
                                 {"circles", circles},
+                                {"arcs", arcs},
                                 {"dimensions", dimensions},
                                 {"constraints", constraints},
                                 {"centerNodeElementIds",
@@ -793,6 +824,14 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
       if (circle.value("dashed").toBool())
         saved.geometry.setCircleDashed(saved.geometry.circles().size() - 1, true);
     }
+    for (const auto arcValue : savedObject.value("arcs").toArray()) {
+      const auto arc = arcValue.toObject();
+      saved.geometry.addArc({arc.value("x").toDouble(), arc.value("y").toDouble()},
+                            arc.value("radius").toDouble(),
+                            arc.value("startAngle").toDouble(),
+                            arc.value("sweepAngle").toDouble(),
+                            arc.value("dashed").toBool());
+    }
     // CRASH-FREE 05: RESTORE VIRTUAL CENTER OWNERSHIP
     //
     // elementId grouping is restored with line geometry. Re-register only
@@ -877,6 +916,8 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
           return saved.geometry.lineId(index);
         if (kind == QStringLiteral("circle"))
           return saved.geometry.circleId(index);
+        if (kind == QStringLiteral("arc"))
+          return saved.geometry.arcId(index);
         return sketch::kInvalidGeometryId;
       };
 
@@ -918,6 +959,26 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
         constraint.secondPoint.circleId =
             saved.geometry.circleId(
                 static_cast<std::size_t>(secondPointCircle));
+      }
+
+      const qint64 firstPointArc =
+          object.value("firstPointArc").toInteger(-1);
+      if (firstPointArc >= 0) {
+        constraint.firstPoint.arcId =
+            saved.geometry.arcId(
+                static_cast<std::size_t>(firstPointArc));
+        constraint.firstPoint.start =
+            object.value("firstPointStart").toBool(true);
+      }
+
+      const qint64 secondPointArc =
+          object.value("secondPointArc").toInteger(-1);
+      if (secondPointArc >= 0) {
+        constraint.secondPoint.arcId =
+            saved.geometry.arcId(
+                static_cast<std::size_t>(secondPointArc));
+        constraint.secondPoint.start =
+            object.value("secondPointStart").toBool(true);
       }
 
       const qint64 firstPointElementCenter =
