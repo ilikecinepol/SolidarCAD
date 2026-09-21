@@ -1593,7 +1593,8 @@ void MainWindow::finishSketch() {
   const auto& sketch = sketchCanvas_->sketch();
   QString completionMessage =
       QString::fromUtf8("Эскиз завершён — модель перестроена");
-  if (sketch.lines().empty() && sketch.circles().empty()) {
+  if (sketch.lines().empty() && sketch.circles().empty() &&
+      sketch.arcs().empty()) {
     workspaceStack_->setCurrentWidget(viewport_);
     statusBar()->showMessage(
         QString::fromUtf8("Пустой эскиз закрыт без сохранения"), 3000);
@@ -1701,7 +1702,8 @@ void MainWindow::updateAutomaticExtrudeOperation() {
   if (profile && targetShape) {
     DocumentSketch operationProfile = *profile;
     const auto& pickedProfile = viewport_->extrusionCandidateSketch();
-    if (!pickedProfile.lines().empty() || !pickedProfile.circles().empty())
+    if (!pickedProfile.lines().empty() || !pickedProfile.circles().empty() ||
+        !pickedProfile.arcs().empty())
       operationProfile.geometry = pickedProfile;
     operation = detectExtrudeOperation(
         operationProfile, extrusionLengthSpin_->value(),
@@ -1731,17 +1733,20 @@ void MainWindow::extrudeSketch() {
   // may contain several independent contours, so preferring the whole sketch
   // here loses the selection and makes Apply fail with "one profile at a time".
   const bool hasPickedProfile =
-      !pickedSketch.lines().empty() || !pickedSketch.circles().empty();
+      !pickedSketch.lines().empty() || !pickedSketch.circles().empty() ||
+      !pickedSketch.arcs().empty();
   const sketch::Sketch sketch =
       hasPickedProfile
           ? pickedSketch
           : modelSketch ? modelSketch->geometry : sketchCanvas_->sketch();
-  if (sketch.lines().empty() && sketch.circles().empty()) {
+  if (sketch.lines().empty() && sketch.circles().empty() &&
+      sketch.arcs().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
     return;
   }
-  if (!sketch.lines().empty() && !sketch.isClosed()) {
+  if (!(sketch.lines().empty() && sketch.arcs().empty()) &&
+      !sketch.isClosed()) {
     QMessageBox::warning(this, QString::fromUtf8("Контур не замкнут"),
                          QString::fromUtf8("Соедините конечные точки линий замкнутого контура."));
     return;

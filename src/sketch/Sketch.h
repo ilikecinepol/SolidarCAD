@@ -100,7 +100,8 @@ enum class ConstraintType {
   Tangent,
   LineDistance,
   Lock,
-  PointOnArc};
+  PointOnArc,
+  Midpoint};
 
 struct Constraint {
   ConstraintId id{kInvalidConstraintId};
@@ -149,6 +150,8 @@ class Sketch final {
   void translateCircle(std::size_t index, double dxMm, double dyMm);
   void setCircleDashedById(GeometryId id, bool dashed);
   void translateCircleById(GeometryId id, double dxMm, double dyMm);
+  void translateArcById(GeometryId id, double dxMm, double dyMm);
+  bool moveArcEndpointReshapeById(GeometryId id, bool start, Point target);
   bool setLineLengthById(GeometryId id, double lengthMm);
   bool setCircleDiameterById(GeometryId id, double diameterMm);
   bool setLineHorizontalById(GeometryId id);
@@ -163,8 +166,10 @@ class Sketch final {
   bool setPointOnLine(GeometryId lineId, PointReference pointReference);
   bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
   bool setPointOnArc(GeometryId arcId, PointReference pointReference);
+  bool setPointToMidpoint(GeometryId lineId, PointReference pointReference);
 
   bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
+  bool setArcTangentToLine(GeometryId lineId, GeometryId arcId);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;

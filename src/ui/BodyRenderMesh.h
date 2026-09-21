@@ -32,6 +32,15 @@ struct RenderTriangle {
 struct RenderEdge {
   std::vector<Point3d> points;
   std::size_t edgeIndex{};
+
+  // Analytic curve classification so Sketcher projection can preserve
+  // circular edges as native circles/arcs instead of tessellated segments.
+  enum class Kind { Tessellated, Circle, Arc };
+  Kind kind{Kind::Tessellated};
+  Point3d center{};    // Circle/Arc: center in world space.
+  double radius{0.0};  // Circle/Arc: radius in world units.
+  Point3d arcStart{};  // Arc: start point in world space.
+  Point3d arcEnd{};    // Arc: end point in world space.
 };
 
 // Immutable world-space tessellation. Camera projection is deliberately kept

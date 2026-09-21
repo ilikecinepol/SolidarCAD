@@ -5,6 +5,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <Standard_Failure.hxx>
+#include <TopoDS.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
@@ -37,9 +38,12 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       ++solidCircles;
       circle = &candidate;
     }
+  std::size_t solidArcs = 0;
+  for (const auto& arc : geometry.arcs())
+    if (!arc.dashed) ++solidArcs;
   if ((solidLines > 0 && solidCircles > 0) || solidCircles > 1)
     return fail("Extrude 2.0 supports one profile at a time");
-  if (solidCircles == 0 && solidLines < 3)
+  if (solidCircles == 0 && solidLines + solidArcs < 3)
     return fail("Profile has insufficient geometry");
   if (solidCircles == 0 && !geometry.isClosed())
     return fail("Profile is not closed");
@@ -67,21 +71,88 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       return true;
     }
 
-    BRepBuilderAPI_MakeWire wireBuilder;
-    std::size_t edgeCount = 0;
+    const auto toWorldPoint = [&profile](const sketch::Point& point) {
+      const auto world = profile.placement.toWorld(point.xMm, point.yMm);
+      return gp_Pnt(world.x, world.y, world.z);
+    };
+
+    struct PendingEdge {
+      gp_Pnt start;
+      gp_Pnt end;
+      TopoDS_Edge edge;
+    };
+    std::vector<PendingEdge> pending;
+
     for (const auto& line : geometry.lines()) {
       if (line.dashed) continue;
-      const auto start = profile.placement.toWorld(line.start.xMm,
-                                                   line.start.yMm);
-      const auto end = profile.placement.toWorld(line.end.xMm,
-                                                 line.end.yMm);
-      BRepBuilderAPI_MakeEdge edgeBuilder(gp_Pnt(start.x, start.y, start.z),
-                                          gp_Pnt(end.x, end.y, end.z));
+      const gp_Pnt start = toWorldPoint(line.start);
+      const gp_Pnt end = toWorldPoint(line.end);
+      BRepBuilderAPI_MakeEdge edgeBuilder(start, end);
       if (!edgeBuilder.IsDone()) return fail("Could not build a profile edge");
-      wireBuilder.Add(edgeBuilder.Edge());
-      ++edgeCount;
+      pending.push_back({start, end, edgeBuilder.Edge()});
     }
-    if (edgeCount < 3 || !wireBuilder.IsDone())
+
+    const auto normal = profile.placement.normal();
+    const auto xDirection = profile.placement.xDirection;
+    const gp_Dir normalDir(normal.x, normal.y, normal.z);
+    const gp_Dir xDir(xDirection.x, xDirection.y, xDirection.z);
+
+    for (const auto& arc : geometry.arcs()) {
+      if (arc.dashed) continue;
+      if (!std::isfinite(arc.radiusMm) || arc.radiusMm <= 0.0 ||
+          !std::isfinite(arc.center.xMm) || !std::isfinite(arc.center.yMm))
+        return fail("Arc radius and center must be finite and positive");
+      const auto center = profile.placement.toWorld(arc.center.xMm,
+                                                    arc.center.yMm);
+      gp_Ax2 axes(gp_Pnt(center.x, center.y, center.z), normalDir, xDir);
+      BRepBuilderAPI_MakeEdge edgeBuilder(
+          gp_Circ(axes, arc.radiusMm), arc.startAngleRad,
+          arc.startAngleRad + arc.sweepAngleRad);
+      if (!edgeBuilder.IsDone()) return fail("Could not build an arc edge");
+      pending.push_back({toWorldPoint(sketch::arcStartPoint(arc)),
+                         toWorldPoint(sketch::arcEndPoint(arc)),
+                         edgeBuilder.Edge()});
+    }
+
+    if (pending.size() < 3)
+      return fail("Could not build a profile wire");
+
+    // Chain the mixed line/arc edges into one connected wire. Lines and arcs
+    // are stored in separate arrays, so connectivity must be resolved by
+    // matching world-space endpoints.
+    BRepBuilderAPI_MakeWire wireBuilder;
+    std::vector<bool> used(pending.size(), false);
+    const auto closeEnough = [](const gp_Pnt& first, const gp_Pnt& second) {
+      return first.Distance(second) <= 1e-6;
+    };
+
+    for (std::size_t seed = 0; seed < pending.size(); ++seed) {
+      if (used[seed]) continue;
+      used[seed] = true;
+      wireBuilder.Add(pending[seed].edge);
+      gp_Pnt cursor = pending[seed].end;
+
+      bool progressed = true;
+      while (progressed) {
+        progressed = false;
+        for (std::size_t index = 0; index < pending.size(); ++index) {
+          if (used[index]) continue;
+          if (closeEnough(pending[index].start, cursor)) {
+            wireBuilder.Add(pending[index].edge);
+            cursor = pending[index].end;
+            used[index] = true;
+            progressed = true;
+          } else if (closeEnough(pending[index].end, cursor)) {
+            wireBuilder.Add(TopoDS::Edge(pending[index].edge.Reversed()));
+            cursor = pending[index].start;
+            used[index] = true;
+            progressed = true;
+          }
+        }
+      }
+    }
+
+    if (!wireBuilder.IsDone())
       return fail("Could not build a profile wire");
     BRepBuilderAPI_MakeFace faceBuilder(wireBuilder.Wire(), true);
     if (!faceBuilder.IsDone()) return fail("Could not build a profile face");

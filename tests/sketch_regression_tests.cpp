@@ -1,4 +1,5 @@
 #include "sketch/Sketch.h"
+#include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/SketchSolver.h"
 
 #include <algorithm>
@@ -282,6 +283,40 @@ void tangencyAndPointRelationsStayValidAfterMovement() {
          "mixed point relations must solve without dangling references");
 }
 
+void lineArcTangencySurvivesMovement() {
+  constexpr double kPi = 3.14159265358979323846;
+  Sketch sketch;
+  sketch.addLine({-50.0, 0.0}, {50.0, 0.0});
+  sketch.addArc({20.0, 30.0}, 10.0, kPi, kPi);
+  const GeometryId lineId = sketch.lineId(0);
+  const GeometryId arcId = sketch.arcId(0);
+
+  const ConstraintId tangent = sketch.addConstraint(
+      geometryConstraint(ConstraintType::Tangent, lineId, arcId));
+  expect(tangent != kInvalidConstraintId,
+         "Line-Arc Tangent must be accepted");
+  expect(near(sketch.arcs()[0].center.yMm, 10.0),
+         "Line-Arc Tangent must move the Arc onto the carrier");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "Line-Arc Tangent must be diagnostically satisfied");
+
+  sketch.translateElement(sketch.lines()[0].elementId, 0.0, 5.0);
+  expect(near(sketch.arcs()[0].center.yMm, 15.0),
+         "Line-Arc Tangent must follow carrier movement");
+
+  sketch.translateArcById(arcId, 0.0, 12.0);
+  expect(near(sketch.arcs()[0].center.yMm, 15.0),
+         "dragging a constrained Arc must reapply Tangent");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "Line-Arc Tangent must remain satisfied after dragging");
+
+  sketch.removeArc(0);
+  expect(sketch.constraints().empty(),
+         "deleting an Arc must remove its Tangent constraint");
+  expect(BasicSketchSolver::solve(sketch).invalidReferences == 0,
+         "Arc deletion must not leave dangling solver references");
+}
+
 void pointOnCircleSurvivesFurtherSketchEdits() {
   Sketch sketch;
   sketch.addCircle({0.0, 0.0}, 10.0);
@@ -377,6 +412,7 @@ int main() {
   angleBranchesAndCompositeGeometryRemainStable();
   relationalConstraintsRespectDrivingSizesAndComposites();
   tangencyAndPointRelationsStayValidAfterMovement();
+  lineArcTangencySurvivesMovement();
   pointOnCircleSurvivesFurtherSketchEdits();
   deletionStressHasNoDanglingReferenceCrash();
   parallelLineDistanceKeepsRectangleRigid();

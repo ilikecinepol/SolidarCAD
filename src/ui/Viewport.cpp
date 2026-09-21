@@ -2052,6 +2052,36 @@ void Viewport::paintGL() {
     }
   }
 
+  if (solidVisible_ && !hasParametricBody)
+    for (const auto& arc : solidSketch_.arcs()) {
+      const Point3 normal = supportNormal(solidSupportName_);
+      const auto surfacePoint = [&](float angle, float height) {
+        const sketch::Point profilePoint{
+            arc.center.xMm + arc.radiusMm * std::cos(angle),
+            arc.center.yMm + arc.radiusMm * std::sin(angle)};
+        const Point3 base = pointOnSupport(profilePoint, solidSupportName_,
+                                           box_, offsetX_, offsetY_);
+        return project(translated(base, normal, height), size(), yaw_, pitch_,
+                       zoom_);
+      };
+      for (int step = 0; step < 64; ++step) {
+        const float t0 = static_cast<float>(step) / 64.0F;
+        const float t1 = static_cast<float>(step + 1) / 64.0F;
+        const float a =
+            static_cast<float>(arc.startAngleRad + arc.sweepAngleRad * t0);
+        const float b =
+            static_cast<float>(arc.startAngleRad + arc.sweepAngleRad * t1);
+        QPolygonF side{surfacePoint(a, 0.0F), surfacePoint(b, 0.0F),
+                       surfacePoint(b, z), surfacePoint(a, z)};
+        const int shade = 120 + static_cast<int>(45.0F * std::cos(a));
+        if (isFrontFacing(side)) {
+          painter.setBrush(QColor(shade, shade + 5, shade + 10));
+          painter.setPen(QPen(QColor("#59636d"), 0.9));
+          painter.drawPolygon(side);
+        }
+      }
+    }
+
   // Features created on an existing end face remain separate construction
   // records, but are painted as one additive body.  In particular their base
   // starts on the old cap instead of at the global sketch plane; drawing them
@@ -2207,6 +2237,22 @@ void Viewport::paintGL() {
       }
       painter.drawPolyline(curve);
     }
+    for (const auto& arc : sketch_.arcs()) {
+      painter.setPen(QPen(QColor(22, 105, 215), 2.2,
+                          arc.dashed ? Qt::DashLine : Qt::SolidLine));
+      QPolygonF curve;
+      for (int step = 0; step <= 64; ++step) {
+        const float t = static_cast<float>(step) / 64.0F;
+        const float angle =
+            static_cast<float>(arc.startAngleRad + arc.sweepAngleRad * t);
+        curve << project(pointOnPlacement(
+                             {arc.center.xMm + arc.radiusMm * std::cos(angle),
+                              arc.center.yMm + arc.radiusMm * std::sin(angle)},
+                             sketchPlacement_, offsetX_, offsetY_),
+                         size(), yaw_, pitch_, zoom_);
+      }
+      painter.drawPolyline(curve);
+    }
   }
 
   if (sketchVisible_ && !displaySketches_.empty()) {
@@ -2234,6 +2280,23 @@ void Viewport::paintGL() {
           const sketch::Point point{
               circle.center.xMm + circle.radiusMm * std::cos(angle),
               circle.center.yMm + circle.radiusMm * std::sin(angle)};
+          curve << project(pointOnPlacement(point, displayed.placement,
+                                            offsetX_, offsetY_),
+                           size(), yaw_, pitch_, zoom_);
+        }
+        painter.drawPolyline(curve);
+      }
+      for (const auto& arc : displayed.geometry.arcs()) {
+        painter.setPen(QPen(QColor("#1469d7"), 2.2,
+                            arc.dashed ? Qt::DashLine : Qt::SolidLine));
+        QPolygonF curve;
+        for (int step = 0; step <= 64; ++step) {
+          const float t = static_cast<float>(step) / 64.0F;
+          const float angle =
+              static_cast<float>(arc.startAngleRad + arc.sweepAngleRad * t);
+          const sketch::Point point{
+              arc.center.xMm + arc.radiusMm * std::cos(angle),
+              arc.center.yMm + arc.radiusMm * std::sin(angle)};
           curve << project(pointOnPlacement(point, displayed.placement,
                                             offsetX_, offsetY_),
                            size(), yaw_, pitch_, zoom_);
@@ -2991,6 +3054,10 @@ void Viewport::rebuildSelectedExtrusionSketch() {
         selectedExtrusionSketch_.addLine(line.start, line.end);
       for (const auto& circle : region.circles())
         selectedExtrusionSketch_.addCircle(circle.center, circle.radiusMm);
+      for (const auto& arc : region.arcs())
+        selectedExtrusionSketch_.addArc(arc.center, arc.radiusMm,
+                                        arc.startAngleRad, arc.sweepAngleRad,
+                                        arc.dashed);
     }
     return;
   }

@@ -37,6 +37,32 @@ bool moveArcEndpointRigid(Arc& arc, bool start, Point target) {
   return true;
 }
 
+// Reshape an arc by moving one endpoint while keeping the center, radius and
+// the opposite endpoint fixed. Used by interactive endpoint dragging (unlike
+// moveArcEndpointRigid, which translates the whole curve for the solver).
+bool moveArcEndpointReshape(Arc& arc, bool start, Point target) {
+  const double dx = target.xMm - arc.center.xMm;
+  const double dy = target.yMm - arc.center.yMm;
+  if (std::hypot(dx, dy) <= 1e-12) return false;
+
+  const double targetAngle = std::atan2(dy, dx);
+  constexpr double kTwoPi = 6.28318530717958647692;
+  const auto normalizeSweep = [kTwoPi](double sweep) {
+    while (sweep <= 1e-9) sweep += kTwoPi;
+    while (sweep >= kTwoPi - 1e-9) sweep -= kTwoPi;
+    return sweep;
+  };
+
+  if (start) {
+    const double endAngle = arc.startAngleRad + arc.sweepAngleRad;
+    arc.startAngleRad = targetAngle;
+    arc.sweepAngleRad = normalizeSweep(endAngle - targetAngle);
+  } else {
+    arc.sweepAngleRad = normalizeSweep(targetAngle - arc.startAngleRad);
+  }
+  return true;
+}
+
 }  // namespace
 
 Sketch::Sketch() { clear(); }
@@ -966,6 +992,25 @@ void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
   // Move the circle center together with every Coincident-connected
   // endpoint/center. This also re-runs the active solver afterwards.
   (void)translatePoint(centerReference, dxMm, dyMm);
+}
+
+void Sketch::translateArcById(GeometryId id, double dxMm, double dyMm) {
+  const auto index = arcIndex(id);
+  if (!index || isGeometryLocked(id)) return;
+  arcs_[*index].center.xMm += dxMm;
+  arcs_[*index].center.yMm += dyMm;
+  (void)BasicSketchSolver::solveStable(*this);
+  updateBounds();
+}
+
+bool Sketch::moveArcEndpointReshapeById(GeometryId id, bool start,
+                                        Point target) {
+  const auto index = arcIndex(id);
+  if (!index || isGeometryLocked(id)) return false;
+  if (!moveArcEndpointReshape(arcs_[*index], start, target)) return false;
+  (void)BasicSketchSolver::solveStable(*this);
+  updateBounds();
+  return true;
 }
 
 bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
@@ -2091,6 +2136,69 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
   updateBounds();
   return true;
 }
+
+bool Sketch::setPointToMidpoint(GeometryId lineIdValue,
+                                PointReference pointReference) {
+  const auto carrierIndex = lineIndex(lineIdValue);
+  const auto point = referencedPoint(pointReference);
+
+  // LOCK CONSTRAINT: the constrained point itself is locked.
+  if (isPointReferenceLocked(pointReference))
+    return false;
+
+  if (!carrierIndex || !point) return false;
+
+  const auto& carrier = lines_[*carrierIndex];
+  const Point target{
+      (carrier.start.xMm + carrier.end.xMm) * 0.5,
+      (carrier.start.yMm + carrier.end.yMm) * 0.5};
+
+  const Point oldPoint = *point;
+
+  if (pointReference.elementCenterId != 0) {
+    const double moveX = target.xMm - oldPoint.xMm;
+    const double moveY = target.yMm - oldPoint.yMm;
+
+    for (auto& line : lines_) {
+      if (line.elementId != pointReference.elementCenterId)
+        continue;
+
+      line.start.xMm += moveX;
+      line.start.yMm += moveY;
+      line.end.xMm += moveX;
+      line.end.yMm += moveY;
+    }
+  } else if (pointReference.circleId != kInvalidGeometryId) {
+    const auto circle = circleIndex(pointReference.circleId);
+    if (!circle) return false;
+    circles_[*circle].center = target;
+  } else if (pointReference.arcId != kInvalidGeometryId) {
+    const auto arc = arcIndex(pointReference.arcId);
+    if (!arc) return false;
+    if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target))
+      return false;
+  } else {
+    const auto same = [](Point first, Point second) {
+      return std::hypot(first.xMm - second.xMm,
+                        first.yMm - second.yMm) <= 1e-7;
+    };
+
+    // Keep the complete coincident CAD vertex cluster together.
+    for (auto& line : lines_) {
+      if (same(line.start, oldPoint)) line.start = target;
+      if (same(line.end, oldPoint)) line.end = target;
+    }
+
+    for (auto& circle : circles_) {
+      if (same(circle.center, oldPoint))
+        circle.center = target;
+    }
+  }
+
+  updateBounds();
+  return true;
+}
+
 bool Sketch::setPointOnCircle(GeometryId circleIdValue,
                               PointReference pointReference) {
   const auto carrierIndex = circleIndex(circleIdValue);
@@ -2348,6 +2456,61 @@ bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
       contact.xMm + side * nx * circle.radiusMm;
   circle.center.yMm =
       contact.yMm + side * ny * circle.radiusMm;
+
+  updateBounds();
+  return true;
+}
+bool Sketch::setArcTangentToLine(GeometryId lineIdValue,
+                                 GeometryId arcIdValue) {
+  if (isGeometryLocked(arcIdValue)) return false;
+  const auto lineIndexValue = lineIndex(lineIdValue);
+  const auto arcIndexValue = arcIndex(arcIdValue);
+  if (!lineIndexValue || !arcIndexValue) return false;
+
+  const Line& line = lines_[*lineIndexValue];
+  Arc& arc = arcs_[*arcIndexValue];
+  if (!std::isfinite(arc.radiusMm) || arc.radiusMm <= 1e-9 ||
+      !std::isfinite(arc.startAngleRad) ||
+      !std::isfinite(arc.sweepAngleRad) || arc.sweepAngleRad <= 1e-9)
+    return false;
+
+  const double dx = line.end.xMm - line.start.xMm;
+  const double dy = line.end.yMm - line.start.yMm;
+  const double lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= 1e-12) return false;
+
+  const double length = std::sqrt(lengthSquared);
+  const double nx = -dy / length;
+  const double ny = dx / length;
+  const double rawT =
+      ((arc.center.xMm - line.start.xMm) * dx +
+       (arc.center.yMm - line.start.yMm) * dy) /
+      lengthSquared;
+  const double t = std::clamp(rawT, 0.0, 1.0);
+  const Point contact{line.start.xMm + dx * t,
+                      line.start.yMm + dy * t};
+  const double signedDistance =
+      (arc.center.xMm - line.start.xMm) * nx +
+      (arc.center.yMm - line.start.yMm) * ny;
+  const double side = signedDistance < 0.0 ? -1.0 : 1.0;
+
+  arc.center.xMm = contact.xMm + side * nx * arc.radiusMm;
+  arc.center.yMm = contact.yMm + side * ny * arc.radiusMm;
+
+  // Tangency belongs to the finite Arc span. Preserve its sweep and rotate
+  // the rigid curve only when the contact direction is currently outside it.
+  constexpr double kTwoPi = 6.28318530717958647692;
+  const auto normalize = [kTwoPi](double angle) {
+    angle = std::fmod(angle, kTwoPi);
+    if (angle < 0.0) angle += kTwoPi;
+    return angle;
+  };
+  const double contactAngle =
+      std::atan2(contact.yMm - arc.center.yMm,
+                 contact.xMm - arc.center.xMm);
+  const double offset = normalize(contactAngle - arc.startAngleRad);
+  if (offset > arc.sweepAngleRad + 1e-9)
+    arc.startAngleRad = contactAngle - arc.sweepAngleRad * 0.5;
 
   updateBounds();
   return true;

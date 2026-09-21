@@ -148,6 +148,10 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // Applied after carrier geometry has settled.
         break;
 
+      case ConstraintType::Midpoint:
+        // Applied after carrier geometry has settled.
+        break;
+
       case ConstraintType::Tangent:
         // Applied in the final tangency stabilization pass.
         break;
@@ -1234,6 +1238,27 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       ++result.invalidReferences;
   }
 
+  // MIDPOINT FINAL PASS
+  // The carrier line remains fixed. The referenced point is placed exactly at
+  // the segment midpoint.
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Midpoint)
+      continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstGeometry) ||
+        !sketch.referencedPoint(constraint.secondPoint)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setPointToMidpoint(constraint.firstGeometry,
+                                  constraint.secondPoint))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
+  }
+
   // CRASH-FREE 10: GROUPED MULTI-TANGENT SOLVER
   //
   // Sequentially projecting one circle onto Tangent A, then B, then C makes
@@ -1257,6 +1282,10 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
     const GeometryId circleId =
         seed.secondGeometry;
+
+    // Finite Arcs use a dedicated pass below.
+    if (!sketch.circleIndex(circleId))
+      continue;
 
     if (circleId == kInvalidGeometryId ||
         alreadyProcessedTangentCircle(circleId))
@@ -1593,6 +1622,25 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         moveY);
 
     ++result.applied;
+  }
+
+  // LINE-ARC TANGENCY FINAL PASS
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Tangent ||
+        !sketch.arcIndex(constraint.secondGeometry))
+      continue;
+
+    if (constraint.firstGeometry == kInvalidGeometryId ||
+        !sketch.lineIndex(constraint.firstGeometry)) {
+      ++result.invalidReferences;
+      continue;
+    }
+
+    if (sketch.setArcTangentToLine(constraint.firstGeometry,
+                                   constraint.secondGeometry))
+      ++result.applied;
+    else
+      ++result.invalidReferences;
   }
   // CRASH-FREE 11: FINAL COMPOSITE-SAFE EQUAL STABILIZATION
   //

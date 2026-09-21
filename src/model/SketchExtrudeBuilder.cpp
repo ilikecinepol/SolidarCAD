@@ -77,29 +77,49 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
       return fail("Profile circle must be finite and positive");
     circles.push_back(&circle);
   }
-  if (!lines.empty() && !circles.empty())
+  std::vector<const sketch::Arc*> arcs;
+  for (const auto& arc : profile.geometry.arcs()) {
+    if (arc.dashed) continue;
+    if (!std::isfinite(arc.center.xMm) ||
+        !std::isfinite(arc.center.yMm) ||
+        !std::isfinite(arc.radiusMm) || arc.radiusMm <= 0.0)
+      return fail("Profile arc must be finite and positive");
+    arcs.push_back(&arc);
+  }
+  if ((!lines.empty() || !arcs.empty()) && !circles.empty())
     return fail("Extrude 2.0 supports one profile at a time");
-  if (circles.size() == 1 && lines.empty()) return true;
+  if (circles.size() == 1 && lines.empty() && arcs.empty()) return true;
   if (!circles.empty()) return fail("Profile contains multiple circles");
-  if (lines.size() < 3 || !profile.geometry.isClosed())
-    return fail("Profile is not one closed line wire");
+  if (lines.size() + arcs.size() < 3 || !profile.geometry.isClosed())
+    return fail("Profile is not one closed wire");
 
   // isClosed permits several independent loops. Walk endpoint-connected lines
-  // to prove that every solid line belongs to one wire.
-  std::vector<bool> reached(lines.size(), false);
+  // and arcs to prove that every solid edge belongs to one wire.
+  struct Edge {
+    sketch::Point start;
+    sketch::Point end;
+  };
+  std::vector<Edge> edges;
+  edges.reserve(lines.size() + arcs.size());
+  for (const auto* line : lines)
+    edges.push_back({line->start, line->end});
+  for (const auto* arc : arcs)
+    edges.push_back({sketch::arcStartPoint(*arc), sketch::arcEndPoint(*arc)});
+
+  std::vector<bool> reached(edges.size(), false);
   reached[0] = true;
   std::size_t reachedCount = 1;
   bool changed = true;
   while (changed) {
     changed = false;
-    for (std::size_t i = 0; i < lines.size(); ++i) {
+    for (std::size_t i = 0; i < edges.size(); ++i) {
       if (reached[i]) continue;
-      for (std::size_t j = 0; j < lines.size(); ++j) {
+      for (std::size_t j = 0; j < edges.size(); ++j) {
         if (!reached[j]) continue;
-        if (samePoint(lines[i]->start, lines[j]->start) ||
-            samePoint(lines[i]->start, lines[j]->end) ||
-            samePoint(lines[i]->end, lines[j]->start) ||
-            samePoint(lines[i]->end, lines[j]->end)) {
+        if (samePoint(edges[i].start, edges[j].start) ||
+            samePoint(edges[i].start, edges[j].end) ||
+            samePoint(edges[i].end, edges[j].start) ||
+            samePoint(edges[i].end, edges[j].end)) {
           reached[i] = true;
           ++reachedCount;
           changed = true;
@@ -108,7 +128,7 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
       }
     }
   }
-  return reachedCount == lines.size()
+  return reachedCount == edges.size()
              ? true
              : fail("Profile contains multiple closed regions or holes");
 }

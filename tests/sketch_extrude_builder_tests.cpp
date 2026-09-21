@@ -214,9 +214,34 @@ int main() {
     TopoDS_Shape result;
     std::string error;
     CHECK(!buildExtrusionFromSketch(profile, &base, 10.0,
-                                    ExtrudeOperation::NewBody, false, &result,
-                                    nullptr, &error));
+                                     ExtrudeOperation::NewBody, false, &result,
+                                     nullptr, &error));
     CHECK(error.find("first feature") != std::string::npos);
+  }
+
+  // A closed contour with arcs (a stadium) is supported and extrudes into a
+  // valid solid, proving that arcs survive the sketch -> profile -> 3D path.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    auto profile = profileWith(19);
+    profile.geometry.addLine({0.0, 0.0}, {100.0, 0.0});
+    profile.geometry.addArc({100.0, 10.0}, 10.0, -kPi * 0.5, kPi);
+    profile.geometry.addLine({100.0, 20.0}, {0.0, 20.0});
+    profile.geometry.addArc({0.0, 10.0}, 10.0, kPi * 0.5, kPi);
+    CHECK(isSupportedSingleSketchProfile(profile));
+
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 50.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(!result.IsNull());
+    CHECK(test::solidCount(result) == 1);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    // Stadium area = rectangle 100x20 + full circle radius 10.
+    const double expected = (2000.0 + kPi * 100.0) * 50.0;
+    CHECK(test::near(test::volumeOf(result), expected, 1e-2));
   }
 
   return EXIT_SUCCESS;

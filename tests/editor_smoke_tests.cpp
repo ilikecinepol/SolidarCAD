@@ -1,9 +1,17 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pnt.hxx>
 #include <QApplication>
 #include <QDir>
+#include <QMouseEvent>
 #include <QPixmap>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -14,6 +22,7 @@
 #include <cassert>
 #include <cmath>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -106,7 +115,13 @@ void autoProjectionRegressionTests() {
   solidar::SketchCanvas withHole;
   withHole.setSketchEditContext(faceContext(cut.Shape(), 20.0, true));
   CHECK(withHole.referenceFaceEdgeCount() == 5);
-  CHECK(projectedElements(withHole).size() == 5);
+  // The four straight support edges project as lines; the circular hole edge
+  // projects as a single native circle, never a low-poly segment chain.
+  CHECK(withHole.sketch().lines().size() == 4);
+  CHECK(withHole.sketch().circles().size() == 1);
+  CHECK(withHole.sketch().circles().front().dashed);
+  CHECK(std::abs(withHole.sketch().circles().front().radiusMm - 5.0) <= 1e-6);
+  CHECK(projectedElements(withHole).size() == 4);
   CHECK(withHole.sketch().constraints().size() == 5);
   CHECK(!withHole.canUndo());
 
@@ -148,6 +163,95 @@ void autoProjectionRegressionTests() {
   CHECK(!manual.canUndo());
 }
 
+void circularEdgeProjectionTests() {
+  // A full circular edge (a planar disk) projects as exactly one native
+  // Sketch Circle, with its radius preserved, no segment approximations, and
+  // a Lock constraint.
+  const gp_Circ circle(gp_Ax2(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+                       5.0);
+  const TopoDS_Shape disk =
+      BRepBuilderAPI_MakeFace(
+          BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge())
+              .Wire())
+          .Shape();
+  solidar::SketchCanvas canvas;
+  canvas.resize(900, 650);
+  canvas.setSketchEditContext(faceContext(disk, 0.0, true));
+  CHECK(canvas.hasRealReferenceBody());
+  CHECK(canvas.referenceFaceEdgeCount() == 1);
+  CHECK(canvas.sketch().lines().empty());
+  CHECK(canvas.sketch().circles().size() == 1);
+  CHECK(canvas.sketch().arcs().empty());
+  const auto& projected = canvas.sketch().circles().front();
+  CHECK(projected.dashed);
+  CHECK(std::abs(projected.radiusMm - 5.0) <= 1e-6);
+  CHECK(std::abs(projected.center.xMm) <= 1e-6);
+  CHECK(std::abs(projected.center.yMm) <= 1e-6);
+  CHECK(canvas.sketch().constraints().size() == 1);
+  CHECK(canvas.sketch().isGeometryLocked(canvas.sketch().circleId(0)));
+
+  // Manual projection is duplicate-guarded: the already-projected circle is
+  // not added a second time.
+  const auto circleCountBefore = canvas.sketch().circles().size();
+  for (std::size_t edge = 0; edge < canvas.referenceBodyEdgeCount(); ++edge)
+    (void)canvas.projectReferenceEdge(edge);
+  CHECK(canvas.sketch().circles().size() == circleCountBefore);
+}
+
+void arcBodySelectionAndDragTests() {
+  solidar::sketch::Sketch sketch;
+  constexpr double almostFullSweep = 2.0 * std::numbers::pi - 1e-6;
+  // A large-radius arc exposes hit tests that approximate the curve with a
+  // fixed number of straight segments. Keep the visible part near the sketch
+  // origin while its center remains far below the viewport.
+  sketch.addArc({0.0, -1300.0}, 1300.0, 0.0, almostFullSweep);
+
+  solidar::SketchCanvas canvas;
+  canvas.resize(900, 650);
+  canvas.loadSketch(sketch);
+  canvas.setTool(solidar::SketchCanvas::Tool::Select);
+  canvas.setSnapEnabled(false);
+  canvas.show();
+  QApplication::processEvents();
+
+  // Click halfway between two vertices of the former 48-segment hit-test.
+  // The point is exactly on the analytic arc but more than nine pixels from
+  // that coarse polyline. SketchCanvas starts at 5 px/mm and centers the
+  // sketch inside the ruler margins (44 px left, 30 px top).
+  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
+  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
+  constexpr double hitAngle = almostFullSweep * 12.5 / 48.0;
+  const double hitX = 1300.0 * std::cos(hitAngle);
+  const double hitY = -1300.0 + 1300.0 * std::sin(hitAngle);
+  const QPointF arcBody(centerX + hitX * 5.0,
+                        centerY - hitY * 5.0);
+  const QPointF draggedTo = arcBody + QPointF(30.0, 20.0);
+
+  QString selectionDescription;
+  QObject::connect(&canvas, &solidar::SketchCanvas::selectionChanged,
+                   [&selectionDescription](const QString& description) {
+                     selectionDescription = description;
+                   });
+
+  QMouseEvent press(QEvent::MouseButtonPress, arcBody, Qt::LeftButton,
+                    Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &press);
+  CHECK(selectionDescription.contains(QString::fromUtf8("дуга"),
+                                      Qt::CaseInsensitive));
+
+  QMouseEvent move(QEvent::MouseMove, draggedTo, Qt::NoButton,
+                   Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &move);
+  QMouseEvent release(QEvent::MouseButtonRelease, draggedTo, Qt::LeftButton,
+                      Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &release);
+
+  CHECK(canvas.sketch().arcs().size() == 1);
+  const auto& moved = canvas.sketch().arcs().front();
+  CHECK(std::abs(moved.center.xMm - 6.0) <= 1e-6);
+  CHECK(std::abs(moved.center.yMm + 1304.0) <= 1e-6);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -157,6 +261,8 @@ int main(int argc, char** argv) {
   solidar::AppSettings settings(tempDir.filePath("settings.ini"));
 
   autoProjectionRegressionTests();
+  circularEdgeProjectionTests();
+  arcBodySelectionAndDragTests();
 
   solidar::home::HomeWindow home(settings);
   solidar::MainWindow* editor = nullptr;

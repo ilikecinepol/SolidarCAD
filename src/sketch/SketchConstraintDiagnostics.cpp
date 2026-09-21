@@ -496,13 +496,51 @@ std::vector<Equation> evaluate(const Sketch& sketch,
         break;
       }
 
+      case ConstraintType::Midpoint: {
+        const auto line =
+            lineOf(layout, variables, constraint.firstGeometry);
+        const auto point =
+            pointOf(sketch, layout, variables, constraint.secondPoint);
+        if (!line || !point) { invalidEquation(constraint); break; }
+        const sketch::Point midpoint{
+            (line->start.xMm + line->end.xMm) * 0.5,
+            (line->start.yMm + line->end.yMm) * 0.5};
+        add(pointDistance(midpoint, *point),
+            kLengthTolerance, constraint);
+        break;
+      }
+
       case ConstraintType::Tangent: {
         const auto line =
             lineOf(layout, variables, constraint.firstGeometry);
-        const auto circle =
-            circleOf(layout, variables, constraint.secondGeometry);
-        if (!line || !circle) { invalidEquation(constraint); break; }
-        add(segmentDistance(circle->center, *line) - circle->radiusMm,
+        if (!line) { invalidEquation(constraint); break; }
+        if (const auto circle =
+                circleOf(layout, variables, constraint.secondGeometry)) {
+          add(segmentDistance(circle->center, *line) - circle->radiusMm,
+              kLengthTolerance, constraint);
+          break;
+        }
+
+        const auto arcIndex = sketch.arcIndex(constraint.secondGeometry);
+        if (!arcIndex) { invalidEquation(constraint); break; }
+        const auto& arc = sketch.arcs()[*arcIndex];
+        const double dx = line->end.xMm - line->start.xMm;
+        const double dy = line->end.yMm - line->start.yMm;
+        const double lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 1e-12) {
+          invalidEquation(constraint);
+          break;
+        }
+        const double t = std::clamp(
+            ((arc.center.xMm - line->start.xMm) * dx +
+             (arc.center.yMm - line->start.yMm) * dy) /
+                lengthSquared,
+            0.0, 1.0);
+        const Point contact{line->start.xMm + dx * t,
+                            line->start.yMm + dy * t};
+        add(segmentDistance(arc.center, *line) - arc.radiusMm,
+            kLengthTolerance, constraint);
+        add(finiteArcDistance(contact, arc),
             kLengthTolerance, constraint);
         break;
       }

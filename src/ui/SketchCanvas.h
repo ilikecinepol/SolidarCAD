@@ -150,7 +150,7 @@ signals:
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
-  enum class SelectionKind { None, Line, Circle };
+  enum class SelectionKind { None, Line, Circle, Arc };
   enum class ConstructionSnapKind {
     None,
     LinePoint,
@@ -175,17 +175,22 @@ signals:
   [[nodiscard]] QRectF viewCubeRightRect() const;
   [[nodiscard]] QPointF mapPoint(sketch::Point point) const;
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
+  [[nodiscard]] double arcDistanceToScreenPoint(
+      const sketch::Arc& arc, QPointF point) const;
   [[nodiscard]] sketch::Point snappedPoint(QPointF point) const;
   [[nodiscard]] ConstructionSnap constructionSnapAt(QPointF position) const;
   [[nodiscard]] std::optional<std::size_t> referenceEdgeAt(QPointF position) const;
   bool appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
                            bool reportStatus);
+  bool appendProjectedCircularEdge(const RenderEdge& edge, bool recordUndo,
+                                   bool reportStatus);
   void selectAt(QPointF position, bool additive = false,
                 bool preserveExistingIfHit = false);
   void selectInRect(const QRectF& rect, bool additive);
   void clearGeometrySelection();
   [[nodiscard]] bool lineElementSelected(std::size_t elementId) const;
   [[nodiscard]] bool circleSelected(sketch::GeometryId id) const;
+  [[nodiscard]] bool arcSelected(sketch::GeometryId id) const;
   void commitPoint(sketch::Point point);
   void showDimensionEditor(QPoint position);
   void updateDimensionEditor();
@@ -222,9 +227,11 @@ signals:
   SelectionKind selectionKind_{SelectionKind::None};
   sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
+  sketch::GeometryId selectionArcId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
   std::vector<std::size_t> selectedElementIds_;
   std::vector<sketch::GeometryId> selectedCircleIds_;
+  std::vector<sketch::GeometryId> selectedArcIds_;
   bool selectionBoxActive_{false};
   QPointF selectionBoxStart_{};
   QPointF selectionBoxCurrent_{};

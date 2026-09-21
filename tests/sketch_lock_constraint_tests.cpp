@@ -1,5 +1,6 @@
 #include "sketch/Sketch.h"
 #include "sketch/SketchConstraintDiagnostics.h"
+#include "sketch/SketchSolver.h"
 
 #include <algorithm>
 #include <cmath>
@@ -708,6 +709,81 @@ void rotatedViewOrthogonalPointGaps(bool rectangleSelectedFirst) {
   CHECK(!analyzeConstraintSystem(sketch).conflicting);
 }
 
+void midpointConstraintPinsPointToLineCenter() {
+  Sketch sketch;
+  sketch.addLine({0.0, 0.0}, {100.0, 0.0});
+  sketch.addLine({80.0, 30.0}, {60.0, 25.0});
+  const GeometryId carrier = sketch.lineId(0);
+  const GeometryId child = sketch.lineId(1);
+
+  Constraint midpoint;
+  midpoint.type = ConstraintType::Midpoint;
+  midpoint.firstGeometry = carrier;
+  midpoint.secondPoint = PointReference{child, true};
+  CHECK(sketch.addConstraint(midpoint) != kInvalidConstraintId);
+
+  // The solver moves the child start exactly to the carrier midpoint.
+  const auto point = sketch.referencedPoint(PointReference{child, true});
+  CHECK(point.has_value());
+  CHECK(std::abs(point->xMm - 50.0) <= 1e-7);
+  CHECK(std::abs(point->yMm) <= 1e-7);
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+
+  // Moving the carrier re-applies the midpoint relation.
+  sketch.translateElement(sketch.lines()[0].elementId, 20.0, 0.0);
+  (void)BasicSketchSolver::solveStable(sketch);
+  const auto after = sketch.referencedPoint(PointReference{child, true});
+  CHECK(after.has_value());
+  CHECK(std::abs(after->xMm - 70.0) <= 1e-7);
+  CHECK(std::abs(after->yMm) <= 1e-7);
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+}
+
+void moveArcStartReshapesKeepingCenterAndEnd() {
+  Sketch sketch;
+  sketch.addArc({0.0, 0.0}, 10.0, 0.0, 1.5707963267948966);
+  const GeometryId arcId = sketch.arcId(0);
+
+  const double kPi = 3.14159265358979323846;
+  CHECK(sketch.moveArcEndpointReshapeById(
+      arcId, true, {10.0 * std::cos(kPi * 0.25), 10.0 * std::sin(kPi * 0.25)}));
+
+  const auto& arc = sketch.arcs().front();
+  CHECK(std::abs(arc.center.xMm) <= 1e-9 && std::abs(arc.center.yMm) <= 1e-9);
+  CHECK(std::abs(arc.radiusMm - 10.0) <= 1e-9);
+  CHECK(std::abs(arc.startAngleRad - kPi * 0.25) <= 1e-9);
+  CHECK(std::abs(arc.sweepAngleRad - kPi * 0.25) <= 1e-9);
+
+  const auto start = arcStartPoint(arc);
+  const auto end = arcEndPoint(arc);
+  CHECK(std::abs(start.xMm - 10.0 * std::cos(kPi * 0.25)) <= 1e-7);
+  CHECK(std::abs(start.yMm - 10.0 * std::sin(kPi * 0.25)) <= 1e-7);
+  CHECK(std::abs(end.xMm) <= 1e-7);
+  CHECK(std::abs(end.yMm - 10.0) <= 1e-7);
+}
+
+void moveArcEndReshapesKeepingCenterAndStart() {
+  Sketch sketch;
+  sketch.addArc({0.0, 0.0}, 10.0, 0.0, 1.5707963267948966);
+  const GeometryId arcId = sketch.arcId(0);
+
+  const double kPi = 3.14159265358979323846;
+  CHECK(sketch.moveArcEndpointReshapeById(arcId, false, {-10.0, 0.0}));
+
+  const auto& arc = sketch.arcs().front();
+  CHECK(std::abs(arc.center.xMm) <= 1e-9 && std::abs(arc.center.yMm) <= 1e-9);
+  CHECK(std::abs(arc.radiusMm - 10.0) <= 1e-9);
+  CHECK(std::abs(arc.startAngleRad) <= 1e-9);
+  CHECK(std::abs(arc.sweepAngleRad - kPi) <= 1e-9);
+
+  const auto start = arcStartPoint(arc);
+  const auto end = arcEndPoint(arc);
+  CHECK(std::abs(start.xMm - 10.0) <= 1e-7);
+  CHECK(std::abs(start.yMm) <= 1e-7);
+  CHECK(std::abs(end.xMm + 10.0) <= 1e-7);
+  CHECK(std::abs(end.yMm) <= 1e-7);
+}
+
 }  // namespace
 
 int main() {
@@ -731,5 +807,8 @@ int main() {
   incompatiblePointDistanceRestoresSnapshot();
   rotatedViewOrthogonalPointGaps(false);
   rotatedViewOrthogonalPointGaps(true);
+  midpointConstraintPinsPointToLineCenter();
+  moveArcStartReshapesKeepingCenterAndEnd();
+  moveArcEndReshapesKeepingCenterAndStart();
   return EXIT_SUCCESS;
 }

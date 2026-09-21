@@ -50,6 +50,18 @@ int main(int argc, char* argv[]) {
   // Project v2 round-trip preserves IDs, parameters, face support and the
   // complete editable feature chain, then rebuilds B-Rep from history.
   solidar::Document source;
+  auto& arcSketch = source.addSketch("Arc constraints");
+  const auto arcSketchId = arcSketch.id;
+  arcSketch.geometry.addLine({-50.0, 0.0}, {50.0, 0.0});
+  arcSketch.geometry.addArc({10.0, 20.0}, 8.0,
+                            3.14159265358979323846,
+                            3.14159265358979323846);
+  solidar::sketch::Constraint arcTangent;
+  arcTangent.type = solidar::sketch::ConstraintType::Tangent;
+  arcTangent.firstGeometry = arcSketch.geometry.lineId(0);
+  arcTangent.secondGeometry = arcSketch.geometry.arcId(0);
+  assert(arcSketch.geometry.addConstraint(arcTangent) !=
+         solidar::sketch::kInvalidConstraintId);
   auto& baseSketch = source.addSketch("Base");
   const auto baseSketchId = baseSketch.id;
   baseSketch.geometry.addRectangle({0.0, 0.0}, {80.0, 35.0});
@@ -99,6 +111,14 @@ int main(int argc, char* argv[]) {
   const auto* restoredBody = restored.findBody(bodyId);
   assert(restoredBody && restoredBody->features().size() == 3);
   assert(restored.findSketch(baseSketchId));
+  const auto* restoredArcSketch = restored.findSketch(arcSketchId);
+  assert(restoredArcSketch);
+  assert(restoredArcSketch->geometry.arcs().size() == 1);
+  assert(restoredArcSketch->geometry.constraints().size() == 1);
+  assert(restoredArcSketch->geometry.constraints().front().type ==
+         solidar::sketch::ConstraintType::Tangent);
+  assert(restoredArcSketch->geometry.constraints().front().secondGeometry ==
+         restoredArcSketch->geometry.arcId(0));
   const auto* restoredPocketSketch = restored.findSketch(pocketSketchId);
   assert(restoredPocketSketch);
   assert(restoredPocketSketch->support.type ==

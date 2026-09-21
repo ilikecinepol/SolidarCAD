@@ -6,6 +6,7 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
+#include <GeomAbs_CurveType.hxx>
 #include <Poly_Triangulation.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
@@ -13,6 +14,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Circ.hxx>
 
 #include <algorithm>
 #include <chrono>
@@ -128,6 +130,32 @@ void BodyRenderMesh::rebuild(const TopoDS_Shape& shape,
     RenderEdge rendered;
     rendered.edgeIndex = edgeIndex;
     BRepAdaptor_Curve curve(edge);
+
+    // Preserve native circular geometry: a circle/arc edge carries its exact
+    // center, radius and extent, so Sketcher projection can build a real
+    // SketchCircle/Arc instead of a low-poly segment chain.
+    if (curve.GetType() == GeomAbs_Circle) {
+      const gp_Circ circle = curve.Circle();
+      rendered.center = point(circle.Location());
+      rendered.radius = circle.Radius();
+      // A full circle edge is closed (start point == end point at the seam),
+      // while a trimmed arc is open. IsPeriodic()/IsClosed() both report true
+      // for a trimmed circle because the underlying circle curve is periodic,
+      // so compare the endpoints directly instead.
+      const gp_Pnt startPoint = curve.Value(curve.FirstParameter());
+      const gp_Pnt endPoint = curve.Value(curve.LastParameter());
+      const bool fullCircle =
+          startPoint.Distance(endPoint) <=
+          1e-6 * std::max(1.0, circle.Radius());
+      if (fullCircle) {
+        rendered.kind = RenderEdge::Kind::Circle;
+      } else {
+        rendered.kind = RenderEdge::Kind::Arc;
+        rendered.arcStart = point(startPoint);
+        rendered.arcEnd = point(endPoint);
+      }
+    }
+
     GCPnts_QuasiUniformDeflection sampler(curve, linearDeflection_ * 0.65);
     if (sampler.IsDone()) {
       rendered.points.reserve(static_cast<std::size_t>(sampler.NbPoints()));
