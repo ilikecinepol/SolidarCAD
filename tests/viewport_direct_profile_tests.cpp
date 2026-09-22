@@ -132,6 +132,7 @@ int main(int argc, char** argv) {
     const auto& selectedRectangle = arcView.extrusionCandidateSketch();
     CHECK(selectedRectangle.lines().size() == 4);
     CHECK(selectedRectangle.arcs().empty());
+    CHECK(selectedRectangle.circles().empty());
     CHECK(selectedRectangle.isClosed());
 
     mouse(arcView, QEvent::MouseButtonPress, insideArcSegment,
@@ -140,19 +141,36 @@ int main(int argc, char** argv) {
     const auto& selectedArcSegment = arcView.extrusionCandidateSketch();
     CHECK(selectedArcSegment.lines().size() == 1);
     CHECK(selectedArcSegment.arcs().size() == 1);
+    CHECK(selectedArcSegment.circles().empty());
     CHECK(selectedArcSegment.isClosed());
 
-    // Ctrl-selection of both adjacent regions removes their shared chord and
-    // produces one exact outer wire, rather than a branched multi-loop sketch.
-    arcView.beginExtrusionSurfaceSelection();
+    // Ctrl-click is additive: selecting the rectangle next to the already
+    // selected Arc region produces their exact union and keeps the Arc curved.
     mouseMod(arcView, QEvent::MouseButtonPress, insideRectangle,
-             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
-    mouseMod(arcView, QEvent::MouseButtonPress, insideArcSegment,
              Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
     const auto& combined = arcView.extrusionCandidateSketch();
     CHECK(combined.lines().size() == 3);
     CHECK(combined.arcs().size() == 1);
+    CHECK(combined.circles().empty());
     CHECK(combined.isClosed());
+
+    // Repeating Ctrl-click on the rectangle toggles only that region off.
+    mouseMod(arcView, QEvent::MouseButtonPress, insideRectangle,
+             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    const auto& remainingArcSegment = arcView.extrusionCandidateSketch();
+    CHECK(remainingArcSegment.lines().size() == 1);
+    CHECK(remainingArcSegment.arcs().size() == 1);
+    CHECK(remainingArcSegment.circles().empty());
+    CHECK(remainingArcSegment.isClosed());
+
+    // A normal click replaces the complete additive selection.
+    mouse(arcView, QEvent::MouseButtonPress, insideRectangle,
+          Qt::LeftButton, Qt::LeftButton);
+    const auto& replacedWithRectangle = arcView.extrusionCandidateSketch();
+    CHECK(replacedWithRectangle.lines().size() == 4);
+    CHECK(replacedWithRectangle.arcs().empty());
+    CHECK(replacedWithRectangle.circles().empty());
+    CHECK(replacedWithRectangle.isClosed());
   }
 
   // Solver-created coincidences can retain a few microns of numerical drift.

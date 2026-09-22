@@ -3034,9 +3034,53 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   // machinery already depth-filters, so an occluded profile is not picked.
   updateExtrusionHover(scenePosition);
   if (hoveredExtrusionSketchIndex_ != static_cast<std::size_t>(-1)) {
+    const bool append = event->modifiers().testFlag(Qt::ControlModifier);
+    if (!append || selectedExtrusionSketchIndex_ != hoveredExtrusionSketchIndex_) {
+      selectedExtrusionPolygons_.clear();
+      selectedExtrusionPaths_.clear();
+      selectedExtrusionRegionSketches_.clear();
+    }
+
+    QPainterPath hoveredPath = extrusionHoverPath_;
+    if (hoveredPath.isEmpty()) {
+      hoveredPath.addPolygon(extrusionHoverPolygon_);
+      hoveredPath.closeSubpath();
+    }
+    const QRectF hoveredBounds = hoveredPath.boundingRect();
+    const auto existing = std::find_if(
+        selectedExtrusionPaths_.begin(), selectedExtrusionPaths_.end(),
+        [&hoveredBounds](const QPainterPath& path) {
+          const QRectF bounds = path.boundingRect();
+          return QLineF(bounds.center(), hoveredBounds.center()).length() < 1.0 &&
+                 std::abs(bounds.width() - hoveredBounds.width()) < 1.0 &&
+                 std::abs(bounds.height() - hoveredBounds.height()) < 1.0;
+        });
+    if (append && existing != selectedExtrusionPaths_.end()) {
+      const auto index = static_cast<std::size_t>(
+          std::distance(selectedExtrusionPaths_.begin(), existing));
+      selectedExtrusionPaths_.erase(existing);
+      if (index < selectedExtrusionPolygons_.size())
+        selectedExtrusionPolygons_.erase(selectedExtrusionPolygons_.begin() +
+                                         static_cast<std::ptrdiff_t>(index));
+      if (index < selectedExtrusionRegionSketches_.size())
+        selectedExtrusionRegionSketches_.erase(
+            selectedExtrusionRegionSketches_.begin() +
+            static_cast<std::ptrdiff_t>(index));
+    } else {
+      selectedExtrusionPaths_.push_back(hoveredPath);
+      selectedExtrusionPolygons_.push_back(extrusionHoverPolygon_);
+      selectedExtrusionRegionSketches_.push_back(hoveredExtrusionSketch_);
+    }
     selectedExtrusionSketchIndex_ = hoveredExtrusionSketchIndex_;
-    selectedExtrusionSketch_ = hoveredExtrusionSketch_;
     selectedExtrusionSupport_ = hoveredExtrusionSupport_;
+    rebuildSelectedExtrusionSketch();
+    if (selectedExtrusionPaths_.empty()) {
+      selectedExtrusionPolygon_.clear();
+      update();
+      event->accept();
+      return;
+    }
+    selectedExtrusionPolygon_ = selectedExtrusionPolygons_.front();
     emit directProfilePicked(hoveredExtrusionSketchIndex_);
     // If the synchronous MainWindow slot installed a manipulator, continue this
     // same press as a drag so the user extrudes without a second click.
