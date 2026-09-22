@@ -150,6 +150,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] float cameraYawDegrees() const noexcept;
   [[nodiscard]] float cameraPitchDegrees() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
+  [[nodiscard]] QRectF extrusionPreviewBaseBounds() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
   [[nodiscard]] bool extrusionCandidateOnBodyCap() const noexcept;

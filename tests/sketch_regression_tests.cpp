@@ -317,6 +317,54 @@ void lineArcTangencySurvivesMovement() {
          "Arc deletion must not leave dangling solver references");
 }
 
+void rectangleSideArcDragIsStable() {
+  constexpr double kPi = 3.14159265358979323846;
+  Sketch sketch;
+  sketch.addRectangle({0.0, 0.0}, {100.0, 20.0});
+  sketch.addArc({50.0, 20.0}, 50.0, 0.0, kPi);
+
+  const GeometryId topLineId = sketch.lineId(2);
+  const GeometryId arcId = sketch.arcId(0);
+  const PointReference topStart{topLineId, true};
+  const PointReference topEnd{topLineId, false};
+  PointReference arcStart;
+  arcStart.arcId = arcId;
+  arcStart.start = true;
+  PointReference arcEnd = arcStart;
+  arcEnd.start = false;
+
+  expect(sketch.addConstraint(
+             pointConstraint(ConstraintType::Coincident, topStart,
+                             arcStart, 0.0)) != kInvalidConstraintId,
+         "rectangle/Arc first endpoint Coincident must be accepted");
+  expect(sketch.addConstraint(
+             pointConstraint(ConstraintType::Coincident, topEnd,
+                             arcEnd, 0.0)) != kInvalidConstraintId,
+         "rectangle/Arc second endpoint Coincident must be accepted");
+
+  sketch.translateArcById(arcId, 5.0, 5.0);
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "dragging the attached Arc must keep both endpoints valid");
+
+  sketch.translateElement(sketch.lines()[0].elementId, 7.0, -3.0);
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "dragging the attached rectangle must keep both endpoints valid");
+  expect(BasicSketchSolver::solve(sketch).invalidReferences == 0,
+         "rectangle/Arc drag must not leave invalid solver references");
+
+  const auto firstLinePoint = sketch.referencedPoint(topStart);
+  const auto firstArcPoint = sketch.referencedPoint(arcStart);
+  const auto secondLinePoint = sketch.referencedPoint(topEnd);
+  const auto secondArcPoint = sketch.referencedPoint(arcEnd);
+  expect(firstLinePoint && firstArcPoint && secondLinePoint && secondArcPoint,
+         "rectangle/Arc endpoint references must survive dragging");
+  expect(near(firstLinePoint->xMm, firstArcPoint->xMm) &&
+             near(firstLinePoint->yMm, firstArcPoint->yMm) &&
+             near(secondLinePoint->xMm, secondArcPoint->xMm) &&
+             near(secondLinePoint->yMm, secondArcPoint->yMm),
+         "both Arc endpoints must follow the moved rectangle");
+}
+
 void pointOnCircleSurvivesFurtherSketchEdits() {
   Sketch sketch;
   sketch.addCircle({0.0, 0.0}, 10.0);
@@ -368,7 +416,7 @@ void deletionStressHasNoDanglingReferenceCrash() {
          "geometry deletion must proactively remove dangling references");
   expect(!sketch.removeConstraint(stale),
          "constraint referencing deleted geometry must already be gone");
-  sketch.translateSelection({}, {sketch.circleId(0)}, 3.0, -2.0);
+  sketch.translateSelection({}, {sketch.circleId(0)}, {}, 3.0, -2.0);
 }
 
 
@@ -413,6 +461,7 @@ int main() {
   relationalConstraintsRespectDrivingSizesAndComposites();
   tangencyAndPointRelationsStayValidAfterMovement();
   lineArcTangencySurvivesMovement();
+  rectangleSideArcDragIsStable();
   pointOnCircleSurvivesFurtherSketchEdits();
   deletionStressHasNoDanglingReferenceCrash();
   parallelLineDistanceKeepsRectangleRigid();

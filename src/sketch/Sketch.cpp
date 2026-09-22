@@ -677,6 +677,7 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
 void Sketch::translateSelection(
     const std::vector<std::size_t>& elementIds,
     const std::vector<GeometryId>& circleIds,
+    const std::vector<GeometryId>& arcIds,
     double dxMm, double dyMm) {
   // LOCK CONSTRAINT: mixed selections do not partially move.
   for (std::size_t index = 0; index < lines_.size(); ++index) {
@@ -689,8 +690,12 @@ void Sketch::translateSelection(
     if (isGeometryLocked(id))
       return;
   }
+  for (const auto id : arcIds) {
+    if (isGeometryLocked(id))
+      return;
+  }
   if (dxMm == 0.0 && dyMm == 0.0) return;
-  if (elementIds.empty() && circleIds.empty()) return;
+  if (elementIds.empty() && circleIds.empty() && arcIds.empty()) return;
 
   const auto elementSelected =
       [&elementIds](std::size_t elementId) {
@@ -710,6 +715,11 @@ void Sketch::translateSelection(
                circleIds.end();
       };
 
+  const auto arcSelected =
+      [&arcIds](GeometryId id) {
+        return std::find(arcIds.begin(), arcIds.end(), id) != arcIds.end();
+      };
+
   // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY IN GROUP DRAG
   const auto sameReference =
       [](PointReference first,
@@ -727,6 +737,14 @@ void Sketch::translateSelection(
           return first.circleId != kInvalidGeometryId &&
                  second.circleId != kInvalidGeometryId &&
                  first.circleId == second.circleId;
+        }
+
+        if (first.arcId != kInvalidGeometryId ||
+            second.arcId != kInvalidGeometryId) {
+          return first.arcId != kInvalidGeometryId &&
+                 second.arcId != kInvalidGeometryId &&
+                 first.arcId == second.arcId &&
+                 first.start == second.start;
         }
 
         if (first.lineId == kInvalidGeometryId ||
@@ -795,6 +813,17 @@ void Sketch::translateSelection(
     PointReference center;
     center.circleId = id;
     addReference(center);
+  }
+
+  for (std::size_t index = 0; index < arcs_.size(); ++index) {
+    const GeometryId id = arcIds_[index];
+    if (!arcSelected(id)) continue;
+    PointReference endpoint;
+    endpoint.arcId = id;
+    endpoint.start = true;
+    addReference(endpoint);
+    endpoint.start = false;
+    addReference(endpoint);
   }
 
   bool expanded = true;
@@ -946,6 +975,33 @@ void Sketch::translateSelection(
         referenceMoves(center)) {
       circles_[index].center.xMm += dxMm;
       circles_[index].center.yMm += dyMm;
+    }
+  }
+
+
+  for (std::size_t index = 0; index < arcs_.size(); ++index) {
+    const GeometryId id = arcIds_[index];
+    PointReference start;
+    start.arcId = id;
+    start.start = true;
+    PointReference end = start;
+    end.start = false;
+    const bool moveStart = referenceMoves(start);
+    const bool moveEnd = referenceMoves(end);
+
+    if (arcSelected(id) || (moveStart && moveEnd)) {
+      arcs_[index].center.xMm += dxMm;
+      arcs_[index].center.yMm += dyMm;
+    } else if (moveStart) {
+      const Point current = arcStartPoint(arcs_[index]);
+      (void)moveArcEndpointReshape(
+          arcs_[index], true,
+          {current.xMm + dxMm, current.yMm + dyMm});
+    } else if (moveEnd) {
+      const Point current = arcEndPoint(arcs_[index]);
+      (void)moveArcEndpointReshape(
+          arcs_[index], false,
+          {current.xMm + dxMm, current.yMm + dyMm});
     }
   }
 

@@ -43,7 +43,9 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     if (!arc.dashed) ++solidArcs;
   if ((solidLines > 0 && solidCircles > 0) || solidCircles > 1)
     return fail("Extrude 2.0 supports one profile at a time");
-  if (solidCircles == 0 && solidLines + solidArcs < 3)
+  // Two edges are sufficient for a valid closed wire: a semicircle plus its
+  // diameter, or two arcs sharing both endpoints (a lens/full split circle).
+  if (solidCircles == 0 && solidLines + solidArcs < 2)
     return fail("Profile has insufficient geometry");
   if (solidCircles == 0 && !geometry.isClosed())
     return fail("Profile is not closed");
@@ -114,7 +116,7 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
                          edgeBuilder.Edge()});
     }
 
-    if (pending.size() < 3)
+    if (pending.size() < 2)
       return fail("Could not build a profile wire");
 
     // Chain the mixed line/arc edges into one connected wire. Lines and arcs

@@ -19,6 +19,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <memory>
@@ -252,6 +253,365 @@ void arcBodySelectionAndDragTests() {
   CHECK(std::abs(moved.center.yMm + 1304.0) <= 1e-6);
 }
 
+void draggedPointSnappingTests() {
+  constexpr double kPi = std::numbers::pi;
+  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
+  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
+  const auto screenPoint = [](double xMm, double yMm) {
+    return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
+  };
+  const auto drag = [](solidar::SketchCanvas& canvas, QPointF from,
+                       QPointF to) {
+    QMouseEvent press(QEvent::MouseButtonPress, from, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &press);
+    QMouseEvent move(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton,
+                     Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, to, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &release);
+  };
+  const auto click = [](solidar::SketchCanvas& canvas, QPointF at) {
+    QMouseEvent press(QEvent::MouseButtonPress, at, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &release);
+  };
+
+  // A manually dragged line endpoint snaps to an existing Arc endpoint and
+  // persists the relationship as Coincident.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 0.0}, {-20.0, 0.0});
+    sketch.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Select);
+    canvas.show();
+    QApplication::processEvents();
+
+    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(10.0, 0.0));
+
+    const auto& constraints = canvas.sketch().constraints();
+    CHECK(std::any_of(constraints.begin(), constraints.end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::Coincident &&
+                               constraint.firstPoint.arcId == arcId &&
+                               constraint.firstPoint.start &&
+                               constraint.secondPoint.lineId == lineId &&
+                               !constraint.secondPoint.start;
+                      }));
+    canvas.undo();
+    CHECK(canvas.sketch().constraints().empty());
+    CHECK(std::abs(canvas.sketch().lines().front().end.xMm + 20.0) <= 1e-9);
+    CHECK(std::abs(canvas.sketch().lines().front().end.yMm) <= 1e-9);
+  }
+
+  // The release coordinate wins over a stale line-body hover. This models a
+  // final cursor step delivered together with MouseButtonRelease on Windows.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-20.0, 20.0}, {20.0, 20.0});
+    sketch.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Select);
+    canvas.show();
+    QApplication::processEvents();
+
+    QMouseEvent press(QEvent::MouseButtonPress, screenPoint(10.0, 0.0),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &press);
+    QMouseEvent move(QEvent::MouseMove, screenPoint(5.0, 20.0), Qt::NoButton,
+                     Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, screenPoint(20.0, 20.0),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &release);
+
+    CHECK(std::any_of(canvas.sketch().constraints().begin(),
+                      canvas.sketch().constraints().end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::Coincident &&
+                               constraint.firstPoint.lineId == lineId &&
+                               !constraint.firstPoint.start &&
+                               constraint.secondPoint.arcId == arcId &&
+                               constraint.secondPoint.start;
+                      }));
+  }
+
+  // Arc endpoints use the same drag-snap path. Dropping one on a line body
+  // creates PointOnLine instead of leaving two merely overlapping shapes.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-20.0, 20.0}, {20.0, 20.0});
+    sketch.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Select);
+    canvas.show();
+    QApplication::processEvents();
+
+    drag(canvas, screenPoint(10.0, 0.0), screenPoint(5.0, 20.0));
+
+    const auto& constraints = canvas.sketch().constraints();
+    CHECK(std::any_of(constraints.begin(), constraints.end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::PointOnLine &&
+                               constraint.firstGeometry == lineId &&
+                               constraint.secondPoint.arcId == arcId &&
+                               constraint.secondPoint.start;
+                      }));
+  }
+
+  // The merged "Coincident / Point-on" tool accepts an Arc endpoint as the
+  // point selected after a line carrier.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-20.0, 20.0}, {20.0, 20.0});
+    sketch.addArc({40.0, 20.0}, 10.0, kPi, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    canvas.show();
+    QApplication::processEvents();
+
+    click(canvas, screenPoint(0.0, 20.0));
+    click(canvas, screenPoint(30.0, 20.0));
+    CHECK(std::any_of(canvas.sketch().constraints().begin(),
+                      canvas.sketch().constraints().end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::PointOnLine &&
+                               constraint.firstGeometry == lineId &&
+                               constraint.secondPoint.arcId == arcId &&
+                               constraint.secondPoint.start;
+                      }));
+  }
+
+  // Point first, finite Arc body second creates PointOnArc.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 0.0}, {-20.0, 0.0});
+    sketch.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    canvas.show();
+    QApplication::processEvents();
+
+    click(canvas, screenPoint(-20.0, 0.0));
+    click(canvas, screenPoint(0.0, 10.0));
+    CHECK(std::any_of(canvas.sketch().constraints().begin(),
+                      canvas.sketch().constraints().end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::PointOnArc &&
+                               constraint.firstGeometry == arcId &&
+                               constraint.secondPoint.lineId == lineId &&
+                               !constraint.secondPoint.start;
+                      }));
+  }
+
+  // An Arc endpoint located on a line body remains a point hit. The selected
+  // line vertex must become Coincident with it instead of becoming PointOnLine
+  // with the carrier underneath.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({0.0, 20.0}, {0.0, -20.0});
+    sketch.addArc({0.0, 0.0}, 10.0, kPi * 0.5, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    canvas.show();
+    QApplication::processEvents();
+
+    click(canvas, screenPoint(0.0, 20.0));
+    click(canvas, screenPoint(0.0, 10.0));
+    CHECK(std::any_of(canvas.sketch().constraints().begin(),
+                      canvas.sketch().constraints().end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::Coincident &&
+                               constraint.firstPoint.lineId == lineId &&
+                               constraint.firstPoint.start &&
+                               constraint.secondPoint.arcId == arcId &&
+                               constraint.secondPoint.start;
+                      }));
+    CHECK(std::none_of(canvas.sketch().constraints().begin(),
+                       canvas.sketch().constraints().end(),
+                       [](const auto& constraint) {
+                         return constraint.type ==
+                                solidar::sketch::ConstraintType::PointOnLine;
+                       }));
+  }
+
+  // Curved carrier bodies produce persistent semantic constraints as well.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 0.0}, {-20.0, 0.0});
+    sketch.addCircle({0.0, 0.0}, 10.0);
+    const auto lineId = sketch.lineId(0);
+    const auto circleId = sketch.circleId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Select);
+    canvas.show();
+    QApplication::processEvents();
+
+    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(0.0, 10.0));
+    const auto& constraints = canvas.sketch().constraints();
+    CHECK(std::any_of(constraints.begin(), constraints.end(),
+                      [lineId, circleId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::PointOnCircle &&
+                               constraint.firstGeometry == circleId &&
+                               constraint.secondPoint.lineId == lineId &&
+                               !constraint.secondPoint.start;
+                      }));
+  }
+
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 0.0}, {-20.0, 0.0});
+    sketch.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    const auto lineId = sketch.lineId(0);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Select);
+    canvas.show();
+    QApplication::processEvents();
+
+    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(0.0, 10.0));
+    const auto& constraints = canvas.sketch().constraints();
+    CHECK(std::any_of(constraints.begin(), constraints.end(),
+                      [lineId, arcId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::PointOnArc &&
+                               constraint.firstGeometry == arcId &&
+                               constraint.secondPoint.lineId == lineId &&
+                               !constraint.secondPoint.start;
+                      }));
+  }
+
+  // A circle centre is an editable support point too, not just the
+  // circumference of the circle.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-10.0, 20.0}, {20.0, 20.0});
+    sketch.addCircle({-20.0, 0.0}, 5.0);
+    const auto lineId = sketch.lineId(0);
+    const auto circleId = sketch.circleId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Select);
+    canvas.show();
+    QApplication::processEvents();
+
+    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(10.0, 20.0));
+    const auto& constraints = canvas.sketch().constraints();
+    CHECK(std::any_of(constraints.begin(), constraints.end(),
+                      [lineId, circleId](const auto& constraint) {
+                        return constraint.type ==
+                                   solidar::sketch::ConstraintType::PointOnLine &&
+                               constraint.firstGeometry == lineId &&
+                               constraint.secondPoint.circleId == circleId;
+                      }));
+  }
+}
+
+void attachedRectangleArcDragTests() {
+  constexpr double kPi = std::numbers::pi;
+  solidar::sketch::Sketch sketch;
+  sketch.addRectangle({0.0, 0.0}, {100.0, 20.0});
+  sketch.addArc({50.0, 20.0}, 50.0, 0.0, kPi);
+  const auto topLineId = sketch.lineId(2);
+  const auto arcId = sketch.arcId(0);
+
+  solidar::sketch::PointReference arcStart;
+  arcStart.arcId = arcId;
+  arcStart.start = true;
+  solidar::sketch::PointReference arcEnd = arcStart;
+  arcEnd.start = false;
+  solidar::sketch::Constraint first;
+  first.type = solidar::sketch::ConstraintType::Coincident;
+  first.firstPoint = {topLineId, true};
+  first.secondPoint = arcStart;
+  CHECK(sketch.addConstraint(first) != solidar::sketch::kInvalidConstraintId);
+  solidar::sketch::Constraint second;
+  second.type = solidar::sketch::ConstraintType::Coincident;
+  second.firstPoint = {topLineId, false};
+  second.secondPoint = arcEnd;
+  CHECK(sketch.addConstraint(second) != solidar::sketch::kInvalidConstraintId);
+
+  solidar::SketchCanvas canvas;
+  canvas.resize(900, 650);
+  canvas.loadSketch(sketch);
+  canvas.setTool(solidar::SketchCanvas::Tool::Select);
+  canvas.show();
+  QApplication::processEvents();
+
+  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
+  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
+  const auto point = [](double xMm, double yMm) {
+    return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
+  };
+  const auto drag = [&canvas](QPointF from, QPointF to) {
+    QMouseEvent press(QEvent::MouseButtonPress, from, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &press);
+    QMouseEvent move(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton,
+                     Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, to, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &release);
+  };
+
+  drag(point(50.0, 70.0), point(55.0, 75.0));
+  drag(point(50.0, 0.0), point(55.0, 5.0));
+  CHECK(canvas.sketch().arcs().size() == 1);
+  CHECK(canvas.sketch().lines().size() == 4);
+  CHECK(canvas.sketch().constraints().size() >= 2);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -263,6 +623,8 @@ int main(int argc, char** argv) {
   autoProjectionRegressionTests();
   circularEdgeProjectionTests();
   arcBodySelectionAndDragTests();
+  draggedPointSnappingTests();
+  attachedRectangleArcDragTests();
 
   solidar::home::HomeWindow home(settings);
   solidar::MainWindow* editor = nullptr;

@@ -244,5 +244,68 @@ int main() {
     CHECK(test::near(test::volumeOf(result), expected, 1e-2));
   }
 
+  // A two-edge D profile (semicircle plus diameter) is a valid closed wire.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    auto profile = profileWith(20);
+    profile.geometry.addLine({-10.0, 0.0}, {10.0, 0.0});
+    profile.geometry.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    CHECK(isSupportedSingleSketchProfile(profile));
+
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 25.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    CHECK(test::near(test::volumeOf(result), 0.5 * kPi * 100.0 * 25.0,
+                     1e-2));
+  }
+
+  // A circle split into two arcs must extrude exactly like a native circle.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    auto profile = profileWith(21);
+    profile.geometry.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    profile.geometry.addArc({0.0, 0.0}, 10.0, kPi, kPi);
+    CHECK(isSupportedSingleSketchProfile(profile));
+
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 25.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    CHECK(test::near(test::volumeOf(result), kPi * 100.0 * 25.0, 1e-2));
+  }
+
+  // A partial rectangle side replaced by an outward semicircle is the exact
+  // profile selected by Viewport for the user's attached-Arc workflow.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    auto profile = profileWith(22);
+    profile.geometry.addLine({-20.0, -20.0}, {20.0, -20.0});
+    profile.geometry.addLine({20.0, -20.0}, {20.0, 20.0});
+    profile.geometry.addLine({20.0, 20.0}, {-20.0, 20.0});
+    profile.geometry.addLine({-20.0, 20.0}, {-20.0, 0.0});
+    profile.geometry.addArc({-20.0, -10.0}, 10.0, kPi * 0.5, kPi);
+    CHECK(isSupportedSingleSketchProfile(profile));
+
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    const double expectedArea = 40.0 * 40.0 + 0.5 * kPi * 100.0;
+    CHECK(test::near(test::volumeOf(result), expectedArea * 10.0, 1e-2));
+  }
+
   return EXIT_SUCCESS;
 }

@@ -144,6 +144,7 @@ class Sketch final {
   centerNodeElementIds() const noexcept;
   void translateSelection(const std::vector<std::size_t>& elementIds,
                           const std::vector<GeometryId>& circleIds,
+                          const std::vector<GeometryId>& arcIds,
                           double dxMm, double dyMm);
   void setElementDashed(std::size_t elementId, bool dashed);
   void setCircleDashed(std::size_t index, bool dashed);

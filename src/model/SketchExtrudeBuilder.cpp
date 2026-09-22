@@ -90,7 +90,9 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
     return fail("Extrude 2.0 supports one profile at a time");
   if (circles.size() == 1 && lines.empty() && arcs.empty()) return true;
   if (!circles.empty()) return fail("Profile contains multiple circles");
-  if (lines.size() + arcs.size() < 3 || !profile.geometry.isClosed())
+  // A closed wire may legitimately consist of only two edges, for example a
+  // semicircular arc and its diameter or two arcs with common endpoints.
+  if (lines.size() + arcs.size() < 2 || !profile.geometry.isClosed())
     return fail("Profile is not one closed wire");
 
   // isClosed permits several independent loops. Walk endpoint-connected lines

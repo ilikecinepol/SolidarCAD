@@ -366,6 +366,222 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
   return faces;
 }
 
+struct AttachedArcProfile {
+  sketch::Sketch geometry;
+  std::vector<sketch::Point> boundary;
+};
+
+bool sameSketchPoint(sketch::Point first, sketch::Point second) {
+  return std::hypot(first.xMm - second.xMm,
+                    first.yMm - second.yMm) <= 1e-5;
+}
+
+std::optional<double> pointParameterOnLine(sketch::Point point,
+                                           const sketch::Line& line) {
+  const double dx = line.end.xMm - line.start.xMm;
+  const double dy = line.end.yMm - line.start.yMm;
+  const double lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= 1e-12) return std::nullopt;
+  const double parameter =
+      ((point.xMm - line.start.xMm) * dx +
+       (point.yMm - line.start.yMm) * dy) /
+      lengthSquared;
+  if (parameter < -1e-7 || parameter > 1.0 + 1e-7)
+    return std::nullopt;
+  const sketch::Point projection{line.start.xMm + dx * parameter,
+                                 line.start.yMm + dy * parameter};
+  if (!sameSketchPoint(point, projection)) return std::nullopt;
+  return std::clamp(parameter, 0.0, 1.0);
+}
+
+// An Arc whose endpoints land anywhere on one side of a closed line element
+// replaces only the covered part of that side. Keep the Arc exact: sampling is
+// used exclusively for screen hit-testing, never for the B-Rep profile.
+std::vector<AttachedArcProfile> attachedArcProfiles(
+    const sketch::Sketch& source) {
+  std::vector<AttachedArcProfile> profiles;
+
+  const auto finishProfile = [](AttachedArcProfile profile,
+                                const sketch::Arc& arc)
+      -> std::optional<AttachedArcProfile> {
+    if (!profile.geometry.isClosed()) return std::nullopt;
+    constexpr int arcSteps = 64;
+    profile.boundary.reserve(static_cast<std::size_t>(arcSteps + 1) +
+                             profile.geometry.lines().size());
+    for (int step = 0; step <= arcSteps; ++step) {
+      const double parameter = static_cast<double>(step) / arcSteps;
+      const double angle = arc.startAngleRad + arc.sweepAngleRad * parameter;
+      profile.boundary.push_back(
+          {arc.center.xMm + arc.radiusMm * std::cos(angle),
+           arc.center.yMm + arc.radiusMm * std::sin(angle)});
+    }
+
+    sketch::Point cursor = sketch::arcEndPoint(arc);
+    const auto& lines = profile.geometry.lines();
+    std::vector<bool> used(lines.size(), false);
+    for (std::size_t step = 0; step < lines.size(); ++step) {
+      bool found = false;
+      for (std::size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+        if (used[lineIndex]) continue;
+        const auto& line = lines[lineIndex];
+        if (sameSketchPoint(line.start, cursor)) {
+          cursor = line.end;
+        } else if (sameSketchPoint(line.end, cursor)) {
+          cursor = line.start;
+        } else {
+          continue;
+        }
+        used[lineIndex] = true;
+        profile.boundary.push_back(cursor);
+        found = true;
+        break;
+      }
+      if (!found) return std::nullopt;
+    }
+    if (!sameSketchPoint(cursor, sketch::arcStartPoint(arc)))
+      return std::nullopt;
+    return profile;
+  };
+
+  for (const auto& arc : source.arcs()) {
+    if (arc.dashed) continue;
+    const sketch::Point arcStart = sketch::arcStartPoint(arc);
+    const sketch::Point arcEnd = sketch::arcEndPoint(arc);
+
+    for (std::size_t chordIndex = 0; chordIndex < source.lines().size();
+         ++chordIndex) {
+      const auto& chord = source.lines()[chordIndex];
+      if (chord.dashed) continue;
+      const auto startParameter = pointParameterOnLine(arcStart, chord);
+      const auto endParameter = pointParameterOnLine(arcEnd, chord);
+      if (!startParameter || !endParameter ||
+          std::abs(*startParameter - *endParameter) <= 1e-8)
+        continue;
+
+      AttachedArcProfile profile;
+      for (std::size_t lineIndex = 0; lineIndex < source.lines().size();
+           ++lineIndex) {
+        const auto& line = source.lines()[lineIndex];
+        if (line.dashed || line.elementId != chord.elementId)
+          continue;
+        if (lineIndex != chordIndex) {
+          profile.geometry.addLine(line.start, line.end);
+          continue;
+        }
+
+        const double first = std::min(*startParameter, *endParameter);
+        const double second = std::max(*startParameter, *endParameter);
+        const double dx = line.end.xMm - line.start.xMm;
+        const double dy = line.end.yMm - line.start.yMm;
+        const sketch::Point firstPoint{line.start.xMm + dx * first,
+                                       line.start.yMm + dy * first};
+        const sketch::Point secondPoint{line.start.xMm + dx * second,
+                                        line.start.yMm + dy * second};
+        if (first > 1e-8)
+          profile.geometry.addLine(line.start, firstPoint);
+        if (second < 1.0 - 1e-8)
+          profile.geometry.addLine(secondPoint, line.end);
+      }
+      profile.geometry.addArc(arc.center, arc.radiusMm, arc.startAngleRad,
+                              arc.sweepAngleRad);
+      if (auto completed = finishProfile(std::move(profile), arc))
+        profiles.push_back(std::move(*completed));
+    }
+  }
+  return profiles;
+}
+
+template <typename ProjectPoint>
+std::vector<QPolygonF> projectedSketchBoundaries(
+    const sketch::Sketch& geometry, ProjectPoint projectPoint) {
+  struct Primitive {
+    sketch::Point start;
+    sketch::Point end;
+    std::vector<sketch::Point> samples;
+    bool used{false};
+  };
+
+  std::vector<Primitive> primitives;
+  for (const auto& line : geometry.lines()) {
+    if (line.dashed || sameSketchPoint(line.start, line.end)) continue;
+    primitives.push_back({line.start, line.end, {line.start, line.end}, false});
+  }
+  constexpr double kTwoPi = 6.28318530717958647692;
+  for (const auto& arc : geometry.arcs()) {
+    if (arc.dashed || arc.radiusMm <= 1e-9 || arc.sweepAngleRad <= 1e-9)
+      continue;
+    const int steps = std::max(
+        8, static_cast<int>(std::ceil(96.0 * arc.sweepAngleRad / kTwoPi)));
+    Primitive primitive;
+    primitive.start = sketch::arcStartPoint(arc);
+    primitive.end = sketch::arcEndPoint(arc);
+    primitive.samples.reserve(static_cast<std::size_t>(steps + 1));
+    for (int step = 0; step <= steps; ++step) {
+      const double parameter = static_cast<double>(step) / steps;
+      const double angle = arc.startAngleRad + arc.sweepAngleRad * parameter;
+      primitive.samples.push_back(
+          {arc.center.xMm + arc.radiusMm * std::cos(angle),
+           arc.center.yMm + arc.radiusMm * std::sin(angle)});
+    }
+    primitives.push_back(std::move(primitive));
+  }
+
+  std::vector<QPolygonF> result;
+  for (std::size_t seed = 0; seed < primitives.size(); ++seed) {
+    if (primitives[seed].used) continue;
+    primitives[seed].used = true;
+    std::vector<sketch::Point> boundary = primitives[seed].samples;
+    const sketch::Point first = primitives[seed].start;
+    sketch::Point cursor = primitives[seed].end;
+    bool closed = sameSketchPoint(cursor, first);
+
+    for (std::size_t guard = 0;
+         !closed && guard < primitives.size(); ++guard) {
+      bool found = false;
+      for (auto& primitive : primitives) {
+        if (primitive.used) continue;
+        if (sameSketchPoint(primitive.start, cursor)) {
+          boundary.insert(boundary.end(), primitive.samples.begin() + 1,
+                          primitive.samples.end());
+          cursor = primitive.end;
+        } else if (sameSketchPoint(primitive.end, cursor)) {
+          for (auto iterator = primitive.samples.rbegin() + 1;
+               iterator != primitive.samples.rend(); ++iterator)
+            boundary.push_back(*iterator);
+          cursor = primitive.start;
+        } else {
+          continue;
+        }
+        primitive.used = true;
+        found = true;
+        break;
+      }
+      if (!found) break;
+      closed = sameSketchPoint(cursor, first);
+    }
+    if (!closed || boundary.size() < 3) continue;
+    if (sameSketchPoint(boundary.front(), boundary.back()))
+      boundary.pop_back();
+    QPolygonF polygon;
+    polygon.reserve(static_cast<qsizetype>(boundary.size()));
+    for (const auto point : boundary) polygon << projectPoint(point);
+    if (polygon.size() >= 3) result.push_back(std::move(polygon));
+  }
+
+  for (const auto& circle : geometry.circles()) {
+    if (circle.dashed || circle.radiusMm <= 1e-9) continue;
+    QPolygonF polygon;
+    for (int step = 0; step < 96; ++step) {
+      const double angle = kTwoPi * step / 96.0;
+      polygon << projectPoint(
+          {circle.center.xMm + circle.radiusMm * std::cos(angle),
+           circle.center.yMm + circle.radiusMm * std::sin(angle)});
+    }
+    result.push_back(std::move(polygon));
+  }
+  return result;
+}
+
 
 }  // namespace
 
@@ -1464,6 +1680,15 @@ const sketch::Sketch& Viewport::extrusionCandidateSketch() const noexcept {
   return selectedExtrusionSketch_;
 }
 
+QRectF Viewport::extrusionPreviewBaseBounds() const noexcept {
+  QRectF bounds;
+  for (const auto& path : selectedExtrusionPaths_)
+    bounds = bounds.united(path.boundingRect());
+  if (bounds.isEmpty() && !selectedExtrusionPolygon_.isEmpty())
+    bounds = selectedExtrusionPolygon_.boundingRect();
+  return bounds;
+}
+
 QString Viewport::extrusionCandidateSupport() const {
   return selectedExtrusionSupport_;
 }
@@ -1573,34 +1798,11 @@ void Viewport::refreshSelectedExtrusionPolygon() {
       QPainterPath regionPath;
       regionPath.setFillRule(Qt::OddEvenFill);
       QPolygonF firstBoundary;
-      QPolygonF boundary;
-      for (const auto& line : regionSketch.lines()) {
-        if (boundary.isEmpty()) boundary << projectSelectedPoint(line.start);
-        boundary << projectSelectedPoint(line.end);
-        if (boundary.size() >= 4 &&
-            QLineF(boundary.front(), boundary.back()).length() < 0.5) {
-          regionPath.addPolygon(boundary);
-          regionPath.closeSubpath();
-          if (firstBoundary.isEmpty()) firstBoundary = boundary;
-          boundary.clear();
-        }
-      }
-      if (!boundary.isEmpty()) {
+      for (const auto& boundary :
+           projectedSketchBoundaries(regionSketch, projectSelectedPoint)) {
         regionPath.addPolygon(boundary);
         regionPath.closeSubpath();
         if (firstBoundary.isEmpty()) firstBoundary = boundary;
-      }
-      for (const auto& circle : regionSketch.circles()) {
-        QPolygonF circleBoundary;
-        for (int step = 0; step < 96; ++step) {
-          const float angle = 2.0F * std::numbers::pi_v<float> * step / 96.0F;
-          circleBoundary << projectSelectedPoint(
-              {circle.center.xMm + circle.radiusMm * std::cos(angle),
-               circle.center.yMm + circle.radiusMm * std::sin(angle)});
-        }
-        regionPath.addPolygon(circleBoundary);
-        regionPath.closeSubpath();
-        if (firstBoundary.isEmpty()) firstBoundary = circleBoundary;
       }
       if (!regionPath.isEmpty()) {
         selectedExtrusionPaths_.push_back(regionPath);
@@ -1618,10 +1820,10 @@ void Viewport::refreshSelectedExtrusionPolygon() {
   }
 
   if (selectedExtrusionSketch_.lines().empty() &&
-      selectedExtrusionSketch_.circles().empty())
+      selectedExtrusionSketch_.circles().empty() &&
+      selectedExtrusionSketch_.arcs().empty())
     return;
 
-  QPolygonF polygon;
   const auto projectSelectedPoint = [&](sketch::Point point) {
     if (selectedExtrusionSketchIndex_ < displaySketches_.size())
       return project(pointOnPlacement(point,
@@ -1636,19 +1838,10 @@ void Viewport::refreshSelectedExtrusionPolygon() {
                         static_cast<float>(box_.heightMm));
     return project(base, size(), yaw_, pitch_, zoom_);
   };
-  if (!selectedExtrusionSketch_.circles().empty()) {
-    const auto& circle = selectedExtrusionSketch_.circles().front();
-    for (int step = 0; step < 64; ++step) {
-      const float angle = 2.0F * std::numbers::pi_v<float> * step / 64.0F;
-      const sketch::Point point{
-          circle.center.xMm + circle.radiusMm * std::cos(angle),
-          circle.center.yMm + circle.radiusMm * std::sin(angle)};
-      polygon << projectSelectedPoint(point);
-    }
-  } else {
-    for (const auto& line : selectedExtrusionSketch_.lines())
-      polygon << projectSelectedPoint(line.start);
-  }
+  const auto boundaries =
+      projectedSketchBoundaries(selectedExtrusionSketch_, projectSelectedPoint);
+  if (boundaries.empty()) return;
+  const QPolygonF& polygon = boundaries.front();
 
   if (polygon.size() >= 3) {
     const QPointF previousCenter = selectedExtrusionPolygon_.boundingRect().center();
@@ -3517,6 +3710,8 @@ void Viewport::updateExtrusionHover(QPointF position) {
   // Resolve one real sketch before splitting regions. Screen overlap does not
   // imply coplanarity, and the parametric feature references one DocumentSketch.
   std::vector<QPolygonF> contours;
+  sketch::Sketch exactArcProfile;
+  QPolygonF exactArcPolygon;
   QString regionSupport;
   std::size_t regionSketchIndex = static_cast<std::size_t>(-1);
   const ViewportCameraState camera{yaw_, pitch_, zoom_, {}, size()};
@@ -3543,6 +3738,21 @@ void Viewport::updateExtrusionHover(QPointF position) {
                                       offsetX_, offsetY_),
                      size(), yaw_, pitch_, zoom_);
     };
+    std::optional<sketch::Sketch> hitArcProfile;
+    QPolygonF hitArcPolygon;
+    for (auto& profile : attachedArcProfiles(displayed.geometry)) {
+      QPolygonF polygon;
+      for (const auto point : profile.boundary)
+        polygon << projectContourPoint(point);
+      if (polygon.size() < 3 || std::abs(signedArea(polygon)) <= 1e-6)
+        continue;
+      sketchContours.push_back(polygon);
+      if (!hitArcProfile &&
+          polygon.containsPoint(position, Qt::OddEvenFill)) {
+        hitArcProfile = std::move(profile.geometry);
+        hitArcPolygon = std::move(polygon);
+      }
+    }
     // PLANAR SKETCH REGION GRAPH
     //
     // A rectangle side is one primitive. When a newly drawn line terminates
@@ -3614,6 +3824,13 @@ void Viewport::updateExtrusionHover(QPointF position) {
     // Newest sketch wins only for equal-depth hits.
     bestDepth = depth;
     contours = std::move(sketchContours);
+    if (hitArcProfile) {
+      exactArcProfile = std::move(*hitArcProfile);
+      exactArcPolygon = std::move(hitArcPolygon);
+    } else {
+      exactArcProfile.clear();
+      exactArcPolygon.clear();
+    }
     regionSupport = displayed.supportName;
     regionSketchIndex = displayedIndex;
   }
@@ -3621,6 +3838,17 @@ void Viewport::updateExtrusionHover(QPointF position) {
   // can still be picked as the extrusion source. Without this the extrusion
   // tool could never re-attach to a surface once the sketch contour was moved
   // off the cursor, and the legacy box/cap heuristics below went dead.
+
+  if (!exactArcPolygon.isEmpty()) {
+    extrusionHoverPolygon_ = exactArcPolygon;
+    extrusionHoverPath_.addPolygon(exactArcPolygon);
+    extrusionHoverPath_.closeSubpath();
+    hoveredExtrusionSketch_ = std::move(exactArcProfile);
+    hoveredExtrusionSupport_ = regionSupport;
+    hoveredExtrusionSurface_ = QString::fromUtf8("Замкнутый контур с дугой");
+    hoveredExtrusionSketchIndex_ = regionSketchIndex;
+    return;
+  }
 
   if (contours.size() >= 2) {
     QPainterPath region;

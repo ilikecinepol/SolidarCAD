@@ -18,6 +18,7 @@
 
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
+  qputenv("QT_OPENGL", "software");
   QApplication application(argc, argv);
 
   const auto mouse = [](solidar::Viewport& view, QEvent::Type type,
@@ -93,6 +94,87 @@ int main(int argc, char** argv) {
   mouse(view, QEvent::MouseButtonPress, {10, 10}, Qt::LeftButton,
         Qt::LeftButton);
   CHECK(picks == 1);
+
+  // An Arc spanning a complete rectangle side replaces that chord in the
+  // picked profile. The exact Arc must survive selection so extrusion creates
+  // a curved face instead of silently reverting to the rectangle.
+  {
+    solidar::Viewport arcView;
+    arcView.resize(800, 600);
+    solidar::sketch::Sketch arcProfile;
+    arcProfile.addRectangle({-20.0, -10.0}, {20.0, 10.0});
+    arcProfile.addArc({0.0, 10.0}, 20.0, 0.0,
+                      3.14159265358979323846);
+    const auto arcPlacement = solidar::SketchPlacement::xy();
+    arcView.addSketch(arcProfile, QStringLiteral("XY"), arcPlacement);
+
+    const solidar::ViewportCameraState arcCamera{
+        arcView.cameraYawDegrees(), arcView.cameraPitchDegrees(), 1.0F, {},
+        arcView.size()};
+    const QPointF insideBulgedProfile =
+        arcCamera.worldToScreen(arcPlacement.toWorld(0.0, 0.0));
+    int arcPicks = 0;
+    QObject::connect(&arcView, &solidar::Viewport::directProfilePicked,
+                     &arcView, [&](std::size_t) { ++arcPicks; });
+
+    mouse(arcView, QEvent::MouseButtonPress, insideBulgedProfile,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(arcPicks == 1);
+    const auto& selectedArcProfile = arcView.extrusionCandidateSketch();
+    CHECK(selectedArcProfile.lines().size() == 3);
+    CHECK(selectedArcProfile.arcs().size() == 1);
+    CHECK(selectedArcProfile.isClosed());
+  }
+
+  // The Arc endpoints may land in the middle of one rectangle side. Only the
+  // covered side segment is replaced; the remaining side and the exact Arc
+  // together still form the intended outer extrusion profile.
+  {
+    solidar::Viewport partialArcView;
+    partialArcView.resize(800, 600);
+    solidar::sketch::Sketch partialArcProfile;
+    partialArcProfile.addRectangle({-20.0, -20.0}, {20.0, 20.0});
+    partialArcProfile.addArc({-20.0, -10.0}, 10.0,
+                             3.14159265358979323846 * 0.5,
+                             3.14159265358979323846);
+    const auto placement = solidar::SketchPlacement::xy();
+    partialArcView.addSketch(partialArcProfile, QStringLiteral("XY"),
+                             placement);
+    const solidar::ViewportCameraState camera{
+        partialArcView.cameraYawDegrees(),
+        partialArcView.cameraPitchDegrees(), 1.0F, {},
+        partialArcView.size()};
+    const QPointF inside = camera.worldToScreen(placement.toWorld(0.0, 0.0));
+
+    int picks = 0;
+    QObject::connect(&partialArcView,
+                     &solidar::Viewport::directProfilePicked,
+                     &partialArcView, [&](std::size_t) { ++picks; });
+    mouse(partialArcView, QEvent::MouseButtonPress, inside,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(picks == 1);
+    const auto& selected = partialArcView.extrusionCandidateSketch();
+    CHECK(selected.lines().size() == 4);
+    CHECK(selected.arcs().size() == 1);
+    CHECK(selected.isClosed());
+
+    // paintGL reprojects the model-space profile for every interactive frame.
+    // The rebuilt preview boundary must still reach the Arc's outermost point
+    // instead of collapsing back to the original rectangle.
+    partialArcView.beginExtrusionSurfaceSelection();
+    mouse(partialArcView, QEvent::MouseButtonPress, inside,
+          Qt::LeftButton, Qt::LeftButton);
+    partialArcView.showExtrusionManipulator(12.0);
+    partialArcView.show();
+    QApplication::processEvents();
+    const QPointF arcExtreme =
+        camera.worldToScreen(placement.toWorld(-30.0, -10.0));
+    CHECK(partialArcView.extrusionPreviewBaseBounds()
+              .adjusted(-0.5, -0.5, 0.5, 0.5)
+              .contains(arcExtreme));
+  }
 
 
   // partitioned-region regression: an internal chain whose endpoints land on
