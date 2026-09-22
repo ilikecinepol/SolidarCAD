@@ -149,6 +149,48 @@ void lineArcExtrudeRecomputesAfterArcEdit() {
   CHECK(body.resultShape() == extrudePtr->shape());
   const double volumeAfter = solidar::test::volumeOf(*extrudePtr->shape());
   CHECK(std::abs(volumeAfter - volumeBefore) > 1e-4);
+
+  // Open the same Line + Arc loop by shortening only the Arc sweep. Rebuild
+  // must fail naturally, clear the stale result, and retain feature identity.
+  const double validSweep = kPi - 2.0 * startAngle;
+  const auto validShape = extrudePtr->shape();
+  editedProfile->geometry.removeArc(0);
+  editedProfile->geometry.addArc({0.0, -centerOffset}, 12.0, startAngle,
+                                 validSweep - 0.1);
+  CHECK(!editedProfile->geometry.isClosed());
+  CHECK(document.markSketchDirty(profileId));
+  CHECK(extrudePtr->isDirty());
+
+  CHECK(!document.recompute());
+  CHECK(extrudePtr->id() == extrudeId);
+  CHECK(extrudePtr->state() == solidar::FeatureState::Error);
+  CHECK(!extrudePtr->hasShape());
+  CHECK(!extrudePtr->shape());
+  CHECK(!body.resultShape());
+  CHECK(!extrudePtr->error().empty());
+  CHECK(!document.rebuildError().empty());
+
+  // Restore the exact valid Arc without recreating the Sketch, Body, or
+  // Extrude. The same feature must recover and reproduce the prior volume.
+  editedProfile->geometry.removeArc(0);
+  editedProfile->geometry.addArc({0.0, -centerOffset}, 12.0, startAngle,
+                                 validSweep);
+  CHECK(editedProfile->geometry.isClosed());
+  CHECK(document.markSketchDirty(profileId));
+  CHECK(extrudePtr->isDirty());
+
+  CHECK(document.recompute());
+  CHECK(extrudePtr->id() == extrudeId);
+  CHECK(extrudePtr->state() == solidar::FeatureState::Valid);
+  CHECK(extrudePtr->shape());
+  CHECK(!extrudePtr->shape()->IsNull());
+  CHECK(extrudePtr->shape().get() != validShape.get());
+  CHECK(solidar::test::solidCount(*extrudePtr->shape()) == 1);
+  CHECK(body.resultShape() == extrudePtr->shape());
+  CHECK(extrudePtr->error().empty());
+  CHECK(document.rebuildError().empty());
+  CHECK(solidar::test::near(
+      solidar::test::volumeOf(*extrudePtr->shape()), volumeAfter, 1e-4));
 }
 
 }  // namespace
