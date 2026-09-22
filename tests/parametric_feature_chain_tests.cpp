@@ -3,6 +3,9 @@
 #endif
 
 #include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,6 +16,15 @@
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
+#include "model/TopologyReferenceResolver.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 
@@ -103,4 +115,105 @@ int main() {
     assert(!filletPtr->error().empty());
     assert(pocketPtr->shape());
   }
+
+  // A curved root profile must preserve the complete attached Pocket chain
+  // when only its Arc changes and the Document propagates dirtiness.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    solidar::Document curvedDocument;
+
+    auto& curvedBase = curvedDocument.addSketch("Line and Arc base");
+    const auto curvedBaseId = curvedBase.id;
+    curvedBase.geometry.addLine({-10.0, 0.0}, {10.0, 0.0});
+    curvedBase.geometry.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    CHECK(curvedBase.geometry.arcs().size() == 1);
+    CHECK(curvedBase.geometry.isClosed());
+
+    auto& curvedBody = curvedDocument.addBody("Curved downstream body");
+    const auto curvedBodyId = curvedBody.id();
+    auto curvedExtrude = std::make_unique<solidar::ExtrudeFeature>(
+        curvedBaseId, 25.0, "Curved Extrude");
+    auto* curvedExtrudePtr = curvedExtrude.get();
+    const auto curvedExtrudeId = curvedExtrudePtr->id();
+    curvedBody.addFeature(std::move(curvedExtrude));
+    CHECK(curvedDocument.recompute());
+
+    const auto curvedTopFace =
+        solidar::test::topPlanarFace(*curvedBody.resultShape(), 25.0);
+    CHECK(curvedTopFace);
+    const auto curvedTopReference = solidar::makeFaceReference(
+        *curvedBody.resultShape(), curvedBodyId, curvedExtrudeId,
+        *curvedTopFace);
+    CHECK(curvedTopReference.signature);
+    CHECK(!curvedTopReference.persistentTag.empty());
+
+    auto& curvedPocketSketch =
+        curvedDocument.addSketch("Pocket on curved Extrude");
+    const auto curvedPocketSketchId = curvedPocketSketch.id;
+    CHECK(curvedDocument.attachSketchToFace(curvedPocketSketchId,
+                                            curvedTopReference));
+    const auto pocketCenter =
+        toLocal(curvedPocketSketch.placement, {0.0, 2.0, 25.0});
+    curvedPocketSketch.geometry.addCircle(pocketCenter, 1.0);
+
+    auto curvedPocket = std::make_unique<solidar::PocketFeature>(
+        curvedPocketSketchId, 5.0, "Pocket after curved Extrude");
+    auto* curvedPocketPtr = curvedPocket.get();
+    const auto curvedPocketId = curvedPocketPtr->id();
+    curvedBody.addFeature(std::move(curvedPocket));
+
+    CHECK(curvedDocument.recompute());
+    CHECK(curvedDocument.findSketch(curvedBaseId));
+    CHECK(curvedExtrudePtr->isValid());
+    CHECK(curvedPocketPtr->isValid());
+    CHECK(curvedBody.resultShape());
+    CHECK(!curvedBody.resultShape()->IsNull());
+    CHECK(solidar::test::solidCount(*curvedBody.resultShape()) == 1);
+    const auto finalShapeBefore = curvedBody.resultShape();
+    const auto extrudeShapeBefore = curvedExtrudePtr->shape();
+    const double volumeBefore =
+        solidar::test::volumeOf(*curvedBody.resultShape());
+    CHECK(volumeBefore > 0.0);
+
+    auto* editedBase = curvedDocument.findSketch(curvedBaseId);
+    CHECK(editedBase);
+    editedBase->geometry.removeArc(0);
+    const double centerOffset = std::sqrt(12.0 * 12.0 - 10.0 * 10.0);
+    const double startAngle = std::atan2(centerOffset, 10.0);
+    editedBase->geometry.addArc({0.0, -centerOffset}, 12.0, startAngle,
+                                kPi - 2.0 * startAngle);
+    CHECK(editedBase->geometry.arcs().size() == 1);
+    CHECK(editedBase->geometry.isClosed());
+    CHECK(curvedDocument.markSketchDirty(curvedBaseId));
+    CHECK(curvedExtrudePtr->isDirty());
+    CHECK(curvedPocketPtr->isDirty());
+
+    CHECK(curvedDocument.recompute());
+    CHECK(curvedExtrudePtr->id() == curvedExtrudeId);
+    CHECK(curvedPocketPtr->id() == curvedPocketId);
+    CHECK(curvedExtrudePtr->isValid());
+    CHECK(curvedPocketPtr->isValid());
+    CHECK(curvedExtrudePtr->shape());
+    CHECK(curvedExtrudePtr->shape().get() != extrudeShapeBefore.get());
+    CHECK(curvedBody.resultShape());
+    CHECK(!curvedBody.resultShape()->IsNull());
+    CHECK(curvedBody.resultShape().get() != finalShapeBefore.get());
+    CHECK(solidar::test::solidCount(*curvedBody.resultShape()) == 1);
+    const auto* attachedSketch =
+        curvedDocument.findSketch(curvedPocketSketchId);
+    CHECK(attachedSketch);
+    CHECK(attachedSketch->support.type == solidar::SketchSupportType::Face);
+    CHECK(attachedSketch->support.face.bodyId == curvedBodyId);
+    CHECK(attachedSketch->support.face.featureId == curvedExtrudeId);
+    CHECK(attachedSketch->support.face.persistentTag ==
+          curvedTopReference.persistentTag);
+    CHECK(attachedSketch->support.face.signature);
+    CHECK(attachedSketch->supportResolved);
+    CHECK(std::abs(attachedSketch->placement.origin.z - 25.0) < 1e-6);
+    const double volumeAfter =
+        solidar::test::volumeOf(*curvedBody.resultShape());
+    CHECK(std::abs(volumeAfter - volumeBefore) > 1e-4);
+  }
+
+  return EXIT_SUCCESS;
 }
