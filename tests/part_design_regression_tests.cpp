@@ -96,11 +96,68 @@ void checkAllValid(const solidar::Document& document) {
   }
 }
 
+void lineArcExtrudeRecomputesAfterArcEdit() {
+  constexpr double kPi = 3.14159265358979323846;
+  solidar::Document document;
+
+  auto& profile = document.addSketch("Line and Arc profile");
+  const auto profileId = profile.id;
+  profile.geometry.addLine({-10.0, 0.0}, {10.0, 0.0});
+  profile.geometry.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+  CHECK(profile.geometry.lines().size() == 1);
+  CHECK(profile.geometry.arcs().size() == 1);
+  CHECK(profile.geometry.isClosed());
+
+  auto& body = document.addBody("Line and Arc body");
+  auto extrude = std::make_unique<solidar::ExtrudeFeature>(
+      profileId, 25.0, "Line and Arc Extrude");
+  auto* extrudePtr = extrude.get();
+  const auto extrudeId = extrudePtr->id();
+  body.addFeature(std::move(extrude));
+
+  CHECK(document.recompute());
+  CHECK(extrudePtr->state() == solidar::FeatureState::Valid);
+  CHECK(extrudePtr->shape());
+  CHECK(!extrudePtr->shape()->IsNull());
+  CHECK(solidar::test::solidCount(*extrudePtr->shape()) == 1);
+  const auto shapeBefore = extrudePtr->shape();
+  const double volumeBefore = solidar::test::volumeOf(*shapeBefore);
+  CHECK(volumeBefore > 0.0);
+
+  // Replace only the Arc primitive with a shallower circular segment that has
+  // the same endpoints. The source Sketch and Extrude feature keep their IDs.
+  auto* editedProfile = document.findSketch(profileId);
+  CHECK(editedProfile);
+  editedProfile->geometry.removeArc(0);
+  const double centerOffset = std::sqrt(12.0 * 12.0 - 10.0 * 10.0);
+  const double startAngle = std::atan2(centerOffset, 10.0);
+  editedProfile->geometry.addArc({0.0, -centerOffset}, 12.0, startAngle,
+                                 kPi - 2.0 * startAngle);
+  CHECK(editedProfile->geometry.lines().size() == 1);
+  CHECK(editedProfile->geometry.arcs().size() == 1);
+  CHECK(editedProfile->geometry.isClosed());
+  CHECK(document.markSketchDirty(profileId));
+  CHECK(extrudePtr->isDirty());
+
+  CHECK(document.recompute());
+  CHECK(extrudePtr->id() == extrudeId);
+  CHECK(extrudePtr->state() == solidar::FeatureState::Valid);
+  CHECK(extrudePtr->shape());
+  CHECK(!extrudePtr->shape()->IsNull());
+  CHECK(solidar::test::solidCount(*extrudePtr->shape()) == 1);
+  CHECK(extrudePtr->shape().get() != shapeBefore.get());
+  CHECK(body.resultShape() == extrudePtr->shape());
+  const double volumeAfter = solidar::test::volumeOf(*extrudePtr->shape());
+  CHECK(std::abs(volumeAfter - volumeBefore) > 1e-4);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   try {
     QCoreApplication application(argc, argv);
+    lineArcExtrudeRecomputesAfterArcEdit();
+
     solidar::Document document;
 
     auto& baseSketch = document.addSketch("Base profile");
