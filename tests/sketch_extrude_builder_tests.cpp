@@ -55,6 +55,25 @@ int main() {
     std::string error;
     CHECK(!isSupportedSingleSketchProfile(profile, &error));
     CHECK(!error.empty());
+    CHECK(isSupportedSketchProfile(profile, &error));
+  }
+
+  // The legacy Sketch::isClosed convenience predicate rejects mixed primitive
+  // families, but multi-region extrusion accepts disjoint closed regions. The
+  // Apply path must therefore use isSupportedSketchProfile instead.
+  {
+    auto profile = profileWith(24);
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    profile.geometry.addCircle({30.0, 5.0}, 5.0);
+    CHECK(!profile.geometry.isClosed());
+    CHECK(isSupportedSketchProfile(profile));
+
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 6.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 2);
   }
 
   // A hole (nested loop) is rejected.
@@ -65,6 +84,7 @@ int main() {
     std::string error;
     CHECK(!isSupportedSingleSketchProfile(profile, &error));
     CHECK(!error.empty());
+    CHECK(!isSupportedSketchProfile(profile, &error));
   }
 
   // Mixed line + circle profiles are rejected with the committed message.
@@ -244,6 +264,25 @@ int main() {
     CHECK(test::near(test::volumeOf(result), expected, 1e-2));
   }
 
+  // Multiple disjoint selected contours are extruded by one feature and
+  // retained as a valid multi-solid result.
+  {
+    auto profile = profileWith(23);
+    profile.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+    profile.geometry.addRectangle({40.0, 0.0}, {50.0, 10.0});
+    CHECK(isSupportedSketchProfile(profile));
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 8.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 2);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    CHECK(test::near(test::volumeOf(result), (20.0 * 10.0 + 10.0 * 10.0) * 8.0,
+                     1e-3));
+  }
+
   // A two-edge D profile (semicircle plus diameter) is a valid closed wire.
   {
     constexpr double kPi = 3.14159265358979323846;
@@ -283,8 +322,8 @@ int main() {
     CHECK(test::near(test::volumeOf(result), kPi * 100.0 * 25.0, 1e-2));
   }
 
-  // A partial rectangle side replaced by an outward semicircle is the exact
-  // profile selected by Viewport for the user's attached-Arc workflow.
+  // A partial rectangle side replaced by an outward semicircle remains a
+  // supported explicit outer-wire profile.
   {
     constexpr double kPi = 3.14159265358979323846;
     auto profile = profileWith(22);

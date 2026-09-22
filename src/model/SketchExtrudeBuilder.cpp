@@ -1,6 +1,7 @@
 #include "model/SketchExtrudeBuilder.h"
 
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
@@ -23,6 +24,82 @@ namespace {
 bool samePoint(sketch::Point a, sketch::Point b) {
   return std::abs(a.xMm - b.xMm) <= 1e-7 &&
          std::abs(a.yMm - b.yMm) <= 1e-7;
+}
+
+std::vector<DocumentSketch> closedProfileComponents(
+    const DocumentSketch& profile) {
+  struct Primitive {
+    bool arc{};
+    std::size_t index{};
+    sketch::Point start;
+    sketch::Point end;
+  };
+  std::vector<Primitive> primitives;
+  for (std::size_t index = 0; index < profile.geometry.lines().size(); ++index) {
+    const auto& line = profile.geometry.lines()[index];
+    if (!line.dashed)
+      primitives.push_back({false, index, line.start, line.end});
+  }
+  for (std::size_t index = 0; index < profile.geometry.arcs().size(); ++index) {
+    const auto& arc = profile.geometry.arcs()[index];
+    if (!arc.dashed)
+      primitives.push_back(
+          {true, index, sketch::arcStartPoint(arc), sketch::arcEndPoint(arc)});
+  }
+
+  std::vector<DocumentSketch> result;
+  std::vector<bool> assigned(primitives.size(), false);
+  for (std::size_t seed = 0; seed < primitives.size(); ++seed) {
+    if (assigned[seed]) continue;
+    std::vector<std::size_t> component{seed};
+    assigned[seed] = true;
+    for (std::size_t position = 0; position < component.size(); ++position) {
+      const auto& reached = primitives[component[position]];
+      for (std::size_t candidate = 0; candidate < primitives.size();
+           ++candidate) {
+        if (assigned[candidate]) continue;
+        const auto& edge = primitives[candidate];
+        if (samePoint(reached.start, edge.start) ||
+            samePoint(reached.start, edge.end) ||
+            samePoint(reached.end, edge.start) ||
+            samePoint(reached.end, edge.end)) {
+          assigned[candidate] = true;
+          component.push_back(candidate);
+        }
+      }
+    }
+
+    DocumentSketch part = profile;
+    part.geometry.clear();
+    for (const auto primitiveIndex : component) {
+      const auto& primitive = primitives[primitiveIndex];
+      if (primitive.arc) {
+        const auto& arc = profile.geometry.arcs()[primitive.index];
+        part.geometry.addArc(arc.center, arc.radiusMm, arc.startAngleRad,
+                             arc.sweepAngleRad);
+      } else {
+        const auto& line = profile.geometry.lines()[primitive.index];
+        part.geometry.addLine(line.start, line.end);
+      }
+    }
+    result.push_back(std::move(part));
+  }
+
+  for (const auto& circle : profile.geometry.circles()) {
+    if (circle.dashed) continue;
+    DocumentSketch part = profile;
+    part.geometry.clear();
+    part.geometry.addCircle(circle.center, circle.radiusMm);
+    result.push_back(std::move(part));
+  }
+  return result;
+}
+
+std::size_t shapeSolidCount(const TopoDS_Shape& shape) {
+  std::size_t count = 0;
+  for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next())
+    ++count;
+  return count;
 }
 
 bool exactlyOneSolid(const TopoDS_Shape& shape, TopoDS_Shape* solid,
@@ -135,6 +212,47 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
              : fail("Profile contains multiple closed regions or holes");
 }
 
+bool isSupportedSketchProfile(const DocumentSketch& profile,
+                              std::string* error) {
+  const auto components = closedProfileComponents(profile);
+  if (components.empty()) {
+    if (error) *error = "Profile has insufficient geometry";
+    return false;
+  }
+  for (const auto& component : components)
+    if (!isSupportedSingleSketchProfile(component, error)) return false;
+
+  // Independent selected regions may be disjoint or merely touch. Positive
+  // planar overlap means nested/overlapping wires (a hole or ambiguous double
+  // selection), which needs a dedicated face-with-inner-wires representation.
+  try {
+    std::vector<TopoDS_Face> faces;
+    faces.reserve(components.size());
+    for (const auto& component : components) {
+      TopoDS_Face face;
+      if (!buildPlanarFaceFromSketch(component, &face, error)) return false;
+      faces.push_back(face);
+    }
+    for (std::size_t first = 0; first < faces.size(); ++first) {
+      for (std::size_t second = first + 1; second < faces.size(); ++second) {
+        BRepAlgoAPI_Common common(faces[first], faces[second]);
+        common.Build();
+        if (!common.IsDone() || common.Shape().IsNull()) continue;
+        GProp_GProps overlap;
+        BRepGProp::SurfaceProperties(common.Shape(), overlap);
+        if (std::abs(overlap.Mass()) > 1e-8) {
+          if (error) *error = "Profile regions overlap or form a hole";
+          return false;
+        }
+      }
+    }
+  } catch (const Standard_Failure&) {
+    if (error) *error = "Could not classify multiple profile regions";
+    return false;
+  }
+  return true;
+}
+
 bool buildExtrusionFromSketch(const DocumentSketch& profile,
                               const TopoDS_Shape* baseShape,
                               double lengthMm, ExtrudeOperation operation,
@@ -148,7 +266,7 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
   if (!result) return fail("Sketch extrude result output is missing");
   if (!std::isfinite(lengthMm) || lengthMm <= 0.0)
     return fail("Extrude length must be a finite positive value");
-  if (!isSupportedSingleSketchProfile(profile, error)) return false;
+  if (!isSupportedSketchProfile(profile, error)) return false;
   if (operation == ExtrudeOperation::NewBody) {
     if (baseShape && !baseShape->IsNull())
       return fail("Extrude New Body must be the first feature of a Body");
@@ -159,46 +277,75 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
   }
 
   try {
-    TopoDS_Face profileFace;
-    if (!buildPlanarFaceFromSketch(profile, &profileFace, error)) return false;
-    GProp_GProps surfaceProperties;
-    BRepGProp::SurfaceProperties(profileFace, surfaceProperties);
+    const auto components = closedProfileComponents(profile);
+    std::vector<TopoDS_Shape> prismSolids;
+    prismSolids.reserve(components.size());
+    double totalArea = 0.0;
+    double centroidX = 0.0;
+    double centroidY = 0.0;
+    double centroidZ = 0.0;
+    for (const auto& component : components) {
+      TopoDS_Face profileFace;
+      if (!buildPlanarFaceFromSketch(component, &profileFace, error))
+        return false;
+      GProp_GProps surfaceProperties;
+      BRepGProp::SurfaceProperties(profileFace, surfaceProperties);
+      const double area = std::abs(surfaceProperties.Mass());
+      const gp_Pnt center = surfaceProperties.CentreOfMass();
+      totalArea += area;
+      centroidX += center.X() * area;
+      centroidY += center.Y() * area;
+      centroidZ += center.Z() * area;
 
-    TopoDS_Shape prism;
-    if (!buildExtrusionPrismFromSketch(profile, lengthMm, reversed, &prism,
-                                       error))
-      return false;
-    TopoDS_Shape prismSolid;
-    if (!exactlyOneSolid(prism, &prismSolid, error)) return false;
+      TopoDS_Shape prism;
+      if (!buildExtrusionPrismFromSketch(component, lengthMm, reversed, &prism,
+                                         error))
+        return false;
+      TopoDS_Shape prismSolid;
+      if (!exactlyOneSolid(prism, &prismSolid, error)) return false;
+      prismSolids.push_back(std::move(prismSolid));
+    }
 
-    TopoDS_Shape singleSolid;
+    TopoDS_Shape extrusionTool = prismSolids.front();
+    for (std::size_t index = 1; index < prismSolids.size(); ++index) {
+      BRepAlgoAPI_Fuse fuse(extrusionTool, prismSolids[index]);
+      fuse.Build();
+      if (!fuse.IsDone() || fuse.Shape().IsNull())
+        return fail("Could not combine selected profile regions");
+      extrusionTool = fuse.Shape();
+    }
+    if (shapeSolidCount(extrusionTool) == 0)
+      return fail("Extrude result does not contain a solid");
+
+    TopoDS_Shape outputShape;
     if (operation == ExtrudeOperation::NewBody) {
-      singleSolid = prismSolid;
+      outputShape = extrusionTool;
     } else {
       GProp_GProps beforeProperties;
       BRepGProp::VolumeProperties(*baseShape, beforeProperties);
+      const std::size_t beforeSolidCount = shapeSolidCount(*baseShape);
       TopoDS_Shape booleanResult;
       if (operation == ExtrudeOperation::Join) {
-        BRepAlgoAPI_Fuse fuse(*baseShape, prismSolid);
+        BRepAlgoAPI_Fuse fuse(*baseShape, extrusionTool);
         fuse.Build();
         if (!fuse.IsDone() || fuse.Shape().IsNull())
           return fail("Extrude Join boolean fuse failed");
         booleanResult = fuse.Shape();
       } else {
-        BRepAlgoAPI_Cut cut(*baseShape, prismSolid);
+        BRepAlgoAPI_Cut cut(*baseShape, extrusionTool);
         cut.Build();
         if (!cut.IsDone() || cut.Shape().IsNull())
           return fail("Extrude Cut boolean cut failed");
         booleanResult = cut.Shape();
       }
-      if (!exactlyOneSolid(booleanResult, &singleSolid, error)) {
-        if (operation == ExtrudeOperation::Join && error &&
-            *error == "Extrude result contains multiple solids")
-          *error = "Extrude Join does not intersect the body";
-        return false;
-      }
+      if (shapeSolidCount(booleanResult) == 0)
+        return fail("Extrude result does not contain a solid");
+      if (operation == ExtrudeOperation::Join &&
+          shapeSolidCount(booleanResult) > beforeSolidCount)
+        return fail("Extrude Join does not intersect the body");
+      outputShape = booleanResult;
       GProp_GProps afterProperties;
-      BRepGProp::VolumeProperties(singleSolid, afterProperties);
+      BRepGProp::VolumeProperties(outputShape, afterProperties);
       const double before = beforeProperties.Mass();
       const double after = afterProperties.Mass();
       const double tolerance = std::max(1e-7, std::abs(before) * 1e-10);
@@ -207,19 +354,23 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
       if (operation == ExtrudeOperation::Cut && after >= before - tolerance)
         return fail("Extrude Cut does not intersect the body");
       if (operation == ExtrudeOperation::Join) {
-        ShapeUpgrade_UnifySameDomain unify(singleSolid, true, true, false);
+        ShapeUpgrade_UnifySameDomain unify(outputShape, true, true, false);
         unify.Build();
         if (unify.Shape().IsNull())
           return fail("Extrude same-domain unification failed");
-        singleSolid = unify.Shape();
+        outputShape = unify.Shape();
       }
     }
 
-    BRepCheck_Analyzer analyzer(singleSolid);
+    BRepCheck_Analyzer analyzer(outputShape);
     if (!analyzer.IsValid()) return fail("Extrude result is invalid");
-    *result = singleSolid;
+    *result = outputShape;
     if (geometry) {
-      geometry->centroid = surfaceProperties.CentreOfMass();
+      if (totalArea <= 1e-12)
+        return fail("Extrude profile area is zero");
+      geometry->centroid =
+          gp_Pnt(centroidX / totalArea, centroidY / totalArea,
+                 centroidZ / totalArea);
       const auto normal = profile.placement.normal();
       geometry->normal = gp_Dir(normal.x, normal.y, normal.z);
     }

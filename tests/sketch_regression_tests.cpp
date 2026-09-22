@@ -365,6 +365,48 @@ void rectangleSideArcDragIsStable() {
          "both Arc endpoints must follow the moved rectangle");
 }
 
+void secondArcEndpointCoincidenceReshapesWithoutConflict() {
+  constexpr double kPi = 3.14159265358979323846;
+  Sketch sketch;
+  sketch.addRectangle({0.0, 0.0}, {100.0, 50.0});
+
+  // The lower endpoint already touches the rectangle, while the upper one is
+  // deliberately five millimetres above its corner (the reported UI case).
+  sketch.addArc({0.0, 27.5}, 27.5, -kPi * 0.5, kPi);
+
+  const PointReference bottomLeft{sketch.lineId(0), true};
+  const PointReference topLeft{sketch.lineId(2), false};
+  PointReference arcStart;
+  arcStart.arcId = sketch.arcId(0);
+  arcStart.start = true;
+  PointReference arcEnd = arcStart;
+  arcEnd.start = false;
+
+  expect(sketch.addConstraint(
+             pointConstraint(ConstraintType::Coincident, bottomLeft,
+                             arcStart, 0.0)) != kInvalidConstraintId,
+         "first rectangle/Arc endpoint Coincident must be accepted");
+  expect(sketch.addConstraint(
+             pointConstraint(ConstraintType::Coincident, topLeft,
+                             arcEnd, 0.0)) != kInvalidConstraintId,
+         "second rectangle/Arc endpoint Coincident must reshape the Arc");
+
+  const auto bottomArcPoint = sketch.referencedPoint(arcStart);
+  const auto topArcPoint = sketch.referencedPoint(arcEnd);
+  const auto bottomRectanglePoint = sketch.referencedPoint(bottomLeft);
+  const auto topRectanglePoint = sketch.referencedPoint(topLeft);
+  expect(bottomArcPoint && topArcPoint && bottomRectanglePoint &&
+             topRectanglePoint,
+         "all constrained Arc endpoint references must remain valid");
+  expect(near(bottomArcPoint->xMm, bottomRectanglePoint->xMm) &&
+             near(bottomArcPoint->yMm, bottomRectanglePoint->yMm) &&
+             near(topArcPoint->xMm, topRectanglePoint->xMm) &&
+             near(topArcPoint->yMm, topRectanglePoint->yMm),
+         "both Arc endpoints must coincide with rectangle corners");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "two Arc endpoint coincidences must not conflict");
+}
+
 void pointOnCircleSurvivesFurtherSketchEdits() {
   Sketch sketch;
   sketch.addCircle({0.0, 0.0}, 10.0);
@@ -462,6 +504,7 @@ int main() {
   tangencyAndPointRelationsStayValidAfterMovement();
   lineArcTangencySurvivesMovement();
   rectangleSideArcDragIsStable();
+  secondArcEndpointCoincidenceReshapesWithoutConflict();
   pointOnCircleSurvivesFurtherSketchEdits();
   deletionStressHasNoDanglingReferenceCrash();
   parallelLineDistanceKeepsRectangleRigid();

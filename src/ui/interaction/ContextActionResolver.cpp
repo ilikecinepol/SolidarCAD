@@ -19,7 +19,7 @@ std::optional<ContextActionCapability> ContextActionRegistry::resolve(
 
 std::optional<ContextActionCapability> resolveSketchProfileExtrude(
     const SketchProfileSelectionContext& context) {
-  if (!isSupportedSingleSketchProfile(context.profile)) return std::nullopt;
+  if (!isSupportedSketchProfile(context.profile)) return std::nullopt;
   if (context.activeBodyId == kInvalidBodyId) {
     if (context.profile.support.type == SketchSupportType::Face)
       return std::nullopt;

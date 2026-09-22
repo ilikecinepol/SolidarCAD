@@ -63,6 +63,42 @@ bool moveArcEndpointReshape(Arc& arc, bool start, Point target) {
   return true;
 }
 
+// Move one Arc endpoint exactly onto a constraint target while leaving the
+// opposite endpoint fixed. Preserve the included angle, so the Arc keeps its
+// overall shape while its radius and centre adapt to the new chord.
+bool moveArcEndpointForConstraint(Arc& arc, bool start, Point target) {
+  const Point fixed = start ? arcEndPoint(arc) : arcStartPoint(arc);
+  const Point newStart = start ? target : fixed;
+  const Point newEnd = start ? fixed : target;
+  const double chordX = newEnd.xMm - newStart.xMm;
+  const double chordY = newEnd.yMm - newStart.yMm;
+  const double chordLength = std::hypot(chordX, chordY);
+  if (chordLength <= 1e-12) return false;
+
+  constexpr double kTwoPi = 6.28318530717958647692;
+  const double sweep = std::clamp(arc.sweepAngleRad, 1e-9,
+                                  kTwoPi - 1e-9);
+  const double halfSweep = sweep * 0.5;
+  const double sinHalfSweep = std::sin(halfSweep);
+  if (std::abs(sinHalfSweep) <= 1e-12) return false;
+
+  const double radius = chordLength / (2.0 * sinHalfSweep);
+  const Point midpoint{(newStart.xMm + newEnd.xMm) * 0.5,
+                       (newStart.yMm + newEnd.yMm) * 0.5};
+  const double centerOffset = radius * std::cos(halfSweep);
+  const double leftNormalX = -chordY / chordLength;
+  const double leftNormalY = chordX / chordLength;
+
+  arc.center = {midpoint.xMm + leftNormalX * centerOffset,
+                midpoint.yMm + leftNormalY * centerOffset};
+  arc.radiusMm = radius;
+  arc.startAngleRad =
+      std::atan2(newStart.yMm - arc.center.yMm,
+                 newStart.xMm - arc.center.xMm);
+  arc.sweepAngleRad = sweep;
+  return true;
+}
+
 }  // namespace
 
 Sketch::Sketch() { clear(); }
@@ -2092,7 +2128,9 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
   } else if (secondReference.arcId != kInvalidGeometryId) {
     const auto index = arcIndex(secondReference.arcId);
     if (!index) return false;
-    if (!moveArcEndpointRigid(arcs_[*index], secondReference.start, target)) return false;
+    if (!moveArcEndpointForConstraint(arcs_[*index], secondReference.start,
+                                      target))
+      return false;
   } else {
     const auto same = [](Point a, Point b) {
       return std::hypot(a.xMm - b.xMm,

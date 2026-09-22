@@ -25,7 +25,8 @@ class ExtrudeToolSession final : public ToolSession {
   void beginSketch(DocumentSketch profile, SketchId profileId,
                    ShapeFeature::ShapePtr baseShape, double lengthMm,
                    ExtrudeOperation operation, bool reversed,
-                   std::optional<FeatureId> editingFeatureId = std::nullopt);
+                   std::optional<FeatureId> editingFeatureId = std::nullopt,
+                   std::optional<sketch::Sketch> profileOverride = std::nullopt);
   void setFace(FaceReference face);
   void setLengthFromPanel(double lengthMm);
   void setLengthFromManipulator(double signedValue);
@@ -40,6 +41,8 @@ class ExtrudeToolSession final : public ToolSession {
   [[nodiscard]] const FaceReference& face() const noexcept;
   [[nodiscard]] bool isSketchSource() const noexcept;
   [[nodiscard]] SketchId profileSketchId() const noexcept;
+  [[nodiscard]] const std::optional<sketch::Sketch>&
+  profileOverride() const noexcept;
   [[nodiscard]] double lengthMm() const noexcept;
   [[nodiscard]] ExtrudeOperation operation() const noexcept;
   [[nodiscard]] bool reversed() const noexcept;
@@ -69,6 +72,7 @@ class ExtrudeToolSession final : public ToolSession {
   ShapeFeature::ShapePtr baseShape_;
   FaceReference face_;
   DocumentSketch profile_;
+  std::optional<sketch::Sketch> profileOverride_;
   SketchId profileId_{kInvalidSketchId};
   bool sketchSource_{false};
   NumericParameterState length_;

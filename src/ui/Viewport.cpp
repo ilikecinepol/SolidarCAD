@@ -394,9 +394,10 @@ std::optional<double> pointParameterOnLine(sketch::Point point,
   return std::clamp(parameter, 0.0, 1.0);
 }
 
-// An Arc whose endpoints land anywhere on one side of a closed line element
-// replaces only the covered part of that side. Keep the Arc exact: sampling is
-// used exclusively for screen hit-testing, never for the B-Rep profile.
+// An Arc whose endpoints land anywhere on a line creates a bounded elementary
+// region with the covered line segment as its chord. Keep the Arc exact:
+// sampling is used exclusively for screen hit-testing, never for the B-Rep
+// profile. The original line contour remains a separate selectable region.
 std::vector<AttachedArcProfile> attachedArcProfiles(
     const sketch::Sketch& source) {
   std::vector<AttachedArcProfile> profiles;
@@ -459,29 +460,7 @@ std::vector<AttachedArcProfile> attachedArcProfiles(
         continue;
 
       AttachedArcProfile profile;
-      for (std::size_t lineIndex = 0; lineIndex < source.lines().size();
-           ++lineIndex) {
-        const auto& line = source.lines()[lineIndex];
-        if (line.dashed || line.elementId != chord.elementId)
-          continue;
-        if (lineIndex != chordIndex) {
-          profile.geometry.addLine(line.start, line.end);
-          continue;
-        }
-
-        const double first = std::min(*startParameter, *endParameter);
-        const double second = std::max(*startParameter, *endParameter);
-        const double dx = line.end.xMm - line.start.xMm;
-        const double dy = line.end.yMm - line.start.yMm;
-        const sketch::Point firstPoint{line.start.xMm + dx * first,
-                                       line.start.yMm + dy * first};
-        const sketch::Point secondPoint{line.start.xMm + dx * second,
-                                        line.start.yMm + dy * second};
-        if (first > 1e-8)
-          profile.geometry.addLine(line.start, firstPoint);
-        if (second < 1.0 - 1e-8)
-          profile.geometry.addLine(secondPoint, line.end);
-      }
+      profile.geometry.addLine(arcEnd, arcStart);
       profile.geometry.addArc(arc.center, arc.radiusMm, arc.startAngleRad,
                               arc.sweepAngleRad);
       if (auto completed = finishProfile(std::move(profile), arc))
@@ -3242,16 +3221,143 @@ void Viewport::rebuildSelectedExtrusionSketch() {
     return;
   }
   if (!selectedExtrusionRegionSketches_.empty()) {
+    std::vector<sketch::Line> boundaryLines;
+    std::vector<sketch::Circle> boundaryCircles;
+    std::vector<sketch::Arc> boundaryArcs;
     for (const auto& region : selectedExtrusionRegionSketches_) {
       for (const auto& line : region.lines())
-        selectedExtrusionSketch_.addLine(line.start, line.end);
+        if (!line.dashed) boundaryLines.push_back(line);
       for (const auto& circle : region.circles())
-        selectedExtrusionSketch_.addCircle(circle.center, circle.radiusMm);
+        if (!circle.dashed) boundaryCircles.push_back(circle);
       for (const auto& arc : region.arcs())
-        selectedExtrusionSketch_.addArc(arc.center, arc.radiusMm,
-                                        arc.startAngleRad, arc.sweepAngleRad,
-                                        arc.dashed);
+        if (!arc.dashed) boundaryArcs.push_back(arc);
     }
+
+    // Boolean-union the selected planar regions at the boundary level. Shared
+    // edges occur twice and cancel. Split collinear partial overlaps first so
+    // a short Arc chord can cancel only the covered part of a longer side.
+    constexpr double kRegionMergeToleranceMm = 1e-3;
+    const auto sameRegionPoint = [](sketch::Point first,
+                                    sketch::Point second) {
+      return std::hypot(first.xMm - second.xMm,
+                        first.yMm - second.yMm) <=
+             kRegionMergeToleranceMm;
+    };
+    const auto regionPointParameterOnLine = [](sketch::Point point,
+                                               const sketch::Line& line)
+        -> std::optional<double> {
+      const double dx = line.end.xMm - line.start.xMm;
+      const double dy = line.end.yMm - line.start.yMm;
+      const double lengthSquared = dx * dx + dy * dy;
+      if (lengthSquared <= 1e-12) return std::nullopt;
+      const double parameter =
+          ((point.xMm - line.start.xMm) * dx +
+           (point.yMm - line.start.yMm) * dy) /
+          lengthSquared;
+      if (parameter < -1e-7 || parameter > 1.0 + 1e-7)
+        return std::nullopt;
+      const sketch::Point projection{line.start.xMm + dx * parameter,
+                                     line.start.yMm + dy * parameter};
+      if (std::hypot(point.xMm - projection.xMm,
+                     point.yMm - projection.yMm) >
+          kRegionMergeToleranceMm)
+        return std::nullopt;
+      return std::clamp(parameter, 0.0, 1.0);
+    };
+    std::vector<sketch::Line> splitLines;
+    for (const auto& line : boundaryLines) {
+      std::vector<double> cuts{0.0, 1.0};
+      for (const auto& other : boundaryLines) {
+        for (const auto endpoint : {other.start, other.end}) {
+          if (const auto parameter =
+                  regionPointParameterOnLine(endpoint, line))
+            cuts.push_back(*parameter);
+        }
+      }
+      std::sort(cuts.begin(), cuts.end());
+      cuts.erase(std::unique(cuts.begin(), cuts.end(), [](double first,
+                                                          double second) {
+                   return std::abs(first - second) <= 1e-8;
+                 }),
+                 cuts.end());
+      const double dx = line.end.xMm - line.start.xMm;
+      const double dy = line.end.yMm - line.start.yMm;
+      for (std::size_t index = 0; index + 1 < cuts.size(); ++index) {
+        if (cuts[index + 1] - cuts[index] <= 1e-8) continue;
+        splitLines.push_back(
+            {{line.start.xMm + dx * cuts[index],
+              line.start.yMm + dy * cuts[index]},
+             {line.start.xMm + dx * cuts[index + 1],
+              line.start.yMm + dy * cuts[index + 1]}});
+      }
+    }
+    std::vector<sketch::Line> survivingLines;
+    for (const auto& line : splitLines) {
+      const auto duplicate = std::find_if(
+          survivingLines.begin(), survivingLines.end(),
+          [&line, &sameRegionPoint](const sketch::Line& existing) {
+            return (sameRegionPoint(line.start, existing.start) &&
+                    sameRegionPoint(line.end, existing.end)) ||
+                   (sameRegionPoint(line.start, existing.end) &&
+                    sameRegionPoint(line.end, existing.start));
+          });
+      if (duplicate == survivingLines.end())
+        survivingLines.push_back(line);
+      else
+        survivingLines.erase(duplicate);
+    }
+    std::erase_if(survivingLines, [](const sketch::Line& line) {
+      return std::hypot(line.end.xMm - line.start.xMm,
+                        line.end.yMm - line.start.yMm) <=
+             kRegionMergeToleranceMm;
+    });
+    // Region discovery accepts a small geometric tolerance. Canonicalize every
+    // surviving boundary vertex with that same tolerance before handing the
+    // profile to Sketch/OCCT, whose closed-wire checks intentionally use a much
+    // tighter tolerance. Exact Arc endpoints are seeded first so they win over
+    // a numerically close line endpoint produced by splitting.
+    std::vector<sketch::Point> canonicalEndpoints;
+    canonicalEndpoints.reserve(boundaryArcs.size() * 2 +
+                               survivingLines.size() * 2);
+    for (const auto& arc : boundaryArcs) {
+      for (const auto endpoint : {sketch::arcStartPoint(arc),
+                                  sketch::arcEndPoint(arc)}) {
+        const bool present = std::any_of(
+            canonicalEndpoints.begin(), canonicalEndpoints.end(),
+            [endpoint](sketch::Point existing) {
+              return std::hypot(existing.xMm - endpoint.xMm,
+                                existing.yMm - endpoint.yMm) <=
+                     kRegionMergeToleranceMm;
+            });
+        if (!present) canonicalEndpoints.push_back(endpoint);
+      }
+    }
+    const auto canonicalizeEndpoint = [&canonicalEndpoints](
+                                          sketch::Point* point) {
+      const auto existing = std::find_if(
+          canonicalEndpoints.begin(), canonicalEndpoints.end(),
+          [point](sketch::Point candidate) {
+            return std::hypot(point->xMm - candidate.xMm,
+                              point->yMm - candidate.yMm) <=
+                   kRegionMergeToleranceMm;
+          });
+      if (existing != canonicalEndpoints.end()) {
+        *point = *existing;
+      } else {
+        canonicalEndpoints.push_back(*point);
+      }
+    };
+    for (auto& line : survivingLines) {
+      canonicalizeEndpoint(&line.start);
+      canonicalizeEndpoint(&line.end);
+    }
+    for (const auto& line : survivingLines)
+      selectedExtrusionSketch_.addLine(line.start, line.end);
+    for (const auto& circle : boundaryCircles)
+      selectedExtrusionSketch_.addCircle(circle.center, circle.radiusMm);
+    for (const auto& arc : boundaryArcs)
+      selectedExtrusionSketch_.addArc(arc.center, arc.radiusMm,
+                                      arc.startAngleRad, arc.sweepAngleRad);
     return;
   }
   QString support = selectedExtrusionOnBodyCap_ ? solidSupportName_

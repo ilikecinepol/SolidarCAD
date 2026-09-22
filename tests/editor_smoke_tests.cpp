@@ -281,6 +281,47 @@ void draggedPointSnappingTests() {
     QApplication::sendEvent(&canvas, &release);
   };
 
+  // Arc construction prioritises an existing CAD vertex over the grid and
+  // persists both chord endpoints as Coincident constraints. The rectangle
+  // coordinates are intentionally off-grid so equality cannot be accidental.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addRectangle({1.3, -1.7}, {101.3, 48.7});
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Arc);
+    canvas.show();
+    QApplication::processEvents();
+
+    click(canvas, screenPoint(2.5, 47.5));
+    click(canvas, screenPoint(2.0, -1.0));
+    click(canvas, screenPoint(-23.0, 23.5));
+
+    const auto& result = canvas.sketch();
+    CHECK(result.arcs().size() == 1);
+    const auto arcId = result.arcId(0);
+    std::size_t attachedArcEndpoints = 0;
+    for (const auto& constraint : result.constraints()) {
+      if (constraint.type !=
+          solidar::sketch::ConstraintType::Coincident)
+        continue;
+      if (constraint.firstPoint.arcId == arcId ||
+          constraint.secondPoint.arcId == arcId)
+        ++attachedArcEndpoints;
+    }
+    CHECK(attachedArcEndpoints == 2);
+
+    const auto& arc = result.arcs().front();
+    const auto start = solidar::sketch::arcStartPoint(arc);
+    const auto end = solidar::sketch::arcEndPoint(arc);
+    CHECK(std::abs(start.xMm - 1.3) <= 1e-6);
+    CHECK(std::abs(start.yMm - 48.7) <= 1e-6);
+    CHECK(std::abs(end.xMm - 1.3) <= 1e-6);
+    CHECK(std::abs(end.yMm + 1.7) <= 1e-6);
+  }
+
   // A manually dragged line endpoint snaps to an existing Arc endpoint and
   // persists the relationship as Coincident.
   {
@@ -409,6 +450,55 @@ void draggedPointSnappingTests() {
                                constraint.secondPoint.arcId == arcId &&
                                constraint.secondPoint.start;
                       }));
+  }
+
+  // Regression: when one Arc endpoint is already attached to a rectangle,
+  // Coincident must still be able to attach the other endpoint without the
+  // solver translating the whole Arc back and forth.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addRectangle({0.0, 0.0}, {100.0, 50.0});
+    sketch.addArc({0.0, 27.5}, 27.5, -kPi * 0.5, kPi);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::sketch::PointReference arcStart;
+    arcStart.arcId = arcId;
+    arcStart.start = true;
+    solidar::sketch::Constraint first;
+    first.type = solidar::sketch::ConstraintType::Coincident;
+    first.firstPoint = {sketch.lineId(0), true};
+    first.secondPoint = arcStart;
+    CHECK(sketch.addConstraint(first) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    canvas.show();
+    QApplication::processEvents();
+
+    click(canvas, screenPoint(0.0, 50.0));
+    click(canvas, screenPoint(0.0, 55.0));
+
+    const auto& result = canvas.sketch();
+    CHECK(std::any_of(
+        result.constraints().begin(), result.constraints().end(),
+        [arcId](const auto& constraint) {
+          return constraint.type ==
+                     solidar::sketch::ConstraintType::Coincident &&
+                 ((constraint.firstPoint.arcId == arcId &&
+                   !constraint.firstPoint.start) ||
+                  (constraint.secondPoint.arcId == arcId &&
+                   !constraint.secondPoint.start));
+        }));
+    solidar::sketch::PointReference arcEnd;
+    arcEnd.arcId = arcId;
+    arcEnd.start = false;
+    const auto endpoint = result.referencedPoint(arcEnd);
+    CHECK(endpoint.has_value());
+    CHECK(std::abs(endpoint->xMm) <= 1e-6);
+    CHECK(std::abs(endpoint->yMm - 50.0) <= 1e-6);
   }
 
   // Point first, finite Arc body second creates PointOnArc.

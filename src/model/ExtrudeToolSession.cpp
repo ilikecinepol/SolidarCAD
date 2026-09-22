@@ -27,6 +27,7 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
   face_ = std::move(face);
   sketchSource_ = false;
   profile_ = DocumentSketch{};
+  profileOverride_.reset();
   profileId_ = kInvalidSketchId;
   sketchGeometry_.reset();
   // Native face push/pull follows the signed manipulator direction:
@@ -46,9 +47,12 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
 void ExtrudeToolSession::beginSketch(
     DocumentSketch profile, SketchId profileId, ShapeFeature::ShapePtr baseShape,
     double lengthMm, ExtrudeOperation operation, bool reversed,
-    std::optional<FeatureId> editingFeatureId) {
+    std::optional<FeatureId> editingFeatureId,
+    std::optional<sketch::Sketch> profileOverride) {
   sketchSource_ = true;
   profile_ = std::move(profile);
+  profileOverride_ = std::move(profileOverride);
+  if (profileOverride_) profile_.geometry = *profileOverride_;
   profileId_ = profileId;
   baseShape_ = std::move(baseShape);
   face_ = FaceReference{};
@@ -147,6 +151,10 @@ const FaceReference& ExtrudeToolSession::face() const noexcept { return face_; }
 bool ExtrudeToolSession::isSketchSource() const noexcept { return sketchSource_; }
 SketchId ExtrudeToolSession::profileSketchId() const noexcept {
   return sketchSource_ ? profileId_ : kInvalidSketchId;
+}
+const std::optional<sketch::Sketch>&
+ExtrudeToolSession::profileOverride() const noexcept {
+  return profileOverride_;
 }
 double ExtrudeToolSession::lengthMm() const noexcept { return length_.value(); }
 ExtrudeOperation ExtrudeToolSession::operation() const noexcept {
@@ -364,6 +372,7 @@ void ExtrudeToolSession::cancel() noexcept {
   sketchGeometry_.reset();
   face_ = FaceReference{};
   profile_ = DocumentSketch{};
+  profileOverride_.reset();
   profileId_ = kInvalidSketchId;
   sketchSource_ = false;
   error_.clear();

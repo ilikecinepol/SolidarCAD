@@ -1745,10 +1745,31 @@ void MainWindow::extrudeSketch() {
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
     return;
   }
-  if (!(sketch.lines().empty() && sketch.arcs().empty()) &&
-      !sketch.isClosed()) {
-    QMessageBox::warning(this, QString::fromUtf8("Контур не замкнут"),
-                         QString::fromUtf8("Соедините конечные точки линий замкнутого контура."));
+  // Use the same authoritative multi-region validation as preview and final
+  // recompute. Sketch::isClosed() is a single-sketch convenience check and,
+  // in particular, rejects a valid selection containing both circular and
+  // line/Arc regions.
+  DocumentSketch selectedProfile = modelSketch ? *modelSketch : DocumentSketch{};
+  selectedProfile.geometry = sketch;
+  selectedProfile.placement = modelSketch ? modelSketch->placement
+                                          : currentSketchPlacement_;
+  if (selectedProfile.id == kInvalidSketchId) selectedProfile.id = 1;
+  std::string profileError;
+  if (!isSupportedSketchProfile(selectedProfile, &profileError)) {
+    const QString technical = QString::fromStdString(profileError);
+    const bool openContour = technical.contains(QStringLiteral("closed wire")) ||
+                             technical.contains(QStringLiteral("insufficient geometry"));
+    QMessageBox::warning(
+        this,
+        openContour ? QString::fromUtf8("Контур не замкнут")
+                    : QString::fromUtf8("Некорректный профиль"),
+        openContour
+            ? QString::fromUtf8(
+                  "Соедините конечные точки линий замкнутого контура.")
+            : technical.contains(QStringLiteral("overlap or form a hole"))
+                  ? QString::fromUtf8(
+                        "Выбранные области пересекаются или образуют отверстие.")
+                  : QString::fromUtf8("Выбранный профиль нельзя выдавить."));
     return;
   }
 
@@ -1791,7 +1812,7 @@ void MainWindow::extrudeSketch() {
       operation, reversed);
   // If this feature references an existing sketch, persist the exact selected
   // region inside the feature.  Do not create a hidden duplicate DocumentSketch.
-  if (hasPickedProfile && sourceIndex < sketchHistory_.size())
+  if (hasPickedProfile)
     extrudeFeature->setProfileOverride(sketch);
   modelBody->addFeature(std::move(extrudeFeature));
   if (!document_.rebuild()) {
@@ -2578,6 +2599,14 @@ void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
   Body* activeBody = document_.activeBody();
   SketchProfileSelectionContext context;
   context.profile = *profile;
+  std::optional<sketch::Sketch> profileOverride;
+  const auto& pickedProfile = viewport_->extrusionCandidateSketch();
+  if (!pickedProfile.lines().empty() || !pickedProfile.circles().empty() ||
+      !pickedProfile.arcs().empty()) {
+    context.profile.geometry = pickedProfile;
+    if (!isSupportedSingleSketchProfile(*profile))
+      profileOverride = pickedProfile;
+  }
   context.activeBodyId = activeBody ? activeBody->id() : kInvalidBodyId;
   context.activeFeatureId =
       activeBody && activeBody->activeFeature() ? activeBody->activeFeature()->id()
@@ -2592,8 +2621,9 @@ void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
     return;
   }
   partDesignTools_.activate(PartDesignToolKind::Extrude);
-  faceExtrudeSession_.beginSketch(*profile, sketchId, capability->baseShape,
-                                  10.0, capability->operation, false);
+  faceExtrudeSession_.beginSketch(
+      *profile, sketchId, capability->baseShape, 10.0,
+      capability->operation, false, std::nullopt, std::move(profileOverride));
   faceExtrudeSession_.setOperationFollowsDirection(
       capability->operationFollowsDirection);
   viewport_->clearLegacyExtrusionPreview();
@@ -2691,10 +2721,12 @@ void MainWindow::acceptFaceExtrudeTool() {
       targetBody = document_.activeBody();
       if (!targetBody) return;
     }
-    targetBody->addFeature(std::make_unique<ExtrudeFeature>(
+    auto feature = std::make_unique<ExtrudeFeature>(
         faceExtrudeSession_.profileSketchId(), faceExtrudeSession_.lengthMm(),
         "Extrude", faceExtrudeSession_.operation(),
-        faceExtrudeSession_.reversed()));
+        faceExtrudeSession_.reversed());
+    feature->setProfileOverride(faceExtrudeSession_.profileOverride());
+    targetBody->addFeature(std::move(feature));
     if (!document_.recompute()) {
       const QString error = QString::fromStdString(document_.rebuildError());
       document_ = previous;

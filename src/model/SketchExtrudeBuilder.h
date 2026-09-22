@@ -22,9 +22,16 @@ struct SketchExtrudeGeometry {
 [[nodiscard]] bool isSupportedSingleSketchProfile(
     const DocumentSketch& profile, std::string* error = nullptr);
 
+// Multi-region profile contract used after Ctrl-selection. Each independent
+// closed contour is extruded by the same feature; construction geometry is
+// ignored. A single-region profile remains valid through this API.
+[[nodiscard]] bool isSupportedSketchProfile(
+    const DocumentSketch& profile, std::string* error = nullptr);
+
 // Authoritative sketch extrusion builder shared by interactive previews and
 // ExtrudeFeature recompute. baseShape must be null for NewBody and non-null for
-// Join/Cut. The returned shape is one checked solid.
+// Join/Cut. NewBody may return a checked multi-solid compound for disjoint
+// selected regions.
 bool buildExtrusionFromSketch(const DocumentSketch& profile,
                               const TopoDS_Shape* baseShape,
                               double lengthMm, ExtrudeOperation operation,

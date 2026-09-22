@@ -27,6 +27,13 @@ int main(int argc, char** argv) {
     QMouseEvent event(type, position, position, button, buttons, Qt::NoModifier);
     QApplication::sendEvent(&view, &event);
   };
+  const auto mouseMod = [](solidar::Viewport& view, QEvent::Type type,
+                           QPointF position, Qt::MouseButton button,
+                           Qt::MouseButtons buttons,
+                           Qt::KeyboardModifiers modifiers) {
+    QMouseEvent event(type, position, position, button, buttons, modifiers);
+    QApplication::sendEvent(&view, &event);
+  };
 
   const solidar::SketchPlacement placement{{35, 20, 65}, {1, 0, 0}, {0, 1, 0}};
   const QString support = QStringLiteral("\u0413\u0440\u0430\u043d\u044c \u0442\u0435\u043b\u0430 #7");
@@ -95,9 +102,8 @@ int main(int argc, char** argv) {
         Qt::LeftButton);
   CHECK(picks == 1);
 
-  // An Arc spanning a complete rectangle side replaces that chord in the
-  // picked profile. The exact Arc must survive selection so extrusion creates
-  // a curved face instead of silently reverting to the rectangle.
+  // An Arc spanning a complete rectangle side and the rectangle itself are
+  // two adjacent selectable regions. Picking one must not highlight both.
   {
     solidar::Viewport arcView;
     arcView.resize(800, 600);
@@ -111,25 +117,79 @@ int main(int argc, char** argv) {
     const solidar::ViewportCameraState arcCamera{
         arcView.cameraYawDegrees(), arcView.cameraPitchDegrees(), 1.0F, {},
         arcView.size()};
-    const QPointF insideBulgedProfile =
+    const QPointF insideRectangle =
         arcCamera.worldToScreen(arcPlacement.toWorld(0.0, 0.0));
+    const QPointF insideArcSegment =
+        arcCamera.worldToScreen(arcPlacement.toWorld(0.0, 20.0));
     int arcPicks = 0;
     QObject::connect(&arcView, &solidar::Viewport::directProfilePicked,
                      &arcView, [&](std::size_t) { ++arcPicks; });
 
-    mouse(arcView, QEvent::MouseButtonPress, insideBulgedProfile,
+    mouse(arcView, QEvent::MouseButtonPress, insideRectangle,
           Qt::LeftButton, Qt::LeftButton);
 
     CHECK(arcPicks == 1);
-    const auto& selectedArcProfile = arcView.extrusionCandidateSketch();
-    CHECK(selectedArcProfile.lines().size() == 3);
-    CHECK(selectedArcProfile.arcs().size() == 1);
-    CHECK(selectedArcProfile.isClosed());
+    const auto& selectedRectangle = arcView.extrusionCandidateSketch();
+    CHECK(selectedRectangle.lines().size() == 4);
+    CHECK(selectedRectangle.arcs().empty());
+    CHECK(selectedRectangle.isClosed());
+
+    mouse(arcView, QEvent::MouseButtonPress, insideArcSegment,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(arcPicks == 2);
+    const auto& selectedArcSegment = arcView.extrusionCandidateSketch();
+    CHECK(selectedArcSegment.lines().size() == 1);
+    CHECK(selectedArcSegment.arcs().size() == 1);
+    CHECK(selectedArcSegment.isClosed());
+
+    // Ctrl-selection of both adjacent regions removes their shared chord and
+    // produces one exact outer wire, rather than a branched multi-loop sketch.
+    arcView.beginExtrusionSurfaceSelection();
+    mouseMod(arcView, QEvent::MouseButtonPress, insideRectangle,
+             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    mouseMod(arcView, QEvent::MouseButtonPress, insideArcSegment,
+             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    const auto& combined = arcView.extrusionCandidateSketch();
+    CHECK(combined.lines().size() == 3);
+    CHECK(combined.arcs().size() == 1);
+    CHECK(combined.isClosed());
   }
 
-  // The Arc endpoints may land in the middle of one rectangle side. Only the
-  // covered side segment is replaced; the remaining side and the exact Arc
-  // together still form the intended outer extrusion profile.
+  // Solver-created coincidences can retain a few microns of numerical drift.
+  // Region picking accepts that geometry, so the selected union must also
+  // canonicalize it before the strict model closed-wire validation.
+  {
+    solidar::Viewport driftedArcView;
+    driftedArcView.resize(800, 600);
+    solidar::sketch::Sketch driftedProfile;
+    driftedProfile.addRectangle({-20.0, -10.0}, {20.0, 10.0});
+    driftedProfile.addArc({0.0, 10.0 + 5e-6}, 20.0, 0.0,
+                          3.14159265358979323846);
+    const auto driftedPlacement = solidar::SketchPlacement::xy();
+    driftedArcView.addSketch(driftedProfile, QStringLiteral("XY"),
+                             driftedPlacement);
+    const solidar::ViewportCameraState driftedCamera{
+        driftedArcView.cameraYawDegrees(),
+        driftedArcView.cameraPitchDegrees(), 1.0F, {},
+        driftedArcView.size()};
+    const QPointF insideRectangle =
+        driftedCamera.worldToScreen(driftedPlacement.toWorld(0.0, 0.0));
+    const QPointF insideArcSegment =
+        driftedCamera.worldToScreen(driftedPlacement.toWorld(0.0, 20.0));
+
+    driftedArcView.beginExtrusionSurfaceSelection();
+    mouseMod(driftedArcView, QEvent::MouseButtonPress, insideRectangle,
+             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    mouseMod(driftedArcView, QEvent::MouseButtonPress, insideArcSegment,
+             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    const auto& combined = driftedArcView.extrusionCandidateSketch();
+    CHECK(combined.lines().size() == 3);
+    CHECK(combined.arcs().size() == 1);
+    CHECK(combined.isClosed());
+  }
+
+  // The same region separation applies when the Arc covers only part of a
+  // rectangle side. Its segment keeps the exact Arc for preview/extrusion.
   {
     solidar::Viewport partialArcView;
     partialArcView.resize(800, 600);
@@ -145,26 +205,39 @@ int main(int argc, char** argv) {
         partialArcView.cameraYawDegrees(),
         partialArcView.cameraPitchDegrees(), 1.0F, {},
         partialArcView.size()};
-    const QPointF inside = camera.worldToScreen(placement.toWorld(0.0, 0.0));
+    const QPointF insideRectangle =
+        camera.worldToScreen(placement.toWorld(0.0, 0.0));
+    const QPointF insideArcSegment =
+        camera.worldToScreen(placement.toWorld(-25.0, -10.0));
 
     int picks = 0;
     QObject::connect(&partialArcView,
                      &solidar::Viewport::directProfilePicked,
                      &partialArcView, [&](std::size_t) { ++picks; });
-    mouse(partialArcView, QEvent::MouseButtonPress, inside,
+    mouse(partialArcView, QEvent::MouseButtonPress, insideRectangle,
           Qt::LeftButton, Qt::LeftButton);
 
     CHECK(picks == 1);
-    const auto& selected = partialArcView.extrusionCandidateSketch();
-    CHECK(selected.lines().size() == 4);
-    CHECK(selected.arcs().size() == 1);
-    CHECK(selected.isClosed());
+    const auto& selectedRectangle =
+        partialArcView.extrusionCandidateSketch();
+    CHECK(selectedRectangle.lines().size() == 4);
+    CHECK(selectedRectangle.arcs().empty());
+    CHECK(selectedRectangle.isClosed());
+
+    mouse(partialArcView, QEvent::MouseButtonPress, insideArcSegment,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(picks == 2);
+    const auto& selectedArcSegment =
+        partialArcView.extrusionCandidateSketch();
+    CHECK(selectedArcSegment.lines().size() == 1);
+    CHECK(selectedArcSegment.arcs().size() == 1);
+    CHECK(selectedArcSegment.isClosed());
 
     // paintGL reprojects the model-space profile for every interactive frame.
     // The rebuilt preview boundary must still reach the Arc's outermost point
     // instead of collapsing back to the original rectangle.
     partialArcView.beginExtrusionSurfaceSelection();
-    mouse(partialArcView, QEvent::MouseButtonPress, inside,
+    mouse(partialArcView, QEvent::MouseButtonPress, insideArcSegment,
           Qt::LeftButton, Qt::LeftButton);
     partialArcView.showExtrusionManipulator(12.0);
     partialArcView.show();

@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -338,6 +339,28 @@ int main() {
       CHECK(near(session.lengthMm(), 15.0));
       CHECK(near(session.manipulator()->valueMm, -15.0));
 
+      // A picked elementary region from a multi-contour source is the actual
+      // preview input and remains available for the committed feature.
+      solidar::DocumentSketch multiRegion;
+      multiRegion.id = 1005;
+      multiRegion.supportResolved = true;
+      multiRegion.geometry.addRectangle({-20.0, -10.0}, {20.0, 10.0});
+      multiRegion.geometry.addArc({0.0, 10.0}, 20.0, 0.0,
+                                  std::numbers::pi);
+      solidar::sketch::Sketch selectedArcSegment;
+      selectedArcSegment.addLine({-20.0, 10.0}, {20.0, 10.0});
+      selectedArcSegment.addArc({0.0, 10.0}, 20.0, 0.0,
+                                std::numbers::pi);
+      session.beginSketch(multiRegion, multiRegion.id, nullptr, 10.0,
+                          ExtrudeOperation::NewBody, false, std::nullopt,
+                          selectedArcSegment);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(session.profileOverride().has_value());
+      CHECK(session.profileOverride()->lines().size() == 1);
+      CHECK(session.profileOverride()->arcs().size() == 1);
+      CHECK(near(volumeOf(*session.previewShape()),
+                 0.5 * std::numbers::pi * 20.0 * 20.0 * 10.0, 1e-2));
+
       // A disjoint Join candidate must not destroy the last valid preview.
       const TopoDS_Shape base = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape();
       solidar::DocumentSketch remote;
@@ -368,6 +391,7 @@ int main() {
       CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
       CHECK(session.previewShape() == nullptr);
       CHECK(session.profileSketchId() == solidar::kInvalidSketchId);
+      CHECK(!session.profileOverride().has_value());
     }
 
     // 11. A degenerate (zero-length) profile placement normal fails cleanly in
