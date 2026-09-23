@@ -1,5 +1,6 @@
 #include "project/ProjectFile.h"
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
@@ -8,9 +9,19 @@
 #include <QJsonArray>
 #include <QSaveFile>
 
+#include <BRep_Builder.hxx>
+#include <BRepTools.hxx>
+#include <Standard_Failure.hxx>
+#include <TopoDS_Shape.hxx>
+
+#include <exception>
+#include <memory>
+#include <sstream>
+
 #include <utility>
 
 #include "model/ExtrudeFeature.h"
+#include "model/ImportedShapeFeature.h"
 #include "model/ChamferFeature.h"
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
@@ -23,6 +34,82 @@
 
 namespace solidar::project {
 namespace {
+
+void setError(QString* target, const QString& value);
+
+bool serializeShape(const TopoDS_Shape& shape, QString* encoded,
+                    QString* error) {
+  if (!encoded || shape.IsNull()) {
+    setError(error, QString::fromUtf8("Импортированная B-Rep геометрия пуста."));
+    return false;
+  }
+  try {
+    std::ostringstream stream(std::ios::out | std::ios::binary);
+    // Native persistence needs exact topology, not cached visualization data.
+    BRepTools::Write(shape, stream, false, false,
+                     TopTools_FormatVersion_CURRENT);
+    if (!stream.good()) {
+      setError(
+          error,
+          QString::fromUtf8(
+              "Не удалось сериализовать импортированную B-Rep геометрию."));
+      return false;
+    }
+    const std::string bytes = stream.str();
+    if (bytes.empty()) {
+      setError(error,
+               QString::fromUtf8("Сериализованная B-Rep геометрия пуста."));
+      return false;
+    }
+    *encoded = QString::fromLatin1(
+        QByteArray(bytes.data(), static_cast<qsizetype>(bytes.size())).toBase64());
+    return true;
+  } catch (const Standard_Failure& failure) {
+    setError(error, QString::fromUtf8("Ошибка OCCT при сохранении B-Rep: ") +
+                        QString::fromUtf8(failure.what()));
+  } catch (const std::exception& exception) {
+    setError(error, QString::fromUtf8("Ошибка сохранения B-Rep: ") +
+                        QString::fromUtf8(exception.what()));
+  }
+  return false;
+}
+
+std::shared_ptr<const TopoDS_Shape> deserializeShape(const QString& encoded,
+                                                     QString* error) {
+  const QByteArray bytes = QByteArray::fromBase64(encoded.toLatin1());
+  if (bytes.isEmpty()) {
+    setError(error,
+             QString::fromUtf8(
+                 "Данные импортированной B-Rep геометрии повреждены."));
+    return {};
+  }
+  try {
+    std::istringstream stream(
+        std::string(bytes.constData(), static_cast<std::size_t>(bytes.size())),
+        std::ios::in | std::ios::binary);
+    BRep_Builder builder;
+    TopoDS_Shape shape;
+    BRepTools::Read(shape, stream, builder);
+    if (!stream.good() && !stream.eof()) {
+      setError(error,
+               QString::fromUtf8(
+                   "Не удалось прочитать сохранённую B-Rep геометрию."));
+      return {};
+    }
+    if (shape.IsNull()) {
+      setError(error, QString::fromUtf8("Сохранённая B-Rep геометрия пуста."));
+      return {};
+    }
+    return std::make_shared<const TopoDS_Shape>(std::move(shape));
+  } catch (const Standard_Failure& failure) {
+    setError(error, QString::fromUtf8("Ошибка OCCT при загрузке B-Rep: ") +
+                        QString::fromUtf8(failure.what()));
+  } catch (const std::exception& exception) {
+    setError(error, QString::fromUtf8("Ошибка загрузки B-Rep: ") +
+                        QString::fromUtf8(exception.what()));
+  }
+  return {};
+}
 
 void setError(QString* target, const QString& value) {
   if (target) *target = value;
@@ -448,7 +535,14 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
       QJsonObject saved{{"id", static_cast<qint64>(feature->id())},
                         {"name", QString::fromStdString(feature->name())},
                         {"type", QString::fromStdString(feature->typeName())}};
-      if (const auto* extrude =
+      if (const auto* imported =
+              dynamic_cast<const ImportedShapeFeature*>(feature.get())) {
+        QString encoded;
+        if (!imported->importedShape() ||
+            !serializeShape(*imported->importedShape(), &encoded, error))
+          return false;
+        saved["brep"] = encoded;
+      } else if (const auto* extrude =
               dynamic_cast<const ExtrudeFeature*>(feature.get())) {
         saved["lengthMm"] = extrude->lengthMm();
         saved["operation"] = static_cast<int>(extrude->operation());
@@ -641,7 +735,12 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
       const auto id = static_cast<FeatureId>(saved.value("id").toInteger());
       const auto name = saved.value("name").toString().toStdString();
       const auto type = saved.value("type").toString();
-      if (type == QStringLiteral("Extrude")) {
+      if (type == QStringLiteral("ImportedShape")) {
+        const auto shape = deserializeShape(saved.value("brep").toString(), error);
+        if (!shape) return false;
+        body.addFeature(
+            std::make_unique<ImportedShapeFeature>(id, shape, name));
+      } else if (type == QStringLiteral("Extrude")) {
         const auto sourceKind = saved.value("sourceKind").toString();
         const auto lengthMm = saved.value("lengthMm").toDouble();
         const auto operation =

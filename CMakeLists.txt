@@ -91,7 +91,7 @@ if(NOT OpenCASCADE_FOUND AND WIN32
 
   set(_solidar_occt_toolkits
       TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKPrim
-      TKBO TKBool TKFillet TKOffset TKMesh TKShHealing)
+      TKBO TKBool TKFillet TKOffset TKMesh TKShHealing TKDE TKXSBase TKDESTEP)
   if(EXISTS "${_solidar_occt_build_dir}/include/opencascade/TopoDS_Shape.hxx"
      AND EXISTS "${_solidar_occt_lib_dir}/TKPrim.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKBO.lib"
@@ -99,7 +99,10 @@ if(NOT OpenCASCADE_FOUND AND WIN32
      AND EXISTS "${_solidar_occt_lib_dir}/TKFillet.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKOffset.lib"
      AND EXISTS "${_solidar_occt_lib_dir}/TKMesh.lib"
-     AND EXISTS "${_solidar_occt_lib_dir}/TKShHealing.lib")
+     AND EXISTS "${_solidar_occt_lib_dir}/TKShHealing.lib"
+     AND EXISTS "${_solidar_occt_lib_dir}/TKDE.lib"
+     AND EXISTS "${_solidar_occt_lib_dir}/TKXSBase.lib"
+     AND EXISTS "${_solidar_occt_lib_dir}/TKDESTEP.lib")
     set(OpenCASCADE_FOUND TRUE)
     set(OpenCASCADE_INCLUDE_DIR
         "${_solidar_occt_build_dir}/include/opencascade")

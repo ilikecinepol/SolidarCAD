@@ -96,6 +96,11 @@ target_link_libraries(stl_exporter_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME stl_exporter_tests COMMAND stl_exporter_tests)
 set_tests_properties(stl_exporter_tests PROPERTIES LABELS "regression")
 
+add_executable(step_exchange_tests step_exchange_tests.cpp)
+target_link_libraries(step_exchange_tests PRIVATE solidar_project Qt6::Core)
+add_test(NAME step_exchange_tests COMMAND step_exchange_tests)
+set_tests_properties(step_exchange_tests PROPERTIES LABELS "regression;topology")
+
 add_executable(editor_smoke_tests editor_smoke_tests.cpp)
 target_link_libraries(editor_smoke_tests PRIVATE solidar_editor solidar_home Qt6::Widgets)
 add_test(NAME editor_smoke_tests COMMAND editor_smoke_tests)
@@ -317,6 +322,7 @@ set_tests_properties(
   face_extrude_tests
   extrude_tool_session_tests
   project_file_tests
+  step_exchange_tests
   sketch_regression_tests
   body_render_mesh_normals_tests
   viewport_renderer_tests
@@ -343,6 +349,8 @@ set_tests_properties(
 )
 
 set_property(TEST persistent_topology_tests
+             PROPERTY LABELS "regression;topology")
+set_property(TEST step_exchange_tests
              PROPERTY LABELS "regression;topology")
 set_tests_properties(
   editor_smoke_tests
@@ -394,6 +402,8 @@ if(WIN32)
     extrude_tool_session_tests
     pocket_feature_tests
     project_file_tests
+    stl_exporter_tests
+    step_exchange_tests
     editor_smoke_tests
     model_ribbon_tests
     part_design_history_ui_tests

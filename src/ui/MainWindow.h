@@ -56,6 +56,8 @@ class MainWindow final : public QMainWindow {
   void createProject();
   void openProject();
   void saveProject();
+  void importStep();
+  void exportStep();
   void exportStl();
   void updateFromSketch(double widthMm, double heightMm);
   void finishSketch();

@@ -6,6 +6,7 @@
 #include <QTemporaryDir>
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 
@@ -14,6 +15,15 @@
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
+
+#define CHECK(condition)                                                     \
+  do {                                                                       \
+    if (!(condition)) {                                                      \
+      std::fprintf(stderr, "%s:%d: CHECK(%s) failed\n", __FILE__, __LINE__, \
+                   #condition);                                              \
+      return 1;                                                              \
+    }                                                                        \
+  } while (false)
 
 int main(int argc, char* argv[]) {
   QCoreApplication application(argc, argv);
@@ -129,6 +139,113 @@ int main(int argc, char* argv[]) {
   assert(solidar::test::near(
       solidar::test::volumeOf(*restoredBody->resultShape()), sourceVolume,
       1e-4));
+
+  // A native Line + Arc profile remains editable after a complete project
+  // round-trip. IDs and feature parameters must survive serialization, while
+  // the B-Rep is rebuilt from the restored parametric history.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kExtrudeLength = 25.0;
+    solidar::Document lineArcDocument;
+    auto& lineArcSketch = lineArcDocument.addSketch("Line and Arc profile");
+    const auto lineArcSketchId = lineArcSketch.id;
+    lineArcSketch.geometry.addLine({-10.0, 0.0}, {10.0, 0.0});
+    lineArcSketch.geometry.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    CHECK(lineArcSketch.geometry.lines().size() == 1);
+    CHECK(lineArcSketch.geometry.arcs().size() == 1);
+    CHECK(lineArcSketch.geometry.circles().empty());
+    CHECK(lineArcSketch.geometry.isClosed());
+    const auto sourceArc = lineArcSketch.geometry.arcs().front();
+
+    auto& lineArcBody = lineArcDocument.addBody("Line and Arc body");
+    const auto lineArcBodyId = lineArcBody.id();
+    auto lineArcExtrude = std::make_unique<solidar::ExtrudeFeature>(
+        lineArcSketchId, kExtrudeLength, "Line and Arc Extrude",
+        solidar::ExtrudeOperation::NewBody, true);
+    auto* lineArcExtrudePtr = lineArcExtrude.get();
+    const auto lineArcExtrudeId = lineArcExtrudePtr->id();
+    const auto sourceOperation = lineArcExtrudePtr->operation();
+    const bool sourceReversed = lineArcExtrudePtr->reversed();
+    lineArcBody.addFeature(std::move(lineArcExtrude));
+
+    CHECK(lineArcDocument.recompute());
+    CHECK(lineArcExtrudePtr->state() == solidar::FeatureState::Valid);
+    CHECK(lineArcExtrudePtr->shape());
+    CHECK(!lineArcExtrudePtr->shape()->IsNull());
+    CHECK(solidar::test::solidCount(*lineArcExtrudePtr->shape()) == 1);
+    const double lineArcVolume =
+        solidar::test::volumeOf(*lineArcExtrudePtr->shape());
+    CHECK(lineArcVolume > 0.0);
+
+    const QString lineArcPath = directory.filePath("line-arc.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        lineArcPath, lineArcDocument, &error));
+
+    solidar::Document loadedLineArcDocument;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        lineArcPath, &loadedLineArcDocument, &error));
+    auto* loadedLineArcSketch =
+        loadedLineArcDocument.findSketch(lineArcSketchId);
+    CHECK(loadedLineArcSketch);
+    CHECK(loadedLineArcSketch->id == lineArcSketchId);
+    CHECK(loadedLineArcSketch->geometry.lines().size() == 1);
+    CHECK(loadedLineArcSketch->geometry.arcs().size() == 1);
+    CHECK(loadedLineArcSketch->geometry.circles().empty());
+    CHECK(loadedLineArcSketch->geometry.isClosed());
+    const auto& loadedArc = loadedLineArcSketch->geometry.arcs().front();
+    CHECK(solidar::test::near(loadedArc.center.xMm, sourceArc.center.xMm));
+    CHECK(solidar::test::near(loadedArc.center.yMm, sourceArc.center.yMm));
+    CHECK(solidar::test::near(loadedArc.radiusMm, sourceArc.radiusMm));
+    CHECK(solidar::test::near(loadedArc.startAngleRad,
+                              sourceArc.startAngleRad));
+    CHECK(solidar::test::near(loadedArc.sweepAngleRad,
+                              sourceArc.sweepAngleRad));
+
+    auto* loadedLineArcBody =
+        loadedLineArcDocument.findBody(lineArcBodyId);
+    CHECK(loadedLineArcBody);
+    CHECK(loadedLineArcBody->features().size() == 1);
+    auto* loadedLineArcExtrude = dynamic_cast<solidar::ExtrudeFeature*>(
+        loadedLineArcBody->features().front().get());
+    CHECK(loadedLineArcExtrude);
+    CHECK(loadedLineArcExtrude->id() == lineArcExtrudeId);
+    CHECK(loadedLineArcExtrude->profileSketchId() == lineArcSketchId);
+    CHECK(solidar::test::near(loadedLineArcExtrude->lengthMm(),
+                              kExtrudeLength));
+    CHECK(loadedLineArcExtrude->operation() == sourceOperation);
+    CHECK(loadedLineArcExtrude->reversed() == sourceReversed);
+
+    CHECK(loadedLineArcDocument.recompute());
+    CHECK(loadedLineArcExtrude->state() == solidar::FeatureState::Valid);
+    CHECK(loadedLineArcExtrude->shape());
+    CHECK(!loadedLineArcExtrude->shape()->IsNull());
+    CHECK(solidar::test::solidCount(*loadedLineArcExtrude->shape()) == 1);
+    const double loadedLineArcVolume =
+        solidar::test::volumeOf(*loadedLineArcExtrude->shape());
+    CHECK(solidar::test::near(loadedLineArcVolume, lineArcVolume, 1e-4));
+
+    loadedLineArcSketch->geometry.removeArc(0);
+    const double editedRadius = 12.0;
+    const double centerOffset =
+        std::sqrt(editedRadius * editedRadius - 10.0 * 10.0);
+    const double startAngle = std::atan2(centerOffset, 10.0);
+    loadedLineArcSketch->geometry.addArc(
+        {0.0, -centerOffset}, editedRadius, startAngle,
+        kPi - 2.0 * startAngle);
+    CHECK(loadedLineArcSketch->geometry.lines().size() == 1);
+    CHECK(loadedLineArcSketch->geometry.arcs().size() == 1);
+    CHECK(loadedLineArcSketch->geometry.isClosed());
+    CHECK(loadedLineArcDocument.markSketchDirty(lineArcSketchId));
+    CHECK(loadedLineArcExtrude->isDirty());
+    CHECK(loadedLineArcDocument.recompute());
+    CHECK(loadedLineArcExtrude->id() == lineArcExtrudeId);
+    CHECK(loadedLineArcExtrude->state() == solidar::FeatureState::Valid);
+    CHECK(loadedLineArcExtrude->shape());
+    CHECK(!loadedLineArcExtrude->shape()->IsNull());
+    CHECK(solidar::test::solidCount(*loadedLineArcExtrude->shape()) == 1);
+    CHECK(std::abs(solidar::test::volumeOf(*loadedLineArcExtrude->shape()) -
+                   loadedLineArcVolume) > 1e-4);
+  }
 
   // Extrude from one selected region of a multi-profile sketch.  The source
   // sketch remains intact, while the feature stores only the picked region.

@@ -62,6 +62,7 @@
 
 #include "drawing/EskdRenderer.h"
 #include "io/StlExporter.h"
+#include "io/StepExchange.h"
 #include "project/ProjectFile.h"
 #include "sketch/SketchRibbon.h"
 #include "ui/DrawingSheetView.h"
@@ -101,7 +102,7 @@ MainWindow::MainWindow(AppSettings& settings, QWidget* parent)
   buildUi();
   buildMenus();
   resize(1200, 760);
-  setWindowTitle(QString::fromUtf8("Солидарность CAD — Скетчер ЕСКД"));
+  setWindowTitle(QString::fromUtf8("Солидарность CAD — Скетчер ЕСКД [*]"));
 }
 
 void MainWindow::openSettings() {
@@ -171,7 +172,12 @@ void MainWindow::buildMenus() {
   openAction->setShortcut(QKeySequence::Open);
   auto* saveAction = fileMenu->addAction(QString::fromUtf8("Сохранить"));
   saveAction->setShortcut(QKeySequence::Save);
+  auto* importMenu = fileMenu->addMenu(QString::fromUtf8("Импорт"));
+  auto* importStepAction =
+      importMenu->addAction(QStringLiteral("STEP (*.step *.stp)"));
   auto* exportMenu = fileMenu->addMenu(QString::fromUtf8("Экспорт"));
+  auto* exportStepAction =
+      exportMenu->addAction(QStringLiteral("STEP (*.step *.stp)"));
   auto* exportStlAction = exportMenu->addAction(QStringLiteral("STL (*.stl)"));
 
   auto* editMenu = bar->addMenu(QString::fromUtf8("Правка"));
@@ -193,6 +199,8 @@ void MainWindow::buildMenus() {
   connect(createAction, &QAction::triggered, this, &MainWindow::createProject);
   connect(openAction, &QAction::triggered, this, &MainWindow::openProject);
   connect(saveAction, &QAction::triggered, this, &MainWindow::saveProject);
+  connect(importStepAction, &QAction::triggered, this, &MainWindow::importStep);
+  connect(exportStepAction, &QAction::triggered, this, &MainWindow::exportStep);
   connect(exportStlAction, &QAction::triggered, this, &MainWindow::exportStl);
   connect(undoAction_, &QAction::triggered, this, &MainWindow::undoLastAction);
   connect(redoAction_, &QAction::triggered, this, &MainWindow::redoLastAction);
@@ -377,6 +385,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   applyHistoryPosition(historyPosition_);
   workspaceStack_->setCurrentWidget(viewport_);
   setProjectPath(path);
+  setWindowModified(false);
   return true;
 }
 
@@ -396,7 +405,77 @@ void MainWindow::saveProject() {
     return;
   }
   setProjectPath(path);
+  setWindowModified(false);
   statusBar()->showMessage(QString::fromUtf8("Проект сохранён"), 3000);
+}
+
+void MainWindow::importStep() {
+  const QString fileName = QFileDialog::getOpenFileName(
+      this, QString::fromUtf8("Импортировать STEP"), QString(),
+      QStringLiteral("STEP files (*.step *.stp)"));
+  if (fileName.isEmpty()) return;
+
+  // Build the complete result separately. No model or UI state changes until
+  // the translator and imported feature have both succeeded.
+  Document staged = document_;
+  QString error;
+  const QString importedName = QFileInfo(fileName).completeBaseName();
+  if (!io::importDocumentStep(fileName, &staged, importedName, &error)) {
+    QMessageBox::critical(
+        this, QString::fromUtf8("Failed to import STEP file"), error);
+    return;
+  }
+
+  // Sessions can retain topology references into the current Document. Tear
+  // them down before replacing its B-Rep graph.
+  partDesignTools_.cancelActive();
+  filletToolSession_.cancel();
+  chamferToolSession_.cancel();
+  shellToolSession_.cancel();
+  draftToolSession_.cancel();
+  faceExtrudeSession_.cancel();
+  revolveToolSession_.cancel();
+  viewport_->clearToolManipulator();
+  viewport_->clearToolPreviewShape();
+  viewport_->setSelectedBodyEdges({});
+  viewport_->setSelectedBodyFaces({});
+
+  document_ = std::move(staged);
+  hasExtrusion_ = !document_.bodies().empty();
+  historyPosition_ = 1000000;
+  rebuildHistoryPanel();
+  moveHistoryToEnd();
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  workspaceStack_->setCurrentWidget(viewport_);
+  viewport_->fitAll();
+  setWindowModified(true);
+  statusBar()->showMessage(
+      QString::fromUtf8("STEP импортирован: ") + fileName, 5000);
+}
+
+void MainWindow::exportStep() {
+  QString fileName = QFileDialog::getSaveFileName(
+      this, QString::fromUtf8("Экспортировать STEP"),
+      windowFilePath().isEmpty()
+          ? QStringLiteral("Модель.step")
+          : QFileInfo(windowFilePath()).absolutePath() + QLatin1Char('/') +
+                QFileInfo(windowFilePath()).completeBaseName() +
+                QStringLiteral(".step"),
+      QStringLiteral("STEP files (*.step *.stp)"));
+  if (fileName.isEmpty()) return;
+  if (!fileName.endsWith(QStringLiteral(".step"), Qt::CaseInsensitive) &&
+      !fileName.endsWith(QStringLiteral(".stp"), Qt::CaseInsensitive))
+    fileName += QStringLiteral(".step");
+
+  QString error;
+  if (!io::exportDocumentStep(fileName, document_, &error)) {
+    QMessageBox::critical(
+        this, QString::fromUtf8("Failed to export STEP file"), error);
+    return;
+  }
+  statusBar()->showMessage(QString::fromUtf8("STEP сохранён: ") + fileName,
+                           5000);
 }
 
 void MainWindow::exportStl() {
@@ -429,7 +508,7 @@ void MainWindow::exportStl() {
 void MainWindow::setProjectPath(const QString& path) {
   setWindowFilePath(path);
   setWindowTitle(QFileInfo(path).completeBaseName() +
-                 QString::fromUtf8(" — Солидарность CAD"));
+                 QString::fromUtf8(" — Солидарность CAD [*]"));
 }
 
 void MainWindow::buildUi() {

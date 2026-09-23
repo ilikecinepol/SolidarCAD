@@ -41,6 +41,8 @@ add_library(solidar_model
   model/FilletBuilder.h
   model/FilletToolSession.cpp
   model/FilletToolSession.h
+  model/ImportedShapeFeature.cpp
+  model/ImportedShapeFeature.h
   model/PatternTypes.h
   model/MirrorFeature.cpp
   model/MirrorFeature.h
@@ -105,9 +107,12 @@ add_library(solidar_project
   project/ProjectFile.h
   io/StlExporter.cpp
   io/StlExporter.h
+  io/StepExchange.cpp
+  io/StepExchange.h
 )
 target_include_directories(solidar_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_project PUBLIC solidar_model Qt6::Core)
+target_link_libraries(solidar_project PUBLIC
+  solidar_model Qt6::Core TKDE TKXSBase TKDESTEP)
 solidar_warnings(solidar_project)
 
 add_library(solidar_theme
