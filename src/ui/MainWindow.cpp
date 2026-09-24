@@ -1497,6 +1497,7 @@ void MainWindow::buildUi() {
             if (currentSketchFaceReference_ &&
                 !configureSketchEditContext(true))
               return;
+            configureSketchSceneReferences();
             workspaceStack_->setCurrentWidget(sketchCanvas_);
             ribbonStack_->setCurrentWidget(sketchRibbon_);
             statusBar()->showMessage(QString::fromUtf8("Рабочая плоскость: ") + plane);
@@ -3402,6 +3403,28 @@ bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
   return true;
 }
 
+void MainWindow::configureSketchSceneReferences(SketchId excludedSketchId) {
+  const BodyId supportBodyId = currentSketchFaceReference_
+                                   ? currentSketchFaceReference_->bodyId
+                                   : kInvalidBodyId;
+  std::vector<ShapeFeature::ShapePtr> bodyShapes;
+  bodyShapes.reserve(document_.bodies().size());
+  for (const auto& body : document_.bodies()) {
+    if (body.id() == supportBodyId) continue;
+    if (auto shape = body.resultShape()) bodyShapes.push_back(std::move(shape));
+  }
+
+  std::vector<SketchSceneReference> sketches;
+  sketches.reserve(document_.sketches().size());
+  for (const auto& documentSketch : document_.sketches()) {
+    if (documentSketch.id == excludedSketchId) continue;
+    sketches.push_back(
+        {documentSketch.geometry, documentSketch.placement});
+  }
+  sketchCanvas_->setSceneReferences(currentSketchPlacement_, bodyShapes,
+                                    std::move(sketches));
+}
+
 void MainWindow::editSketchStep(std::size_t index) {
   if (index >= sketchHistory_.size()) return;
   editingSketchIndex_ = index;
@@ -3419,6 +3442,7 @@ void MainWindow::editSketchStep(std::size_t index) {
     return;
   }
   sketchCanvas_->loadSketch(sketchHistory_[index].geometry);
+  configureSketchSceneReferences(sketchHistory_[index].documentSketchId);
   sketchCanvas_->setReferenceBody(document_.box(), currentSketchSupport_,
                                   hasExtrusion_);
   workspaceStack_->setCurrentWidget(sketchCanvas_);

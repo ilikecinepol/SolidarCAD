@@ -88,6 +88,39 @@ void autoProjectionRegressionTests() {
   const QPixmap renderedCanvas = rectangular.grab();
   CHECK(!renderedCanvas.isNull());
 
+  // The complete scene is visible in Sketcher, but only the support face was
+  // auto-projected. Edges from another body remain available for an explicit
+  // Projection command.
+  const auto secondBody = std::make_shared<TopoDS_Shape>(
+      BRepPrimAPI_MakeBox(gp_Pnt(60.0, 0.0, 0.0), 12.0, 10.0, 10.0).Shape());
+  solidar::sketch::Sketch existingSketch;
+  existingSketch.addLine({-10.0, -8.0}, {-2.0, -8.0});
+  solidar::SketchCanvas completeScene;
+  completeScene.resize(900, 650);
+  completeScene.setSketchEditContext(faceContext(box, 20.0, true));
+  const auto supportEdgeCount = completeScene.referenceBodyEdgeCount();
+  const auto autoProjectedBeforeScene = projectedElements(completeScene);
+  completeScene.setSceneReferences(
+      solidar::SketchPlacement::xy(), {secondBody},
+      {{existingSketch, solidar::SketchPlacement::xy()}});
+  CHECK(completeScene.sceneBodyCount() == 2);
+  CHECK(completeScene.sceneSketchCount() == 1);
+  CHECK(projectedElements(completeScene) == autoProjectedBeforeScene);
+  CHECK(completeScene.referenceBodyEdgeCount() > supportEdgeCount);
+  bool projectedSecondBody = false;
+  for (std::size_t edge = supportEdgeCount;
+       edge < completeScene.referenceBodyEdgeCount(); ++edge) {
+    if (!completeScene.projectReferenceEdge(edge)) continue;
+    projectedSecondBody = true;
+    break;
+  }
+  CHECK(projectedSecondBody);
+  CHECK(projectedElements(completeScene).size() ==
+        autoProjectedBeforeScene.size() + 1);
+  completeScene.undo();
+  CHECK(projectedElements(completeScene) == autoProjectedBeforeScene);
+  CHECK(!completeScene.grab().isNull());
+
   const auto automaticLineCount = rectangular.sketch().lines().size();
   for (std::size_t edge = 0; edge < rectangular.referenceBodyEdgeCount();
        ++edge)

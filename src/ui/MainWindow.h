@@ -121,6 +121,8 @@ class MainWindow final : public QMainWindow {
   void updateUndoAvailability();
   void updateSketchConstraintPanel();
   bool configureSketchEditContext(bool autoProjectSupportFace = false);
+  void configureSketchSceneReferences(
+      SketchId excludedSketchId = kInvalidSketchId);
 
   Document document_;
   AppSettings& settings_;

@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace solidar {
 namespace {
@@ -1536,9 +1537,31 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
     }
   }
 
-  const BodyRenderMesh& fitMesh = referenceFaceMesh_.edges().empty()
-                                      ? referenceBodyMesh_
-                                      : referenceFaceMesh_;
+  fitReferenceGeometry();
+  update();
+}
+
+void SketchCanvas::setSceneReferences(
+    SketchPlacement activePlacement,
+    const std::vector<ShapeFeature::ShapePtr>& bodyShapes,
+    std::vector<SketchSceneReference> sketches) {
+  referencePlacement_ = activePlacement;
+  sceneBodyMeshes_.clear();
+  sceneBodyMeshes_.reserve(bodyShapes.size());
+  for (const auto& shape : bodyShapes) {
+    if (!shape || shape->IsNull()) continue;
+    BodyRenderMesh mesh;
+    mesh.rebuild(*shape);
+    if (!mesh.triangles().empty() || !mesh.edges().empty())
+      sceneBodyMeshes_.push_back(std::move(mesh));
+  }
+  sceneSketches_ = std::move(sketches);
+  hoveredProjectionEdge_.reset();
+  fitReferenceGeometry();
+  update();
+}
+
+void SketchCanvas::fitReferenceGeometry() {
   double minU = std::numeric_limits<double>::max();
   double minV = std::numeric_limits<double>::max();
   double maxU = std::numeric_limits<double>::lowest();
@@ -1550,8 +1573,42 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
     maxU = std::max(maxU, local.x);
     maxV = std::max(maxV, local.y);
   };
-  for (const auto& edge : fitMesh.edges())
-    for (const auto& point : edge.points) includePoint(point);
+  const auto includeMesh = [&](const BodyRenderMesh& mesh) {
+    for (const auto& edge : mesh.edges())
+      for (const auto& point : edge.points) includePoint(point);
+    if (mesh.edges().empty())
+      for (const auto& triangle : mesh.triangles()) {
+        includePoint(triangle.a);
+        includePoint(triangle.b);
+        includePoint(triangle.c);
+      }
+  };
+  includeMesh(referenceBodyMesh_);
+  for (const auto& mesh : sceneBodyMeshes_) includeMesh(mesh);
+  for (const auto& reference : sceneSketches_) {
+    const auto includeSketchPoint = [&](sketch::Point point) {
+      includePoint(reference.placement.toWorld(point.xMm, point.yMm));
+    };
+    for (const auto& line : reference.geometry.lines()) {
+      includeSketchPoint(line.start);
+      includeSketchPoint(line.end);
+    }
+    for (const auto& circle : reference.geometry.circles()) {
+      includeSketchPoint({circle.center.xMm - circle.radiusMm,
+                          circle.center.yMm - circle.radiusMm});
+      includeSketchPoint({circle.center.xMm + circle.radiusMm,
+                          circle.center.yMm + circle.radiusMm});
+    }
+    for (const auto& arc : reference.geometry.arcs()) {
+      for (int step = 0; step <= 24; ++step) {
+        const double angle = arc.startAngleRad +
+                             arc.sweepAngleRad * step / 24.0;
+        includeSketchPoint(
+            {arc.center.xMm + arc.radiusMm * std::cos(angle),
+             arc.center.yMm + arc.radiusMm * std::sin(angle)});
+      }
+    }
+  }
   if (minU <= maxU && minV <= maxV) {
     const double spanU = std::max(1.0, maxU - minU);
     const double spanV = std::max(1.0, maxV - minV);
@@ -1563,12 +1620,13 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
     setProperty("sketchPanX", -(minU + maxU) * 0.5 * pixelsPerMm_);
     setProperty("sketchPanY", (minV + maxV) * 0.5 * pixelsPerMm_);
   }
-  update();
 }
 
 void SketchCanvas::clearSketchEditContext() {
   referenceBodyMesh_.clear();
   referenceFaceMesh_.clear();
+  sceneBodyMeshes_.clear();
+  sceneSketches_.clear();
   realReferenceBodyVisible_ = false;
   hoveredProjectionEdge_.reset();
   update();
@@ -1646,7 +1704,17 @@ std::size_t SketchCanvas::referenceFaceEdgeCount() const noexcept {
 }
 
 std::size_t SketchCanvas::referenceBodyEdgeCount() const noexcept {
-  return referenceBodyMesh_.edges().size();
+  std::size_t count = referenceBodyMesh_.edges().size();
+  for (const auto& mesh : sceneBodyMeshes_) count += mesh.edges().size();
+  return count;
+}
+
+std::size_t SketchCanvas::sceneBodyCount() const noexcept {
+  return sceneBodyMeshes_.size() + (realReferenceBodyVisible_ ? 1U : 0U);
+}
+
+std::size_t SketchCanvas::sceneSketchCount() const noexcept {
+  return sceneSketches_.size();
 }
 
 void SketchCanvas::undo() {
@@ -1814,22 +1882,23 @@ QRectF SketchCanvas::viewCubeRightRect() const {
 
 std::optional<std::size_t> SketchCanvas::referenceEdgeAt(
     QPointF position) const {
-  if (!realReferenceBodyVisible_) return std::nullopt;
+  if (referenceBodyEdgeCount() == 0) return std::nullopt;
 
   constexpr double kHitTolerancePx = 9.0;
   double bestDistance = kHitTolerancePx;
   std::optional<std::size_t> best;
 
-  const auto& edges = referenceBodyMesh_.edges();
-  for (std::size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex) {
-    const auto& edge = edges[edgeIndex];
-    if (edge.points.size() < 2) continue;
+  for (std::size_t edgeIndex = 0; edgeIndex < referenceBodyEdgeCount();
+       ++edgeIndex) {
+    const auto* edge = referenceEdge(edgeIndex);
+    if (!edge) continue;
+    if (edge->points.size() < 2) continue;
 
-    for (std::size_t i = 1; i < edge.points.size(); ++i) {
+    for (std::size_t i = 1; i < edge->points.size(); ++i) {
       const auto firstLocal =
-          referencePlacement_.toLocal(edge.points[i - 1]);
+          referencePlacement_.toLocal(edge->points[i - 1]);
       const auto secondLocal =
-          referencePlacement_.toLocal(edge.points[i]);
+          referencePlacement_.toLocal(edge->points[i]);
 
       const QPointF first =
           mapPoint({firstLocal.x, firstLocal.y});
@@ -1848,13 +1917,24 @@ std::optional<std::size_t> SketchCanvas::referenceEdgeAt(
   return best;
 }
 
-bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
-  if (!realReferenceBodyVisible_ ||
-      edgeVectorIndex >= referenceBodyMesh_.edges().size())
-    return false;
+const RenderEdge* SketchCanvas::referenceEdge(
+    std::size_t edgeVectorIndex) const noexcept {
+  if (edgeVectorIndex < referenceBodyMesh_.edges().size())
+    return &referenceBodyMesh_.edges()[edgeVectorIndex];
+  edgeVectorIndex -= referenceBodyMesh_.edges().size();
+  for (const auto& mesh : sceneBodyMeshes_) {
+    if (edgeVectorIndex < mesh.edges().size())
+      return &mesh.edges()[edgeVectorIndex];
+    edgeVectorIndex -= mesh.edges().size();
+  }
+  return nullptr;
+}
 
-  return appendProjectedEdge(referenceBodyMesh_.edges()[edgeVectorIndex], true,
-                             true);
+bool SketchCanvas::projectReferenceEdge(std::size_t edgeVectorIndex) {
+  const auto* edge = referenceEdge(edgeVectorIndex);
+  if (!edge) return false;
+
+  return appendProjectedEdge(*edge, true, true);
 }
 
 bool SketchCanvas::appendProjectedCircularEdge(
@@ -2666,6 +2746,83 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.drawLine(mapPoint({0.0, -axisExtentMm}),
                    mapPoint({0.0, axisExtentMm}));
 
+  const auto projectScenePoint = [&](Point3d point) {
+    const auto local = referencePlacement_.toLocal(point);
+    return mapPoint({local.x, local.y});
+  };
+  std::size_t sceneEdgeOffset = referenceBodyMesh_.edges().size();
+  QColor sceneFill = palette().color(QPalette::Mid);
+  sceneFill.setAlpha(38);
+  QColor sceneEdge = palette().color(QPalette::Text);
+  sceneEdge.setAlpha(82);
+  QColor sceneHover = palette().color(QPalette::Highlight);
+  sceneHover.setAlpha(220);
+  for (const auto& mesh : sceneBodyMeshes_) {
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(sceneFill);
+    for (const auto& triangle : mesh.triangles()) {
+      painter.drawPolygon(QPolygonF{projectScenePoint(triangle.a),
+                                    projectScenePoint(triangle.b),
+                                    projectScenePoint(triangle.c)});
+    }
+    painter.setBrush(Qt::NoBrush);
+    for (std::size_t edgeIndex = 0; edgeIndex < mesh.edges().size();
+         ++edgeIndex) {
+      const bool hovered =
+          tool_ == Tool::Projection && hoveredProjectionEdge_ &&
+          *hoveredProjectionEdge_ == sceneEdgeOffset + edgeIndex;
+      painter.setPen(hovered ? QPen(sceneHover, 3.2, Qt::SolidLine,
+                                    Qt::RoundCap)
+                             : QPen(sceneEdge, 1.0));
+      QPolygonF curve;
+      for (const auto& point : mesh.edges()[edgeIndex].points)
+        curve << projectScenePoint(point);
+      painter.drawPolyline(curve);
+    }
+    sceneEdgeOffset += mesh.edges().size();
+  }
+
+  QColor sceneSketch = palette().color(QPalette::Highlight);
+  sceneSketch.setAlpha(96);
+  painter.setBrush(Qt::NoBrush);
+  for (const auto& reference : sceneSketches_) {
+    const auto projectSketchPoint = [&](sketch::Point point) {
+      return projectScenePoint(
+          reference.placement.toWorld(point.xMm, point.yMm));
+    };
+    for (const auto& line : reference.geometry.lines()) {
+      painter.setPen(QPen(sceneSketch, 1.2,
+                          line.dashed ? Qt::DashLine : Qt::SolidLine));
+      painter.drawLine(projectSketchPoint(line.start),
+                       projectSketchPoint(line.end));
+    }
+    for (const auto& circle : reference.geometry.circles()) {
+      painter.setPen(QPen(sceneSketch, 1.2,
+                          circle.dashed ? Qt::DashLine : Qt::SolidLine));
+      QPolygonF curve;
+      for (int step = 0; step <= 72; ++step) {
+        const double angle = 2.0 * std::numbers::pi * step / 72.0;
+        curve << projectSketchPoint(
+            {circle.center.xMm + circle.radiusMm * std::cos(angle),
+             circle.center.yMm + circle.radiusMm * std::sin(angle)});
+      }
+      painter.drawPolyline(curve);
+    }
+    for (const auto& arc : reference.geometry.arcs()) {
+      painter.setPen(QPen(sceneSketch, 1.2,
+                          arc.dashed ? Qt::DashLine : Qt::SolidLine));
+      QPolygonF curve;
+      for (int step = 0; step <= 48; ++step) {
+        const double angle =
+            arc.startAngleRad + arc.sweepAngleRad * step / 48.0;
+        curve << projectSketchPoint(
+            {arc.center.xMm + arc.radiusMm * std::cos(angle),
+             arc.center.yMm + arc.radiusMm * std::sin(angle)});
+      }
+      painter.drawPolyline(curve);
+    }
+  }
+
   if (realReferenceBodyVisible_) {
     struct ProjectedTriangle {
       QPolygonF polygon;
@@ -2734,7 +2891,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       painter.drawPolyline(boundary);
     }
   }
-  if (!realReferenceBodyVisible_ && referenceBodyVisible_ &&
+  if (!realReferenceBodyVisible_ && sceneBodyMeshes_.empty() &&
+      referenceBodyVisible_ &&
       !referenceProfileVisible_) {
     double bodyWidth = referenceBox_.widthMm;
     double bodyHeight = referenceBox_.depthMm;
@@ -2754,7 +2912,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     painter.setPen(QPen(QColor("#596570"), 1.6));
     painter.drawRect(bodyRect.normalized());
   }
-  if (!realReferenceBodyVisible_ && referenceBodyVisible_ &&
+  if (!realReferenceBodyVisible_ && sceneBodyMeshes_.empty() &&
+      referenceBodyVisible_ &&
       referenceProfileVisible_) {
     painter.setBrush(Qt::NoBrush);
     painter.setPen(QPen(QColor("#596570"), 1.6));

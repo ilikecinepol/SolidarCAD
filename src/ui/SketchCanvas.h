@@ -30,6 +30,11 @@ struct SketchEditContext {
   bool autoProjectSupportFace{false};
 };
 
+struct SketchSceneReference {
+  sketch::Sketch geometry;
+  SketchPlacement placement{SketchPlacement::xy()};
+};
+
 class SketchCanvas final : public QWidget {
   Q_OBJECT
 
@@ -81,6 +86,10 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] int viewQuarterTurns() const noexcept;
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
   void setSketchEditContext(const SketchEditContext& context);
+  void setSceneReferences(
+      SketchPlacement activePlacement,
+      const std::vector<ShapeFeature::ShapePtr>& bodyShapes,
+      std::vector<SketchSceneReference> sketches);
   void clearSketchEditContext();
   void setReferenceProfile(const sketch::Sketch& profile, bool visible);
   [[nodiscard]] bool canUndo() const noexcept;
@@ -89,6 +98,8 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] bool hasRealReferenceBody() const noexcept;
   [[nodiscard]] std::size_t referenceFaceEdgeCount() const noexcept;
   [[nodiscard]] std::size_t referenceBodyEdgeCount() const noexcept;
+  [[nodiscard]] std::size_t sceneBodyCount() const noexcept;
+  [[nodiscard]] std::size_t sceneSketchCount() const noexcept;
   bool projectReferenceEdge(std::size_t edgeVectorIndex);
   struct ConstraintPanelEntry {
     QString description;
@@ -183,6 +194,9 @@ signals:
   bool commitDraggedPointSnap(sketch::PointReference movingPoint,
                               const ConstructionSnap& snap);
   [[nodiscard]] std::optional<std::size_t> referenceEdgeAt(QPointF position) const;
+  [[nodiscard]] const RenderEdge* referenceEdge(
+      std::size_t edgeVectorIndex) const noexcept;
+  void fitReferenceGeometry();
   bool appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
                            bool reportStatus);
   bool appendProjectedCircularEdge(const RenderEdge& edge, bool recordUndo,
@@ -265,6 +279,8 @@ signals:
   bool referenceBodyVisible_{false};
   BodyRenderMesh referenceBodyMesh_;
   BodyRenderMesh referenceFaceMesh_;
+  std::vector<BodyRenderMesh> sceneBodyMeshes_;
+  std::vector<SketchSceneReference> sceneSketches_;
   SketchPlacement referencePlacement_{SketchPlacement::xy()};
   bool realReferenceBodyVisible_{false};
   sketch::Sketch referenceProfile_;
