@@ -13,6 +13,7 @@
 #endif
 #include <cassert>
 #include <cmath>
+#include <iostream>
 #include <memory>
 
 #include "model/Document.h"
@@ -21,6 +22,14 @@
 #include "model/ShellToolSession.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 double volume(const TopoDS_Shape& shape) {
@@ -31,15 +40,19 @@ double volume(const TopoDS_Shape& shape) {
 
 std::size_t topFace(const TopoDS_Shape& shape) {
   std::size_t index = 0;
+  double bestZ = -1e100;
+  std::size_t best = static_cast<std::size_t>(-1);
   for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More();
        faces.Next(), ++index) {
     BRepAdaptor_Surface surface(TopoDS::Face(faces.Current()));
     if (surface.GetType() == GeomAbs_Plane &&
         std::abs(surface.Plane().Axis().Direction().Z()) > 0.99 &&
-        std::abs(surface.Plane().Location().Z() - 20.0) < 1e-6)
-      return index;
+        surface.Plane().Location().Z() > bestZ) {
+      bestZ = surface.Plane().Location().Z();
+      best = index;
+    }
   }
-  return static_cast<std::size_t>(-1);
+  return best;
 }
 
 solidar::Document boxDocument(solidar::FeatureId* sourceId,
@@ -98,6 +111,24 @@ int main(int argc, char** argv) {
   assert(session.thicknessMm() == 3.0 && session.previewShape());
   session.setOutside(true);
   assert(session.outside() && session.editingFeatureId() == shellId);
+
+  // An excessive interactive value keeps a valid preview and stops at the
+  // last buildable wall thickness instead of replacing the model with an
+  // error state.
+  auto shallowShape = std::make_shared<TopoDS_Shape>(
+      BRepPrimAPI_MakeBox(40.0, 30.0, 3.0).Shape());
+  const auto shallowTop = topFace(*shallowShape);
+  CHECK(shallowTop != static_cast<std::size_t>(-1));
+  const auto shallowOpening = solidar::makeFaceReference(
+      *shallowShape, 77, 88, shallowTop);
+  solidar::ShellToolSession boundedSession;
+  boundedSession.begin(77, 88, shallowShape, {shallowOpening}, 4.0, false);
+  CHECK(boundedSession.previewShape());
+  CHECK(boundedSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(boundedSession.limitReached());
+  CHECK(boundedSession.maximumValidThicknessMm());
+  CHECK(boundedSession.thicknessMm() >= 0.01);
+  CHECK(boundedSession.thicknessMm() < 3.0);
 
   QTemporaryDir temporary;
   assert(temporary.isValid());

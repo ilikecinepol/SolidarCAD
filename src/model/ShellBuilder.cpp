@@ -45,11 +45,12 @@ std::shared_ptr<TopoDS_Shape> buildShellShape(
     const double dz = zMax - zMin;
     diagonal = std::hypot(std::hypot(dx, dy), dz);
     smallestDimension = std::min({dx, dy, dz});
-    // An inward offset cannot retain a cavity once it reaches half of the
-    // narrowest global dimension. Keep this inexpensive rejection ahead of
-    // OCCT's substantially heavier intersection work.
+    // Do not use half the narrowest dimension here. When a cap normal to that
+    // dimension is removed, the cavity only needs the remaining depth (for
+    // example a 2 mm bottom wall in a 3 mm extrusion is valid). Reject only
+    // the certain full-collapse case and let OCCT evaluate local clearances.
     if (!outside && smallestDimension > Precision::Confusion() &&
-        thicknessMm >= smallestDimension * 0.5)
+        thicknessMm >= smallestDimension)
       return fail("Shell thickness is too large for the narrowest body dimension");
     if (diagonal > Precision::Confusion() && thicknessMm > diagonal * 4.0)
       return fail("Shell thickness is too large for the source body");

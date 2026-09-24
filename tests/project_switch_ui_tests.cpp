@@ -1,8 +1,10 @@
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
+#include <QDockWidget>
 #include <QDir>
 #include <QTemporaryDir>
+#include <QToolButton>
 
 #include <cstdlib>
 #include <iostream>
@@ -26,6 +28,7 @@
   } while (false)
 
 int main(int argc, char** argv) {
+  qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication application(argc, argv);
 
   QTemporaryDir directory(QDir::current().filePath(
@@ -62,6 +65,54 @@ int main(int argc, char** argv) {
     CHECK(editor.loadProject(pathA, &error));
     CHECK(editor.loadProject(pathB, &error));
   }
+
+  // Switching between the legacy extrusion picker, the dedicated Revolve
+  // panel and the shared Part Design panel must leave exactly one tool UI.
+  // This used to reproduce after a longer session because these three paths
+  // had independent teardown code.
+  CHECK(editor.loadProject(pathA, &error));
+  auto* filletButton = editor.findChild<QToolButton*>(
+      QStringLiteral("filletCommand"));
+  auto* extrudeButton = editor.findChild<QToolButton*>(
+      QStringLiteral("extrudeCommand"));
+  auto* revolveButton = editor.findChild<QToolButton*>(
+      QStringLiteral("revolveCommand"));
+  auto* partDesignDock = editor.findChild<QDockWidget*>(
+      QStringLiteral("partDesignParametersDock"));
+  auto* extrusionDock = editor.findChild<QDockWidget*>(
+      QStringLiteral("extrusionParametersDock"));
+  auto* revolveDock = editor.findChild<QDockWidget*>(
+      QStringLiteral("revolveParametersDock"));
+  CHECK(filletButton != nullptr);
+  CHECK(extrudeButton != nullptr);
+  CHECK(revolveButton != nullptr);
+  CHECK(partDesignDock != nullptr);
+  CHECK(extrusionDock != nullptr);
+  CHECK(revolveDock != nullptr);
+
+  filletButton->click();
+  QApplication::processEvents();
+  CHECK(!partDesignDock->isHidden());
+  CHECK(extrusionDock->isHidden());
+  CHECK(revolveDock->isHidden());
+
+  extrudeButton->click();
+  QApplication::processEvents();
+  CHECK(partDesignDock->isHidden());
+  CHECK(extrusionDock->isHidden());  // still selecting an input profile
+  CHECK(revolveDock->isHidden());
+
+  revolveButton->click();
+  QApplication::processEvents();
+  CHECK(partDesignDock->isHidden());
+  CHECK(extrusionDock->isHidden());
+  CHECK(!revolveDock->isHidden());
+
+  filletButton->click();
+  QApplication::processEvents();
+  CHECK(!partDesignDock->isHidden());
+  CHECK(extrusionDock->isHidden());
+  CHECK(revolveDock->isHidden());
 
   // Active-tool teardown at the controller/session layer. A live Fillet
   // session holds B-Rep references and a preview; the same cancelActive +

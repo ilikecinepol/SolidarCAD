@@ -4527,13 +4527,17 @@ bool Viewport::eventFilter(QObject* watched, QEvent* event) {
 void Viewport::cancelActiveInteraction() {
   // Escape must cancel the whole transient interaction, regardless of whether
   // keyboard focus currently belongs to the viewport or an on-canvas editor.
+  resetToolInteraction();
+  emit selectionChanged(QStringLiteral("__cancel_tools__"));
+}
+
+void Viewport::resetToolInteraction() {
   pickMode_ = PickMode::None;
   clearLegacyExtrusionPreview();
   clearToolPreviewShape();
   clearToolManipulator();
   cancelMarquee();
   unsetCursor();
-  emit selectionChanged(QStringLiteral("__cancel_tools__"));
   update();
 }
 void Viewport::keyPressEvent(QKeyEvent* event) {

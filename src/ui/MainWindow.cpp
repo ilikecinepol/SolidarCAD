@@ -269,6 +269,20 @@ void MainWindow::updateUndoAvailability() {
     redoAction_->setEnabled(!sketchUndo && !modelRedoStack_.empty());
 }
 
+void MainWindow::resetTransientModelingUi() {
+  // PartDesignToolController owns modern sessions, while legacy sketch
+  // extrusion and the dedicated Revolve panel have separate presentation.
+  // Reset all presentation surfaces together before another ribbon command
+  // starts; otherwise switching between generations can leave two parameter
+  // windows active at once.
+  partDesignTools_.cancelActive();
+  viewport_->resetToolInteraction();
+  selectedExtrusionSurface_.clear();
+  if (toolParametersDock_) toolParametersDock_->hide();
+  if (revolveDock_) revolveDock_->hide();
+  if (extrusionDock_) extrusionDock_->hide();
+}
+
 void MainWindow::undoLastAction() {
   if (workspaceStack_->currentWidget() == sketchCanvas_ &&
       sketchCanvas_->canUndo()) {
@@ -616,6 +630,7 @@ void MainWindow::buildUi() {
   extrusionPanelLayout->addStretch();
   extrusionPanelLayout->addLayout(extrusionButtons);
   extrusionDock_->setWidget(extrusionPanel);
+  extrusionDock_->setObjectName(QStringLiteral("extrusionParametersDock"));
   extrusionDock_->setMinimumWidth(250);
   addDockWidget(Qt::RightDockWidgetArea, extrusionDock_);
   extrusionDock_->hide();
@@ -680,6 +695,7 @@ void MainWindow::buildUi() {
   revolveLayout->addStretch();
   revolveLayout->addLayout(revolveButtons);
   revolveDock_->setWidget(revolvePanel);
+  revolveDock_->setObjectName(QStringLiteral("revolveParametersDock"));
   revolveDock_->setMinimumWidth(280);
   addDockWidget(Qt::RightDockWidgetArea, revolveDock_);
   revolveDock_->hide();
@@ -792,6 +808,7 @@ void MainWindow::buildUi() {
                                   QStringLiteral(" mm"));
   toolParametersPanel_->setParameterRange(0.0, 100000.0, 2);
   toolParametersDock_->setWidget(toolParametersPanel_);
+  toolParametersDock_->setObjectName(QStringLiteral("partDesignParametersDock"));
   toolParametersDock_->setMinimumWidth(250);
   addDockWidget(Qt::RightDockWidgetArea, toolParametersDock_);
   toolParametersDock_->hide();
@@ -802,6 +819,8 @@ void MainWindow::buildUi() {
               updateChamferToolPreview();
             } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               shellToolSession_.setThicknessFromPanel(value);
+              toolParametersPanel_->setParameterValue(
+                  shellToolSession_.thicknessMm());
               updateShellToolPreview();
             } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               draftToolSession_.setAngleFromPanel(value);
@@ -1361,6 +1380,7 @@ void MainWindow::buildUi() {
               modelRibbon_->clearActiveTool();
               return;
             }
+            resetTransientModelingUi();
             editingSketchIndex_.reset();
             statusBar()->showMessage(
                 QString::fromUtf8("Выберите базовую плоскость или грань тела"));
@@ -1377,6 +1397,7 @@ void MainWindow::buildUi() {
               modelRibbon_->clearActiveTool();
               return;
             }
+            resetTransientModelingUi();
             extrudeOperationManuallyChanged_ = false;
             extrusionReverseCheck_->setChecked(false);
             const QSignalBlocker blocker(extrusionOperationCombo_);
@@ -1396,6 +1417,7 @@ void MainWindow::buildUi() {
                   QString::fromUtf8("Сначала создайте Body."));
               return;
             }
+            resetTransientModelingUi();
             extrudeOperationManuallyChanged_ = true;
             extrusionOperationCombo_->setCurrentIndex(2);
             extrusionReverseCheck_->setChecked(true);
@@ -2005,6 +2027,7 @@ void MainWindow::refreshBodyViewFromDocument() {
 
 void MainWindow::createRevolve() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Revolve);
   Body* body = document_.activeBody();
   revolveToolSession_.begin(document_, body ? body->id() : kInvalidBodyId,
@@ -2184,6 +2207,7 @@ void MainWindow::createPocket() {
 
 void MainWindow::createFillet() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Fillet);
   if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelChamferTool();
@@ -2230,6 +2254,7 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
     for (std::size_t index = 0; index < body.features().size(); ++index) {
       ShapeFeature* feature = body.features()[index].get();
       if (feature->id() != featureId) continue;
+      resetTransientModelingUi();
       if (auto* revolve = dynamic_cast<RevolveFeature*>(feature)) {
         partDesignTools_.activate(PartDesignToolKind::Revolve);
         ShapeFeature::ShapePtr upstream = index == 0
@@ -2376,6 +2401,7 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
 
 void MainWindow::createMirror() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   Body* body = document_.activeBody();
   if (!body || !body->activeFeature()) return;
   const QStringList planes{QStringLiteral("XY"), QStringLiteral("XZ"),
@@ -2399,6 +2425,7 @@ void MainWindow::createMirror() {
 
 void MainWindow::createLinearPattern() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   Body* body = document_.activeBody();
   if (!body || !body->activeFeature()) return;
   QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("ЛИНЕЙНЫЙ МАССИВ"));
@@ -2421,6 +2448,7 @@ void MainWindow::createLinearPattern() {
 
 void MainWindow::createCircularPattern() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   Body* body = document_.activeBody();
   if (!body || !body->activeFeature()) return;
   QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("КРУГОВОЙ МАССИВ"));
@@ -2442,6 +2470,7 @@ void MainWindow::createCircularPattern() {
 
 void MainWindow::createChamfer() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Chamfer);
   if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
     cancelFilletTool();
@@ -2484,6 +2513,7 @@ void MainWindow::createChamfer() {
 
 void MainWindow::createShell() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Shell);
   auto faces = viewport_->selectedBodyFaces();
   Body* body = faces.empty() ? document_.activeBody()
@@ -2516,9 +2546,17 @@ void MainWindow::updateShellToolPreview() {
   if (state == ToolLifecycle::Inactive) return;
   toolParametersPanel_->setSelectionCount(shellToolSession_.removedFaces().size());
   const bool valid = state == ToolLifecycle::PreviewValid;
+  const QString limitStatus = QString::fromUtf8(
+      "Достигнута предельная толщина: %1 мм")
+                                  .arg(shellToolSession_.thicknessMm(), 0, 'f', 2);
+  toolParametersPanel_->setParameterRange(
+      0.01, shellToolSession_.maximumValidThicknessMm().value_or(100000.0), 2);
+  toolParametersPanel_->setParameterValue(shellToolSession_.thicknessMm());
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
-      valid ? QString::fromUtf8("Предпросмотр построен")
+      valid ? shellToolSession_.limitReached()
+                  ? limitStatus
+                  : QString::fromUtf8("Предпросмотр построен")
             : state == ToolLifecycle::SelectingInput
                   ? partDesignToolStepHint(PartDesignToolKind::Shell,
                                            ToolSelectionStage::SelectingInput)
@@ -2538,6 +2576,8 @@ void MainWindow::updateShellToolPreview() {
     viewport_->setToolManipulator(*manipulator);
   else
     viewport_->clearToolManipulator();
+  if (shellToolSession_.limitReached())
+    statusBar()->showMessage(limitStatus, 5000);
 }
 
 void MainWindow::cancelShellTool() {
@@ -2593,6 +2633,7 @@ void MainWindow::acceptShellTool() {
 
 void MainWindow::createDraft() {
   if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Draft);
   auto faces = viewport_->selectedBodyFaces();
   Body* body = faces.empty() ? document_.activeBody()
@@ -2737,6 +2778,7 @@ void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
         4000);
     return;
   }
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Extrude);
   faceExtrudeSession_.beginSketch(
       *profile, sketchId, capability->baseShape, 10.0,
@@ -2766,6 +2808,7 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
     statusBar()->showMessage(QString::fromUtf8("Сначала создайте тело."), 3000);
     return;
   }
+  resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Extrude);
   faceExtrudeSession_.begin(body->id(), body->activeFeature()->id(),
                             body->resultShape(), face, 10.0,
@@ -3466,6 +3509,7 @@ void MainWindow::editHistoryFeature(BodyId bodyId, FeatureId featureId) {
   Body* body = document_.findBody(bodyId);
   if (!body) return;
   ShapeFeature* feature = findHistoryFeature(document_, bodyId, featureId);
+  if (feature) resetTransientModelingUi();
   if (dynamic_cast<ExtrudeFeature*>(feature)) editExtrusionStep(bodyId, featureId);
   else if (dynamic_cast<PocketFeature*>(feature)) editPocketStep(bodyId, featureId);
   else if (dynamic_cast<FilletFeature*>(feature)) editFilletStep(bodyId, featureId);

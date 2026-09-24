@@ -26,6 +26,8 @@ class ShellToolSession final : public ToolSession {
   [[nodiscard]] const std::vector<FaceReference>& removedFaces() const noexcept;
   [[nodiscard]] double thicknessMm() const noexcept;
   [[nodiscard]] bool outside() const noexcept;
+  [[nodiscard]] std::optional<double> maximumValidThicknessMm() const noexcept;
+  [[nodiscard]] bool limitReached() const noexcept;
   [[nodiscard]] std::optional<LinearToolManipulator> manipulator() const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -37,6 +39,8 @@ class ShellToolSession final : public ToolSession {
   void cancel() noexcept override;
 
  private:
+  bool trySetThickness(double value);
+  bool recoverBelowInvalidThickness(double upperInvalid);
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
@@ -47,6 +51,8 @@ class ShellToolSession final : public ToolSession {
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   std::string error_;
+  std::optional<double> maximumValidThicknessMm_;
+  bool limitReached_{false};
 };
 
 }  // namespace solidar

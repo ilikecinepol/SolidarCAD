@@ -17,6 +17,8 @@
 #include <vector>
 
 #include "model/ChamferBuilder.h"
+#include "model/Document.h"
+#include "model/ExtrudeFeature.h"
 #include "model/FilletBuilder.h"
 #include "model/ShellBuilder.h"
 #include "model/TopologyReferenceResolver.h"
@@ -165,6 +167,34 @@ int main() {
   // Cases 7-8: the exact same upstream B-Rep is used for inward and outward.
   CHECK(validShell(*chamfer5, 1.0, false));
   CHECK(validShell(*chamfer5, 1.0, true));
+
+  // Removing the cap of a shallow extrusion does not impose the generic
+  // half-of-smallest-dimension limit: a 2 mm bottom in a 3 mm deep body still
+  // leaves a valid 1 mm cavity.
+  {
+    const TopoDS_Shape shallow = BRepPrimAPI_MakeBox(40.0, 30.0, 3.0).Shape();
+    CHECK(validShell(shallow, 2.0, false));
+  }
+
+  // User regression: a D-shaped sketch (straight lower portion with a
+  // semicircular cap) extruded into a prism must accept a 2 mm inward shell
+  // when an end cap is removed. This is the profile shown in the reported UI
+  // failure and is well inside its geometric thickness limit.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    solidar::Document document;
+    auto& profile = document.addSketch("D profile");
+    profile.geometry.addLine({-20.0, -30.0}, {20.0, -30.0});
+    profile.geometry.addLine({20.0, -30.0}, {20.0, 0.0});
+    profile.geometry.addArc({0.0, 0.0}, 20.0, 0.0, kPi);
+    profile.geometry.addLine({-20.0, 0.0}, {-20.0, -30.0});
+    auto& body = document.addBody("D body");
+    body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        profile.id, 40.0, "D extrude"));
+    CHECK(document.recompute());
+    CHECK(body.resultShape());
+    CHECK(validShell(*body.resultShape(), 2.0, false));
+  }
 
   // Impossible input fails early and remains recoverable with unchanged input.
   std::string error;

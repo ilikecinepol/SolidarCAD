@@ -90,6 +90,10 @@ class Viewport final : public QOpenGLWidget {
   // Clears every piece of the legacy QPainter extrusion preview (sketch
   // extrude) so it can never overlap the modern Face Extrude native preview.
   void clearLegacyExtrusionPreview();
+  // Clears every transient modeling interaction without emitting the Escape
+  // notification. MainWindow uses this before starting another tool so a
+  // legacy pick mode/HUD cannot survive alongside the new tool's UI.
+  void resetToolInteraction();
   // True when the active tool manipulator is a directional (Face Extrude)
   // linear manipulator; paintGL suppresses the legacy prism/arrow/spinbox in
   // that case so the two preview generations can never render simultaneously.

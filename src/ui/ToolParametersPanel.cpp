@@ -94,6 +94,7 @@ void ToolParametersPanel::setSelectionCount(std::size_t count) {
 }
 void ToolParametersPanel::setParameterRange(double minimum, double maximum,
                                             int decimals) {
+  const QSignalBlocker blocker(parameter_);
   parameter_->setRange(minimum, maximum);
   parameter_->setDecimals(decimals);
 }
