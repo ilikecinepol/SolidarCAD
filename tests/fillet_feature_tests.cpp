@@ -190,8 +190,7 @@ int main() {
   assert(oversizedDocument.rebuild());
   auto* oversized = addFillet(oversizedDocument, oversizedBox, 1000.0);
   assert(!oversizedDocument.rebuild());
-  assert(oversized->error() ==
-         "Fillet could not be built with the requested radius");
+  assert(oversized->error() == "Fillet exceeds the source shape boundary");
   assert(!oversized->hasShape());
 
   // Repeated valid/invalid radius edits remain recoverable and never expose a
@@ -278,10 +277,12 @@ int main() {
   CHECK(multiEdgeSession.edges() == selectedReferences);
   multiEdgeSession.setRadiusFromPanel(1000.0);
   CHECK(multiEdgeSession.lifecycle() ==
-        solidar::ToolLifecycle::PreviewValid);
+        solidar::ToolLifecycle::PreviewInvalid);
   CHECK(multiEdgeSession.previewShape());
   CHECK(std::abs(multiEdgeSession.radiusMm() - 1.0) < 1e-9);
-  CHECK(multiEdgeSession.error().empty());
+  CHECK(!multiEdgeSession.error().empty());
+  CHECK(multiEdgeSession.maximumValidRadiusMm());
+  CHECK(*multiEdgeSession.maximumValidRadiusMm() >= 1.0);
   CHECK(multiEdgeSession.edges() == selectedReferences);
   multiEdgeSession.setRadiusFromManipulator(0.0);
   CHECK(multiEdgeSession.lifecycle() ==
@@ -291,6 +292,15 @@ int main() {
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::PreviewValid);
   CHECK(multiEdgeSession.edges() == selectedReferences);
+  multiEdgeSession.setRadiusFromManipulator(1000.0);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewValid);
+  CHECK(multiEdgeSession.previewShape());
+  CHECK(multiEdgeSession.limitReached());
+  CHECK(multiEdgeSession.maximumValidRadiusMm());
+  CHECK(std::abs(multiEdgeSession.radiusMm() -
+                 *multiEdgeSession.maximumValidRadiusMm()) < 1e-4);
+  CHECK(multiEdgeSession.radiusMm() < 1000.0);
   const double multiEdgeBefore = volumeOf(*multiEdgeBody->resultShape());
   auto feature =
       std::make_unique<solidar::FilletFeature>(verticalEdges, 3.0, "Two edges");

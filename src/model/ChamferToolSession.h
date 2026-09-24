@@ -24,6 +24,8 @@ class ChamferToolSession final : public ToolSession {
   [[nodiscard]] std::optional<FeatureId> editingFeatureId() const noexcept override;
   [[nodiscard]] const std::vector<EdgeReference>& edges() const noexcept;
   [[nodiscard]] double distanceMm() const noexcept;
+  [[nodiscard]] std::optional<double> maximumValidDistanceMm() const noexcept;
+  [[nodiscard]] bool limitReached() const noexcept;
   [[nodiscard]] std::optional<LinearToolManipulator> manipulator() const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -35,7 +37,7 @@ class ChamferToolSession final : public ToolSession {
   void cancel() noexcept override;
 
  private:
-  bool trySetDistance(double distanceMm);
+  bool trySetDistance(double distanceMm, bool clampToBoundary);
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
@@ -45,6 +47,8 @@ class ChamferToolSession final : public ToolSession {
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   std::string error_;
+  std::optional<double> maximumValidDistanceMm_;
+  bool limitReached_{false};
 };
 
 }  // namespace solidar

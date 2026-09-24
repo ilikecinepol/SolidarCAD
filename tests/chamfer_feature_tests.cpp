@@ -3,8 +3,11 @@
 #include <QTemporaryDir>
 
 #include <BRepGProp.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
 #include <GProp_GProps.hxx>
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -17,6 +20,7 @@
 #include "model/ChamferFeature.h"
 #include "model/ChamferToolSession.h"
 #include "model/Document.h"
+#include "model/EdgeFeatureLimits.h"
 #include "model/ExtrudeFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
@@ -164,10 +168,12 @@ int main(int argc, char* argv[]) {
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.edges() == pairReferences);
     pairSession.setDistanceFromPanel(1000.0);
-    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
     CHECK(pairSession.previewShape());
     CHECK(std::abs(pairSession.distanceMm() - 0.75) < 1e-9);
-    CHECK(pairSession.error().empty());
+    CHECK(!pairSession.error().empty());
+    CHECK(pairSession.maximumValidDistanceMm());
+    CHECK(*pairSession.maximumValidDistanceMm() >= 0.75);
     CHECK(pairSession.edges() == pairReferences);
     pairSession.setDistanceFromManipulator(0.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::EditingParameters);
@@ -175,6 +181,86 @@ int main(int argc, char* argv[]) {
     pairSession.setDistanceFromPanel(1.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.edges() == pairReferences);
+    pairSession.setDistanceFromManipulator(1000.0);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+    CHECK(pairSession.previewShape());
+    CHECK(pairSession.limitReached());
+    CHECK(pairSession.maximumValidDistanceMm());
+    CHECK(std::abs(pairSession.distanceMm() -
+                   *pairSession.maximumValidDistanceMm()) < 1e-4);
+    CHECK(pairSession.distanceMm() < 1000.0);
+
+    // A hollow body's oversized chamfer can remain a formally valid B-Rep
+    // while crossing into unrelated inner faces. Treat the nearest such face
+    // as the geometric boundary instead of exposing the parasitic flange.
+    const TopoDS_Shape outer = BRepPrimAPI_MakeBox(80.0, 50.0, 20.0).Shape();
+    const TopoDS_Shape inner =
+        BRepPrimAPI_MakeBox(gp_Pnt(4.0, 4.0, 4.0), 72.0, 42.0, 20.0).Shape();
+    BRepAlgoAPI_Cut trayMaker(outer, inner);
+    trayMaker.Build();
+    CHECK(trayMaker.IsDone());
+    const TopoDS_Shape tray = trayMaker.Shape();
+    bool rejectedBoundaryCrossing = false;
+    bool acceptedLocalChamfer = false;
+    for (std::size_t index = 0; index < 64; ++index) {
+      std::string smallError;
+      if (!solidar::buildChamferShape(tray, {index}, 1.0, &smallError)) {
+        if (smallError.find("could not be resolved") != std::string::npos) break;
+        continue;
+      }
+      acceptedLocalChamfer = true;
+      std::string largeError;
+      const auto large =
+          solidar::buildChamferShape(tray, {index}, 14.08, &largeError);
+      if (!large &&
+          largeError == "Chamfer exceeds the source shape boundary") {
+        rejectedBoundaryCrossing = true;
+        break;
+      }
+    }
+    CHECK(acceptedLocalChamfer);
+    CHECK(rejectedBoundaryCrossing);
+
+    // Faces belonging to another selected edge are part of the same changing
+    // region, not fixed obstacles. A paired inner/outer selection therefore
+    // gets a wider domain than either edge would receive in isolation.
+    struct TrayEdge {
+      std::size_t index{};
+      TopoDS_Edge edge;
+      double individualClearance{};
+    };
+    std::vector<TrayEdge> trayEdges;
+    for (std::size_t index = 0; index < 64; ++index) {
+      const auto edge = solidar::resolveEdge(tray, index);
+      if (!edge) break;
+      std::string error;
+      if (!solidar::buildChamferShape(tray, {index}, 1.0, &error)) continue;
+      const auto clearance =
+          solidar::minimumEdgeFeatureClearance(tray, {*edge});
+      if (clearance) trayEdges.push_back({index, *edge, *clearance});
+    }
+    bool pairedSelectionRelaxesBoundary = false;
+    for (std::size_t first = 0;
+         first < trayEdges.size() && !pairedSelectionRelaxesBoundary; ++first) {
+      for (std::size_t second = first + 1; second < trayEdges.size(); ++second) {
+        const auto groupClearance = solidar::minimumEdgeFeatureClearance(
+            tray, {trayEdges[first].edge, trayEdges[second].edge});
+        const double oldClearance =
+            std::min(trayEdges[first].individualClearance,
+                     trayEdges[second].individualClearance);
+        if (!groupClearance || *groupClearance <= oldClearance + 0.2) continue;
+        const double candidate =
+            oldClearance + std::min(0.5, (*groupClearance - oldClearance) * 0.5);
+        std::string pairError;
+        if (solidar::buildChamferShape(
+                tray, {trayEdges[first].index, trayEdges[second].index},
+                candidate, &pairError)) {
+          pairedSelectionRelaxesBoundary = true;
+          break;
+        }
+      }
+    }
+    CHECK(pairedSelectionRelaxesBoundary);
 
     // Editing an existing multi-edge feature restores its source references
     // while the preview remains an independent session result.

@@ -864,5 +864,26 @@ int main(int argc, char** argv) {
     CHECK(commits == 1);
   }
 
+  // Plane/surface picking owns only hover and left-click selection. A right
+  // drag remains a camera-orbit gesture while either pick mode is active.
+  for (const bool sketchPlaneMode : {true, false}) {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    if (sketchPlaneMode)
+      view.beginSketchPlaneSelection();
+    else
+      view.beginExtrusionSurfaceSelection();
+    const float yawBefore = view.cameraYawDegrees();
+    const float pitchBefore = view.cameraPitchDegrees();
+    mouse(view, QEvent::MouseButtonPress, {400.0, 300.0}, Qt::RightButton,
+          Qt::RightButton);
+    mouse(view, QEvent::MouseMove, {440.0, 320.0}, Qt::NoButton,
+          Qt::RightButton);
+    mouse(view, QEvent::MouseButtonRelease, {440.0, 320.0}, Qt::RightButton,
+          Qt::NoButton);
+    CHECK(std::abs(view.cameraYawDegrees() - yawBefore) > 1e-6F);
+    CHECK(std::abs(view.cameraPitchDegrees() - pitchBefore) > 1e-6F);
+  }
+
   return EXIT_SUCCESS;
 }

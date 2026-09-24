@@ -4364,12 +4364,14 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  if (pickMode_ == PickMode::ExtrusionSurface) {
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::ExtrusionSurface) {
     updateExtrusionHover(event->position() - cameraPan_);
     update();
     return;
   }
-  if (pickMode_ == PickMode::SketchPlane) {
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::SketchPlane) {
     updateSketchPlaneHover(event->position() - cameraPan_);
     update();
     return;

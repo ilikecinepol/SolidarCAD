@@ -197,6 +197,56 @@ void circularEdgeProjectionTests() {
   for (std::size_t edge = 0; edge < canvas.referenceBodyEdgeCount(); ++edge)
     (void)canvas.projectReferenceEdge(edge);
   CHECK(canvas.sketch().circles().size() == circleCountBefore);
+
+  // Exercise the actual Projection tool path. Curved reference edges must be
+  // hit-testable with the mouse, not only projectable through the index API.
+  solidar::SketchCanvas manual;
+  manual.resize(900, 650);
+  manual.setSketchEditContext(faceContext(disk, 0.0, false));
+  manual.setTool(solidar::SketchCanvas::Tool::Projection);
+  manual.show();
+  QApplication::processEvents();
+
+  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
+  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
+  constexpr double pixelsPerMm = 0.82 * (650.0 - 30.0 - 50.0) / 10.0;
+  const QPointF circlePoint(centerX + 5.0 * pixelsPerMm, centerY);
+  QMouseEvent move(QEvent::MouseMove, circlePoint, Qt::NoButton,
+                   Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&manual, &move);
+  QMouseEvent press(QEvent::MouseButtonPress, circlePoint, Qt::LeftButton,
+                    Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&manual, &press);
+
+  CHECK(manual.sketch().circles().size() == 1);
+  CHECK(manual.sketch().circles().front().dashed);
+  CHECK(manual.sketch().isGeometryLocked(manual.sketch().circleId(0)));
+
+  // The same interaction must work for a trimmed circular edge (Arc).
+  const TopoDS_Edge upperArc =
+      BRepBuilderAPI_MakeEdge(circle, 0.0, std::numbers::pi).Edge();
+  const TopoDS_Edge lowerArc =
+      BRepBuilderAPI_MakeEdge(circle, std::numbers::pi,
+                              2.0 * std::numbers::pi)
+          .Edge();
+  const TopoDS_Shape splitDisk =
+      BRepBuilderAPI_MakeFace(
+          BRepBuilderAPI_MakeWire(upperArc, lowerArc).Wire())
+          .Shape();
+  solidar::SketchCanvas arcCanvas;
+  arcCanvas.resize(900, 650);
+  arcCanvas.setSketchEditContext(faceContext(splitDisk, 0.0, false));
+  arcCanvas.setTool(solidar::SketchCanvas::Tool::Projection);
+  arcCanvas.show();
+  QApplication::processEvents();
+
+  const QPointF arcPoint(centerX, centerY - 5.0 * pixelsPerMm);
+  QMouseEvent arcPress(QEvent::MouseButtonPress, arcPoint, Qt::LeftButton,
+                       Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&arcCanvas, &arcPress);
+  CHECK(arcCanvas.sketch().arcs().size() == 1);
+  CHECK(arcCanvas.sketch().arcs().front().dashed);
+  CHECK(arcCanvas.sketch().isGeometryLocked(arcCanvas.sketch().arcId(0)));
 }
 
 void arcBodySelectionAndDragTests() {

@@ -54,6 +54,31 @@ void lockedLineIsImmutable() {
           "locked element must not be deleted");
 }
 
+void lockedArcIsImmutable() {
+  Sketch sketch;
+  constexpr double kPi = 3.14159265358979323846;
+  sketch.addArc({2.0, 3.0}, 10.0, 0.0, kPi);
+  CHECK(sketch.arcs().size() == 1);
+
+  const GeometryId id = sketch.arcId(0);
+  require(lockGeometry(sketch, id) != kInvalidConstraintId,
+          "arc Lock must be accepted");
+  require(sketch.isGeometryLocked(id), "arc must report locked");
+
+  const Arc before = sketch.arcs().front();
+  sketch.translateArcById(id, 8.0, -4.0);
+  CHECK(!sketch.moveArcEndpointReshapeById(id, false, {-10.0, 0.0}));
+  sketch.removeArc(0);
+
+  CHECK(sketch.arcs().size() == 1);
+  const Arc& after = sketch.arcs().front();
+  CHECK(std::abs(after.center.xMm - before.center.xMm) <= 1e-9);
+  CHECK(std::abs(after.center.yMm - before.center.yMm) <= 1e-9);
+  CHECK(std::abs(after.radiusMm - before.radiusMm) <= 1e-9);
+  CHECK(std::abs(after.startAngleRad - before.startAngleRad) <= 1e-9);
+  CHECK(std::abs(after.sweepAngleRad - before.sweepAngleRad) <= 1e-9);
+}
+
 void oneLockFreezesWholeCompositeElement() {
   Sketch sketch;
   sketch.addRectangle({0.0, 0.0}, {40.0, 20.0});
@@ -788,6 +813,7 @@ void moveArcEndReshapesKeepingCenterAndStart() {
 
 int main() {
   lockedLineIsImmutable();
+  lockedArcIsImmutable();
   oneLockFreezesWholeCompositeElement();
   unlockedPointCanReferenceLockedGeometry();
   lockConsumesGeometryDof();

@@ -95,6 +95,41 @@ QString localizedFaceToolError(const std::string& technical) {
     return QString::fromUtf8("Создание эскиза на криволинейной поверхности пока не поддерживается.");
   return QString::fromUtf8("Не удалось определить выбранную поверхность.");
 }
+
+QString localizedPartDesignError(PartDesignToolKind kind,
+                                 const std::string& technical) {
+  const QString error = QString::fromStdString(technical);
+  if (error.contains(QStringLiteral("could not be resolved")) ||
+      error.contains(QStringLiteral("no longer match")) ||
+      error.contains(QStringLiteral("different Body")))
+    return QString::fromUtf8(
+        "Выбранная геометрия больше не соответствует текущей модели. "
+        "Выберите её заново.");
+
+  switch (kind) {
+    case PartDesignToolKind::Fillet:
+      return QString::fromUtf8(
+          "Не удалось построить скругление. Радиус слишком велик для "
+          "выбранной геометрии или приводит к самопересечению.");
+    case PartDesignToolKind::Chamfer:
+      return QString::fromUtf8(
+          "Не удалось построить фаску. Размер слишком велик для выбранной "
+          "геометрии или приводит к самопересечению.");
+    case PartDesignToolKind::Shell:
+      return QString::fromUtf8(
+          "Не удалось построить оболочку. Толщина слишком велика или "
+          "приводит к самопересечению.");
+    case PartDesignToolKind::Draft:
+      return QString::fromUtf8(
+          "Не удалось построить уклон. Проверьте угол, направление и "
+          "выбранные грани.");
+    default:
+      break;
+  }
+  return error.isEmpty()
+             ? QString::fromUtf8("Не удалось построить предпросмотр операции.")
+             : error;
+}
 }  // namespace
 
 MainWindow::MainWindow(AppSettings& settings, QWidget* parent)
@@ -2486,7 +2521,8 @@ void MainWindow::updateShellToolPreview() {
             : state == ToolLifecycle::SelectingInput
                   ? partDesignToolStepHint(PartDesignToolKind::Shell,
                                            ToolSelectionStage::SelectingInput)
-                  : QString::fromStdString(shellToolSession_.error()),
+                  : localizedPartDesignError(PartDesignToolKind::Shell,
+                                             shellToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
   if (valid) {
     viewport_->setToolPreviewPresentation(
@@ -2597,7 +2633,8 @@ void MainWindow::updateDraftToolPreview() {
             : state == ToolLifecycle::SelectingInput
                   ? partDesignToolStepHint(PartDesignToolKind::Draft,
                                            ToolSelectionStage::SelectingInput)
-                  : QString::fromStdString(draftToolSession_.error()),
+                  : localizedPartDesignError(PartDesignToolKind::Draft,
+                                             draftToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
   if (valid) {
     viewport_->setToolPreviewPresentation(
@@ -2938,14 +2975,31 @@ void MainWindow::updateChamferToolPreview() {
   toolParametersPanel_->setSelectionCount(chamferToolSession_.edges().size());
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setAcceptEnabled(valid);
+  const auto maximum = chamferToolSession_.maximumValidDistanceMm();
+  const QString error = maximum
+                            ? QString::fromUtf8(
+                                  "Размер фаски слишком велик. Максимально "
+                                  "допустимое значение: %1 мм.")
+                                  .arg(*maximum, 0, 'f', 2)
+                            : localizedPartDesignError(
+                                  PartDesignToolKind::Chamfer,
+                                  chamferToolSession_.error());
+  const QString limitStatus =
+      maximum
+          ? QString::fromUtf8("Достигнут предельный размер фаски: %1 мм")
+                .arg(*maximum, 0, 'f', 2)
+          : QString{};
+  toolParametersPanel_->setParameterValue(chamferToolSession_.distanceMm());
   toolParametersPanel_->setStatus(
-      valid ? QString::fromUtf8("Предпросмотр построен")
+      valid ? chamferToolSession_.limitReached()
+                  ? limitStatus
+                  : QString::fromUtf8("Предпросмотр построен")
             : state == ToolLifecycle::SelectingInput
                   ? partDesignToolStepHint(PartDesignToolKind::Chamfer,
                                            ToolSelectionStage::SelectingInput)
-                  : QString::fromStdString(chamferToolSession_.error()),
+                  : error,
       state == ToolLifecycle::PreviewInvalid);
-  if (valid)
+  if (chamferToolSession_.previewShape())
     viewport_->setToolPreviewShape(chamferToolSession_.bodyId(),
                                    chamferToolSession_.sourceFeatureId(),
                                    chamferToolSession_.previewShape());
@@ -2955,6 +3009,10 @@ void MainWindow::updateChamferToolPreview() {
     viewport_->setToolManipulator(*manipulator);
   else
     viewport_->clearToolManipulator();
+  if (state == ToolLifecycle::PreviewInvalid)
+    statusBar()->showMessage(error, 5000);
+  else if (chamferToolSession_.limitReached())
+    statusBar()->showMessage(limitStatus, 5000);
 }
 
 void MainWindow::cancelChamferTool() {
@@ -2991,7 +3049,8 @@ void MainWindow::acceptChamferTool() {
         "Фаска " + std::to_string(body->features().size())));
   }
   if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
+    const QString error = localizedPartDesignError(
+        PartDesignToolKind::Chamfer, document_.rebuildError());
     document_ = previousDocument;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
@@ -3026,14 +3085,31 @@ void MainWindow::updateFilletToolPreview() {
   toolParametersPanel_->setSelectionCount(filletToolSession_.edges().size());
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setAcceptEnabled(valid);
+  const auto maximum = filletToolSession_.maximumValidRadiusMm();
+  const QString error = maximum
+                            ? QString::fromUtf8(
+                                  "Радиус скругления слишком велик. Максимально "
+                                  "допустимое значение: %1 мм.")
+                                  .arg(*maximum, 0, 'f', 2)
+                            : localizedPartDesignError(
+                                  PartDesignToolKind::Fillet,
+                                  filletToolSession_.error());
+  const QString limitStatus =
+      maximum
+          ? QString::fromUtf8("Достигнут предельный радиус: %1 мм")
+                .arg(*maximum, 0, 'f', 2)
+          : QString{};
+  toolParametersPanel_->setParameterValue(filletToolSession_.radiusMm());
   toolParametersPanel_->setStatus(
-      valid ? QString::fromUtf8("Предпросмотр построен")
+      valid ? filletToolSession_.limitReached()
+                  ? limitStatus
+                  : QString::fromUtf8("Предпросмотр построен")
             : state == ToolLifecycle::SelectingInput
                   ? partDesignToolStepHint(PartDesignToolKind::Fillet,
                                            ToolSelectionStage::SelectingInput)
-                  : QString::fromStdString(filletToolSession_.error()),
+                  : error,
       state == ToolLifecycle::PreviewInvalid);
-  if (valid)
+  if (filletToolSession_.previewShape())
     viewport_->setToolPreviewShape(filletToolSession_.bodyId(),
                                    filletToolSession_.sourceFeatureId(),
                                    filletToolSession_.previewShape());
@@ -3043,6 +3119,10 @@ void MainWindow::updateFilletToolPreview() {
     viewport_->setToolManipulator(*manipulator);
   else
     viewport_->clearToolManipulator();
+  if (state == ToolLifecycle::PreviewInvalid)
+    statusBar()->showMessage(error, 5000);
+  else if (filletToolSession_.limitReached())
+    statusBar()->showMessage(limitStatus, 5000);
 }
 
 void MainWindow::cancelFilletTool() {
@@ -3079,7 +3159,8 @@ void MainWindow::acceptFilletTool() {
         "Скругление " + std::to_string(body->features().size())));
   }
   if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
+    const QString error = localizedPartDesignError(
+        PartDesignToolKind::Fillet, document_.rebuildError());
     document_ = previousDocument;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);

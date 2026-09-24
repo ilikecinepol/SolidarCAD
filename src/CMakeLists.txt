@@ -11,6 +11,8 @@ add_library(solidar_model
   model/Body.h
   model/Document.cpp
   model/Document.h
+  model/EdgeFeatureLimits.cpp
+  model/EdgeFeatureLimits.h
   model/EdgeManipulatorGeometry.cpp
   model/EdgeManipulatorGeometry.h
   model/NumericParameterState.h

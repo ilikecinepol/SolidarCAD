@@ -861,6 +861,8 @@ SketchCanvas::SketchCanvas(QWidget* parent) : QWidget(parent) {
   };
   primaryDimension_ = makeDimension();
   secondaryDimension_ = makeDimension();
+  primaryDimension_->setObjectName(QStringLiteral("primaryDimension"));
+  secondaryDimension_->setObjectName(QStringLiteral("secondaryDimension"));
 }
 
 void SketchCanvas::setRectangle(double widthMm, double heightMm) {
@@ -3469,6 +3471,55 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         painter.drawRect(QRectF(first - delta, first + delta).normalized());
       } else {
         painter.drawRect(QRectF(first, current).normalized());
+      }
+
+      // Keep the live width/height values attached to conventional CAD
+      // dimension lines instead of presenting them as an unrelated W/H HUD.
+      const QRectF rectangle = rectangleMode_ == RectangleMode::FromCenter
+                                   ? QRectF(first - (current - first),
+                                            first + (current - first))
+                                         .normalized()
+                                   : QRectF(first, current).normalized();
+      if (rectangle.width() > 1.0 || rectangle.height() > 1.0) {
+        constexpr double offset = 24.0;
+        constexpr double extension = 5.0;
+        const QColor dimensionColor = palette().color(QPalette::Highlight);
+        painter.save();
+        painter.setPen(QPen(dimensionColor, 1.2));
+        painter.setBrush(dimensionColor);
+
+        const auto drawInwardArrow = [&painter](QPointF tip,
+                                                 QPointF direction) {
+          const double length = std::hypot(direction.x(), direction.y());
+          if (length < 1e-6) return;
+          direction /= length;
+          const QPointF normal(-direction.y(), direction.x());
+          QPolygonF arrow;
+          arrow << tip << tip + direction * 8.0 + normal * 3.5
+                << tip + direction * 8.0 - normal * 3.5;
+          painter.drawPolygon(arrow);
+        };
+
+        const double dimensionY = rectangle.bottom() + offset;
+        painter.drawLine(QPointF(rectangle.left(), rectangle.bottom()),
+                         QPointF(rectangle.left(), dimensionY + extension));
+        painter.drawLine(QPointF(rectangle.right(), rectangle.bottom()),
+                         QPointF(rectangle.right(), dimensionY + extension));
+        painter.drawLine(QPointF(rectangle.left(), dimensionY),
+                         QPointF(rectangle.right(), dimensionY));
+        drawInwardArrow(QPointF(rectangle.left(), dimensionY), QPointF(1, 0));
+        drawInwardArrow(QPointF(rectangle.right(), dimensionY), QPointF(-1, 0));
+
+        const double dimensionX = rectangle.right() + offset;
+        painter.drawLine(QPointF(rectangle.right(), rectangle.top()),
+                         QPointF(dimensionX + extension, rectangle.top()));
+        painter.drawLine(QPointF(rectangle.right(), rectangle.bottom()),
+                         QPointF(dimensionX + extension, rectangle.bottom()));
+        painter.drawLine(QPointF(dimensionX, rectangle.top()),
+                         QPointF(dimensionX, rectangle.bottom()));
+        drawInwardArrow(QPointF(dimensionX, rectangle.top()), QPointF(0, 1));
+        drawInwardArrow(QPointF(dimensionX, rectangle.bottom()), QPointF(0, -1));
+        painter.restore();
       }
     } else if (tool_ == Tool::Circle) {
       const double radius = QLineF(first, current).length();
@@ -11429,17 +11480,38 @@ void SketchCanvas::showDimensionEditor(QPoint position) {
   primaryDimension_->setRange(0.01, 100000.0);
   secondaryDimension_->setRange(-360.0, 100000.0);
   if (tool_ == Tool::Line) {
+    primaryDimension_->setFixedWidth(122);
+    secondaryDimension_->setFixedWidth(122);
+    primaryDimension_->setFrame(true);
+    secondaryDimension_->setFrame(true);
+    primaryDimension_->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+    secondaryDimension_->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+    primaryDimension_->setAlignment(Qt::AlignLeft);
+    secondaryDimension_->setAlignment(Qt::AlignLeft);
     primaryDimension_->setPrefix(QString::fromUtf8("L: "));
     secondaryDimension_->setPrefix(QString::fromUtf8("Угол: "));
     secondaryDimension_->setSuffix(QString::fromUtf8(" °"));
     secondaryDimension_->show();
   } else if (tool_ == Tool::Rectangle) {
-    primaryDimension_->setPrefix(QString::fromUtf8("W: "));
-    secondaryDimension_->setPrefix(QString::fromUtf8("H: "));
+    primaryDimension_->setFixedWidth(88);
+    secondaryDimension_->setFixedWidth(88);
+    primaryDimension_->setFrame(false);
+    secondaryDimension_->setFrame(false);
+    primaryDimension_->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    secondaryDimension_->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    primaryDimension_->setAlignment(Qt::AlignCenter);
+    secondaryDimension_->setAlignment(Qt::AlignCenter);
+    primaryDimension_->setPrefix(QString());
+    secondaryDimension_->setPrefix(QString());
+    primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
     secondaryDimension_->setSuffix(QString::fromUtf8(" мм"));
     secondaryDimension_->setRange(0.01, 100000.0);
     secondaryDimension_->show();
   } else {
+    primaryDimension_->setFixedWidth(122);
+    primaryDimension_->setFrame(true);
+    primaryDimension_->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+    primaryDimension_->setAlignment(Qt::AlignLeft);
     primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));
     secondaryDimension_->hide();
   }
@@ -11485,6 +11557,36 @@ void SketchCanvas::positionDimensionEditor() {
   if (!anchor_ || !primaryDimension_->isVisible()) return;
   const QPointF anchorPosition = mapPoint(*anchor_);
   const QPointF tipPosition = mapPoint(hoverPoint_);
+
+  if (tool_ == Tool::Rectangle) {
+    const QRectF rectangle = rectangleMode_ == RectangleMode::FromCenter
+                                 ? QRectF(anchorPosition -
+                                              (tipPosition - anchorPosition),
+                                          anchorPosition +
+                                              (tipPosition - anchorPosition))
+                                       .normalized()
+                                 : QRectF(anchorPosition, tipPosition).normalized();
+    constexpr double offset = 24.0;
+    const QPoint primaryPosition(
+        qRound(rectangle.center().x() - primaryDimension_->width() * 0.5),
+        qRound(rectangle.bottom() + offset - primaryDimension_->height() * 0.5));
+    const QPoint secondaryPosition(
+        qRound(rectangle.right() + offset - secondaryDimension_->width() * 0.5),
+        qRound(rectangle.center().y() - secondaryDimension_->height() * 0.5));
+    const auto clamped = [this](QPoint position, const QWidget* editor) {
+      position.setX(std::clamp(position.x(), static_cast<int>(kRulerLeft + 6),
+                               std::max(static_cast<int>(kRulerLeft + 6),
+                                        width() - editor->width() - 8)));
+      position.setY(std::clamp(position.y(), static_cast<int>(kRulerTop + 6),
+                               std::max(static_cast<int>(kRulerTop + 6),
+                                        height() - editor->height() - 8)));
+      return position;
+    };
+    primaryDimension_->move(clamped(primaryPosition, primaryDimension_));
+    secondaryDimension_->move(clamped(secondaryPosition, secondaryDimension_));
+    return;
+  }
+
   QPointF direction = tipPosition - anchorPosition;
   const double length = std::hypot(direction.x(), direction.y());
   direction = length < 1.0 ? QPointF(1.0, 0.5) : direction / length;

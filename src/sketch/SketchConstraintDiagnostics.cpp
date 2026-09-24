@@ -595,6 +595,14 @@ std::vector<Equation> evaluate(const Sketch& sketch,
           break;
         }
 
+        // Arcs are not part of the numeric diagnostics layout yet, but Lock
+        // is still a valid model constraint for them: every arc mutator and
+        // the stable solver baseline already honour isGeometryLocked().
+        // Treat the existing arc as a valid locked carrier instead of marking
+        // the constraint invalid and transactionally deleting projections.
+        if (sketch.arcIndex(constraint.firstGeometry))
+          break;
+
         invalidEquation(constraint);
         break;
       }
