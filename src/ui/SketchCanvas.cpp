@@ -11845,6 +11845,70 @@ void SketchCanvas::commitDimensionEditor() {
       sketch_.addRectangle(start, {start.xMm + sx * primaryDimension_->value(),
                                    start.yMm + sy * secondaryDimension_->value()});
     }
+
+    // Enter confirms explicit driving dimensions. A rectangle finished with
+    // the mouse remains free of dimensional constraints and annotations.
+    if (sketch_.lines().size() == oldLineCount + 4) {
+      std::size_t horizontalIndex = oldLineCount;
+      std::size_t verticalIndex = oldLineCount + 1;
+      double lowestY = std::numeric_limits<double>::max();
+      double rightmostX = std::numeric_limits<double>::lowest();
+
+      for (std::size_t index = oldLineCount;
+           index < oldLineCount + 4; ++index) {
+        const auto& line = sketch_.lines()[index];
+        const double dx = std::abs(line.end.xMm - line.start.xMm);
+        const double dy = std::abs(line.end.yMm - line.start.yMm);
+        if (dx >= dy) {
+          const double y = (line.start.yMm + line.end.yMm) * 0.5;
+          if (y < lowestY) {
+            lowestY = y;
+            horizontalIndex = index;
+          }
+        } else {
+          const double x = (line.start.xMm + line.end.xMm) * 0.5;
+          if (x > rightmostX) {
+            rightmostX = x;
+            verticalIndex = index;
+          }
+        }
+      }
+
+      const auto addDrivingDimension =
+          [this](std::size_t lineIndex,
+                 sketch::ConstraintType constraintType,
+                 sketch::DimensionKind dimensionKind,
+                 double valueMm, double offsetMm) {
+            const auto lineId = sketch_.lineId(lineIndex);
+            if (lineId == sketch::kInvalidGeometryId) return;
+
+            sketch::Constraint constraint;
+            constraint.type = constraintType;
+            constraint.firstPoint = {lineId, true};
+            constraint.secondPoint = {lineId, false};
+            constraint.value = valueMm;
+            if (sketch_.addConstraint(constraint) ==
+                sketch::kInvalidConstraintId)
+              return;
+
+            sketch::Dimension dimension;
+            dimension.kind = dimensionKind;
+            dimension.firstPoint = constraint.firstPoint;
+            dimension.secondPoint = constraint.secondPoint;
+            dimension.valueMm = valueMm;
+            dimension.offsetMm = offsetMm;
+            sketch_.storeDimension(dimension);
+          };
+
+      addDrivingDimension(horizontalIndex,
+                          sketch::ConstraintType::DistanceX,
+                          sketch::DimensionKind::PointDistanceX,
+                          primaryDimension_->value(), 4.0);
+      addDrivingDimension(verticalIndex,
+                          sketch::ConstraintType::DistanceY,
+                          sketch::DimensionKind::PointDistanceY,
+                          secondaryDimension_->value(), -4.0);
+    }
   } else if (tool_ == Tool::Circle) {
     sketch_.addCircle(start, primaryDimension_->value() * 0.5);
     circleDiameterMm_ = primaryDimension_->value();

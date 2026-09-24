@@ -3,6 +3,8 @@
 #include <QMouseEvent>
 #include <QPixmap>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -60,5 +62,69 @@ int main(int argc, char** argv) {
 
   const QPixmap preview = canvas.grab();
   CHECK(!preview.isNull());
+
+  width->setValue(36.0);
+  height->setValue(24.0);
+  canvas.commitCurrentDimension();
+
+  CHECK(canvas.sketch().lines().size() == 4);
+  CHECK(canvas.sketch().dimensions().size() == 2);
+  CHECK(std::any_of(canvas.sketch().dimensions().begin(),
+                    canvas.sketch().dimensions().end(),
+                    [](const solidar::sketch::Dimension& dimension) {
+                      return dimension.kind ==
+                                 solidar::sketch::DimensionKind::PointDistanceX &&
+                             std::abs(dimension.valueMm - 36.0) < 1e-9;
+                    }));
+  CHECK(std::any_of(canvas.sketch().dimensions().begin(),
+                    canvas.sketch().dimensions().end(),
+                    [](const solidar::sketch::Dimension& dimension) {
+                      return dimension.kind ==
+                                 solidar::sketch::DimensionKind::PointDistanceY &&
+                             std::abs(dimension.valueMm - 24.0) < 1e-9;
+                    }));
+  CHECK(std::any_of(canvas.sketch().constraints().begin(),
+                    canvas.sketch().constraints().end(),
+                    [](const solidar::sketch::Constraint& constraint) {
+                      return constraint.type ==
+                                 solidar::sketch::ConstraintType::DistanceX &&
+                             std::abs(constraint.value - 36.0) < 1e-9;
+                    }));
+  CHECK(std::any_of(canvas.sketch().constraints().begin(),
+                    canvas.sketch().constraints().end(),
+                    [](const solidar::sketch::Constraint& constraint) {
+                      return constraint.type ==
+                                 solidar::sketch::ConstraintType::DistanceY &&
+                             std::abs(constraint.value - 24.0) < 1e-9;
+                    }));
+
+  solidar::SketchCanvas mouseOnlyCanvas;
+  mouseOnlyCanvas.resize(900, 650);
+  mouseOnlyCanvas.setTool(solidar::SketchCanvas::Tool::Rectangle);
+  mouseOnlyCanvas.setRectangleMode(
+      solidar::SketchCanvas::RectangleMode::TwoPoints);
+  mouseOnlyCanvas.show();
+  QApplication::processEvents();
+
+  QMouseEvent mouseFirst(QEvent::MouseButtonPress, first, Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&mouseOnlyCanvas, &mouseFirst);
+  QMouseEvent mouseMove(QEvent::MouseMove, opposite, Qt::NoButton,
+                        Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&mouseOnlyCanvas, &mouseMove);
+  QMouseEvent mouseSecond(QEvent::MouseButtonPress, opposite, Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&mouseOnlyCanvas, &mouseSecond);
+
+  CHECK(mouseOnlyCanvas.sketch().lines().size() == 4);
+  CHECK(mouseOnlyCanvas.sketch().dimensions().empty());
+  CHECK(std::none_of(mouseOnlyCanvas.sketch().constraints().begin(),
+                     mouseOnlyCanvas.sketch().constraints().end(),
+                     [](const solidar::sketch::Constraint& constraint) {
+                       return constraint.type ==
+                                  solidar::sketch::ConstraintType::DistanceX ||
+                              constraint.type ==
+                                  solidar::sketch::ConstraintType::DistanceY;
+                     }));
   return EXIT_SUCCESS;
 }
