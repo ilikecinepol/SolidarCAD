@@ -5,6 +5,9 @@
 #include <QFile>
 #include <QTemporaryDir>
 
+#include <BRep_Builder.hxx>
+#include <TopoDS_Face.hxx>
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -14,6 +17,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
+#include "model/ImportedShapeFeature.h"
 #include "model/PocketFeature.h"
 
 #define CHECK(condition)                                                     \
@@ -256,8 +260,13 @@ int main(int argc, char* argv[]) {
     sourceSketch.geometry.addRectangle({0.0, 0.0}, {40.0, 25.0});
     sourceSketch.geometry.addCircle({70.0, 12.5}, 10.0);
 
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kExpectedSelectedArea = 0.5 * kPi * 10.0 * 10.0 +
+                                             kPi * 5.0 * 5.0;
     solidar::sketch::Sketch selectedRegion;
-    selectedRegion.addRectangle({0.0, 0.0}, {40.0, 25.0});
+    selectedRegion.addLine({-10.0, 0.0}, {10.0, 0.0});
+    selectedRegion.addArc({0.0, 0.0}, 10.0, 0.0, kPi);
+    selectedRegion.addCircle({40.0, 5.0}, 5.0);
 
     auto& selectedBody = selectedProfileDocument.addBody("Selected body");
     auto selectedExtrude = std::make_unique<solidar::ExtrudeFeature>(
@@ -266,9 +275,10 @@ int main(int argc, char* argv[]) {
     selectedBody.addFeature(std::move(selectedExtrude));
 
     assert(selectedProfileDocument.recompute());
-    assert(solidar::test::near(
+    CHECK(solidar::test::near(
         solidar::test::volumeOf(*selectedBody.resultShape()),
-        40.0 * 25.0 * 12.0, 1e-4));
+        kExpectedSelectedArea * 12.0, 1e-4));
+    CHECK(solidar::test::solidCount(*selectedBody.resultShape()) == 2);
 
     const QString selectedPath =
         directory.filePath("selected-profile.solidar");
@@ -286,10 +296,108 @@ int main(int argc, char* argv[]) {
             restoredSelectedBody->features().front().get());
     assert(restoredExtrude);
     assert(restoredExtrude->profileOverride());
-    assert(solidar::test::near(
+    const auto& restoredOverride = *restoredExtrude->profileOverride();
+    CHECK(restoredOverride.lines().size() == 1);
+    CHECK(restoredOverride.arcs().size() == 1);
+    CHECK(restoredOverride.circles().size() == 1);
+    const auto& restoredArc = restoredOverride.arcs().front();
+    CHECK(solidar::test::near(restoredArc.center.xMm, 0.0));
+    CHECK(solidar::test::near(restoredArc.center.yMm, 0.0));
+    CHECK(solidar::test::near(restoredArc.radiusMm, 10.0));
+    CHECK(solidar::test::near(restoredArc.startAngleRad, 0.0));
+    CHECK(solidar::test::near(restoredArc.sweepAngleRad, kPi));
+    CHECK(solidar::test::near(
         solidar::test::volumeOf(*restoredSelectedBody->resultShape()),
-        40.0 * 25.0 * 12.0, 1e-4));
+        kExpectedSelectedArea * 12.0, 1e-4));
+    CHECK(solidar::test::solidCount(*restoredSelectedBody->resultShape()) == 2);
   }
+
+  // A true whole-sketch multi-region extrusion survives save/load with stable
+  // identities, parameters and both disjoint solids rebuilt from history.
+  {
+    constexpr double kLength = 9.0;
+    constexpr double kExpectedVolume =
+        (20.0 * 10.0 + 15.0 * 10.0) * kLength;
+    solidar::Document multiRegionDocument;
+    auto& multiRegionSketch =
+        multiRegionDocument.addSketch("Persistent multi-region");
+    const auto sketchId = multiRegionSketch.id;
+    multiRegionSketch.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+    multiRegionSketch.geometry.addRectangle({40.0, 0.0}, {55.0, 10.0});
+    auto& multiRegionBody = multiRegionDocument.addBody("Multi-region body");
+    const auto bodyId = multiRegionBody.id();
+    auto extrude = std::make_unique<solidar::ExtrudeFeature>(
+        sketchId, kLength, "Multi-region Extrude",
+        solidar::ExtrudeOperation::NewBody, false);
+    auto* extrudePtr = extrude.get();
+    const auto featureId = extrudePtr->id();
+    multiRegionBody.addFeature(std::move(extrude));
+
+    CHECK(multiRegionDocument.recompute());
+    CHECK(extrudePtr->state() == solidar::FeatureState::Valid);
+    CHECK(extrudePtr->shape());
+    CHECK(solidar::test::solidCount(*extrudePtr->shape()) == 2);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*extrudePtr->shape()), kExpectedVolume, 1e-4));
+
+    const QString multiRegionPath =
+        directory.filePath("multi-region.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        multiRegionPath, multiRegionDocument, &error));
+    solidar::Document restored;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        multiRegionPath, &restored, &error));
+    auto* restoredSketch = restored.findSketch(sketchId);
+    auto* restoredBody = restored.findBody(bodyId);
+    CHECK(restoredSketch);
+    CHECK(restoredSketch->id == sketchId);
+    CHECK(restoredSketch->geometry.lines().size() == 8);
+    CHECK(restoredBody);
+    CHECK(restoredBody->features().size() == 1);
+    auto* restoredExtrude = dynamic_cast<solidar::ExtrudeFeature*>(
+        restoredBody->features().front().get());
+    CHECK(restoredExtrude);
+    CHECK(restoredExtrude->id() == featureId);
+    CHECK(restoredExtrude->profileSketchId() == sketchId);
+    CHECK(restoredExtrude->operation() == solidar::ExtrudeOperation::NewBody);
+    CHECK(!restoredExtrude->reversed());
+    CHECK(solidar::test::near(restoredExtrude->lengthMm(), kLength));
+    CHECK(restored.recompute());
+    CHECK(restoredExtrude->state() == solidar::FeatureState::Valid);
+    CHECK(restoredExtrude->shape());
+    CHECK(solidar::test::solidCount(*restoredExtrude->shape()) == 2);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*restoredExtrude->shape()), kExpectedVolume,
+        1e-4));
+  }
+
+  // A failed imported-shape serialization must not replace the last valid
+  // project. The empty face is non-null but invalid, so validation fails
+  // while the replacement payload is still only in memory.
+  {
+    const QString atomicPath = directory.filePath("atomic-save.solidar");
+    const QByteArray previousPayload("previous valid project payload\n");
+    QFile previous(atomicPath);
+    CHECK(previous.open(QIODevice::WriteOnly));
+    CHECK(previous.write(previousPayload) == previousPayload.size());
+    previous.close();
+
+    TopoDS_Face invalidFace;
+    BRep_Builder builder;
+    builder.MakeFace(invalidFace);
+    solidar::Document invalidDocument;
+    auto& body = invalidDocument.addBody("Invalid imported shape");
+    body.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+        std::make_shared<const TopoDS_Shape>(invalidFace), "Invalid"));
+
+    CHECK(!solidar::project::ProjectFile::saveDocument(
+        atomicPath, invalidDocument, &error));
+    CHECK(!error.isEmpty());
+    QFile preserved(atomicPath);
+    CHECK(preserved.open(QIODevice::ReadOnly));
+    CHECK(preserved.readAll() == previousPayload);
+  }
+
   QFile broken(directory.filePath("broken.solidar"));
   assert(broken.open(QIODevice::WriteOnly));
   broken.write("not json");

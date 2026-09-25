@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "model/Document.h"
+#include "model/SketchExtrudeBuilder.h"
 #include "model/SketchProfileBuilder.h"
 
 namespace solidar {
@@ -47,9 +48,11 @@ ExtrudeOperation detectExtrudeOperation(const DocumentSketch& profile,
         direction * normal.z * kContactToleranceMm;
     TopoDS_Shape prism;
     std::string error;
-    if (!buildExtrusionPrismFromSketch(
-            detectionProfile, input.distanceMm + kContactToleranceMm,
-            input.reversed, &prism, &error))
+    if (!buildExtrusionFromSketch(
+            detectionProfile, nullptr,
+            input.distanceMm + kContactToleranceMm,
+            ExtrudeOperation::NewBody, input.reversed, &prism, nullptr,
+            &error))
       return ExtrudeOperation::NewBody;
     BRepAlgoAPI_Common common(*targetBody, prism);
     common.Build();

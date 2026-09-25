@@ -156,7 +156,8 @@ set_tests_properties(sketch_canvas_axis_mapping_tests
 add_executable(sketch_rectangle_dimension_ui_tests
                sketch_rectangle_dimension_ui_tests.cpp)
 target_link_libraries(sketch_rectangle_dimension_ui_tests
-                      PRIVATE solidar_sketch_ui solidar_viewport3d Qt6::Widgets)
+                      PRIVATE solidar_sketch_ui solidar_viewport3d
+                              solidar_project Qt6::Widgets)
 add_test(NAME sketch_rectangle_dimension_ui_tests
          COMMAND sketch_rectangle_dimension_ui_tests)
 set_tests_properties(sketch_rectangle_dimension_ui_tests

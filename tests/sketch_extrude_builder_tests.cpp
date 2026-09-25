@@ -283,6 +283,93 @@ int main() {
                      1e-3));
   }
 
+  // Regions sharing even a boundary are ambiguous and are rejected.
+  {
+    auto profile = profileWith(25);
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    profile.geometry.addRectangle({10.0, 0.0}, {20.0, 10.0});
+    std::string error;
+    CHECK(!isSupportedSketchProfile(profile, &error));
+    CHECK(error == "Profile regions touch each other");
+  }
+
+  // A closed but self-intersecting bow-tie is not a valid region.
+  {
+    auto profile = profileWith(26);
+    profile.geometry.addLine({0.0, 0.0}, {10.0, 10.0});
+    profile.geometry.addLine({10.0, 10.0}, {0.0, 10.0});
+    profile.geometry.addLine({0.0, 10.0}, {10.0, 0.0});
+    profile.geometry.addLine({10.0, 0.0}, {0.0, 0.0});
+    std::string error;
+    CHECK(!isSupportedSketchProfile(profile, &error));
+    CHECK(!error.empty());
+  }
+
+  // Every selected Cut region must remove material; one valid cutter must not
+  // mask another remote region.
+  {
+    auto baseProfile = profileWith(27);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+    auto cutProfile = profileWith(28);
+    cutProfile.geometry.addRectangle({2.0, 2.0}, {4.0, 4.0});
+    cutProfile.geometry.addRectangle({20.0, 20.0}, {22.0, 22.0});
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(!buildExtrusionFromSketch(cutProfile, &base, 5.0,
+                                    ExtrudeOperation::Cut, false, &result,
+                                    nullptr, &error));
+    CHECK(error.find("region") != std::string::npos);
+  }
+
+  // Every selected Join region must connect to the base independently.
+  {
+    auto baseProfile = profileWith(29);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+    auto joinProfile = profileWith(30);
+    joinProfile.placement.origin.z = 10.0;
+    joinProfile.geometry.addRectangle({2.0, 2.0}, {4.0, 4.0});
+    joinProfile.geometry.addRectangle({20.0, 20.0}, {22.0, 22.0});
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(!buildExtrusionFromSketch(joinProfile, &base, 5.0,
+                                    ExtrudeOperation::Join, false, &result,
+                                    nullptr, &error));
+    CHECK(error.find("region") != std::string::npos);
+  }
+
+  // A Cut may not increase the body's solid count.  Late validation failure
+  // leaves both output parameters untouched.
+  {
+    auto baseProfile = profileWith(31);
+    baseProfile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape base;
+    CHECK(buildExtrusionFromSketch(baseProfile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &base,
+                                   nullptr, nullptr));
+    auto splitter = profileWith(32);
+    splitter.geometry.addRectangle({4.0, -1.0}, {6.0, 11.0});
+    TopoDS_Shape result = base;
+    SketchExtrudeGeometry geometry{gp_Pnt(1.0, 2.0, 3.0),
+                                   gp_Dir(0.0, 0.0, 1.0)};
+    std::string error;
+    CHECK(!buildExtrusionFromSketch(splitter, &base, 10.0,
+                                    ExtrudeOperation::Cut, false, &result,
+                                    &geometry, &error));
+    CHECK(error.find("split") != std::string::npos);
+    CHECK(result.IsSame(base));
+    CHECK(test::near(geometry.centroid.X(), 1.0));
+    CHECK(test::near(geometry.centroid.Y(), 2.0));
+    CHECK(test::near(geometry.centroid.Z(), 3.0));
+  }
+
   // A two-edge D profile (semicircle plus diameter) is a valid closed wire.
   {
     constexpr double kPi = 3.14159265358979323846;

@@ -111,10 +111,35 @@ int main() {
       CHECK(cap->operationFollowsDirection);
     }
 
-    // Multi-profile -> rejected.
+    // Disjoint closed regions are one valid multi-region NewBody capability.
     {
       DocumentSketch p = profile(3);
       p.geometry.addRectangle({40.0, -20.0}, {80.0, 20.0});
+      SketchProfileSelectionContext ctx;
+      ctx.profile = p;
+      ctx.activeBodyId = kInvalidBodyId;
+      const auto cap = resolveSketchProfileExtrude(ctx);
+      CHECK(cap.has_value());
+      CHECK(cap->kind == ContextActionKind::Extrude);
+      CHECK(cap->operation == ExtrudeOperation::NewBody);
+      CHECK(!cap->operationFollowsDirection);
+      CHECK(cap->profile.id == p.id);
+      CHECK(cap->profile.geometry.lines().size() == 8);
+    }
+
+    // Open and nested contours stay unavailable to the context action.
+    {
+      DocumentSketch p;
+      p.id = 30;
+      p.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+      SketchProfileSelectionContext ctx;
+      ctx.profile = p;
+      ctx.activeBodyId = kInvalidBodyId;
+      CHECK(!resolveSketchProfileExtrude(ctx).has_value());
+    }
+    {
+      DocumentSketch p = profile(31);
+      p.geometry.addCircle({0.0, 0.0}, 5.0);
       SketchProfileSelectionContext ctx;
       ctx.profile = p;
       ctx.activeBodyId = kInvalidBodyId;

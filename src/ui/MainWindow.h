@@ -44,6 +44,8 @@ class HistoryTimelineWidget;
 class MainWindow final : public QMainWindow {
   Q_OBJECT
 
+  friend class MainWindowUndoTestAccess;
+
  public:
   explicit MainWindow(AppSettings& settings, QWidget* parent = nullptr);
   void setProjectPath(const QString& path);

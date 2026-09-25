@@ -3,6 +3,7 @@
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 
 #ifdef NDEBUG
@@ -10,6 +11,8 @@
 #endif
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -17,6 +20,14 @@
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/PocketFeature.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 bool near(double actual, double expected, double tolerance = 1e-4) {
@@ -27,6 +38,14 @@ double volumeOf(const TopoDS_Shape& shape) {
   GProp_GProps properties;
   BRepGProp::VolumeProperties(shape, properties);
   return properties.Mass();
+}
+
+std::size_t solidCount(const TopoDS_Shape& shape) {
+  std::size_t count = 0;
+  for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More();
+       explorer.Next())
+    ++count;
+  return count;
 }
 
 std::optional<std::size_t> topFaceIndex(const TopoDS_Shape& shape,
@@ -159,4 +178,52 @@ int main() {
   unresolved.activeBody()->activeFeature()->setDirty();
   assert(!unresolved.rebuild());
   assert(!unresolved.activeBody()->resultShape());
+
+  // Pocket preserves a multi-solid Extrude container, rejects a cut that
+  // splits one of its solids, and recovers in place without changing IDs.
+  solidar::Document multiSolidDocument;
+  auto& multiBaseSketch = multiSolidDocument.addSketch("Multi-solid base");
+  multiBaseSketch.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+  multiBaseSketch.geometry.addRectangle({40.0, 0.0}, {50.0, 10.0});
+  auto& multiBody = multiSolidDocument.addBody("Multi-solid body");
+  multiBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      multiBaseSketch.id, 10.0, "Multi-region Extrude"));
+  auto& multiPocketSketch = multiSolidDocument.addSketch("Multi-solid pocket");
+  multiPocketSketch.placement.origin.z = 10.0;
+  multiPocketSketch.geometry.addRectangle({2.0, 2.0}, {6.0, 6.0});
+  const auto multiPocketSketchId = multiPocketSketch.id;
+  auto multiPocket = std::make_unique<solidar::PocketFeature>(
+      multiPocketSketchId, 5.0, "Multi-solid Pocket");
+  auto* multiPocketPtr = multiPocket.get();
+  const auto multiPocketId = multiPocketPtr->id();
+  multiBody.addFeature(std::move(multiPocket));
+
+  CHECK(multiSolidDocument.rebuild());
+  CHECK(multiPocketPtr->state() == solidar::FeatureState::Valid);
+  CHECK(multiPocketPtr->id() == multiPocketId);
+  CHECK(multiPocketPtr->hasShape());
+  CHECK(solidCount(*multiPocketPtr->shape()) == 2);
+  CHECK(near(volumeOf(*multiPocketPtr->shape()), 2920.0));
+
+  multiPocketSketch.geometry.clear();
+  multiPocketSketch.geometry.addRectangle({9.0, -1.0}, {11.0, 11.0});
+  multiPocketPtr->setDepthMm(10.0);
+  CHECK(multiSolidDocument.markSketchDirty(multiPocketSketchId));
+  CHECK(!multiSolidDocument.rebuild());
+  CHECK(multiPocketPtr->id() == multiPocketId);
+  CHECK(multiPocketPtr->state() == solidar::FeatureState::Error);
+  CHECK(multiPocketPtr->error().find("split") != std::string::npos);
+  CHECK(!multiPocketPtr->hasShape());
+  CHECK(!multiBody.resultShape());
+
+  multiPocketSketch.geometry.clear();
+  multiPocketSketch.geometry.addRectangle({2.0, 2.0}, {6.0, 6.0});
+  multiPocketPtr->setDepthMm(5.0);
+  CHECK(multiSolidDocument.markSketchDirty(multiPocketSketchId));
+  CHECK(multiSolidDocument.rebuild());
+  CHECK(multiPocketPtr->id() == multiPocketId);
+  CHECK(multiPocketPtr->state() == solidar::FeatureState::Valid);
+  CHECK(multiPocketPtr->hasShape());
+  CHECK(solidCount(*multiPocketPtr->shape()) == 2);
+  CHECK(near(volumeOf(*multiPocketPtr->shape()), 2920.0));
 }

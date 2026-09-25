@@ -26,6 +26,19 @@ bool samePoint(sketch::Point a, sketch::Point b) {
          std::abs(a.yMm - b.yMm) <= 1e-7;
 }
 
+bool hasAnyTopology(const TopoDS_Shape& shape) {
+  if (shape.IsNull()) return false;
+  if (shape.ShapeType() != TopAbs_COMPOUND &&
+      shape.ShapeType() != TopAbs_COMPSOLID)
+    return true;
+  for (const auto type : {TopAbs_SOLID, TopAbs_FACE, TopAbs_EDGE,
+                          TopAbs_VERTEX}) {
+    TopExp_Explorer explorer(shape, type);
+    if (explorer.More()) return true;
+  }
+  return false;
+}
+
 std::vector<DocumentSketch> closedProfileComponents(
     const DocumentSketch& profile) {
   struct Primitive {
@@ -214,6 +227,30 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
 
 bool isSupportedSketchProfile(const DocumentSketch& profile,
                               std::string* error) {
+  // Endpoint-connected contours are not independent regions.  Detect branch
+  // vertices before component extraction so touching line/arc loops produce a
+  // stable diagnostic on every OCCT platform rather than falling through to
+  // wire construction with version-dependent errors.
+  std::vector<sketch::Point> endpoints;
+  for (const auto& line : profile.geometry.lines()) {
+    if (line.dashed) continue;
+    endpoints.push_back(line.start);
+    endpoints.push_back(line.end);
+  }
+  for (const auto& arc : profile.geometry.arcs()) {
+    if (arc.dashed) continue;
+    endpoints.push_back(sketch::arcStartPoint(arc));
+    endpoints.push_back(sketch::arcEndPoint(arc));
+  }
+  for (std::size_t index = 0; index < endpoints.size(); ++index) {
+    std::size_t degree = 0;
+    for (const auto& endpoint : endpoints)
+      if (samePoint(endpoints[index], endpoint)) ++degree;
+    if (degree > 2) {
+      if (error) *error = "Profile regions touch each other";
+      return false;
+    }
+  }
   const auto components = closedProfileComponents(profile);
   if (components.empty()) {
     if (error) *error = "Profile has insufficient geometry";
@@ -222,26 +259,45 @@ bool isSupportedSketchProfile(const DocumentSketch& profile,
   for (const auto& component : components)
     if (!isSupportedSingleSketchProfile(component, error)) return false;
 
-  // Independent selected regions may be disjoint or merely touch. Positive
-  // planar overlap means nested/overlapping wires (a hole or ambiguous double
-  // selection), which needs a dedicated face-with-inner-wires representation.
+  // Independent selected regions must be strictly disjoint.  Nested,
+  // overlapping and touching contours require topology semantics that the
+  // current profile snapshot does not represent unambiguously.
   try {
     std::vector<TopoDS_Face> faces;
     faces.reserve(components.size());
     for (const auto& component : components) {
       TopoDS_Face face;
       if (!buildPlanarFaceFromSketch(component, &face, error)) return false;
+      BRepCheck_Analyzer analyzer(face);
+      if (!analyzer.IsValid()) {
+        if (error) *error = "Profile region is self-intersecting or invalid";
+        return false;
+      }
+      GProp_GProps properties;
+      BRepGProp::SurfaceProperties(face, properties);
+      if (!std::isfinite(properties.Mass()) ||
+          std::abs(properties.Mass()) <= 1e-8) {
+        if (error) *error = "Profile region has zero area";
+        return false;
+      }
       faces.push_back(face);
     }
     for (std::size_t first = 0; first < faces.size(); ++first) {
       for (std::size_t second = first + 1; second < faces.size(); ++second) {
         BRepAlgoAPI_Common common(faces[first], faces[second]);
         common.Build();
-        if (!common.IsDone() || common.Shape().IsNull()) continue;
+        if (!common.IsDone() || common.Shape().IsNull()) {
+          if (error) *error = "Could not classify multiple profile regions";
+          return false;
+        }
         GProp_GProps overlap;
         BRepGProp::SurfaceProperties(common.Shape(), overlap);
         if (std::abs(overlap.Mass()) > 1e-8) {
           if (error) *error = "Profile regions overlap or form a hole";
+          return false;
+        }
+        if (hasAnyTopology(common.Shape())) {
+          if (error) *error = "Profile regions touch each other";
           return false;
         }
       }
@@ -324,6 +380,40 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
       GProp_GProps beforeProperties;
       BRepGProp::VolumeProperties(*baseShape, beforeProperties);
       const std::size_t beforeSolidCount = shapeSolidCount(*baseShape);
+      const double before = beforeProperties.Mass();
+      const double tolerance = std::max(1e-7, std::abs(before) * 1e-10);
+
+      // A multi-region boolean is accepted only when every selected region
+      // contributes on its own.  This prevents one valid region from masking
+      // another disconnected/remote region in the aggregate operation.
+      for (const auto& prismSolid : prismSolids) {
+        TopoDS_Shape individualResult;
+        if (operation == ExtrudeOperation::Join) {
+          BRepAlgoAPI_Fuse fuse(*baseShape, prismSolid);
+          fuse.Build();
+          if (!fuse.IsDone() || fuse.Shape().IsNull())
+            return fail("Extrude Join region boolean fuse failed");
+          individualResult = fuse.Shape();
+          if (shapeSolidCount(individualResult) > beforeSolidCount)
+            return fail("Extrude Join region does not intersect the body");
+        } else {
+          BRepAlgoAPI_Cut cut(*baseShape, prismSolid);
+          cut.Build();
+          if (!cut.IsDone() || cut.Shape().IsNull())
+            return fail("Extrude Cut region boolean cut failed");
+          individualResult = cut.Shape();
+        }
+        GProp_GProps individualProperties;
+        BRepGProp::VolumeProperties(individualResult, individualProperties);
+        const double individualVolume = individualProperties.Mass();
+        if (operation == ExtrudeOperation::Join &&
+            individualVolume <= before + tolerance)
+          return fail("Extrude Join region does not intersect the body");
+        if (operation == ExtrudeOperation::Cut &&
+            individualVolume >= before - tolerance)
+          return fail("Extrude Cut region does not intersect the body");
+      }
+
       TopoDS_Shape booleanResult;
       if (operation == ExtrudeOperation::Join) {
         BRepAlgoAPI_Fuse fuse(*baseShape, extrusionTool);
@@ -343,12 +433,13 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
       if (operation == ExtrudeOperation::Join &&
           shapeSolidCount(booleanResult) > beforeSolidCount)
         return fail("Extrude Join does not intersect the body");
+      if (operation == ExtrudeOperation::Cut &&
+          shapeSolidCount(booleanResult) > beforeSolidCount)
+        return fail("Extrude Cut would split the body");
       outputShape = booleanResult;
       GProp_GProps afterProperties;
       BRepGProp::VolumeProperties(outputShape, afterProperties);
-      const double before = beforeProperties.Mass();
       const double after = afterProperties.Mass();
-      const double tolerance = std::max(1e-7, std::abs(before) * 1e-10);
       if (operation == ExtrudeOperation::Join && after <= before + tolerance)
         return fail("Extrude Join does not intersect the body");
       if (operation == ExtrudeOperation::Cut && after >= before - tolerance)
@@ -364,16 +455,18 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
 
     BRepCheck_Analyzer analyzer(outputShape);
     if (!analyzer.IsValid()) return fail("Extrude result is invalid");
-    *result = outputShape;
+    SketchExtrudeGeometry outputGeometry;
     if (geometry) {
       if (totalArea <= 1e-12)
         return fail("Extrude profile area is zero");
-      geometry->centroid =
+      outputGeometry.centroid =
           gp_Pnt(centroidX / totalArea, centroidY / totalArea,
                  centroidZ / totalArea);
       const auto normal = profile.placement.normal();
-      geometry->normal = gp_Dir(normal.x, normal.y, normal.z);
+      outputGeometry.normal = gp_Dir(normal.x, normal.y, normal.z);
     }
+    *result = outputShape;
+    if (geometry) *geometry = outputGeometry;
     return true;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();

@@ -10,6 +10,7 @@
 #include <QSaveFile>
 
 #include <BRep_Builder.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepTools.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS_Shape.hxx>
@@ -44,6 +45,13 @@ bool serializeShape(const TopoDS_Shape& shape, QString* encoded,
     return false;
   }
   try {
+    BRepCheck_Analyzer analyzer(shape);
+    if (!analyzer.IsValid()) {
+      setError(
+          error,
+          QString::fromUtf8("Импортированная B-Rep геометрия некорректна."));
+      return false;
+    }
     std::ostringstream stream(std::ios::out | std::ios::binary);
     // Native persistence needs exact topology, not cached visualization data.
     BRepTools::Write(shape, stream, false, false,
@@ -98,6 +106,12 @@ std::shared_ptr<const TopoDS_Shape> deserializeShape(const QString& encoded,
     }
     if (shape.IsNull()) {
       setError(error, QString::fromUtf8("Сохранённая B-Rep геометрия пуста."));
+      return {};
+    }
+    BRepCheck_Analyzer analyzer(shape);
+    if (!analyzer.IsValid()) {
+      setError(error,
+               QString::fromUtf8("Сохранённая B-Rep геометрия некорректна."));
       return {};
     }
     return std::make_shared<const TopoDS_Shape>(std::move(shape));
@@ -229,7 +243,16 @@ QJsonObject savedExtrudeProfileGeometry(const sketch::Sketch& geometry) {
                                {"y", circle.center.yMm},
                                {"radius", circle.radiusMm}});
   }
-  return QJsonObject{{"lines", lines}, {"circles", circles}};
+  QJsonArray arcs;
+  for (const auto& arc : geometry.arcs()) {
+    if (arc.dashed) continue;
+    arcs.append(QJsonObject{{"x", arc.center.xMm},
+                            {"y", arc.center.yMm},
+                            {"radius", arc.radiusMm},
+                            {"startAngle", arc.startAngleRad},
+                            {"sweepAngle", arc.sweepAngleRad}});
+  }
+  return QJsonObject{{"lines", lines}, {"circles", circles}, {"arcs", arcs}};
 }
 
 sketch::Sketch loadedExtrudeProfileGeometry(const QJsonValue& value) {
@@ -249,6 +272,14 @@ sketch::Sketch loadedExtrudeProfileGeometry(const QJsonValue& value) {
     geometry.addCircle(
         {circle.value("x").toDouble(), circle.value("y").toDouble()},
         circle.value("radius").toDouble());
+  }
+  for (const auto arcValue : saved.value("arcs").toArray()) {
+    const auto arc = arcValue.toObject();
+    geometry.addArc(
+        {arc.value("x").toDouble(), arc.value("y").toDouble()},
+        arc.value("radius").toDouble(),
+        arc.value("startAngle").toDouble(),
+        arc.value("sweepAngle").toDouble());
   }
   return geometry;
 }
@@ -272,13 +303,8 @@ bool ProjectFile::create(const QString& path, QString* error) {
   return saveDocument(path, Document{}, error);
 }
 
-bool ProjectFile::save(const QString& path, const ProjectData& data,
-                       QString* error) {
-  QSaveFile file(path);
-  if (!file.open(QIODevice::WriteOnly)) {
-    setError(error, file.errorString());
-    return false;
-  }
+static QJsonObject serializedProjectRoot(const QString& path,
+                                         const ProjectData& data) {
   QJsonObject root;
   root["format"] = "solidar-project";
   root["version"] = 1;
@@ -471,7 +497,24 @@ bool ProjectFile::save(const QString& path, const ProjectData& data,
   if (data.extrusionSourceSketch)
     extrusion["sourceSketch"] = static_cast<qint64>(*data.extrusionSourceSketch);
   root["extrusion"] = extrusion;
-  file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+  return root;
+}
+
+bool ProjectFile::save(const QString& path, const ProjectData& data,
+                       QString* error) {
+  const QByteArray payload =
+      QJsonDocument(serializedProjectRoot(path, data))
+          .toJson(QJsonDocument::Indented);
+  QSaveFile file(path);
+  if (!file.open(QIODevice::WriteOnly)) {
+    setError(error, file.errorString());
+    return false;
+  }
+  if (file.write(payload) != payload.size()) {
+    setError(error, file.errorString());
+    file.cancelWriting();
+    return false;
+  }
   if (!file.commit()) {
     setError(error, file.errorString());
     return false;
@@ -490,15 +533,7 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
   legacy.box = document.box();
   for (const auto& item : document.sketches())
     legacy.sketches.push_back({item.geometry, QStringLiteral("XY")});
-  if (!save(path, legacy, error)) return false;
-
-  QFile input(path);
-  if (!input.open(QIODevice::ReadOnly)) {
-    setError(error, input.errorString());
-    return false;
-  }
-  auto root = QJsonDocument::fromJson(input.readAll()).object();
-  input.close();
+  auto root = serializedProjectRoot(path, legacy);
   root["version"] = 2;
 
   QJsonArray sketches;
@@ -658,12 +693,17 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
   }
   root["model"] = QJsonObject{{"sketches", sketches}, {"bodies", bodies}};
 
+  const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
   QSaveFile output(path);
   if (!output.open(QIODevice::WriteOnly)) {
     setError(error, output.errorString());
     return false;
   }
-  output.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+  if (output.write(payload) != payload.size()) {
+    setError(error, output.errorString());
+    output.cancelWriting();
+    return false;
+  }
   if (!output.commit()) {
     setError(error, output.errorString());
     return false;

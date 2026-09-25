@@ -1,6 +1,7 @@
 #include "io/StepExchange.h"
 
 #include <BRep_Builder.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_Static.hxx>
 #include <STEPControl_Reader.hxx>
@@ -123,6 +124,12 @@ std::shared_ptr<const TopoDS_Shape> readStepFile(const QString& path,
       setError(error, QString::fromUtf8("После импорта получена пустая геометрия."));
       return {};
     }
+    BRepCheck_Analyzer analyzer(shape);
+    if (!analyzer.IsValid()) {
+      setError(error,
+               QString::fromUtf8("STEP-файл содержит некорректную B-Rep геометрию."));
+      return {};
+    }
     return std::make_shared<const TopoDS_Shape>(std::move(shape));
   } catch (const Standard_Failure& failure) {
     setError(error, failureMessage("Ошибка OCCT при импорте STEP", failure));
@@ -174,14 +181,22 @@ bool importDocumentStep(const QString& path, Document* document,
 bool exportDocumentStep(const QString& path, const Document& document,
                         QString* error) {
   if (error) error->clear();
-  const TopoDS_Shape shape = documentShape(document);
-  if (shape.IsNull()) {
-    setError(error,
-             QString::fromUtf8("Документ не содержит B-Rep геометрии для экспорта."));
-    return false;
-  }
-
   try {
+    const TopoDS_Shape shape = documentShape(document);
+    if (shape.IsNull()) {
+      setError(
+          error,
+          QString::fromUtf8("Документ не содержит B-Rep геометрии для экспорта."));
+      return false;
+    }
+    BRepCheck_Analyzer analyzer(shape);
+    if (!analyzer.IsValid()) {
+      setError(
+          error,
+          QString::fromUtf8("Документ содержит некорректную B-Rep геометрию."));
+      return false;
+    }
+
     std::lock_guard lock(stepTranslatorMutex());
     // Constructing the writer initializes the STEP controller and registers
     // its Interface_Static parameters before the schema is changed.

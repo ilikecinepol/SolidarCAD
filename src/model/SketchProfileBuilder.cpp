@@ -3,6 +3,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS.hxx>
@@ -69,7 +70,10 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       if (!circleWire.IsDone()) return fail("Could not build a circle wire");
       BRepBuilderAPI_MakeFace circleFace(circleWire.Wire(), true);
       if (!circleFace.IsDone()) return fail("Could not build a circle face");
-      *face = circleFace.Face();
+      const TopoDS_Face builtFace = circleFace.Face();
+      BRepCheck_Analyzer analyzer(builtFace);
+      if (!analyzer.IsValid()) return fail("Profile face is invalid");
+      *face = builtFace;
       return true;
     }
 
@@ -158,7 +162,10 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       return fail("Could not build a profile wire");
     BRepBuilderAPI_MakeFace faceBuilder(wireBuilder.Wire(), true);
     if (!faceBuilder.IsDone()) return fail("Could not build a profile face");
-    *face = faceBuilder.Face();
+    const TopoDS_Face builtFace = faceBuilder.Face();
+    BRepCheck_Analyzer analyzer(builtFace);
+    if (!analyzer.IsValid()) return fail("Profile face is invalid");
+    *face = builtFace;
     return true;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();
@@ -191,7 +198,10 @@ bool buildExtrusionPrismFromSketch(const DocumentSketch& profile,
     builder.Build();
     if (!builder.IsDone() || builder.Shape().IsNull())
       return fail("could not build a solid prism");
-    *prism = builder.Shape();
+    const TopoDS_Shape builtPrism = builder.Shape();
+    BRepCheck_Analyzer analyzer(builtPrism);
+    if (!analyzer.IsValid()) return fail("extrusion prism is invalid");
+    *prism = builtPrism;
     return true;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();

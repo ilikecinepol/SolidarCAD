@@ -241,11 +241,14 @@ void MainWindow::buildMenus() {
   connect(redoAction_, &QAction::triggered, this, &MainWindow::redoLastAction);
   connect(sketchCanvas_, &SketchCanvas::undoAvailable, this,
           [this](bool) { updateUndoAvailability(); });
+  connect(sketchCanvas_, &SketchCanvas::redoAvailable, this,
+          [this](bool) { updateUndoAvailability(); });
 }
 
 void MainWindow::pushUndoAction(std::function<void()> action) {
   if (applyingUndo_) return;
   modelUndoStack_.push_back({std::move(action), nullptr});
+  modelRedoStack_.clear();
   if (modelUndoStack_.size() > 100) modelUndoStack_.erase(modelUndoStack_.begin());
   updateUndoAvailability();
 }
@@ -261,12 +264,14 @@ void MainWindow::pushUndoRedoAction(std::function<void()> undo,
 
 void MainWindow::updateUndoAvailability() {
   if (!undoAction_) return;
-  const bool sketchUndo = workspaceStack_ &&
-                          workspaceStack_->currentWidget() == sketchCanvas_ &&
-                          sketchCanvas_->canUndo();
-  undoAction_->setEnabled(sketchUndo || !modelUndoStack_.empty());
-  if (redoAction_)
-    redoAction_->setEnabled(!sketchUndo && !modelRedoStack_.empty());
+  const bool sketchActive =
+      workspaceStack_ && workspaceStack_->currentWidget() == sketchCanvas_;
+  undoAction_->setEnabled(sketchActive ? sketchCanvas_->canUndo()
+                                       : !modelUndoStack_.empty());
+  if (redoAction_) {
+    redoAction_->setEnabled(sketchActive ? sketchCanvas_->canRedo()
+                                         : !modelRedoStack_.empty());
+  }
 }
 
 void MainWindow::resetTransientModelingUi() {
@@ -284,9 +289,8 @@ void MainWindow::resetTransientModelingUi() {
 }
 
 void MainWindow::undoLastAction() {
-  if (workspaceStack_->currentWidget() == sketchCanvas_ &&
-      sketchCanvas_->canUndo()) {
-    sketchCanvas_->undo();
+  if (workspaceStack_->currentWidget() == sketchCanvas_) {
+    if (sketchCanvas_->canUndo()) sketchCanvas_->undo();
   } else if (!modelUndoStack_.empty()) {
     auto entry = std::move(modelUndoStack_.back());
     modelUndoStack_.pop_back();
@@ -299,6 +303,11 @@ void MainWindow::undoLastAction() {
 }
 
 void MainWindow::redoLastAction() {
+  if (workspaceStack_->currentWidget() == sketchCanvas_) {
+    if (sketchCanvas_->canRedo()) sketchCanvas_->redo();
+    updateUndoAvailability();
+    return;
+  }
   if (modelRedoStack_.empty()) return;
   auto entry = std::move(modelRedoStack_.back());
   modelRedoStack_.pop_back();
@@ -1571,6 +1580,7 @@ void MainWindow::buildUi() {
                                        ? static_cast<QWidget*>(modelRibbon_)
                                        : static_cast<QWidget*>(sketchRibbon_));
     if (!sketchMode && sketchSettingsDock_) sketchSettingsDock_->hide();
+    updateUndoAvailability();
   });
   workspaceStack_->setCurrentWidget(viewport_);
   ribbonStack_->setCurrentWidget(modelRibbon_);

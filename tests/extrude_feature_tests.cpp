@@ -4,12 +4,15 @@
 #include <GProp_GProps.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
 
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -18,6 +21,14 @@
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/ExtrudeOperationDetector.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 
@@ -48,6 +59,14 @@ double volumeOf(const TopoDS_Shape& shape) {
   GProp_GProps properties;
   BRepGProp::VolumeProperties(shape, properties);
   return properties.Mass();
+}
+
+std::size_t solidCount(const TopoDS_Shape& shape) {
+  std::size_t count = 0;
+  for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More();
+       explorer.Next())
+    ++count;
+  return count;
 }
 
 std::size_t topFaceOf(const TopoDS_Shape& shape, double z) {
@@ -367,6 +386,14 @@ int main() {
   assert(solidar::detectExtrudeOperation(faceProfile, 5.0, true,
                                          detectionShape.get(), true) ==
          solidar::ExtrudeOperation::Cut);
+  auto multiRegionProfile = faceProfile;
+  multiRegionProfile.geometry.addRectangle({20.0, 20.0}, {30.0, 30.0});
+  CHECK(solidar::detectExtrudeOperation(multiRegionProfile, 5.0, false,
+                                        detectionShape.get(), true) ==
+        solidar::ExtrudeOperation::Join);
+  CHECK(solidar::detectExtrudeOperation(multiRegionProfile, 5.0, true,
+                                        detectionShape.get(), true) ==
+        solidar::ExtrudeOperation::Cut);
   auto remoteProfile = faceProfile;
   remoteProfile.support.type = solidar::SketchSupportType::BasePlane;
   remoteProfile.placement.origin.x = 100.0;
@@ -383,8 +410,53 @@ int main() {
   mixed.geometry.addCircle({10.0, 10.0}, 3.0);
   auto& mixedBody = mixedDocument.addBody();
   mixedBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(mixed.id, 10.0));
-  assert(!mixedDocument.rebuild());
-  assert(mixedBody.activeFeature()->error().find("one profile") != std::string::npos);
+  CHECK(!mixedDocument.rebuild());
+  CHECK(mixedBody.activeFeature()->state() == solidar::FeatureState::Error);
+  CHECK(!mixedBody.activeFeature()->hasShape());
+  CHECK(!mixedBody.resultShape());
+  CHECK(mixedBody.activeFeature()->error().find("overlap or form a hole") !=
+        std::string::npos);
+
+  // A whole-sketch multi-region feature retains both independent solids and
+  // recovers in place after a transient invalid nested region.
+  solidar::Document multiRegionDocument;
+  auto& multiRegionSketch = multiRegionDocument.addSketch("Multi-region");
+  multiRegionSketch.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+  multiRegionSketch.geometry.addRectangle({40.0, 0.0}, {50.0, 10.0});
+  const auto multiRegionSketchId = multiRegionSketch.id;
+  auto& multiRegionBody = multiRegionDocument.addBody();
+  auto multiRegionExtrude = std::make_unique<solidar::ExtrudeFeature>(
+      multiRegionSketchId, 8.0, "Multi-region Extrude");
+  auto* multiRegionExtrudePtr = multiRegionExtrude.get();
+  const auto multiRegionFeatureId = multiRegionExtrudePtr->id();
+  multiRegionBody.addFeature(std::move(multiRegionExtrude));
+  CHECK(multiRegionDocument.rebuild());
+  CHECK(multiRegionExtrudePtr->state() == solidar::FeatureState::Valid);
+  CHECK(multiRegionExtrudePtr->id() == multiRegionFeatureId);
+  CHECK(multiRegionExtrudePtr->hasShape());
+  CHECK(solidCount(*multiRegionExtrudePtr->shape()) == 2);
+  CHECK(near(volumeOf(*multiRegionExtrudePtr->shape()),
+             (20.0 * 10.0 + 10.0 * 10.0) * 8.0));
+
+  multiRegionSketch.geometry.addCircle({10.0, 5.0}, 2.0);
+  CHECK(multiRegionDocument.markSketchDirty(multiRegionSketchId));
+  CHECK(!multiRegionDocument.rebuild());
+  CHECK(multiRegionExtrudePtr->id() == multiRegionFeatureId);
+  CHECK(multiRegionExtrudePtr->state() == solidar::FeatureState::Error);
+  CHECK(!multiRegionExtrudePtr->hasShape());
+  CHECK(!multiRegionBody.resultShape());
+  CHECK(multiRegionExtrudePtr->error().find("overlap or form a hole") !=
+        std::string::npos);
+
+  multiRegionSketch.geometry.removeCircle(0);
+  CHECK(multiRegionDocument.markSketchDirty(multiRegionSketchId));
+  CHECK(multiRegionDocument.rebuild());
+  CHECK(multiRegionExtrudePtr->id() == multiRegionFeatureId);
+  CHECK(multiRegionExtrudePtr->state() == solidar::FeatureState::Valid);
+  CHECK(multiRegionExtrudePtr->hasShape());
+  CHECK(solidCount(*multiRegionExtrudePtr->shape()) == 2);
+  CHECK(near(volumeOf(*multiRegionExtrudePtr->shape()),
+             (20.0 * 10.0 + 10.0 * 10.0) * 8.0));
 
   solidar::Document invalidCircleDocument;
   auto& invalidCircle = invalidCircleDocument.addSketch("Invalid circle");

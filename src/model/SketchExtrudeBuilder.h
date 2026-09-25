@@ -22,9 +22,10 @@ struct SketchExtrudeGeometry {
 [[nodiscard]] bool isSupportedSingleSketchProfile(
     const DocumentSketch& profile, std::string* error = nullptr);
 
-// Multi-region profile contract used after Ctrl-selection. Each independent
-// closed contour is extruded by the same feature; construction geometry is
-// ignored. A single-region profile remains valid through this API.
+// Multi-region profile contract used after Ctrl-selection. Each simple,
+// non-degenerate closed contour must be strictly disjoint from every other
+// contour; nesting, overlap, touching and self-intersection are rejected.
+// Construction geometry is ignored. A single-region profile remains valid.
 [[nodiscard]] bool isSupportedSketchProfile(
     const DocumentSketch& profile, std::string* error = nullptr);
 

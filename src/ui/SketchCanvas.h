@@ -80,6 +80,7 @@ class SketchCanvas final : public QWidget {
   void setCircleDiameter(double diameterMm);
   void setRectangleMode(RectangleMode mode);
   void undo();
+  void redo();
   void rotateViewClockwise();
   void rotateViewCounterClockwise();
   void resetViewRotation();
@@ -93,6 +94,7 @@ class SketchCanvas final : public QWidget {
   void clearSketchEditContext();
   void setReferenceProfile(const sketch::Sketch& profile, bool visible);
   [[nodiscard]] bool canUndo() const noexcept;
+  [[nodiscard]] bool canRedo() const noexcept;
   [[nodiscard]] Tool tool() const noexcept;
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
   [[nodiscard]] bool hasRealReferenceBody() const noexcept;
@@ -146,6 +148,7 @@ signals:
   void selectionChanged(const QString& description);
   void toolChanged(Tool tool);
   void undoAvailable(bool available);
+  void redoAvailable(bool available);
   void primaryDimensionChanged(double value);
   void lineStyleSelectionChanged(bool lineSelected, bool dashed);
   void constraintStatusChanged(const QString& status);
@@ -240,6 +243,7 @@ signals:
 
   sketch::Sketch sketch_;
   std::vector<sketch::Sketch> undoStack_;
+  std::vector<sketch::Sketch> redoStack_;
   Tool tool_{Tool::Select};
   SelectionKind selectionKind_{SelectionKind::None};
   sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};

@@ -1,6 +1,7 @@
 #include "io/StepExchange.h"
 
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepGProp.hxx>
@@ -102,6 +103,7 @@ int main(int argc, char* argv[]) {
   auto roundTripBox = solidar::io::readStepFile(boxPath, &error);
   CHECK(roundTripBox);
   CHECK(!roundTripBox->IsNull());
+  CHECK(BRepCheck_Analyzer(*roundTripBox).IsValid());
   CHECK(countSubshapes(*roundTripBox, TopAbs_SOLID) == 1);
   const auto boxDimensions = dimensions(*roundTripBox);
   CHECK(near(boxDimensions[0], 100.0, 1e-5));
@@ -121,6 +123,7 @@ int main(int argc, char* argv[]) {
   CHECK(solidar::io::exportDocumentStep(cylinderPath, cylinderDocument, &error));
   auto roundTripCylinder = solidar::io::readStepFile(cylinderPath, &error);
   CHECK(roundTripCylinder);
+  CHECK(BRepCheck_Analyzer(*roundTripCylinder).IsValid());
   bool hasAnalyticCylinder = false;
   for (TopExp_Explorer faces(*roundTripCylinder, TopAbs_FACE); faces.More();
        faces.Next()) {
@@ -142,6 +145,7 @@ int main(int argc, char* argv[]) {
   CHECK(solidar::io::exportDocumentStep(multiPath, multiDocument, &error));
   auto roundTripMulti = solidar::io::readStepFile(multiPath, &error);
   CHECK(roundTripMulti);
+  CHECK(BRepCheck_Analyzer(*roundTripMulti).IsValid());
   CHECK(countSubshapes(*roundTripMulti, TopAbs_SOLID) == 2);
 
   // D. Invalid input fails without changing the destination document.
@@ -181,8 +185,20 @@ int main(int argc, char* argv[]) {
   CHECK(restored.bodies().size() == 1);
   const auto restoredShape = restored.bodies().front().resultShape();
   CHECK(restoredShape);
+  CHECK(BRepCheck_Analyzer(*restoredShape).IsValid());
   CHECK(countSubshapes(*restoredShape, TopAbs_SOLID) == 1);
   CHECK(near(volume(*restoredShape), volume(box), 1e-4));
+
+  // A native-restored ImportedShape remains a valid STEP export source.
+  const QString restoredStepPath =
+      temporary.filePath(QStringLiteral("restored-import.step"));
+  CHECK(solidar::io::exportDocumentStep(restoredStepPath, restored, &error));
+  auto restoredRoundTrip =
+      solidar::io::readStepFile(restoredStepPath, &error);
+  CHECK(restoredRoundTrip);
+  CHECK(BRepCheck_Analyzer(*restoredRoundTrip).IsValid());
+  CHECK(countSubshapes(*restoredRoundTrip, TopAbs_SOLID) == 1);
+  CHECK(near(volume(*restoredRoundTrip), volume(box), 1e-4));
 
   // G. Real faces and edges remain available to picking/topology analysis.
   CHECK(countSubshapes(*roundTripBox, TopAbs_FACE) == 6);

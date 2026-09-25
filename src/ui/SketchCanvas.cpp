@@ -1659,6 +1659,7 @@ void SketchCanvas::resetSketch() {
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.clear();
+  redoStack_.clear();
   clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   anchor_.reset();
@@ -1671,6 +1672,7 @@ void SketchCanvas::resetSketch() {
   setProperty("sketchPanning", false);
   hideDimensionEditor();
   emit undoAvailable(false);
+  emit redoAvailable(false);
   notifyGeometryChanged();
 }
 
@@ -1680,6 +1682,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
   undoStack_.clear();
+  redoStack_.clear();
   clearGeometrySelection();
   anchor_.reset();
   dragging_ = false;
@@ -1690,10 +1693,12 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   setTool(Tool::Select);
   notifyGeometryChanged();
   emit undoAvailable(false);
+  emit redoAvailable(false);
   update();
 }
 
 bool SketchCanvas::canUndo() const noexcept { return !undoStack_.empty(); }
+bool SketchCanvas::canRedo() const noexcept { return !redoStack_.empty(); }
 
 bool SketchCanvas::hasRealReferenceBody() const noexcept {
   return realReferenceBodyVisible_;
@@ -1719,6 +1724,7 @@ std::size_t SketchCanvas::sceneSketchCount() const noexcept {
 
 void SketchCanvas::undo() {
   if (undoStack_.empty()) return;
+  redoStack_.push_back(sketch_);
   sketch_ = undoStack_.back();
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
@@ -1729,6 +1735,24 @@ void SketchCanvas::undo() {
   hideDimensionEditor();
   emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
   emit undoAvailable(canUndo());
+  emit redoAvailable(canRedo());
+  notifyGeometryChanged();
+}
+
+void SketchCanvas::redo() {
+  if (redoStack_.empty()) return;
+  undoStack_.push_back(sketch_);
+  sketch_ = redoStack_.back();
+  redoStack_.pop_back();
+  setProperty("dimensionLabelAlongMm", QVariantList{});
+  setProperty("dimensionLabelOffsetMm", QVariantList{});
+  clearGeometrySelection();
+  emit lineStyleSelectionChanged(false, false);
+  anchor_.reset();
+  hideDimensionEditor();
+  emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
+  emit undoAvailable(canUndo());
+  emit redoAvailable(canRedo());
   notifyGeometryChanged();
 }
 
@@ -11823,6 +11847,9 @@ void SketchCanvas::setSnapEnabled(bool enabled) {
 
 void SketchCanvas::commitDimensionEditor() {
   if (!anchor_) return;
+  const sketch::Sketch operationSnapshot = sketch_;
+  const auto undoSnapshot = undoStack_;
+  const auto redoSnapshot = redoStack_;
   pushUndoState();
 
   const std::size_t oldLineCount = sketch_.lines().size();
@@ -11841,6 +11868,9 @@ void SketchCanvas::commitDimensionEditor() {
       const double halfHeight = secondaryDimension_->value() * 0.5;
       sketch_.addRectangle({start.xMm-sx*halfWidth, start.yMm-sy*halfHeight},
                            {start.xMm+sx*halfWidth, start.yMm+sy*halfHeight});
+      if (oldLineCount < sketch_.lines().size())
+        sketch_.markElementCenterNode(
+            sketch_.lines()[oldLineCount].elementId);
     } else {
       sketch_.addRectangle(start, {start.xMm + sx * primaryDimension_->value(),
                                    start.yMm + sy * secondaryDimension_->value()});
@@ -11878,9 +11908,9 @@ void SketchCanvas::commitDimensionEditor() {
           [this](std::size_t lineIndex,
                  sketch::ConstraintType constraintType,
                  sketch::DimensionKind dimensionKind,
-                 double valueMm, double offsetMm) {
+                 double valueMm, double offsetMm) -> bool {
             const auto lineId = sketch_.lineId(lineIndex);
-            if (lineId == sketch::kInvalidGeometryId) return;
+            if (lineId == sketch::kInvalidGeometryId) return false;
 
             sketch::Constraint constraint;
             constraint.type = constraintType;
@@ -11889,7 +11919,7 @@ void SketchCanvas::commitDimensionEditor() {
             constraint.value = valueMm;
             if (sketch_.addConstraint(constraint) ==
                 sketch::kInvalidConstraintId)
-              return;
+              return false;
 
             sketch::Dimension dimension;
             dimension.kind = dimensionKind;
@@ -11898,16 +11928,32 @@ void SketchCanvas::commitDimensionEditor() {
             dimension.valueMm = valueMm;
             dimension.offsetMm = offsetMm;
             sketch_.storeDimension(dimension);
+            return true;
           };
 
-      addDrivingDimension(horizontalIndex,
-                          sketch::ConstraintType::DistanceX,
-                          sketch::DimensionKind::PointDistanceX,
-                          primaryDimension_->value(), 4.0);
-      addDrivingDimension(verticalIndex,
-                          sketch::ConstraintType::DistanceY,
-                          sketch::DimensionKind::PointDistanceY,
-                          secondaryDimension_->value(), -4.0);
+      const bool widthAdded = addDrivingDimension(
+          horizontalIndex, sketch::ConstraintType::DistanceX,
+          sketch::DimensionKind::PointDistanceX,
+          primaryDimension_->value(), 4.0);
+      const bool heightAdded = widthAdded && addDrivingDimension(
+          verticalIndex, sketch::ConstraintType::DistanceY,
+          sketch::DimensionKind::PointDistanceY,
+          secondaryDimension_->value(), -4.0);
+      if (!heightAdded) {
+        // Numeric rectangle creation is one transaction: never leave a
+        // rectangle with only one of its two promised driving dimensions.
+        sketch_ = operationSnapshot;
+        undoStack_ = undoSnapshot;
+        redoStack_ = redoSnapshot;
+        emit undoAvailable(canUndo());
+        emit redoAvailable(canRedo());
+        anchor_.reset();
+        hideDimensionEditor();
+        emit constraintStatusChanged(
+            QString::fromUtf8("Не удалось создать размеры прямоугольника"));
+        update();
+        return;
+      }
     }
   } else if (tool_ == Tool::Circle) {
     sketch_.addCircle(start, primaryDimension_->value() * 0.5);
@@ -11970,9 +12016,11 @@ void SketchCanvas::notifyGeometryChanged() {
 
 void SketchCanvas::pushUndoState() {
   undoStack_.push_back(sketch_);
+  redoStack_.clear();
   constexpr std::size_t maxUndoSteps = 100;
   if (undoStack_.size() > maxUndoSteps) undoStack_.erase(undoStack_.begin());
   emit undoAvailable(true);
+  emit redoAvailable(false);
 }
 
 }  // namespace solidar

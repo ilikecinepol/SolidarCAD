@@ -1,8 +1,10 @@
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
+#include <QAction>
 #include <QDockWidget>
 #include <QDir>
+#include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
 
@@ -15,7 +17,39 @@
 #include "model/FilletToolSession.h"
 #include "project/ProjectFile.h"
 #include "ui/MainWindow.h"
+#include "ui/SketchCanvas.h"
+#include "ui/Viewport.h"
 #include "ui/tools/PartDesignToolController.h"
+
+namespace solidar {
+
+class MainWindowUndoTestAccess {
+ public:
+  static void reset(MainWindow& window) {
+    window.modelUndoStack_.clear();
+    window.modelRedoStack_.clear();
+    window.updateUndoAvailability();
+  }
+  static void pushUndo(MainWindow& window, std::function<void()> undo) {
+    window.pushUndoAction(std::move(undo));
+  }
+  static void pushUndoRedo(MainWindow& window, std::function<void()> undo,
+                           std::function<void()> redo) {
+    window.pushUndoRedoAction(std::move(undo), std::move(redo));
+  }
+  static std::size_t redoCount(const MainWindow& window) {
+    return window.modelRedoStack_.size();
+  }
+  static QAction* undoAction(MainWindow& window) { return window.undoAction_; }
+  static QAction* redoAction(MainWindow& window) { return window.redoAction_; }
+  static QStackedWidget* workspace(MainWindow& window) {
+    return window.workspaceStack_;
+  }
+  static SketchCanvas* sketch(MainWindow& window) { return window.sketchCanvas_; }
+  static Viewport* viewport(MainWindow& window) { return window.viewport_; }
+};
+
+}  // namespace solidar
 
 // Every critical check uses CHECK (not assert) so it remains active in the
 // Release CI build where NDEBUG is defined.
@@ -71,6 +105,54 @@ int main(int argc, char** argv) {
   // This used to reproduce after a longer session because these three paths
   // had independent teardown code.
   CHECK(editor.loadProject(pathA, &error));
+
+  // Model and Sketch histories are separate domains. A new committed model
+  // action invalidates a stale model redo, and switching workspaces exposes
+  // only the active domain's availability.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    Access::reset(editor);
+    int modelState = 1;
+    Access::pushUndoRedo(editor, [&] { modelState = 0; },
+                         [&] { modelState = 1; });
+    CHECK(Access::undoAction(editor)->isEnabled());
+    CHECK(!Access::redoAction(editor)->isEnabled());
+    Access::undoAction(editor)->trigger();
+    CHECK(modelState == 0);
+    CHECK(Access::redoCount(editor) == 1);
+    CHECK(Access::redoAction(editor)->isEnabled());
+
+    modelState = 2;
+    Access::pushUndo(editor, [&] { modelState = 0; });
+    CHECK(Access::redoCount(editor) == 0);
+    CHECK(!Access::redoAction(editor)->isEnabled());
+
+    auto* canvas = Access::sketch(editor);
+    canvas->resetSketch();
+    Access::workspace(editor)->setCurrentWidget(canvas);
+    QApplication::processEvents();
+    CHECK(!Access::undoAction(editor)->isEnabled());
+    CHECK(!Access::redoAction(editor)->isEnabled());
+
+    canvas->setRectangle(12.0, 8.0);
+    CHECK(Access::undoAction(editor)->isEnabled());
+    CHECK(!Access::redoAction(editor)->isEnabled());
+    Access::undoAction(editor)->trigger();
+    CHECK(!Access::undoAction(editor)->isEnabled());
+    CHECK(Access::redoAction(editor)->isEnabled());
+
+    Access::workspace(editor)->setCurrentWidget(Access::viewport(editor));
+    QApplication::processEvents();
+    CHECK(Access::undoAction(editor)->isEnabled());
+    CHECK(!Access::redoAction(editor)->isEnabled());
+
+    Access::workspace(editor)->setCurrentWidget(canvas);
+    QApplication::processEvents();
+    CHECK(!Access::undoAction(editor)->isEnabled());
+    CHECK(Access::redoAction(editor)->isEnabled());
+    Access::workspace(editor)->setCurrentWidget(Access::viewport(editor));
+  }
+
   auto* filletButton = editor.findChild<QToolButton*>(
       QStringLiteral("filletCommand"));
   auto* extrudeButton = editor.findChild<QToolButton*>(
