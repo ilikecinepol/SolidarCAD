@@ -1866,6 +1866,21 @@ SketchCanvas::pointDimensionWitness(sketch::Point first,
   }
 }
 
+double SketchCanvas::angularDimensionRadiusPx(
+    double offsetMm, double pixelsPerMm, double viewportExtentPx) noexcept {
+  const double safeScale = std::isfinite(pixelsPerMm)
+                               ? std::max(0.0, pixelsPerMm)
+                               : 0.0;
+  const double extent = std::isfinite(viewportExtentPx)
+                            ? std::max(0.0, viewportExtentPx)
+                            : 0.0;
+  const double maximum = std::clamp(extent * 0.22, 48.0, 180.0);
+  const double requested = std::isfinite(offsetMm)
+                               ? std::abs(offsetMm) * safeScale
+                               : 16.0;
+  return std::clamp(requested, 16.0, maximum);
+}
+
 void SketchCanvas::rotateViewClockwise() {
   viewQuarterTurns_ = (viewQuarterTurns_ + 1) % 4;
   hideDimensionEditor();
@@ -3176,8 +3191,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       QPointF firstDirection = rays->first;
       QPointF secondDirection = rays->second;
 
-      const double radius =
-          std::max(16.0, std::abs(dimension.offsetMm) * pixelsPerMm_);
+      const double radius = angularDimensionRadiusPx(
+          dimension.offsetMm, pixelsPerMm_, std::min(width(), height()));
       const QPointF arcFirst = *center + firstDirection * radius;
       const QPointF arcSecond = *center + secondDirection * radius;
 
@@ -4950,9 +4965,9 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
             while (spanDeg <= -180.0) spanDeg += 360.0;
             while (spanDeg > 180.0) spanDeg -= 360.0;
 
-            const double radius =
-                std::max(16.0,
-                         std::abs(dimension.offsetMm) * pixelsPerMm_);
+            const double radius = angularDimensionRadiusPx(
+                dimension.offsetMm, pixelsPerMm_,
+                std::min(width(), height()));
             const double midDeg = startDeg + spanDeg * 0.5;
             const double midRad =
                 midDeg * 3.14159265358979323846 / 180.0;
@@ -6126,11 +6141,8 @@ bool SketchCanvas::beginDimensionLabelDrag(QPointF position) {
       while (spanDeg > 180.0)
         spanDeg -= 360.0;
 
-      const double radius =
-          std::max(
-              16.0,
-              std::abs(dimension.offsetMm) *
-                  pixelsPerMm_);
+      const double radius = angularDimensionRadiusPx(
+          dimension.offsetMm, pixelsPerMm_, std::min(width(), height()));
 
       const double midRad =
           (startDeg + spanDeg * 0.5) *
@@ -6320,10 +6332,8 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
       while (spanDeg > 180.0)
         spanDeg -= 360.0;
 
-      const double radius =
-          std::max(16.0,
-                   std::abs(dimension.offsetMm) *
-                       pixelsPerMm_);
+      const double radius = angularDimensionRadiusPx(
+          dimension.offsetMm, pixelsPerMm_, std::min(width(), height()));
 
       const QPointF arcFirst =
           *center + firstDirection * radius;

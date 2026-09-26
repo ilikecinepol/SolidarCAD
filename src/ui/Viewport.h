@@ -81,6 +81,8 @@ class Viewport final : public QOpenGLWidget {
   void setSketchVisible(std::size_t index, bool visible);
   void setOriginVisible(bool visible);
   void setBasePlaneVisible(int plane, bool visible);
+  [[nodiscard]] bool basePlaneVisible(int plane) const noexcept;
+  [[nodiscard]] bool sketchPlaneSelectionActive() const noexcept;
   void resetScene();
   void beginSketchPlaneSelection();
   void beginExtrusionSurfaceSelection();

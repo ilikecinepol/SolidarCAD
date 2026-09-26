@@ -1,14 +1,31 @@
 #include "drawing/EskdRenderer.h"
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRep_Tool.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <Standard_Failure.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Shape.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <QFont>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
 #include <QPolygonF>
+#include <QTransform>
 #include <QList>
 #include <QStringList>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <numbers>
+#include <optional>
+#include <vector>
 
 namespace solidar::drawing {
 namespace {
@@ -119,11 +136,134 @@ void titleBlock(QPainter& painter, const TitleBlockData& data) {
   text(painter, {left, top + 50, 24, 5}, "Пров.", 2.5, Qt::AlignLeft | Qt::AlignVCenter);
 }
 
+struct ProjectedEdge final {
+  QPainterPath path;
+  QRectF bounds;
+};
+
+std::vector<ProjectedEdge> projectEdges(const TopoDS_Shape& shape) {
+  std::vector<ProjectedEdge> result;
+  for (TopExp_Explorer explorer(shape, TopAbs_EDGE); explorer.More();
+       explorer.Next()) {
+    const TopoDS_Edge edgeShape = TopoDS::Edge(explorer.Current());
+    if (BRep_Tool::Degenerated(edgeShape)) continue;
+    try {
+      BRepAdaptor_Curve curve(edgeShape);
+      const double first = curve.FirstParameter();
+      const double last = curve.LastParameter();
+      if (!std::isfinite(first) || !std::isfinite(last) || last < first)
+        continue;
+
+      QPainterPath path;
+      if (curve.GetType() == GeomAbs_Line) {
+        const gp_Pnt start = curve.Value(first);
+        const gp_Pnt end = curve.Value(last);
+        path.moveTo(start.X(), -start.Y());
+        path.lineTo(end.X(), -end.Y());
+      } else if (curve.GetType() == GeomAbs_Circle) {
+        // Preserve analytic circles/arcs. A 3D circle projected onto XY is an
+        // affine ellipse, which QPainter represents exactly under a transform.
+        const gp_Circ circle = curve.Circle();
+        const gp_Ax2 axes = circle.Position();
+        const gp_Dir x = axes.XDirection();
+        const gp_Dir y = axes.YDirection();
+        const gp_Pnt center = circle.Location();
+        const double radius = circle.Radius();
+        QPainterPath local;
+        const QRectF bounds(-radius, -radius, 2.0 * radius, 2.0 * radius);
+        const double startDegrees = -first * 180.0 / std::numbers::pi;
+        const double sweepDegrees = -(last - first) * 180.0 / std::numbers::pi;
+        local.arcMoveTo(bounds, startDegrees);
+        local.arcTo(bounds, startDegrees, sweepDegrees);
+        const QTransform projection(x.X(), -x.Y(), y.X(), -y.Y(),
+                                    center.X(), -center.Y());
+        path = projection.map(local);
+      } else if (curve.GetType() == GeomAbs_Ellipse) {
+        const gp_Elips ellipse = curve.Ellipse();
+        const gp_Ax2 axes = ellipse.Position();
+        const gp_Dir x = axes.XDirection();
+        const gp_Dir y = axes.YDirection();
+        const gp_Pnt center = ellipse.Location();
+        QPainterPath local;
+        const QRectF bounds(-ellipse.MajorRadius(), -ellipse.MinorRadius(),
+                            2.0 * ellipse.MajorRadius(),
+                            2.0 * ellipse.MinorRadius());
+        const double startDegrees = -first * 180.0 / std::numbers::pi;
+        const double sweepDegrees = -(last - first) * 180.0 / std::numbers::pi;
+        local.arcMoveTo(bounds, startDegrees);
+        local.arcTo(bounds, startDegrees, sweepDegrees);
+        const QTransform projection(x.X(), -x.Y(), y.X(), -y.Y(),
+                                    center.X(), -center.Y());
+        path = projection.map(local);
+      } else {
+        // General spline/conic display is presentation-only. Use a bounded
+        // adaptive-looking tessellation here; analytic line/circle/ellipse
+        // paths above are never degraded to polylines.
+        constexpr int kSamples = 65;
+        for (int index = 0; index < kSamples; ++index) {
+          const double t = first + (last - first) * index / (kSamples - 1);
+          const gp_Pnt point = curve.Value(t);
+          if (index == 0)
+            path.moveTo(point.X(), -point.Y());
+          else
+            path.lineTo(point.X(), -point.Y());
+        }
+      }
+      if (!path.isEmpty()) result.push_back({path, path.boundingRect()});
+    } catch (const Standard_Failure&) {
+      // Some otherwise valid B-Reps contain edges without an evaluable 3D
+      // curve. A drawing preview must skip them, never unwind through paintEvent.
+      continue;
+    }
+  }
+  return result;
+}
+
+struct ProjectedDrawingBounds {
+  QRectF pageBounds;
+  double modelWidth = 0.0;
+  double modelHeight = 0.0;
+};
+
+std::optional<ProjectedDrawingBounds> drawProjectedShape(
+    QPainter& painter, const QRectF& area, const TopoDS_Shape* sourceShape) {
+  if (!sourceShape || sourceShape->IsNull()) return std::nullopt;
+  const auto edges = projectEdges(*sourceShape);
+  if (edges.empty()) return std::nullopt;
+
+  double minX = std::numeric_limits<double>::max();
+  double minY = std::numeric_limits<double>::max();
+  double maxX = std::numeric_limits<double>::lowest();
+  double maxY = std::numeric_limits<double>::lowest();
+  for (const auto& edge : edges) {
+    minX = std::min(minX, edge.bounds.left());
+    minY = std::min(minY, edge.bounds.top());
+    maxX = std::max(maxX, edge.bounds.right());
+    maxY = std::max(maxY, edge.bounds.bottom());
+  }
+  const double width = std::max(maxX - minX, 1e-6);
+  const double height = std::max(maxY - minY, 1e-6);
+  const double scale = std::min(area.width() / width, area.height() / height);
+  const QPointF modelCenter((minX + maxX) * 0.5, (minY + maxY) * 0.5);
+  const QPointF pageCenter = area.center();
+
+  painter.setPen(QPen(Qt::black, 0.5));
+  QTransform fit;
+  fit.translate(pageCenter.x(), pageCenter.y());
+  fit.scale(scale, scale);
+  fit.translate(-modelCenter.x(), -modelCenter.y());
+  for (const auto& edge : edges) painter.drawPath(fit.map(edge.path));
+  return ProjectedDrawingBounds{
+      fit.mapRect(QRectF(QPointF(minX, minY), QPointF(maxX, maxY))),
+      width, height};
+}
+
 }  // namespace
 
 void EskdRenderer::renderA4(QPainter& painter, const QRectF& target,
                             const sketch::Sketch& sketch,
-                            const TitleBlockData& title) {
+                            const TitleBlockData& title,
+                            const TopoDS_Shape* sourceShape) {
   painter.save();
   painter.setRenderHint(QPainter::Antialiasing);
   painter.fillRect(target, Qt::white);
@@ -139,36 +279,54 @@ void EskdRenderer::renderA4(QPainter& painter, const QRectF& target,
 
   const QRectF drawingArea(kLeftMarginMm + 15.0, kOtherMarginMm + 20.0,
                            150.0, 190.0);
-  const double scale = std::min(drawingArea.width() / (sketch.widthMm() + 30.0),
-                                drawingArea.height() / (sketch.heightMm() + 30.0));
-  const QPointF center = drawingArea.center();
-  auto map = [&](sketch::Point point) {
-    return QPointF(center.x() + point.xMm * scale,
-                   center.y() - point.yMm * scale);
-  };
+  // Reserve room for dimensions around the fitted model. When a model source
+  // exists it is the single source of both geometry and overall dimensions;
+  // drawing the support sketch as well would duplicate and misalign outlines.
+  const QRectF geometryArea = drawingArea.adjusted(10.0, 10.0, -20.0, -20.0);
+  const auto projection =
+      drawProjectedShape(painter, geometryArea, sourceShape);
+  if (projection) {
+    const QRectF bounds = projection->pageBounds.normalized();
+    if (projection->modelWidth > 1e-6)
+      horizontalDimension(painter, bounds.left(), bounds.right(),
+                          bounds.bottom(), bounds.bottom() + 12.0,
+                          projection->modelWidth);
+    if (projection->modelHeight > 1e-6)
+      verticalDimension(painter, bounds.bottom(), bounds.top(), bounds.right(),
+                        bounds.right() + 12.0, projection->modelHeight);
+  } else {
+    const double scale =
+        std::min(drawingArea.width() / (sketch.widthMm() + 30.0),
+                 drawingArea.height() / (sketch.heightMm() + 30.0));
+    const QPointF center = drawingArea.center();
+    auto map = [&](sketch::Point point) {
+      return QPointF(center.x() + point.xMm * scale,
+                     center.y() - point.yMm * scale);
+    };
 
-  for (const auto& segment : sketch.lines()) {
-    painter.setPen(QPen(Qt::black, 0.7,
-                        segment.dashed ? Qt::DashLine : Qt::SolidLine));
-    painter.drawLine(map(segment.start), map(segment.end));
-  }
-  painter.setPen(QPen(Qt::black, 0.7));
-  for (const auto& circle : sketch.circles()) {
-    painter.setPen(QPen(Qt::black, 0.7,
-                        circle.dashed ? Qt::DashLine : Qt::SolidLine));
-    const QPointF circleCenter = map(circle.center);
-    const double radius = circle.radiusMm * scale;
-    painter.drawEllipse(circleCenter, radius, radius);
-  }
+    for (const auto& segment : sketch.lines()) {
+      painter.setPen(QPen(Qt::black, 0.7,
+                          segment.dashed ? Qt::DashLine : Qt::SolidLine));
+      painter.drawLine(map(segment.start), map(segment.end));
+    }
+    painter.setPen(QPen(Qt::black, 0.7));
+    for (const auto& circle : sketch.circles()) {
+      painter.setPen(QPen(Qt::black, 0.7,
+                          circle.dashed ? Qt::DashLine : Qt::SolidLine));
+      const QPointF circleCenter = map(circle.center);
+      const double radius = circle.radiusMm * scale;
+      painter.drawEllipse(circleCenter, radius, radius);
+    }
 
-  const double left = center.x() - sketch.widthMm() * scale * 0.5;
-  const double right = center.x() + sketch.widthMm() * scale * 0.5;
-  const double top = center.y() - sketch.heightMm() * scale * 0.5;
-  const double bottom = center.y() + sketch.heightMm() * scale * 0.5;
-  horizontalDimension(painter, left, right, bottom, bottom + 12.0,
-                      sketch.widthMm());
-  verticalDimension(painter, bottom, top, right, right + 12.0,
-                    sketch.heightMm());
+    const double left = center.x() - sketch.widthMm() * scale * 0.5;
+    const double right = center.x() + sketch.widthMm() * scale * 0.5;
+    const double top = center.y() - sketch.heightMm() * scale * 0.5;
+    const double bottom = center.y() + sketch.heightMm() * scale * 0.5;
+    horizontalDimension(painter, left, right, bottom, bottom + 12.0,
+                        sketch.widthMm());
+    verticalDimension(painter, bottom, top, right, right + 12.0,
+                      sketch.heightMm());
+  }
   painter.restore();
 }
 

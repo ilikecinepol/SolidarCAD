@@ -90,6 +90,36 @@ int main(int argc, char** argv) {
   session.setNeutralPlane(plane);
   assert(session.previewShape() && session.editingFeatureId() == draftId);
 
+  // Parameter-domain failure keeps the last valid visual preview, disables
+  // commit through PreviewInvalid and recovers in the same session when the
+  // angle returns to a buildable value.
+  bool foundInvalidAngle = false;
+  double invalidAngle = 0.0;
+  for (double angle = 10.0; angle <= 88.0; angle += 2.0) {
+    const auto lastValidPreview = session.previewShape();
+    session.setAngleFromPanel(angle);
+    if (session.lifecycle() != solidar::ToolLifecycle::PreviewInvalid) continue;
+    foundInvalidAngle = true;
+    invalidAngle = angle;
+    assert(!session.error().empty());
+    assert(session.previewShape() == lastValidPreview);
+    break;
+  }
+  assert(foundInvalidAngle);
+  // Last-valid geometry belongs only to the same faces/reference/reversed
+  // context. Changing a structural input at an invalid angle must not surface
+  // a preview built for the previous context.
+  session.clearNeutralPlane();
+  assert(!session.previewShape());
+  session.setNeutralPlane(plane);
+  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  assert(session.angleDeg() == invalidAngle);
+  assert(!session.previewShape());
+  session.setAngleFromPanel(5.0);
+  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  assert(session.previewShape());
+  assert(session.editingFeatureId() == draftId);
+
   QTemporaryDir temporary; assert(temporary.isValid());
   const QString path = temporary.filePath("draft.solidar"); QString error;
   assert(solidar::project::ProjectFile::saveDocument(path, document, &error));

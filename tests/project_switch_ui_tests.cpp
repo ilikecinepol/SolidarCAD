@@ -4,8 +4,10 @@
 #include <QAction>
 #include <QDockWidget>
 #include <QDir>
+#include <QMessageBox>
 #include <QStackedWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 
 #include <cstdlib>
@@ -47,6 +49,22 @@ class MainWindowUndoTestAccess {
   }
   static SketchCanvas* sketch(MainWindow& window) { return window.sketchCanvas_; }
   static Viewport* viewport(MainWindow& window) { return window.viewport_; }
+  static void removeBody(MainWindow& window, BodyId id) {
+    window.removeBody(id);
+  }
+  static std::size_t bodyCount(const MainWindow& window) {
+    return window.document_.bodies().size();
+  }
+  static std::size_t sketchHistoryCount(const MainWindow& window) {
+    return window.sketchHistory_.size();
+  }
+  static std::size_t sketchCount(const MainWindow& window) {
+    return window.sketchCount_;
+  }
+  static bool extrusionSourceValid(const MainWindow& window) {
+    return !window.extrusionSourceSketch_ ||
+           *window.extrusionSourceSketch_ < window.sketchHistory_.size();
+  }
 };
 
 }  // namespace solidar
@@ -238,6 +256,56 @@ int main(int argc, char** argv) {
     CHECK(fillet.lifecycle() == solidar::ToolLifecycle::Inactive);
     CHECK(fillet.previewShape() == nullptr);
     CHECK(fillet.edges().empty());
+  }
+
+  // Removing a Body must synchronize the legacy sketch count/source index
+  // before rebuilding the tree. Exercise the real confirmation plus Undo/Redo;
+  // stale sketchCount_ previously caused an out-of-bounds tree rebuild here.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::Document twoBodies;
+    auto& firstSketch = twoBodies.addSketch("First profile");
+    firstSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    auto& firstBody = twoBodies.addBody("First body");
+    const auto removedBodyId = firstBody.id();
+    firstBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        firstSketch.id, 5.0));
+    auto& secondSketch = twoBodies.addSketch("Second profile");
+    secondSketch.geometry.addRectangle({30.0, 0.0}, {42.0, 10.0});
+    auto& secondBody = twoBodies.addBody("Second body");
+    secondBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        secondSketch.id, 7.0));
+    CHECK(twoBodies.recompute());
+    const QString twoBodiesPath =
+        directory.filePath(QStringLiteral("two-bodies-delete.solidar"));
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        twoBodiesPath, twoBodies, &error));
+    CHECK(editor.loadProject(twoBodiesPath, &error));
+    CHECK(Access::bodyCount(editor) == 2);
+    CHECK(Access::sketchCount(editor) == 2);
+
+    QTimer::singleShot(0, [] {
+      for (QWidget* widget : QApplication::topLevelWidgets())
+        if (auto* box = qobject_cast<QMessageBox*>(widget))
+          box->done(QMessageBox::Yes);
+    });
+    Access::removeBody(editor, removedBodyId);
+    CHECK(Access::bodyCount(editor) == 1);
+    CHECK(Access::sketchHistoryCount(editor) == 2);
+    CHECK(Access::sketchCount(editor) == 2);
+    CHECK(Access::extrusionSourceValid(editor));
+
+    Access::undoAction(editor)->trigger();
+    CHECK(Access::bodyCount(editor) == 2);
+    CHECK(Access::sketchHistoryCount(editor) == 2);
+    CHECK(Access::sketchCount(editor) == 2);
+    CHECK(Access::extrusionSourceValid(editor));
+
+    Access::redoAction(editor)->trigger();
+    CHECK(Access::bodyCount(editor) == 1);
+    CHECK(Access::sketchHistoryCount(editor) == 2);
+    CHECK(Access::sketchCount(editor) == 2);
+    CHECK(Access::extrusionSourceValid(editor));
   }
 
   return EXIT_SUCCESS;

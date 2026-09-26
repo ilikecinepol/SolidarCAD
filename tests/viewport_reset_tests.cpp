@@ -2,6 +2,7 @@
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
 
 #include <cstdlib>
@@ -73,6 +74,27 @@ int main(int argc, char** argv) {
   CHECK(!viewport.faceMultiSelectionMode());
   CHECK(!viewport.edgeMultiSelectionMode());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+
+  // Create Sketch cancellation is a full state transition: its temporary
+  // plane picker and all three forced-visible base planes disappear.
+  viewport.beginSketchPlaneSelection();
+  CHECK(viewport.sketchPlaneSelectionActive());
+  CHECK(viewport.basePlaneVisible(0));
+  CHECK(viewport.basePlaneVisible(1));
+  CHECK(viewport.basePlaneVisible(2));
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(&viewport, &escape);
+  CHECK(!viewport.sketchPlaneSelectionActive());
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+  CHECK(!viewport.basePlaneVisible(0));
+  CHECK(!viewport.basePlaneVisible(1));
+  CHECK(!viewport.basePlaneVisible(2));
+  viewport.beginSketchPlaneSelection();
+  CHECK(viewport.sketchPlaneSelectionActive());
+  viewport.resetToolInteraction();
+  CHECK(!viewport.sketchPlaneSelectionActive());
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+  CHECK(!viewport.basePlaneVisible(0));
   CHECK(!viewport.angularToolManipulator().has_value());
   CHECK(viewport.solidFeatures().empty());
 

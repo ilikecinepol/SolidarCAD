@@ -6,6 +6,7 @@
 #include "sketch/Sketch.h"
 
 class QPainter;
+class TopoDS_Shape;
 
 namespace solidar::drawing {
 
@@ -22,7 +23,8 @@ class EskdRenderer final {
   // Page coordinates are millimetres; the painter transform maps them to output.
   static void renderA4(QPainter& painter, const QRectF& target,
                        const sketch::Sketch& sketch,
-                       const TitleBlockData& title = {});
+                       const TitleBlockData& title = {},
+                       const TopoDS_Shape* sourceShape = nullptr);
 };
 
 }  // namespace solidar::drawing

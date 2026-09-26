@@ -23,16 +23,17 @@ void DraftToolSession::begin(Document& document, BodyId bodyId,
   baseShape_ = std::move(baseShape); faces_ = std::move(faces);
   neutralPlane_ = std::move(plane); pullDirection_ = std::move(direction);
   angleDeg_ = angle; reversed_ = reversed; editingFeatureId_ = editingFeatureId;
+  previewShape_.reset(); lastValidPreviewShape_.reset();
   lifecycle_ = ToolLifecycle::Editing; updatePreview();
 }
-void DraftToolSession::setFaces(std::vector<FaceReference> value) { faces_ = std::move(value); updatePreview(); }
-void DraftToolSession::setNeutralPlane(PlaneReference value) { neutralPlane_ = std::move(value); updatePreview(); }
-void DraftToolSession::clearNeutralPlane() { neutralPlane_.reset(); updatePreview(); }
-void DraftToolSession::setPullDirection(AxisReference value) { pullDirection_ = value; updatePreview(); }
-void DraftToolSession::clearPullDirection() { pullDirection_.reset(); updatePreview(); }
+void DraftToolSession::setFaces(std::vector<FaceReference> value) { faces_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(); }
+void DraftToolSession::setNeutralPlane(PlaneReference value) { neutralPlane_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(); }
+void DraftToolSession::clearNeutralPlane() { neutralPlane_.reset(); lastValidPreviewShape_.reset(); updatePreview(); }
+void DraftToolSession::setPullDirection(AxisReference value) { pullDirection_ = value; lastValidPreviewShape_.reset(); updatePreview(); }
+void DraftToolSession::clearPullDirection() { pullDirection_.reset(); lastValidPreviewShape_.reset(); updatePreview(); }
 void DraftToolSession::setAngleFromPanel(double value) { angleDeg_ = value; updatePreview(); }
 void DraftToolSession::setAngleFromManipulator(double value) { angleDeg_ = std::clamp(value, 0.01, 88.99); updatePreview(); }
-void DraftToolSession::setReversed(bool value) { reversed_ = value; updatePreview(); }
+void DraftToolSession::setReversed(bool value) { reversed_ = value; lastValidPreviewShape_.reset(); updatePreview(); }
 BodyId DraftToolSession::bodyId() const noexcept { return bodyId_; }
 FeatureId DraftToolSession::sourceFeatureId() const noexcept { return sourceFeatureId_; }
 std::optional<FeatureId> DraftToolSession::editingFeatureId() const noexcept { return editingFeatureId_; }
@@ -61,22 +62,33 @@ std::vector<ToolParameterDescriptor> DraftToolSession::parameters() const {
 std::shared_ptr<const TopoDS_Shape> DraftToolSession::previewShape() const { return previewShape_; }
 const std::string& DraftToolSession::error() const noexcept { return error_; }
 bool DraftToolSession::updatePreview() {
-  previewShape_.reset(); error_.clear();
-  if (!document_ || !baseShape_ || baseShape_->IsNull()) { error_ = "Draft base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-  if (faces_.empty()) { lifecycle_ = ToolLifecycle::SelectingInput; return false; }
-  if (!neutralPlane_ || !pullDirection_) { lifecycle_ = ToolLifecycle::SelectingReference; return false; }
+  error_.clear();
+  if (!document_ || !baseShape_ || baseShape_->IsNull()) { previewShape_.reset(); lastValidPreviewShape_.reset(); error_ = "Draft base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  if (faces_.empty()) { previewShape_.reset(); lifecycle_ = ToolLifecycle::SelectingInput; return false; }
+  if (!neutralPlane_ || !pullDirection_) { previewShape_.reset(); lifecycle_ = ToolLifecycle::SelectingReference; return false; }
   std::vector<std::size_t> indices;
   for (const auto& face : faces_) {
-    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { previewShape_.reset(); error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
     const auto resolved = resolveFaceReference(*baseShape_, face.topology());
-    if (!resolved) { error_ = "Draft face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    if (!resolved) { previewShape_.reset(); error_ = "Draft face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
     indices.push_back(resolved.index);
   }
   gp_Pln plane; gp_Dir direction;
-  if (!resolveDraftReferences(*document_, *baseShape_, *neutralPlane_, *pullDirection_, &plane, &direction, &error_)) { lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-  previewShape_ = buildDraftShape(*baseShape_, indices, plane, direction, angleDeg_, reversed_, &error_);
-  lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid : ToolLifecycle::PreviewInvalid;
-  return static_cast<bool>(previewShape_);
+  if (!resolveDraftReferences(*document_, *baseShape_, *neutralPlane_, *pullDirection_, &plane, &direction, &error_)) { previewShape_.reset(); lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  auto candidate = buildDraftShape(*baseShape_, indices, plane, direction,
+                                   angleDeg_, reversed_, &error_);
+  if (!candidate) {
+    // Parameter-domain failure is recoverable. Keep displaying the last valid
+    // trial, but remain PreviewInvalid so Apply cannot commit it as the newly
+    // requested angle.
+    previewShape_ = lastValidPreviewShape_;
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  previewShape_ = std::move(candidate);
+  lastValidPreviewShape_ = previewShape_;
+  lifecycle_ = ToolLifecycle::PreviewValid;
+  return true;
 }
 std::optional<AngularToolManipulator> DraftToolSession::manipulator() const {
   // Do not advertise an angle handle until geometry/reference selection has
@@ -94,6 +106,6 @@ std::optional<AngularToolManipulator> DraftToolSession::manipulator() const {
                                 {direction.X(), direction.Y(), direction.Z()},
                                 radius, angleDeg_};
 }
-void DraftToolSession::cancel() noexcept { previewShape_.reset(); faces_.clear(); neutralPlane_.reset(); pullDirection_.reset(); error_.clear(); document_ = nullptr; lifecycle_ = ToolLifecycle::Inactive; }
+void DraftToolSession::cancel() noexcept { previewShape_.reset(); lastValidPreviewShape_.reset(); faces_.clear(); neutralPlane_.reset(); pullDirection_.reset(); error_.clear(); document_ = nullptr; lifecycle_ = ToolLifecycle::Inactive; }
 
 }  // namespace solidar

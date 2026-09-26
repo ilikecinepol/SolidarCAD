@@ -4509,8 +4509,11 @@ void Sketch::updateBounds() noexcept {
 
 bool Sketch::isClosed() const noexcept {
   const auto samePoint = [](Point first, Point second) {
-    return std::abs(first.xMm - second.xMm) <= 1e-7 &&
-           std::abs(first.yMm - second.yMm) <= 1e-7;
+    // Match the wire builder's modelling tolerance. Interactive snapping and
+    // imported decimal coordinates may leave sub-micron endpoint noise that
+    // is topologically closed for OCCT and must not be rejected here first.
+    return std::abs(first.xMm - second.xMm) <= 1e-6 &&
+           std::abs(first.yMm - second.yMm) <= 1e-6;
   };
 
   std::vector<std::pair<Point, Point>> edges;

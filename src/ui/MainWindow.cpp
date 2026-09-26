@@ -1589,7 +1589,30 @@ void MainWindow::buildUi() {
   featureTree_ = new QTreeWidget(modelDock);
   featureTree_->setHeaderHidden(true);
   featureTree_->setAlternatingRowColors(true);
+  featureTree_->setContextMenuPolicy(Qt::CustomContextMenu);
   rebuildFeatureTree();
+  connect(featureTree_, &QTreeWidget::customContextMenuRequested, this,
+          [this](const QPoint& point) {
+            auto* item = featureTree_->itemAt(point);
+            if (!item) return;
+            const auto bodyId = static_cast<BodyId>(
+                item->data(0, Qt::UserRole + 2).toULongLong());
+            if (bodyId == kInvalidBodyId) return;
+            QMenu menu(featureTree_);
+            QAction* remove = menu.addAction(QString::fromUtf8("Удалить Body"));
+            if (menu.exec(featureTree_->viewport()->mapToGlobal(point)) == remove)
+              removeBody(bodyId);
+          });
+  auto* deleteBodyShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Delete), featureTree_);
+  deleteBodyShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(deleteBodyShortcut, &QShortcut::activated, this, [this] {
+    auto* item = featureTree_->currentItem();
+    if (!item) return;
+    const auto bodyId = static_cast<BodyId>(
+        item->data(0, Qt::UserRole + 2).toULongLong());
+    if (bodyId != kInvalidBodyId) removeBody(bodyId);
+  });
   connect(featureTree_, &QTreeWidget::itemChanged, this,
           [this](QTreeWidgetItem* item, int) {
             const int kind = item->data(0, Qt::UserRole).toInt();
@@ -1672,7 +1695,8 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::selectionChanged, this,
           [this](const QString& text) {
-            if (text == QStringLiteral("__cancel_tools__")) {
+            if (text == QStringLiteral("__cancel_tools__") ||
+                text == QStringLiteral("__cancel_sketch_plane__")) {
               if (partDesignTools_.handleEscape()) {
                 updateRevolveToolPreview();
                 statusBar()->showMessage(
@@ -1683,6 +1707,8 @@ void MainWindow::buildUi() {
               selectedExtrusionSurface_.clear();
               if (extrusionDock_) extrusionDock_->hide();
               modelRibbon_->clearActiveTool();
+              if (text == QStringLiteral("__cancel_sketch_plane__"))
+                rebuildFeatureTree();
               statusBar()->showMessage(
                   QString::fromUtf8("Инструменты сброшены"), 2000);
               return;
@@ -2025,6 +2051,7 @@ void MainWindow::refreshBodyViewFromDocument() {
   hasExtrusion_ = !shapes.empty();
   viewport_->setBodyShapes(std::move(shapes));
   viewport_->setSolidVisible(hasExtrusion_);
+  drawingSheet_->setDocument(document_);
   for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
     const auto* modelSketch =
         document_.findSketch(sketchHistory_[index].documentSketchId);
@@ -2688,7 +2715,7 @@ void MainWindow::updateDraftToolPreview() {
                   : localizedPartDesignError(PartDesignToolKind::Draft,
                                              draftToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
-  if (valid) {
+  if (draftToolSession_.previewShape()) {
     viewport_->setToolPreviewPresentation(
         ToolPreviewPresentation::ReplaceSource);
     viewport_->setToolPreviewShape(draftToolSession_.bodyId(),
@@ -3379,6 +3406,95 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
 }
 
+void MainWindow::removeBody(BodyId bodyId) {
+  if (!ensureHistoryAtEnd()) return;
+  const Body* body = document_.findBody(bodyId);
+  if (!body) return;
+  QMessageBox box(
+      QMessageBox::Warning, QString::fromUtf8("Удаление Body"),
+      QString::fromUtf8("Удалить «%1» и зависимые эскизы/операции?")
+          .arg(QString::fromStdString(body->name())),
+      QMessageBox::Yes | QMessageBox::Cancel, this);
+  box.button(QMessageBox::Yes)->setText(QString::fromUtf8("Удалить"));
+  box.button(QMessageBox::Cancel)->setText(QString::fromUtf8("Отмена"));
+  if (box.exec() != QMessageBox::Yes) return;
+
+  resetTransientModelingUi();
+  const Document previousDocument = document_;
+  const auto previousSketchHistory = sketchHistory_;
+  const auto previousExtrusionSource = extrusionSourceSketch_;
+  const std::optional<SketchId> previousSourceSketchId =
+      previousExtrusionSource &&
+              *previousExtrusionSource < previousSketchHistory.size()
+          ? std::optional<SketchId>(
+                previousSketchHistory[*previousExtrusionSource].documentSketchId)
+          : std::nullopt;
+  std::string error;
+  if (!document_.removeBodyCascade(bodyId, &error) || !document_.recompute()) {
+    const std::string rebuildError = document_.rebuildError();
+    document_ = previousDocument;
+    QMessageBox::warning(
+        this, QString::fromUtf8("Ошибка удаления"),
+        QString::fromStdString(error.empty() ? rebuildError : error));
+    return;
+  }
+
+  for (std::size_t index = sketchHistory_.size(); index-- > 0;)
+    if (!document_.findSketch(sketchHistory_[index].documentSketchId)) {
+      viewport_->removeSketch(index);
+      sketchHistory_.erase(sketchHistory_.begin() +
+                           static_cast<std::ptrdiff_t>(index));
+    }
+  sketchCount_ = sketchHistory_.size();
+  extrusionSourceSketch_.reset();
+  if (previousSourceSketchId)
+    for (std::size_t index = 0; index < sketchHistory_.size(); ++index)
+      if (sketchHistory_[index].documentSketchId == *previousSourceSketchId) {
+        extrusionSourceSketch_ = index;
+        break;
+      }
+  const Document removedDocument = document_;
+  const auto removedSketchHistory = sketchHistory_;
+  const auto removedExtrusionSource = extrusionSourceSketch_;
+  const auto restoreSnapshot = [this](const Document& document,
+                                      const auto& sketchHistory,
+                                      std::optional<std::size_t> source) {
+    for (std::size_t index = sketchHistory_.size(); index-- > 0;)
+      viewport_->removeSketch(index);
+    document_ = document;
+    sketchHistory_ = sketchHistory;
+    sketchCount_ = sketchHistory_.size();
+    extrusionSourceSketch_ =
+        source && *source < sketchHistory_.size() ? source : std::nullopt;
+    for (const auto& entry : sketchHistory_) {
+      const auto* sketch = document_.findSketch(entry.documentSketchId);
+      viewport_->addSketch(entry.geometry, entry.support,
+                           sketch ? sketch->placement : SketchPlacement::xy());
+    }
+    viewport_->setSelectedBodies({});
+    viewport_->setSelectedBodyEdges({});
+    viewport_->setSelectedBodyFaces({});
+    historyPosition_ = 1000000;
+    refreshBodyViewFromDocument();
+    rebuildHistoryPanel();
+    rebuildFeatureTree();
+  };
+  pushUndoRedoAction(
+      [this, previousDocument, previousSketchHistory,
+       previousExtrusionSource, restoreSnapshot] {
+        restoreSnapshot(previousDocument, previousSketchHistory,
+                        previousExtrusionSource);
+      },
+      [this, removedDocument, removedSketchHistory,
+       removedExtrusionSource, restoreSnapshot] {
+        restoreSnapshot(removedDocument, removedSketchHistory,
+                        removedExtrusionSource);
+      });
+  restoreSnapshot(removedDocument, removedSketchHistory,
+                  removedExtrusionSource);
+  statusBar()->showMessage(QString::fromUtf8("Body удалён"), 2500);
+}
+
 void MainWindow::applyHistoryPosition(int position) {
   const int lastPosition = static_cast<int>(historySteps_.size());
   historyPosition_ = std::clamp(position, 0, lastPosition);
@@ -3781,6 +3897,8 @@ void MainWindow::rebuildFeatureTree() {
           models, {QString::fromUtf8("▣  Body%1").arg(bodyIndex + 1, 3, 10,
                                                        QLatin1Char('0'))});
       bodyItem->setData(0, Qt::UserRole, 3);
+      bodyItem->setData(0, Qt::UserRole + 2,
+                        QVariant::fromValue<qulonglong>(body.id()));
       bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
       bodyItem->setCheckState(0, Qt::Checked);
       for (const auto& feature : body.features()) {
@@ -3828,7 +3946,8 @@ void MainWindow::exportPdf() {
     return;
   }
   drawing::EskdRenderer::renderA4(painter, painter.viewport(),
-                                  sketchCanvas_->sketch());
+                                  sketchCanvas_->sketch(), {},
+                                  drawingSheet_->sourceShape());
   painter.end();
   statusBar()->showMessage(QString::fromUtf8("PDF сохранён: ") + fileName,
                            4000);
@@ -3845,7 +3964,8 @@ void MainWindow::printDrawing() {
 
   QPainter painter(&printer);
   drawing::EskdRenderer::renderA4(painter, painter.viewport(),
-                                  sketchCanvas_->sketch());
+                                  sketchCanvas_->sketch(), {},
+                                  drawingSheet_->sourceShape());
 }
 
 }  // namespace solidar

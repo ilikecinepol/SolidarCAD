@@ -69,6 +69,7 @@ class Document final {
                             std::string* error = nullptr);
   bool removeSketchCascade(SketchId sketchId,
                            std::string* error = nullptr);
+  bool removeBodyCascade(BodyId bodyId, std::string* error = nullptr);
   bool attachSketchToFace(SketchId sketchId, FaceReference reference);
   void updateSketchPlacements();
   [[nodiscard]] const BoxParameters& box() const noexcept;

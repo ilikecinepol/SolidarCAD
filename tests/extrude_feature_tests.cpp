@@ -410,15 +410,30 @@ int main() {
   mixed.geometry.addCircle({10.0, 10.0}, 3.0);
   auto& mixedBody = mixedDocument.addBody();
   mixedBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(mixed.id, 10.0));
-  CHECK(!mixedDocument.rebuild());
-  CHECK(mixedBody.activeFeature()->state() == solidar::FeatureState::Error);
-  CHECK(!mixedBody.activeFeature()->hasShape());
-  CHECK(!mixedBody.resultShape());
-  CHECK(mixedBody.activeFeature()->error().find("overlap or form a hole") !=
-        std::string::npos);
+  CHECK(mixedDocument.rebuild());
+  CHECK(mixedBody.activeFeature()->state() == solidar::FeatureState::Valid);
+  CHECK(mixedBody.activeFeature()->hasShape());
+  CHECK(solidCount(*mixedBody.resultShape()) == 1);
+  CHECK(near(volumeOf(*mixedBody.resultShape()),
+             (400.0 - std::numbers::pi * 9.0) * 10.0));
+
+  // The holed result remains a normal parametric base for downstream
+  // face-supported features.
+  auto& downstream = mixedDocument.addSketch("Downstream on holed face");
+  downstream.geometry.addCircle({3.0, 3.0}, 1.0);
+  CHECK(mixedDocument.attachSketchToFace(
+      downstream.id,
+      {mixedBody.id(), mixedBody.activeFeature()->id(),
+       topFaceOf(*mixedBody.resultShape(), 10.0)}));
+  mixedBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+      downstream.id, 2.0, "Downstream join",
+      solidar::ExtrudeOperation::Join));
+  CHECK(mixedDocument.recompute());
+  CHECK(mixedBody.activeFeature()->isValid());
+  CHECK(solidCount(*mixedBody.resultShape()) == 1);
 
   // A whole-sketch multi-region feature retains both independent solids and
-  // recovers in place after a transient invalid nested region.
+  // recovers in place after a transient contour crossing the outer boundary.
   solidar::Document multiRegionDocument;
   auto& multiRegionSketch = multiRegionDocument.addSketch("Multi-region");
   multiRegionSketch.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
@@ -438,15 +453,14 @@ int main() {
   CHECK(near(volumeOf(*multiRegionExtrudePtr->shape()),
              (20.0 * 10.0 + 10.0 * 10.0) * 8.0));
 
-  multiRegionSketch.geometry.addCircle({10.0, 5.0}, 2.0);
+  multiRegionSketch.geometry.addCircle({19.0, 5.0}, 2.0);
   CHECK(multiRegionDocument.markSketchDirty(multiRegionSketchId));
   CHECK(!multiRegionDocument.rebuild());
   CHECK(multiRegionExtrudePtr->id() == multiRegionFeatureId);
   CHECK(multiRegionExtrudePtr->state() == solidar::FeatureState::Error);
   CHECK(!multiRegionExtrudePtr->hasShape());
   CHECK(!multiRegionBody.resultShape());
-  CHECK(multiRegionExtrudePtr->error().find("overlap or form a hole") !=
-        std::string::npos);
+  CHECK(!multiRegionExtrudePtr->error().empty());
 
   multiRegionSketch.geometry.removeCircle(0);
   CHECK(multiRegionDocument.markSketchDirty(multiRegionSketchId));

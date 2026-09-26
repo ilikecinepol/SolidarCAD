@@ -89,10 +89,30 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     };
     std::vector<PendingEdge> pending;
 
+    // Build one canonical endpoint set for the wire. Sketch snapping and
+    // decimal persistence can leave sub-micron noise between endpoints that
+    // belongs to the same topological vertex. Prefer exact analytic arc ends,
+    // then snap line endpoints to the first matching canonical point.
+    constexpr double kEndpointTolerance = 1e-6;
+    std::vector<sketch::Point> canonicalPoints;
+    for (const auto& arc : geometry.arcs()) {
+      if (arc.dashed) continue;
+      canonicalPoints.push_back(sketch::arcStartPoint(arc));
+      canonicalPoints.push_back(sketch::arcEndPoint(arc));
+    }
+    const auto canonicalPoint = [&canonicalPoints](sketch::Point point) {
+      for (const auto& candidate : canonicalPoints)
+        if (std::abs(candidate.xMm - point.xMm) <= kEndpointTolerance &&
+            std::abs(candidate.yMm - point.yMm) <= kEndpointTolerance)
+          return candidate;
+      canonicalPoints.push_back(point);
+      return point;
+    };
+
     for (const auto& line : geometry.lines()) {
       if (line.dashed) continue;
-      const gp_Pnt start = toWorldPoint(line.start);
-      const gp_Pnt end = toWorldPoint(line.end);
+      const gp_Pnt start = toWorldPoint(canonicalPoint(line.start));
+      const gp_Pnt end = toWorldPoint(canonicalPoint(line.end));
       BRepBuilderAPI_MakeEdge edgeBuilder(start, end);
       if (!edgeBuilder.IsDone()) return fail("Could not build a profile edge");
       pending.push_back({start, end, edgeBuilder.Edge()});
@@ -129,7 +149,7 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     BRepBuilderAPI_MakeWire wireBuilder;
     std::vector<bool> used(pending.size(), false);
     const auto closeEnough = [](const gp_Pnt& first, const gp_Pnt& second) {
-      return first.Distance(second) <= 1e-6;
+      return first.Distance(second) <= kEndpointTolerance;
     };
 
     for (std::size_t seed = 0; seed < pending.size(); ++seed) {

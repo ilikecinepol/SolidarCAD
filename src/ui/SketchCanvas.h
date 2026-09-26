@@ -143,6 +143,11 @@ class SketchCanvas final : public QWidget {
   pointDimensionWitness(sketch::Point first, sketch::Point second,
                         sketch::DimensionKind kind);
 
+  // Screen-space radius for angular dimensions. It follows the stored offset
+  // but remains readable under extreme zoom or legacy large offsets.
+  [[nodiscard]] static double angularDimensionRadiusPx(
+      double offsetMm, double pixelsPerMm, double viewportExtentPx) noexcept;
+
 signals:
   void geometryChanged(double widthMm, double heightMm);
   void selectionChanged(const QString& description);

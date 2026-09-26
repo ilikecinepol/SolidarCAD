@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <string>
 
 #include "TestGeometryUtils.h"
@@ -76,7 +77,7 @@ int main() {
     CHECK(test::solidCount(result) == 2);
   }
 
-  // A hole (nested loop) is rejected.
+  // A nested loop is classified as a hole independently of creation order.
   {
     auto profile = profileWith(4);
     profile.geometry.addRectangle({0.0, 0.0}, {30.0, 30.0});
@@ -84,17 +85,142 @@ int main() {
     std::string error;
     CHECK(!isSupportedSingleSketchProfile(profile, &error));
     CHECK(!error.empty());
-    CHECK(!isSupportedSketchProfile(profile, &error));
+    CHECK(isSupportedSketchProfile(profile, &error));
+    TopoDS_Shape result;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 10.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    CHECK(test::near(test::volumeOf(result), (30.0 * 30.0 - 10.0 * 10.0) * 10.0,
+                     1e-3));
   }
 
-  // Mixed line + circle profiles are rejected with the committed message.
+  // Rectangle plus an analytic circle creates a real cylindrical hole.
   {
     auto profile = profileWith(5);
     profile.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
     profile.geometry.addCircle({10.0, 10.0}, 3.0);
     std::string error;
     CHECK(!isSupportedSingleSketchProfile(profile, &error));
-    CHECK(error.find("one profile") != std::string::npos);
+    CHECK(isSupportedSketchProfile(profile, &error));
+    TopoDS_Shape result;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 12.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    CHECK(test::near(test::volumeOf(result),
+                     (400.0 - std::numbers::pi * 9.0) * 12.0, 1e-2));
+  }
+
+  // Multiple analytic holes belong to the same outer region.
+  {
+    auto profile = profileWith(33);
+    profile.geometry.addCircle({12.0, 15.0}, 4.0);
+    profile.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+    profile.geometry.addCircle({28.0, 15.0}, 5.0);
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 7.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    CHECK(test::near(test::volumeOf(result),
+                     (1200.0 - std::numbers::pi * (16.0 + 25.0)) * 7.0,
+                     1e-2));
+  }
+
+  // Analytic Line+Arc outer contour keeps its exact arcs while accepting an
+  // analytic circular hole.
+  {
+    constexpr double kPi = std::numbers::pi;
+    auto profile = profileWith(39);
+    profile.geometry.addLine({0.0, 0.0}, {40.0, 0.0});
+    profile.geometry.addArc({40.0, 10.0}, 10.0, -kPi * 0.5, kPi);
+    profile.geometry.addLine({40.0, 20.0}, {0.0, 20.0});
+    profile.geometry.addArc({0.0, 10.0}, 10.0, kPi * 0.5, kPi);
+    profile.geometry.addCircle({20.0, 10.0}, 3.0);
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 6.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    CHECK(test::near(test::volumeOf(result),
+                     (800.0 + kPi * 100.0 - kPi * 9.0) * 6.0, 1e-2));
+  }
+
+  // Polygon containment is classified geometrically, not by primitive type
+  // or creation order.
+  {
+    auto profile = profileWith(40);
+    profile.geometry.addLine({8.0, 6.0}, {12.0, 6.0});
+    profile.geometry.addLine({12.0, 6.0}, {10.0, 10.0});
+    profile.geometry.addLine({10.0, 10.0}, {8.0, 6.0});
+    profile.geometry.addLine({0.0, 0.0}, {20.0, 0.0});
+    profile.geometry.addLine({20.0, 0.0}, {24.0, 12.0});
+    profile.geometry.addLine({24.0, 12.0}, {10.0, 22.0});
+    profile.geometry.addLine({10.0, 22.0}, {-4.0, 12.0});
+    profile.geometry.addLine({-4.0, 12.0}, {0.0, 0.0});
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 4.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    CHECK(BRepCheck_Analyzer(result).IsValid());
+  }
+
+  // Invalid containment is rejected deterministically: crossing and touching
+  // inner contours are not silently interpreted as holes.
+  {
+    auto crossing = profileWith(34);
+    crossing.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+    crossing.geometry.addCircle({39.0, 15.0}, 3.0);
+    std::string error;
+    CHECK(!isSupportedSketchProfile(crossing, &error));
+    CHECK(!error.empty());
+
+    auto touching = profileWith(35);
+    touching.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+    touching.geometry.addCircle({35.0, 15.0}, 5.0);
+    error.clear();
+    CHECK(!isSupportedSketchProfile(touching, &error));
+    CHECK(error.find("touch") != std::string::npos ||
+          error.find("intersect") != std::string::npos);
+  }
+
+  // An open would-be inner contour is a controlled validation error.
+  {
+    auto profile = profileWith(36);
+    profile.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+    profile.geometry.addLine({10.0, 10.0}, {20.0, 10.0});
+    profile.geometry.addLine({20.0, 10.0}, {20.0, 20.0});
+    std::string error;
+    CHECK(!isSupportedSketchProfile(profile, &error));
+    CHECK(!error.empty());
+  }
+
+  // Simple polygons are independent of insertion order and edge direction;
+  // endpoint noise within the modelling tolerance remains closed.
+  {
+    auto house = profileWith(37);
+    house.geometry.addLine({20.0, 0.0}, {20.0, 12.0});
+    house.geometry.addLine({0.0, 12.0}, {0.0, 0.0});       // reversed
+    house.geometry.addLine({10.0, 20.0}, {20.0, 12.0});   // reversed
+    house.geometry.addLine({0.0, 0.0}, {20.0, 0.0});
+    house.geometry.addLine({0.0, 12.0}, {10.0, 20.0});
+    CHECK(isSupportedSketchProfile(house));
+    TopoDS_Shape result;
+    CHECK(buildExtrusionFromSketch(house, nullptr, 5.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, nullptr));
+    CHECK(test::near(test::volumeOf(result), 320.0 * 5.0, 1e-3));
+
+    auto noisyTriangle = profileWith(38);
+    noisyTriangle.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    noisyTriangle.geometry.addLine({5.0, 10.0}, {0.0, 0.0000005});
+    noisyTriangle.geometry.addLine({10.0, 0.0}, {5.0, 10.0});
+    CHECK(isSupportedSketchProfile(noisyTriangle));
   }
 
   // Unresolved support is rejected.

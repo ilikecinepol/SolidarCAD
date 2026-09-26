@@ -3,12 +3,18 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepTools.hxx>
 #include <GProp_GProps.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <gp_Vec.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -21,22 +27,12 @@
 namespace solidar {
 namespace {
 
-bool samePoint(sketch::Point a, sketch::Point b) {
-  return std::abs(a.xMm - b.xMm) <= 1e-7 &&
-         std::abs(a.yMm - b.yMm) <= 1e-7;
-}
+constexpr double kProfileEndpointTolerance = 1e-6;
+constexpr double kProfileAreaTolerance = 1e-8;
 
-bool hasAnyTopology(const TopoDS_Shape& shape) {
-  if (shape.IsNull()) return false;
-  if (shape.ShapeType() != TopAbs_COMPOUND &&
-      shape.ShapeType() != TopAbs_COMPSOLID)
-    return true;
-  for (const auto type : {TopAbs_SOLID, TopAbs_FACE, TopAbs_EDGE,
-                          TopAbs_VERTEX}) {
-    TopExp_Explorer explorer(shape, type);
-    if (explorer.More()) return true;
-  }
-  return false;
+bool samePoint(sketch::Point a, sketch::Point b) {
+  return std::abs(a.xMm - b.xMm) <= kProfileEndpointTolerance &&
+         std::abs(a.yMm - b.yMm) <= kProfileEndpointTolerance;
 }
 
 std::vector<DocumentSketch> closedProfileComponents(
@@ -106,6 +102,132 @@ std::vector<DocumentSketch> closedProfileComponents(
     result.push_back(std::move(part));
   }
   return result;
+}
+
+bool buildClassifiedRegionFaces(const DocumentSketch& profile,
+                                std::vector<TopoDS_Face>* regions,
+                                std::string* error) {
+  const auto fail = [&](std::string message) {
+    if (error) *error = std::move(message);
+    return false;
+  };
+  if (!regions) return fail("Profile region output is missing");
+
+  const auto components = closedProfileComponents(profile);
+  if (components.empty()) return fail("Profile has insufficient geometry");
+
+  struct Contour {
+    TopoDS_Face face;
+    TopoDS_Wire boundary;
+    double area{};
+    std::optional<std::size_t> parent;
+    std::size_t depth{};
+  };
+  std::vector<Contour> contours;
+  contours.reserve(components.size());
+  for (const auto& component : components) {
+    if (!isSupportedSingleSketchProfile(component, error)) return false;
+    TopoDS_Face face;
+    if (!buildPlanarFaceFromSketch(component, &face, error)) return false;
+    BRepCheck_Analyzer analyzer(face);
+    if (!analyzer.IsValid())
+      return fail("Profile region is self-intersecting or invalid");
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(face, properties);
+    const double area = std::abs(properties.Mass());
+    if (!std::isfinite(area) || area <= kProfileAreaTolerance)
+      return fail("Profile region has zero area");
+    const TopoDS_Wire boundary = BRepTools::OuterWire(face);
+    if (boundary.IsNull()) return fail("Profile region boundary is invalid");
+    contours.push_back({face, boundary, area});
+  }
+
+  // Classify strictly nested contours geometrically. Boundaries are checked
+  // first: zero distance means crossing/touching/duplicate topology and is
+  // never a valid hole relationship.
+  for (std::size_t first = 0; first < contours.size(); ++first) {
+    for (std::size_t second = first + 1; second < contours.size(); ++second) {
+      BRepExtrema_DistShapeShape distance(contours[first].boundary,
+                                          contours[second].boundary);
+      distance.Perform();
+      if (!distance.IsDone())
+        return fail("Could not classify profile region boundaries");
+      if (distance.Value() <= kProfileEndpointTolerance)
+        return fail("Profile regions touch or intersect each other");
+
+      BRepAlgoAPI_Common common(contours[first].face, contours[second].face);
+      common.Build();
+      if (!common.IsDone() || common.Shape().IsNull())
+        return fail("Could not classify multiple profile regions");
+      GProp_GProps overlap;
+      BRepGProp::SurfaceProperties(common.Shape(), overlap);
+      const double commonArea = std::abs(overlap.Mass());
+      if (commonArea <= kProfileAreaTolerance) continue;
+
+      const std::size_t smaller = contours[first].area < contours[second].area
+                                      ? first
+                                      : second;
+      const std::size_t larger = smaller == first ? second : first;
+      const double containmentTolerance =
+          std::max(kProfileAreaTolerance, contours[smaller].area * 1e-8);
+      if (std::abs(commonArea - contours[smaller].area) >
+          containmentTolerance)
+        return fail("Profile regions overlap without valid containment");
+      if (std::abs(contours[first].area - contours[second].area) <=
+          containmentTolerance)
+        return fail("Profile regions are duplicate or ambiguous");
+
+      // Keep the nearest containing contour as the direct parent.
+      if (!contours[smaller].parent ||
+          contours[larger].area <
+              contours[*contours[smaller].parent].area)
+        contours[smaller].parent = larger;
+    }
+  }
+
+  for (std::size_t index = 0; index < contours.size(); ++index) {
+    std::size_t cursor = index;
+    std::size_t depth = 0;
+    while (contours[cursor].parent) {
+      cursor = *contours[cursor].parent;
+      if (++depth > contours.size())
+        return fail("Profile containment hierarchy is invalid");
+    }
+    contours[index].depth = depth;
+    if (depth > 1)
+      return fail("Nested islands inside profile holes are not supported");
+  }
+
+  std::vector<TopoDS_Face> builtRegions;
+  for (std::size_t outer = 0; outer < contours.size(); ++outer) {
+    if (contours[outer].depth != 0) continue;
+    bool hasHoles = false;
+    for (std::size_t hole = 0; hole < contours.size(); ++hole)
+      if (contours[hole].depth == 1 &&
+          contours[hole].parent == std::optional<std::size_t>(outer))
+        hasHoles = true;
+    if (!hasHoles) {
+      builtRegions.push_back(contours[outer].face);
+      continue;
+    }
+
+    BRepBuilderAPI_MakeFace faceBuilder(contours[outer].boundary, true);
+    for (std::size_t hole = 0; hole < contours.size(); ++hole) {
+      if (contours[hole].depth != 1 ||
+          contours[hole].parent != std::optional<std::size_t>(outer))
+        continue;
+      faceBuilder.Add(TopoDS::Wire(contours[hole].boundary.Reversed()));
+    }
+    faceBuilder.Build();
+    if (!faceBuilder.IsDone()) return fail("Could not build profile with holes");
+    const TopoDS_Face region = faceBuilder.Face();
+    BRepCheck_Analyzer analyzer(region);
+    if (!analyzer.IsValid()) return fail("Profile face with holes is invalid");
+    builtRegions.push_back(region);
+  }
+  if (builtRegions.empty()) return fail("Profile has no outer region");
+  *regions = std::move(builtRegions);
+  return true;
 }
 
 std::size_t shapeSolidCount(const TopoDS_Shape& shape) {
@@ -251,62 +373,13 @@ bool isSupportedSketchProfile(const DocumentSketch& profile,
       return false;
     }
   }
-  const auto components = closedProfileComponents(profile);
-  if (components.empty()) {
-    if (error) *error = "Profile has insufficient geometry";
-    return false;
-  }
-  for (const auto& component : components)
-    if (!isSupportedSingleSketchProfile(component, error)) return false;
-
-  // Independent selected regions must be strictly disjoint.  Nested,
-  // overlapping and touching contours require topology semantics that the
-  // current profile snapshot does not represent unambiguously.
   try {
-    std::vector<TopoDS_Face> faces;
-    faces.reserve(components.size());
-    for (const auto& component : components) {
-      TopoDS_Face face;
-      if (!buildPlanarFaceFromSketch(component, &face, error)) return false;
-      BRepCheck_Analyzer analyzer(face);
-      if (!analyzer.IsValid()) {
-        if (error) *error = "Profile region is self-intersecting or invalid";
-        return false;
-      }
-      GProp_GProps properties;
-      BRepGProp::SurfaceProperties(face, properties);
-      if (!std::isfinite(properties.Mass()) ||
-          std::abs(properties.Mass()) <= 1e-8) {
-        if (error) *error = "Profile region has zero area";
-        return false;
-      }
-      faces.push_back(face);
-    }
-    for (std::size_t first = 0; first < faces.size(); ++first) {
-      for (std::size_t second = first + 1; second < faces.size(); ++second) {
-        BRepAlgoAPI_Common common(faces[first], faces[second]);
-        common.Build();
-        if (!common.IsDone() || common.Shape().IsNull()) {
-          if (error) *error = "Could not classify multiple profile regions";
-          return false;
-        }
-        GProp_GProps overlap;
-        BRepGProp::SurfaceProperties(common.Shape(), overlap);
-        if (std::abs(overlap.Mass()) > 1e-8) {
-          if (error) *error = "Profile regions overlap or form a hole";
-          return false;
-        }
-        if (hasAnyTopology(common.Shape())) {
-          if (error) *error = "Profile regions touch each other";
-          return false;
-        }
-      }
-    }
+    std::vector<TopoDS_Face> regions;
+    return buildClassifiedRegionFaces(profile, &regions, error);
   } catch (const Standard_Failure&) {
     if (error) *error = "Could not classify multiple profile regions";
     return false;
   }
-  return true;
 }
 
 bool buildExtrusionFromSketch(const DocumentSketch& profile,
@@ -333,17 +406,15 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
   }
 
   try {
-    const auto components = closedProfileComponents(profile);
+    std::vector<TopoDS_Face> regionFaces;
+    if (!buildClassifiedRegionFaces(profile, &regionFaces, error)) return false;
     std::vector<TopoDS_Shape> prismSolids;
-    prismSolids.reserve(components.size());
+    prismSolids.reserve(regionFaces.size());
     double totalArea = 0.0;
     double centroidX = 0.0;
     double centroidY = 0.0;
     double centroidZ = 0.0;
-    for (const auto& component : components) {
-      TopoDS_Face profileFace;
-      if (!buildPlanarFaceFromSketch(component, &profileFace, error))
-        return false;
+    for (const auto& profileFace : regionFaces) {
       GProp_GProps surfaceProperties;
       BRepGProp::SurfaceProperties(profileFace, surfaceProperties);
       const double area = std::abs(surfaceProperties.Mass());
@@ -353,10 +424,16 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
       centroidY += center.Y() * area;
       centroidZ += center.Z() * area;
 
-      TopoDS_Shape prism;
-      if (!buildExtrusionPrismFromSketch(component, lengthMm, reversed, &prism,
-                                         error))
-        return false;
+      const auto normal = profile.placement.normal();
+      const double sign = reversed ? -1.0 : 1.0;
+      BRepPrimAPI_MakePrism prismBuilder(
+          profileFace, gp_Vec(sign * normal.x * lengthMm,
+                              sign * normal.y * lengthMm,
+                              sign * normal.z * lengthMm));
+      prismBuilder.Build();
+      if (!prismBuilder.IsDone() || prismBuilder.Shape().IsNull())
+        return fail("Could not build a solid prism");
+      TopoDS_Shape prism = prismBuilder.Shape();
       TopoDS_Shape prismSolid;
       if (!exactlyOneSolid(prism, &prismSolid, error)) return false;
       prismSolids.push_back(std::move(prismSolid));

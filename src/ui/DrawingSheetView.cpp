@@ -2,6 +2,7 @@
 
 #include <QPainter>
 
+#include "drawing/DrawingSource.h"
 #include "drawing/EskdRenderer.h"
 
 namespace solidar {
@@ -13,6 +14,26 @@ DrawingSheetView::DrawingSheetView(QWidget* parent) : QWidget(parent) {
 void DrawingSheetView::setRectangle(double widthMm, double heightMm) {
   sketch_.setRectangle(widthMm, heightMm);
   update();
+}
+
+void DrawingSheetView::setDocument(const Document& document) {
+  auto source = drawing::collectDrawingSource(document);
+  sourceShape_ = std::move(source.shape);
+  sourceBodyCount_ = source.bodyCount;
+  sourceSolidCount_ = source.solidCount;
+  update();
+}
+
+const TopoDS_Shape* DrawingSheetView::sourceShape() const noexcept {
+  return sourceShape_.get();
+}
+
+std::size_t DrawingSheetView::sourceBodyCount() const noexcept {
+  return sourceBodyCount_;
+}
+
+std::size_t DrawingSheetView::sourceSolidCount() const noexcept {
+  return sourceSolidCount_;
 }
 
 void DrawingSheetView::paintEvent(QPaintEvent*) {
@@ -33,7 +54,8 @@ void DrawingSheetView::paintEvent(QPaintEvent*) {
   painter.setPen(Qt::NoPen);
   painter.setBrush(QColor(40, 40, 40, 90));
   painter.drawRect(page.translated(4.0, 5.0));
-  drawing::EskdRenderer::renderA4(painter, page, sketch_);
+  drawing::EskdRenderer::renderA4(painter, page, sketch_, {},
+                                  sourceShape_.get());
 }
 
 }  // namespace solidar

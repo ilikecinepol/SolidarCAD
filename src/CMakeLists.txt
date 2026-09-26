@@ -143,6 +143,8 @@ target_link_libraries(solidar_sketch_ui PUBLIC solidar_model Qt6::Widgets)
 solidar_warnings(solidar_sketch_ui)
 
 add_library(solidar_drawing_ui
+    drawing/DrawingSource.cpp
+    drawing/DrawingSource.h
   drawing/EskdRenderer.cpp
   drawing/EskdRenderer.h
   ui/DrawingSheetView.cpp

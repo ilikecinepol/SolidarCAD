@@ -756,6 +756,15 @@ int main(int argc, char** argv) {
     const std::vector<std::size_t> expected{0, 1, 2, 3, 4, 5,
                                             6, 7, 8, 9, 10, 11};
     CHECK(view.effectiveSelectedFaceIndices() == expected);
+
+    // A document recompute or body deletion replaces the topology. No hover
+    // or selection ordinal from the old compound may survive that swap.
+    view.setBodyShapes({{bodyB, featB, boxB}});
+    CHECK(view.selectedBodyFaces().empty());
+    CHECK(view.selectedBodyEdges().empty());
+    CHECK(view.selectedBodies().empty());
+    CHECK(view.effectiveSelectedFaceIndices().empty());
+    CHECK(!view.hoveredBodyEdgeIndex().has_value());
   }
 
   // Plain marquee in an edge multi-select tool REPLACES the prior selection;

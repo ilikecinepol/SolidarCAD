@@ -57,6 +57,7 @@ class DraftToolSession final : public ToolSession {
   bool reversed_{false};
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
+  ShapeFeature::ShapePtr lastValidPreviewShape_;
   std::string error_;
 };
 

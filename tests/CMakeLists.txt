@@ -91,6 +91,12 @@ add_executable(project_file_tests project_file_tests.cpp)
 target_link_libraries(project_file_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME project_file_tests COMMAND project_file_tests)
 
+add_executable(drawing_source_tests drawing_source_tests.cpp)
+target_link_libraries(drawing_source_tests
+  PRIVATE solidar_drawing_ui solidar_project Qt6::Core)
+add_test(NAME drawing_source_tests COMMAND drawing_source_tests)
+set_tests_properties(drawing_source_tests PROPERTIES LABELS "regression")
+
 add_executable(stl_exporter_tests stl_exporter_tests.cpp)
 target_link_libraries(stl_exporter_tests PRIVATE solidar_project Qt6::Core)
 add_test(NAME stl_exporter_tests COMMAND stl_exporter_tests)

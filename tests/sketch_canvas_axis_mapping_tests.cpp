@@ -108,11 +108,23 @@ void witnessProjectsInSketchCoordinates() {
         std::abs(aligned.second.yMm - 20.0) <= 1e-12);
 }
 
+void angularRadiusStaysReadable() {
+  CHECK(std::abs(SketchCanvas::angularDimensionRadiusPx(2.0, 10.0, 800.0) -
+                 20.0) <= 1e-12);
+  CHECK(std::abs(SketchCanvas::angularDimensionRadiusPx(0.0, 10.0, 800.0) -
+                 16.0) <= 1e-12);
+  CHECK(std::abs(SketchCanvas::angularDimensionRadiusPx(1000.0, 10.0, 800.0) -
+                 176.0) <= 1e-12);
+  CHECK(std::abs(SketchCanvas::angularDimensionRadiusPx(1000.0, 10.0, 200.0) -
+                 48.0) <= 1e-12);
+}
+
 }  // namespace
 
 int main() {
   screenAxisToSketchModeAllRotations();
   resolveModeUsesSketchAxisSeparation();
   witnessProjectsInSketchCoordinates();
+  angularRadiusStaysReadable();
   return EXIT_SUCCESS;
 }

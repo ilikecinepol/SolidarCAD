@@ -107,6 +107,7 @@ class MainWindow final : public QMainWindow {
   void editSketchById(SketchId sketchId);
   void editHistoryFeature(BodyId bodyId, FeatureId featureId);
   void removeHistoryStep(const HistoryStep& step);
+  void removeBody(BodyId bodyId);
   bool ensureHistoryAtEnd();
   void moveHistoryToEnd();
   [[nodiscard]] bool isHistoryAtEnd() const;

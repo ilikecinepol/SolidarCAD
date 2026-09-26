@@ -251,6 +251,48 @@ int main(int argc, char* argv[]) {
                    loadedLineArcVolume) > 1e-4);
   }
 
+  // A classified outer contour + analytic hole survives native save/load and
+  // rebuilds to the same one-solid topology and volume.
+  {
+    constexpr double kPi = 3.14159265358979323846;
+    solidar::Document holeDocument;
+    auto& holeSketch = holeDocument.addSketch("Profile with hole");
+    const auto holeSketchId = holeSketch.id;
+    holeSketch.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+    holeSketch.geometry.addCircle({20.0, 15.0}, 5.0);
+    auto& holeBody = holeDocument.addBody("Body with hole");
+    const auto holeBodyId = holeBody.id();
+    auto holeExtrude = std::make_unique<solidar::ExtrudeFeature>(
+        holeSketchId, 12.0, "Extrude with hole");
+    const auto holeFeatureId = holeExtrude->id();
+    holeBody.addFeature(std::move(holeExtrude));
+    CHECK(holeDocument.recompute());
+    const double expectedVolume = (40.0 * 30.0 - kPi * 25.0) * 12.0;
+    CHECK(solidar::test::solidCount(*holeBody.resultShape()) == 1);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*holeBody.resultShape()), expectedVolume,
+        1e-3));
+
+    const QString holePath = directory.filePath("profile-with-hole.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        holePath, holeDocument, &error));
+    solidar::Document restoredHoleDocument;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        holePath, &restoredHoleDocument, &error));
+    const auto* restoredHoleSketch =
+        restoredHoleDocument.findSketch(holeSketchId);
+    const auto* restoredHoleBody = restoredHoleDocument.findBody(holeBodyId);
+    CHECK(restoredHoleSketch);
+    CHECK(restoredHoleSketch->geometry.lines().size() == 4);
+    CHECK(restoredHoleSketch->geometry.circles().size() == 1);
+    CHECK(restoredHoleBody);
+    CHECK(restoredHoleBody->features().front()->id() == holeFeatureId);
+    CHECK(solidar::test::solidCount(*restoredHoleBody->resultShape()) == 1);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*restoredHoleBody->resultShape()),
+        expectedVolume, 1e-3));
+  }
+
   // Extrude from one selected region of a multi-profile sketch.  The source
   // sketch remains intact, while the feature stores only the picked region.
   {
@@ -369,6 +411,43 @@ int main(int argc, char* argv[]) {
     CHECK(solidar::test::near(
         solidar::test::volumeOf(*restoredExtrude->shape()), kExpectedVolume,
         1e-4));
+  }
+
+  // Deleting one Body is persisted as a model change: the removed Body and
+  // its features do not reappear after save/load, while reusable base-plane
+  // sketches and the survivor keep their stable identifiers.
+  {
+    solidar::Document removalDocument;
+    auto& removedSketch = removalDocument.addSketch("Removed profile");
+    const auto removedSketchId = removedSketch.id;
+    removedSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    auto& removedBody = removalDocument.addBody("Removed body");
+    const auto removedBodyId = removedBody.id();
+    removedBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        removedSketchId, 5.0));
+    auto& keptSketch = removalDocument.addSketch("Kept profile");
+    const auto keptSketchId = keptSketch.id;
+    keptSketch.geometry.addRectangle({30.0, 0.0}, {42.0, 8.0});
+    auto& keptBody = removalDocument.addBody("Kept body");
+    const auto keptBodyId = keptBody.id();
+    keptBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        keptSketchId, 7.0));
+    CHECK(removalDocument.recompute());
+    std::string removalError;
+    CHECK(removalDocument.removeBodyCascade(removedBodyId, &removalError));
+    CHECK(removalDocument.recompute());
+
+    const QString removalPath = directory.filePath("removed-body.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        removalPath, removalDocument, &error));
+    solidar::Document restoredRemoval;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        removalPath, &restoredRemoval, &error));
+    CHECK(restoredRemoval.findBody(removedBodyId) == nullptr);
+    CHECK(restoredRemoval.findSketch(removedSketchId));
+    CHECK(restoredRemoval.findBody(keptBodyId));
+    CHECK(restoredRemoval.findSketch(keptSketchId));
+    CHECK(restoredRemoval.bodies().size() == 1);
   }
 
   // A failed imported-shape serialization must not replace the last valid

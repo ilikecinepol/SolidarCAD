@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -207,6 +208,74 @@ bool Document::removeSketchCascade(SketchId sketchId, std::string* error) {
         return std::find(plan.sketchIds.begin(), plan.sketchIds.end(), sketch.id) !=
                plan.sketchIds.end();
       }), sketches_.end());
+  return true;
+}
+
+bool Document::removeBodyCascade(BodyId bodyId, std::string* error) {
+  const Body* target = findBody(bodyId);
+  if (!target) {
+    if (error) *error = "Body to remove was not found";
+    return false;
+  }
+
+  std::set<FeatureId> removedFeatures;
+  std::set<SketchId> removedSketches;
+  for (const auto& feature : target->features())
+    removedFeatures.insert(feature->id());
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto& sketch : sketches_) {
+      const bool ownedByRemovedFeature =
+          sketch.support.type == SketchSupportType::Face &&
+          (sketch.support.face.bodyId == bodyId ||
+           removedFeatures.contains(sketch.support.face.featureId));
+      if (ownedByRemovedFeature && removedSketches.insert(sketch.id).second)
+        changed = true;
+    }
+
+    // A feature in another Body may consume a face-attached sketch owned by
+    // the removed Body. Remove that feature and its downstream chain rather
+    // than leaving a dangling support/reference.
+    for (const Body& body : bodies_) {
+      if (body.id() == bodyId) continue;
+      std::optional<std::size_t> firstDependent;
+      for (std::size_t index = 0; index < body.features().size(); ++index) {
+        for (const auto sketchId : removedSketches)
+          if (body.features()[index]->dependsOnSketch(sketchId)) {
+            firstDependent = index;
+            break;
+          }
+        if (firstDependent) break;
+      }
+      if (!firstDependent) continue;
+      for (std::size_t index = *firstDependent;
+           index < body.features().size(); ++index)
+        if (removedFeatures.insert(body.features()[index]->id()).second)
+          changed = true;
+    }
+  }
+
+  for (Body& body : bodies_) {
+    if (body.id() == bodyId) continue;
+    for (std::size_t index = 0; index < body.features().size(); ++index) {
+      if (!removedFeatures.contains(body.features()[index]->id())) continue;
+      body.eraseFeaturesFrom(index);
+      break;
+    }
+  }
+  sketches_.erase(std::remove_if(
+                      sketches_.begin(), sketches_.end(),
+                      [&removedSketches](const DocumentSketch& sketch) {
+                        return removedSketches.contains(sketch.id);
+                      }),
+                  sketches_.end());
+  bodies_.erase(std::remove_if(bodies_.begin(), bodies_.end(),
+                               [bodyId](const Body& body) {
+                                 return body.id() == bodyId;
+                               }),
+                bodies_.end());
   return true;
 }
 

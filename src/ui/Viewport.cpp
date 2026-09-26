@@ -962,6 +962,14 @@ void Viewport::setBasePlaneVisible(int plane, bool visible) {
   update();
 }
 
+bool Viewport::basePlaneVisible(int plane) const noexcept {
+  return plane >= 0 && plane <= 2 && basePlanesVisible_[plane];
+}
+
+bool Viewport::sketchPlaneSelectionActive() const noexcept {
+  return pickMode_ == PickMode::SketchPlane;
+}
+
 void Viewport::resetScene() {
   orientationAnimation_->stop();
   clearCubeHover();
@@ -1036,7 +1044,7 @@ void Viewport::resetScene() {
 }
 
 void Viewport::beginSketchPlaneSelection() {
-  selectionFilter_ = SelectionFilter::Face;
+  setSelectionFilter(SelectionFilter::Face);
   pickMode_ = PickMode::SketchPlane;
   extrusionHoverPolygon_.clear();
   extrusionHoverPath_ = {};
@@ -2670,17 +2678,29 @@ void Viewport::paintGL() {
     const QPointF xEnd = project({18, 0, 0}, size(), yaw_, pitch_, zoom_);
     const QPointF yEnd = project({0, 18, 0}, size(), yaw_, pitch_, zoom_);
     const QPointF zEnd = project({0, 0, 18}, size(), yaw_, pitch_, zoom_);
-    painter.setPen(QPen(QColor("#dc3f45"), 2.0));
-    painter.drawLine(origin, xEnd);
-    painter.drawText(xEnd + QPointF(5, 3), "X");
-    painter.setPen(QPen(QColor("#239653"), 2.0));
-    painter.drawLine(origin, yEnd);
-    painter.drawText(yEnd + QPointF(5, 3), "Y");
-    painter.setPen(QPen(QColor("#1769d2"), 2.0));
-    painter.drawLine(origin, zEnd);
-    painter.drawText(zEnd + QPointF(5, 3), "Z");
+    const auto drawAxis = [&](QPointF end, const QColor& color,
+                              const QString& label) {
+      // Origin trihedron is an interaction-neutral screen overlay. A
+      // theme-derived halo keeps it readable over both light and dark solid
+      // faces without disabling depth for any selectable model presentation.
+      QColor halo = theme.viewportBackground;
+      halo.setAlpha(220);
+      painter.setPen(QPen(halo, 5.0, Qt::SolidLine, Qt::RoundCap));
+      painter.drawLine(origin, end);
+      painter.setPen(QPen(color, 2.2, Qt::SolidLine, Qt::RoundCap));
+      painter.drawLine(origin, end);
+      const QPointF labelPosition = end + QPointF(5, 3);
+      const QRectF labelBackground(labelPosition + QPointF(-2, -13),
+                                   QSizeF(15, 17));
+      painter.fillRect(labelBackground, halo);
+      painter.setPen(color);
+      painter.drawText(labelPosition, label);
+    };
+    drawAxis(xEnd, theme.axisX, QStringLiteral("X"));
+    drawAxis(yEnd, theme.axisY, QStringLiteral("Y"));
+    drawAxis(zEnd, theme.axisZ, QStringLiteral("Z"));
     painter.setBrush(selectedOrigin_ ? QColor("#d9eaff") : Qt::white);
-    painter.setPen(QPen(selectedOrigin_ ? QColor("#075eff") : QColor("#1769d2"),
+    painter.setPen(QPen(selectedOrigin_ ? theme.accent : theme.axisZ,
                         selectedOrigin_ ? 3.0 : 1.5));
     painter.drawEllipse(origin, 4.0, 4.0);
   }
@@ -4527,16 +4547,23 @@ bool Viewport::eventFilter(QObject* watched, QEvent* event) {
 void Viewport::cancelActiveInteraction() {
   // Escape must cancel the whole transient interaction, regardless of whether
   // keyboard focus currently belongs to the viewport or an on-canvas editor.
+  const bool cancelledSketchPlane = pickMode_ == PickMode::SketchPlane;
   resetToolInteraction();
-  emit selectionChanged(QStringLiteral("__cancel_tools__"));
+  emit selectionChanged(cancelledSketchPlane
+                            ? QStringLiteral("__cancel_sketch_plane__")
+                            : QStringLiteral("__cancel_tools__"));
 }
 
 void Viewport::resetToolInteraction() {
+  const bool wasSketchPlane = pickMode_ == PickMode::SketchPlane;
   pickMode_ = PickMode::None;
+  setSelectionFilter(SelectionFilter::Any);
   clearLegacyExtrusionPreview();
   clearToolPreviewShape();
   clearToolManipulator();
   cancelMarquee();
+  if (wasSketchPlane)
+    for (bool& visible : basePlanesVisible_) visible = false;
   unsetCursor();
   update();
 }

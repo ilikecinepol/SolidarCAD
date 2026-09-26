@@ -127,11 +127,20 @@ int main() {
       CHECK(cap->profile.geometry.lines().size() == 8);
     }
 
-    // Open and nested contours stay unavailable to the context action.
+    // Open contours stay unavailable. A strictly nested contour is a valid
+    // hole, while a contour crossing the outer boundary remains invalid.
     {
       DocumentSketch p;
       p.id = 30;
       p.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+      SketchProfileSelectionContext ctx;
+      ctx.profile = p;
+      ctx.activeBodyId = kInvalidBodyId;
+      CHECK(!resolveSketchProfileExtrude(ctx).has_value());
+    }
+    {
+      DocumentSketch p = profile(32);
+      p.geometry.addCircle({19.0, 0.0}, 5.0);
       SketchProfileSelectionContext ctx;
       ctx.profile = p;
       ctx.activeBodyId = kInvalidBodyId;
@@ -143,7 +152,7 @@ int main() {
       SketchProfileSelectionContext ctx;
       ctx.profile = p;
       ctx.activeBodyId = kInvalidBodyId;
-      CHECK(!resolveSketchProfileExtrude(ctx).has_value());
+      CHECK(resolveSketchProfileExtrude(ctx).has_value());
     }
 
     // Face-supported profile with NO body -> rejected.
