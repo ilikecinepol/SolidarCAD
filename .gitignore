@@ -29,3 +29,6 @@ angle_dimension_local_diagnostic.txt
 # Local standalone source backups
 .*_backup_*.cpp
 .sketchcanvas_dimensions_restore_*.cpp
+
+# Website is maintained outside the CAD repository
+/website/
