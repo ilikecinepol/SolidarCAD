@@ -125,6 +125,8 @@ add_library(solidar_theme
   ui/ThemeColors.h
   ui/ThemeManager.cpp
   ui/ThemeManager.h
+  ui/ToolIcon.cpp
+  ui/ToolIcon.h
   ui/SettingsWidget.cpp
   ui/SettingsWidget.h
 )
@@ -139,7 +141,8 @@ add_library(solidar_sketch_ui
   ui/SketchCanvas.h
 )
 target_include_directories(solidar_sketch_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_sketch_ui PUBLIC solidar_model Qt6::Widgets)
+target_link_libraries(solidar_sketch_ui PUBLIC solidar_model solidar_theme
+  Qt6::Widgets)
 solidar_warnings(solidar_sketch_ui)
 
 add_library(solidar_drawing_ui

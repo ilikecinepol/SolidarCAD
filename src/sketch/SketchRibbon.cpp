@@ -3,7 +3,6 @@
 #include <QButtonGroup>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QIcon>
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
@@ -11,14 +10,15 @@
 #include <QVBoxLayout>
 
 #include "ui/SketchCanvas.h"
+#include "ui/ToolIcon.h"
 
 namespace solidar {
 namespace {
 
-QPushButton* toolButton(const QString& iconPath, const QString& title,
+QPushButton* toolButton(ToolIconKind icon, const QString& title,
                         QWidget* parent, bool enabled = true) {
   auto* button = new QPushButton(parent);
-  button->setIcon(QIcon(iconPath));
+  button->setIcon(toolIcon(icon));
   button->setIconSize(QSize(30, 30));
   button->setObjectName("toolButton");
   button->setCheckable(true);
@@ -26,6 +26,7 @@ QPushButton* toolButton(const QString& iconPath, const QString& title,
   button->setEnabled(enabled);
   button->setCursor(enabled ? Qt::PointingHandCursor : Qt::ArrowCursor);
   button->setFocusPolicy(Qt::NoFocus);
+  button->setAccessibleName(title);
   button->setToolTip(enabled
                          ? title
                          : title + QString::fromUtf8(" — инструмент появится позже"));
@@ -74,24 +75,23 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   root->setContentsMargins(14, 6, 14, 6);
   root->setSpacing(5);
 
-  auto* line = toolButton(":/icons/sketch/line.png",
+  auto* line = toolButton(ToolIconKind::Line,
                           QString::fromUtf8("Линия"), this);
-  auto* rectangle = toolButton(":/icons/sketch/rectangle.png",
+  auto* rectangle = toolButton(ToolIconKind::Rectangle,
                                QString::fromUtf8("Прямоугольник"), this);
-  auto* circle = toolButton(":/icons/sketch/circle.png",
+  auto* circle = toolButton(ToolIconKind::Circle,
                             QString::fromUtf8("Окружность"), this);
   auto* projection = toolButton(
-      QString(), QString::fromUtf8("Проекция"), this);
-  projection->setText(QString::fromUtf8("⇩"));
+      ToolIconKind::Projection, QString::fromUtf8("Проекция"), this);
   projection->setToolTip(
       QString::fromUtf8("Проекция существующего ребра в эскиз"));
-  auto* arc = toolButton(":/icons/sketch/arc.png",
+  auto* arc = toolButton(ToolIconKind::Arc,
                          QString::fromUtf8("Дуга по 3 точкам"), this);
-  auto* polygon = toolButton(":/icons/sketch/polygon.png",
+  auto* polygon = toolButton(ToolIconKind::Polygon,
                              QString::fromUtf8("Полигон"), this, false);
-  auto* slot = toolButton(":/icons/sketch/slot.png",
+  auto* slot = toolButton(ToolIconKind::Slot,
                           QString::fromUtf8("Слот"), this, false);
-  auto* text = toolButton(":/icons/sketch/text.png",
+  auto* text = toolButton(ToolIconKind::Text,
                           QString::fromUtf8("Текст"), this, false);
   auto* toolGroup = new QButtonGroup(this);
   toolGroup->setExclusive(true);
@@ -117,18 +117,24 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   separator1->setObjectName("separator");
   root->addWidget(separator1);
 
-  auto* mirror = toolButton(":/icons/sketch/mirror.png",
+  auto* mirror = toolButton(ToolIconKind::SketchMirror,
                             QString::fromUtf8("Зеркало"), this, false);
-  auto* remove = new QPushButton(QString::fromUtf8("⌫"), this);
+  auto* remove = new QPushButton(this);
+  remove->setIcon(toolIcon(ToolIconKind::Delete));
+  remove->setIconSize(QSize(30, 30));
   remove->setObjectName("toolButton");
   remove->setFixedSize(54, 54);
   remove->setToolTip(QString::fromUtf8("Удалить"));
+  remove->setAccessibleName(remove->toolTip());
   remove->setFocusPolicy(Qt::NoFocus);
   remove->setCheckable(false);
-  auto* clear = new QPushButton(QString::fromUtf8("×"), this);
+  auto* clear = new QPushButton(this);
+  clear->setIcon(toolIcon(ToolIconKind::Clear));
+  clear->setIconSize(QSize(30, 30));
   clear->setObjectName("toolButton");
   clear->setFixedSize(54, 54);
   clear->setToolTip(QString::fromUtf8("Очистить"));
+  clear->setAccessibleName(clear->toolTip());
   clear->setFocusPolicy(Qt::NoFocus);
   clear->setCheckable(false);
   auto* editingLayout = new QHBoxLayout;
@@ -145,49 +151,48 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   root->addWidget(separator2);
 
   auto* constraintsLayout = new QHBoxLayout;
-  auto* dimension = toolButton(":/icons/sketch/auto-dimension.png",
+  auto* dimension = toolButton(ToolIconKind::AutoDimension,
                                QString::fromUtf8("Авторазмер"), this);
   toolGroup->addButton(dimension);
   constraintsLayout->addWidget(dimension);
   auto* orthogonalTool = toolButton(
-      ":/icons/sketch/constraint/orthogonal.png",
+      ToolIconKind::OrthogonalConstraint,
       QString::fromUtf8("Горизонтально/вертикально"), this);
   toolGroup->addButton(orthogonalTool);
   constraintsLayout->addWidget(orthogonalTool);
 
   auto* coincidentTool = toolButton(
-      ":/icons/sketch/constraint/coincident.png",
+      ToolIconKind::CoincidentConstraint,
       QString::fromUtf8("Совпадение / Принадлежность"), this);
   toolGroup->addButton(coincidentTool);
   constraintsLayout->addWidget(coincidentTool);
 
   auto* perpendicularTool = toolButton(
-      ":/icons/sketch/constraint/perpendicular.png",
+      ToolIconKind::PerpendicularConstraint,
       QString::fromUtf8("Перпендикулярность"), this);
   toolGroup->addButton(perpendicularTool);
   constraintsLayout->addWidget(perpendicularTool);
 
   auto* parallelTool = toolButton(
-      ":/icons/sketch/constraint/parallel.png",
+      ToolIconKind::ParallelConstraint,
       QString::fromUtf8("Параллельность"), this);
   toolGroup->addButton(parallelTool);
   constraintsLayout->addWidget(parallelTool);
 
   auto* equalTool = toolButton(
-      ":/icons/sketch/constraint/equal.png",
+      ToolIconKind::EqualConstraint,
       QString::fromUtf8("Эквивалентность"), this);
   toolGroup->addButton(equalTool);
   constraintsLayout->addWidget(equalTool);
 
   auto* tangentTool = toolButton(
-      ":/icons/sketch/constraint/tangent.png",
+      ToolIconKind::TangentConstraint,
       QString::fromUtf8("Касательная к окружности"), this);
   toolGroup->addButton(tangentTool);
   constraintsLayout->addWidget(tangentTool);
 
   auto* lockTool = toolButton(
-      QString(), QString::fromUtf8("Замок"), this);
-  lockTool->setText(QString::fromUtf8("🔒"));
+      ToolIconKind::LockConstraint, QString::fromUtf8("Замок"), this);
   lockTool->setToolTip(
       QString::fromUtf8("Зафиксировать объект"));
   toolGroup->addButton(lockTool);

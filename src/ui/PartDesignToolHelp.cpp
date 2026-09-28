@@ -1,8 +1,7 @@
 #include "ui/PartDesignToolHelp.h"
 
 #include <array>
-#include <QPainter>
-#include <QPixmap>
+#include "ui/ToolIcon.h"
 
 namespace solidar {
 namespace {
@@ -57,56 +56,27 @@ QString partDesignToolStepHint(PartDesignToolKind kind,
 }
 
 QIcon partDesignToolIcon(PartDesignToolKind kind) {
-  QPixmap pixmap(24, 24);
-  pixmap.fill(Qt::transparent);
-  QPainter painter(&pixmap);
-  painter.setRenderHint(QPainter::Antialiasing);
-  QPen pen(QColor("#185ca8"), 2.0, Qt::SolidLine, Qt::RoundCap,
-           Qt::RoundJoin);
-  painter.setPen(pen);
-  painter.setBrush(QColor("#d9eaff"));
   switch (kind) {
-    case PartDesignToolKind::Extrude:
-      painter.drawRect(4, 8, 11, 11); painter.drawLine(15, 8, 20, 4);
-      painter.drawLine(15, 19, 20, 15); painter.drawLine(20, 4, 20, 15); break;
-    case PartDesignToolKind::Pocket:
-      painter.drawRect(3, 5, 18, 15); painter.drawRect(8, 5, 8, 9);
-      painter.drawLine(10, 8, 14, 12); painter.drawLine(14, 8, 10, 12); break;
-    case PartDesignToolKind::Revolve:
-      painter.drawArc(3, 3, 18, 18, 40 * 16, 285 * 16);
-      painter.drawLine(17, 3, 21, 5); painter.drawLine(17, 3, 18, 8); break;
-    case PartDesignToolKind::Fillet:
-      painter.setBrush(Qt::NoBrush); painter.drawLine(4, 20, 4, 11);
-      painter.drawArc(4, 4, 16, 16, 90 * 16, 90 * 16); painter.drawLine(12, 4, 20, 4); break;
-    case PartDesignToolKind::Chamfer:
-      painter.setBrush(Qt::NoBrush); painter.drawPolyline(QPolygon({QPoint(4,20),QPoint(4,12),QPoint(12,4),QPoint(20,4)})); break;
-    case PartDesignToolKind::Shell:
-      painter.drawRect(4, 4, 16, 16); painter.setBrush(Qt::white);
-      painter.drawRect(8, 8, 8, 12); break;
-    case PartDesignToolKind::Draft:
-      painter.drawPolygon(QPolygon({QPoint(5,20),QPoint(9,4),QPoint(19,4),QPoint(19,20)}));
-      painter.drawLine(9, 4, 5, 4); break;
-    case PartDesignToolKind::Mirror:
-      painter.drawLine(12, 2, 12, 22); painter.drawPolygon(QPolygon({QPoint(3,18),QPoint(9,5),QPoint(9,18)}));
-      painter.setBrush(Qt::NoBrush); painter.drawPolygon(QPolygon({QPoint(21,18),QPoint(15,5),QPoint(15,18)})); break;
+    case PartDesignToolKind::Extrude: return toolIcon(ToolIconKind::Extrude);
+    case PartDesignToolKind::Pocket: return toolIcon(ToolIconKind::Pocket);
+    case PartDesignToolKind::Revolve: return toolIcon(ToolIconKind::Revolve);
+    case PartDesignToolKind::Fillet: return toolIcon(ToolIconKind::Fillet);
+    case PartDesignToolKind::Chamfer: return toolIcon(ToolIconKind::Chamfer);
+    case PartDesignToolKind::Mirror: return toolIcon(ToolIconKind::Mirror);
     case PartDesignToolKind::LinearPattern:
-      for (int x : {3, 10, 17}) painter.drawRect(x, 8, 5, 8); break;
+      return toolIcon(ToolIconKind::LinearPattern);
     case PartDesignToolKind::CircularPattern:
-      for (const QPoint& p : {QPoint(9,2), QPoint(16,9), QPoint(9,16), QPoint(2,9)})
-        painter.drawEllipse(p.x(), p.y(), 5, 5); break;
-    case PartDesignToolKind::None: break;
+      return toolIcon(ToolIconKind::CircularPattern);
+    case PartDesignToolKind::Shell: return toolIcon(ToolIconKind::Shell);
+    case PartDesignToolKind::Draft: return toolIcon(ToolIconKind::Draft);
+    case PartDesignToolKind::None: return {};
   }
-  return QIcon(pixmap);
+  return {};
 }
 
 QIcon modelCommandIcon(const QString& commandId) {
-  if (commandId == QLatin1String("createSketch")) {
-    QPixmap pixmap(24, 24); pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap); painter.setPen(QPen(QColor("#185ca8"), 2));
-    painter.drawRect(4, 4, 14, 14); painter.drawLine(9, 12, 21, 2);
-    painter.drawLine(17, 2, 21, 6);
-    return QIcon(pixmap);
-  }
+  if (commandId == QLatin1String("createSketch"))
+    return toolIcon(ToolIconKind::CreateSketch);
   for (const auto& entry : kEntries)
     if (commandId == QLatin1String(entry.commandId)) return partDesignToolIcon(entry.kind);
   return {};

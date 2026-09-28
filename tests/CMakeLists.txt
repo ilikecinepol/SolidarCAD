@@ -124,6 +124,12 @@ add_executable(model_ribbon_tests model_ribbon_tests.cpp)
 target_link_libraries(model_ribbon_tests PRIVATE solidar_editor Qt6::Widgets)
 add_test(NAME model_ribbon_tests COMMAND model_ribbon_tests)
 
+add_executable(tool_icon_tests tool_icon_tests.cpp)
+target_link_libraries(tool_icon_tests PRIVATE solidar_sketch_ui
+  solidar_viewport3d solidar_theme Qt6::Widgets)
+add_test(NAME tool_icon_tests COMMAND tool_icon_tests)
+set_tests_properties(tool_icon_tests PROPERTIES LABELS "unit;ui-smoke")
+
 add_executable(part_design_history_ui_tests part_design_history_ui_tests.cpp)
 target_link_libraries(part_design_history_ui_tests
   PRIVATE solidar_editor solidar_project Qt6::Widgets)

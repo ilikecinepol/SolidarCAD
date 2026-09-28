@@ -9,6 +9,7 @@
 #include "model/ShellFeature.h"
 #include "model/DraftFeature.h"
 #include "ui/ToolParametersPanel.h"
+#include "ui/ToolIcon.h"
 #include "ui/PartDesignToolHelp.h"
 #include "ui/PartDesignHistory.h"
 #include "ui/HistoryTimelineWidget.h"
@@ -1217,22 +1218,22 @@ void MainWindow::buildUi() {
   auto* circleModeGroup = new QButtonGroup(circleModeButtons);
   circleModeGroup->setExclusive(true);
   struct CircleModeButtonSpec {
-    const char* icon;
+    ToolIconKind icon;
     const char* tooltip;
   };
   const CircleModeButtonSpec circleModes[] = {
-      {":/icons/sketch/circle/center-radius.png", "Из центра"},
-      {":/icons/sketch/circle/two-points.png", "По двум точкам"},
-      {":/icons/sketch/circle/three-points.png", "По трём точкам"},
-      {":/icons/sketch/circle/three-tangents.png", "По трём прямым"},
-      {":/icons/sketch/circle/two-tangents-radius.png",
+      {ToolIconKind::CircleCenterRadius, "Из центра"},
+      {ToolIconKind::CircleTwoPoints, "По двум точкам"},
+      {ToolIconKind::CircleThreePoints, "По трём точкам"},
+      {ToolIconKind::CircleThreeTangents, "По трём прямым"},
+      {ToolIconKind::CircleTwoTangentsRadius,
        "По двум прямым и радиусу"},
   };
   for (int index = 0; index < 5; ++index) {
     auto* button = new QToolButton(circleModeButtons);
     button->setCheckable(true);
     button->setAutoExclusive(true);
-    button->setIcon(QIcon(QString::fromUtf8(circleModes[index].icon)));
+    button->setIcon(toolIcon(circleModes[index].icon));
     button->setIconSize(QSize(26, 26));
     button->setFixedSize(36, 36);
     button->setToolTip(QString::fromUtf8(circleModes[index].tooltip));
@@ -1265,15 +1266,15 @@ void MainWindow::buildUi() {
   auto* rectangleModeGroup = new QButtonGroup(rectangleModeButtons);
   rectangleModeGroup->setExclusive(true);
   const CircleModeButtonSpec rectangleModes[] = {
-      {":/icons/sketch/rectangle/two-points.png", "По двум точкам"},
-      {":/icons/sketch/rectangle/three-points.png", "По трём точкам"},
-      {":/icons/sketch/rectangle/from-center.png", "Из центра"},
+      {ToolIconKind::RectangleTwoPoints, "По двум точкам"},
+      {ToolIconKind::RectangleThreePoints, "По трём точкам"},
+      {ToolIconKind::RectangleFromCenter, "Из центра"},
   };
   for (int index = 0; index < 3; ++index) {
     auto* button = new QToolButton(rectangleModeButtons);
     button->setCheckable(true);
     button->setAutoExclusive(true);
-    button->setIcon(QIcon(QString::fromUtf8(rectangleModes[index].icon)));
+    button->setIcon(toolIcon(rectangleModes[index].icon));
     button->setIconSize(QSize(26, 26));
     button->setFixedSize(36, 36);
     button->setToolTip(QString::fromUtf8(rectangleModes[index].tooltip));
