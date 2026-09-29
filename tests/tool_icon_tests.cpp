@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
   solidar::SketchRibbon ribbon(&canvas);
   const auto buttons = ribbon.findChildren<QPushButton*>(
       QStringLiteral("toolButton"));
-  CHECK(buttons.size() == 19);
+  CHECK(buttons.size() == 15);
   for (const auto* button : buttons) {
     CHECK(!button->icon().isNull());
     CHECK(hasVisiblePixel(button->icon()));

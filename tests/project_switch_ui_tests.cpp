@@ -65,6 +65,10 @@ class MainWindowUndoTestAccess {
     return !window.extrusionSourceSketch_ ||
            *window.extrusionSourceSketch_ < window.sketchHistory_.size();
   }
+  static bool modified(const MainWindow& window) {
+    return window.isWindowModified();
+  }
+  static void save(MainWindow& window) { window.saveProject(); }
 };
 
 }  // namespace solidar
@@ -118,6 +122,26 @@ int main(int argc, char** argv) {
     CHECK(editor.loadProject(pathB, &error));
   }
 
+  // Save must commit the sketcher's working copy before serializing.  Without
+  // this, the UI reported success while the visible sketch was absent from
+  // the file on disk.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    auto* canvas = Access::sketch(editor);
+    canvas->resetSketch();
+    canvas->setRectangle(12.0, 8.0);
+    CHECK(Access::modified(editor));
+    Access::workspace(editor)->setCurrentWidget(canvas);
+    Access::save(editor);
+    CHECK(!Access::modified(editor));
+
+    solidar::Document restored;
+    CHECK(solidar::project::ProjectFile::loadDocument(pathB, &restored,
+                                                       &error));
+    CHECK(restored.sketches().size() == 1);
+    CHECK(!restored.sketches().front().geometry.lines().empty());
+  }
+
   // Switching between the legacy extrusion picker, the dedicated Revolve
   // panel and the shared Part Design panel must leave exactly one tool UI.
   // This used to reproduce after a longer session because these three paths
@@ -133,6 +157,7 @@ int main(int argc, char** argv) {
     int modelState = 1;
     Access::pushUndoRedo(editor, [&] { modelState = 0; },
                          [&] { modelState = 1; });
+    CHECK(Access::modified(editor));
     CHECK(Access::undoAction(editor)->isEnabled());
     CHECK(!Access::redoAction(editor)->isEnabled());
     Access::undoAction(editor)->trigger();
@@ -307,6 +332,26 @@ int main(int argc, char** argv) {
     CHECK(Access::sketchCount(editor) == 2);
     CHECK(Access::extrusionSourceValid(editor));
   }
+
+  // Closing a modified project must never discard work without an explicit
+  // choice. Cancel keeps the editor alive; Discard permits the close.
+  editor.show();
+  QApplication::processEvents();
+  CHECK(solidar::MainWindowUndoTestAccess::modified(editor));
+  QTimer::singleShot(0, [] {
+    for (QWidget* widget : QApplication::topLevelWidgets())
+      if (auto* box = qobject_cast<QMessageBox*>(widget))
+        box->done(QMessageBox::Cancel);
+  });
+  CHECK(!editor.close());
+  CHECK(editor.isVisible());
+
+  QTimer::singleShot(0, [] {
+    for (QWidget* widget : QApplication::topLevelWidgets())
+      if (auto* box = qobject_cast<QMessageBox*>(widget))
+        box->done(QMessageBox::Discard);
+  });
+  CHECK(editor.close());
 
   return EXIT_SUCCESS;
 }

@@ -4,16 +4,14 @@ Solidar CAD (Солидарность CAD) is an early open-source, cross-platfo
 for Windows and Ubuntu. The first milestone is a dependable part-design workflow:
 constrained 2D sketch → extrusion → editable feature history.
 
-## Current prototype
+## MVP scope
 
 - standalone Home screen with create/open project actions
 - versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet/Chamfer history
-- independently linkable Home, Sketch, Drawing and 3D View modules
+- independently linkable Home, Sketch and 3D View modules
 - Qt 6 desktop shell with model tree and parameter editor
-- 2D sketch workspace with a constrained rectangular profile
-- on-screen A4 drawing sheet using the Russian ESKD profile
-- shared vector renderer for preview, PDF export and physical printing
-- A4 frame, title block, visible outlines and linear dimensions
+- 2D sketch workspace with lines, rectangles, circles, arcs, projection and
+  geometric constraints
 - interactive orbit/zoom viewport
 - cascading parametric history with Dirty/Valid/Error states
 - platform-neutral document model with a smoke test
@@ -80,21 +78,28 @@ then set `VCPKG_ROOT`, `VCPKG_DEFAULT_TRIPLET` (`ci-x64-windows` or
 ```bash
 cmake --preset release
 cmake --build --preset release
-cmake --install build/release --prefix build/stage
+cmake --install build/release
+cpack --config build/release/CPackConfig.cmake
 ```
 
-The repository provides only the install foundation (`solidar` into `bin`) at
-this stage. Runtime deployment and installer/package generation remain future
-packaging work.
+The install step creates a runnable tree in `build/release/stage`. CPack creates
+a portable Windows ZIP including runtime dependencies and third-party notices;
+GitHub Actions builds and uploads it as a workflow artifact. The Linux install
+tree remains a developer validation artifact rather than an MVP distribution.
+Publishing a public release still requires a clean-machine smoke test. The
+portable archive already includes the canonical Qt 6.8.3 license texts and the
+binary-package SPDX inventories used to verify the deployed Qt modules.
 
 ## Roadmap
 
-1. Add interactive line/arc/circle tools and snapping.
-2. Integrate a constraint-solver adapter (PlaneGCS evaluation first).
-3. Complete the ESKD dimension and title-block variants and bundle a licensed
-   stroke font conforming to GOST 2.304.
-4. Integrate Open CASCADE and replace the preview box with a `TopoDS_Shape`.
-5. Add picking, STEP/STL exchange, dependency diagnostics and undo/redo.
+The MVP is intentionally limited to single-part parametric modelling on
+Windows x64: sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Shell, Draft,
+project save/load and STEP/STL exchange. Polygon, Slot, Text, sketch mirroring,
+assemblies and the drawing workbench are post-MVP and are not exposed as
+available commands.
+
+Post-MVP priorities are solver hardening, dependency diagnostics, complete
+ESKD drawing workflows, assemblies, signed installers and broader Linux QA.
 
 See [docs/eskd-profile.md](docs/eskd-profile.md) for the implemented standards
 profile and its current conformance boundary.
@@ -108,9 +113,14 @@ for the current parametric 3D stabilization status and verification gate.
 
 ## License and third-party components
 
-The license for SolidarCAD's own code has not been selected yet. Third-party
-components retain their respective licenses; see [DEPENDENCIES.md](DEPENDENCIES.md)
-and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Unless a file or directory states otherwise, SolidarCAD source code and project
+documentation are licensed under the [Mozilla Public License 2.0](LICENSE),
+copyright (c) 2026 Молотков Михаил Алексеевич. See [NOTICE](NOTICE) for the
+project notice and scope. Separately distributed paid modules and hosted
+services may use other terms and are not covered by this license unless stated.
+Third-party components retain their respective licenses; see
+[DEPENDENCIES.md](DEPENDENCIES.md) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 # Parametric 3D features
 
 SolidarCAD supports history-based Extrude, Pocket, Fillet, Chamfer and Revolve features.

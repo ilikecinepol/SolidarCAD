@@ -33,6 +33,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QColor>
 #include <QComboBox>
 #include <QButtonGroup>
@@ -251,6 +252,7 @@ void MainWindow::pushUndoAction(std::function<void()> action) {
   modelUndoStack_.push_back({std::move(action), nullptr});
   modelRedoStack_.clear();
   if (modelUndoStack_.size() > 100) modelUndoStack_.erase(modelUndoStack_.begin());
+  setWindowModified(true);
   updateUndoAvailability();
 }
 
@@ -260,6 +262,7 @@ void MainWindow::pushUndoRedoAction(std::function<void()> undo,
   modelUndoStack_.push_back({std::move(undo), std::move(redo)});
   modelRedoStack_.clear();
   if (modelUndoStack_.size() > 100) modelUndoStack_.erase(modelUndoStack_.begin());
+  setWindowModified(true);
   updateUndoAvailability();
 }
 
@@ -290,8 +293,12 @@ void MainWindow::resetTransientModelingUi() {
 }
 
 void MainWindow::undoLastAction() {
+  bool changed = false;
   if (workspaceStack_->currentWidget() == sketchCanvas_) {
-    if (sketchCanvas_->canUndo()) sketchCanvas_->undo();
+    if (sketchCanvas_->canUndo()) {
+      sketchCanvas_->undo();
+      changed = true;
+    }
   } else if (!modelUndoStack_.empty()) {
     auto entry = std::move(modelUndoStack_.back());
     modelUndoStack_.pop_back();
@@ -299,13 +306,18 @@ void MainWindow::undoLastAction() {
     entry.first();
     applyingUndo_ = false;
     if (entry.second) modelRedoStack_.push_back(std::move(entry));
+    changed = true;
   }
+  if (changed) setWindowModified(true);
   updateUndoAvailability();
 }
 
 void MainWindow::redoLastAction() {
   if (workspaceStack_->currentWidget() == sketchCanvas_) {
-    if (sketchCanvas_->canRedo()) sketchCanvas_->redo();
+    if (sketchCanvas_->canRedo()) {
+      sketchCanvas_->redo();
+      setWindowModified(true);
+    }
     updateUndoAvailability();
     return;
   }
@@ -316,7 +328,38 @@ void MainWindow::redoLastAction() {
   entry.second();
   applyingUndo_ = false;
   modelUndoStack_.push_back(std::move(entry));
+  setWindowModified(true);
   updateUndoAvailability();
+}
+
+bool MainWindow::confirmProjectReplacement() {
+  if (!isWindowModified()) return true;
+
+  QMessageBox prompt(
+      QMessageBox::Warning, QString::fromUtf8("Несохранённые изменения"),
+      QString::fromUtf8(
+          "Проект был изменён. Сохранить изменения перед продолжением?"),
+      QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+  prompt.setDefaultButton(QMessageBox::Save);
+  prompt.button(QMessageBox::Save)->setText(QString::fromUtf8("Сохранить"));
+  prompt.button(QMessageBox::Discard)->setText(
+      QString::fromUtf8("Не сохранять"));
+  prompt.button(QMessageBox::Cancel)->setText(QString::fromUtf8("Отмена"));
+
+  const auto result = static_cast<QMessageBox::StandardButton>(prompt.exec());
+  if (result == QMessageBox::Cancel) return false;
+  if (result == QMessageBox::Discard) return true;
+  saveProject();
+  return !isWindowModified();
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+  if (!confirmProjectReplacement()) {
+    event->ignore();
+    return;
+  }
+  resetTransientModelingUi();
+  event->accept();
 }
 
 void MainWindow::createProject() {
@@ -326,6 +369,7 @@ void MainWindow::createProject() {
   if (path.isEmpty()) return;
   if (!path.endsWith(QStringLiteral(".solidar"), Qt::CaseInsensitive))
     path += QStringLiteral(".solidar");
+  if (!confirmProjectReplacement()) return;
   QString error;
   if (!project::ProjectFile::create(path, &error)) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка создания"), error);
@@ -346,6 +390,7 @@ void MainWindow::openProject() {
       this, QString::fromUtf8("Открыть проект"), QString(),
       QString::fromUtf8("Проекты Солидарность CAD (*.solidar)"));
   if (path.isEmpty()) return;
+  if (!confirmProjectReplacement()) return;
   QString error;
   if (!loadProject(path, &error)) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка открытия"), error);
@@ -449,6 +494,11 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
 }
 
 void MainWindow::saveProject() {
+  // The Sketcher edits a working copy. Commit it before serializing so Save
+  // never reports success while silently leaving the visible sketch out of
+  // the project file.
+  if (workspaceStack_->currentWidget() == sketchCanvas_) finishSketch();
+
   QString path = windowFilePath();
   if (path.isEmpty()) {
     path = QFileDialog::getSaveFileName(
@@ -481,7 +531,7 @@ void MainWindow::importStep() {
   const QString importedName = QFileInfo(fileName).completeBaseName();
   if (!io::importDocumentStep(fileName, &staged, importedName, &error)) {
     QMessageBox::critical(
-        this, QString::fromUtf8("Failed to import STEP file"), error);
+        this, QString::fromUtf8("Не удалось импортировать STEP"), error);
     return;
   }
 
@@ -530,7 +580,7 @@ void MainWindow::exportStep() {
   QString error;
   if (!io::exportDocumentStep(fileName, document_, &error)) {
     QMessageBox::critical(
-        this, QString::fromUtf8("Failed to export STEP file"), error);
+        this, QString::fromUtf8("Не удалось экспортировать STEP"), error);
     return;
   }
   statusBar()->showMessage(QString::fromUtf8("STEP сохранён: ") + fileName,
@@ -1381,9 +1431,6 @@ void MainWindow::buildUi() {
   ribbonStack_ = new QStackedWidget(this);
   ribbonStack_->addWidget(modelRibbon_);
   ribbonStack_->addWidget(sketchRibbon_);
-  auto* drawingRibbonPlaceholder = new QWidget(ribbonStack_);
-  drawingRibbonPlaceholder->setFixedHeight(124);
-  ribbonStack_->addWidget(drawingRibbonPlaceholder);
   connect(modelRibbon_, &ModelRibbon::createSketchRequested, this,
           [this] {
             if (!ensureHistoryAtEnd()) {
@@ -1747,10 +1794,11 @@ void MainWindow::buildUi() {
   rebuildHistoryPanel();
 
   statusBar()->showMessage(
-      QString::fromUtf8("Готово — профиль ЕСКД, лист A4"));
+      QString::fromUtf8("Готово к параметрическому моделированию"));
 }
 
 void MainWindow::updateFromSketch(double widthMm, double heightMm) {
+  setWindowModified(true);
   if (widthMm <= 0.0 || heightMm <= 0.0) {
     statusBar()->showMessage(QString::fromUtf8("Эскиз пуст"));
     return;
@@ -3849,7 +3897,7 @@ void MainWindow::rebuildFeatureTree() {
     planeItem->setCheckState(0, Qt::Unchecked);
   }
 
-  auto* drawings = new QTreeWidgetItem(project, {QString::fromUtf8("Чертежи")});
+  auto* sketches = new QTreeWidgetItem(project, {QString::fromUtf8("Эскизы")});
   const std::size_t activeSketchCount = std::min<std::size_t>(
       static_cast<std::size_t>(std::max(historyPosition_, 0)), sketchCount_);
   // During a just-committed direct operation rebuildFeatureTree() can run
@@ -3861,11 +3909,11 @@ void MainWindow::rebuildFeatureTree() {
       (historyAtEnd ||
        historyPosition_ > static_cast<int>(sketchHistory_.size()));
   if (activeSketchCount == 0) {
-    new QTreeWidgetItem(drawings, {QString::fromUtf8("Эскизов нет")});
+    new QTreeWidgetItem(sketches, {QString::fromUtf8("Эскизов нет")});
   } else {
     for (std::size_t index = 0; index < activeSketchCount; ++index) {
       auto* sketchItem = new QTreeWidgetItem(
-          drawings, {QString::fromUtf8("⌞  Эскиз %1").arg(index + 1)});
+          sketches, {QString::fromUtf8("⌞  Эскиз %1").arg(index + 1)});
       sketchItem->setData(0, Qt::UserRole, 20 + static_cast<int>(index));
       sketchItem->setFlags(sketchItem->flags() | Qt::ItemIsUserCheckable);
       const SketchId sketchId = sketchHistory_[index].documentSketchId;
@@ -3922,8 +3970,6 @@ void MainWindow::rebuildFeatureTree() {
       }
     }
   }
-  auto* components = new QTreeWidgetItem(project, {QString::fromUtf8("Компоненты")});
-  new QTreeWidgetItem(components, {QString::fromUtf8("Компоненты отсутствуют")});
   featureTree_->expandAll();
 }
 

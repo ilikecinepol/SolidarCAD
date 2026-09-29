@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def package(name: str, spdx_id: str, version: str, license_id: str,
-            download: str) -> dict:
+            download: str, copyright_text: str = "NOASSERTION") -> dict:
     return {
         "name": name,
         "SPDXID": spdx_id,
@@ -20,7 +20,7 @@ def package(name: str, spdx_id: str, version: str, license_id: str,
         "filesAnalyzed": False,
         "licenseConcluded": "NOASSERTION",
         "licenseDeclared": license_id,
-        "copyrightText": "NOASSERTION",
+        "copyrightText": copyright_text,
     }
 
 
@@ -38,7 +38,8 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None,
     baseline = manifest["builtin-baseline"]
     packages = [
         package("SolidarCAD", "SPDXRef-SolidarCAD", project,
-                "NOASSERTION", "NOASSERTION"),
+                "MPL-2.0", "https://github.com/ilikecinepol/SolidarCAD",
+                "Copyright (c) 2026 Молотков Михаил Алексеевич"),
         package("Qt", "SPDXRef-Qt", qt, "LGPL-3.0-only",
                 f"https://download.qt.io/official_releases/qt/{'.'.join(qt.split('.')[:2])}/{qt}/"),
         package("Open CASCADE Technology", "SPDXRef-OCCT", occt,

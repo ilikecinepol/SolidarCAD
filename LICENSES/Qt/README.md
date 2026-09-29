@@ -1,7 +1,18 @@
-# Qt
+# Qt 6.8.3
 
-Текущая среда разработки использует Qt 6.11.1 из `C:/Qt/6.11.1/msvc2022_64`.
-Для релиза сюда копируются без изменения LGPL-3.0 и все применимые third-party
-license files из license bundle именно той версии Qt, которая попала в пакет.
+Windows MVP динамически поставляет библиотеки и плагины Qt 6.8.3. Каталоги
+`qtbase/` и `qtsvg/` содержат неизменённые лицензионные тексты из официальных
+тегов Qt Project `v6.8.3`. Каталог `SBOM/` содержит SPDX inventories из
+установленной бинарной сборки, использованной для release-пакета.
 
-Источник требований: https://doc.qt.io/qt-6/licensing.html
+SolidarCAD использует применимые Qt-модули на условиях LGPL-3.0-only. Наличие в
+bundle текстов альтернативных лицензий отражает исходный состав Qt и не меняет
+лицензию кода SolidarCAD. Qt DLL и плагины расположены отдельно от
+`solidar.exe`, динамически загружаются и могут быть заменены совместимой сборкой.
+
+Источники:
+
+- https://github.com/qt/qtbase/tree/v6.8.3/LICENSES
+- https://github.com/qt/qtsvg/tree/v6.8.3/LICENSES
+- https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/
+- https://doc.qt.io/qt-6.8/licensing.html

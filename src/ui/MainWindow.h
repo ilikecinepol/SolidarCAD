@@ -19,6 +19,7 @@
 #include "app/AppSettings.h"
 
 class QTreeWidget;
+class QCloseEvent;
 class QStackedWidget;
 class QAction;
 class QHBoxLayout;
@@ -51,6 +52,9 @@ class MainWindow final : public QMainWindow {
   void setProjectPath(const QString& path);
   bool loadProject(const QString& path, QString* error = nullptr);
 
+ protected:
+  void closeEvent(QCloseEvent* event) override;
+
  private:
   void buildUi();
   void buildMenus();
@@ -58,6 +62,7 @@ class MainWindow final : public QMainWindow {
   void createProject();
   void openProject();
   void saveProject();
+  [[nodiscard]] bool confirmProjectReplacement();
   void importStep();
   void exportStep();
   void exportStl();

@@ -8,14 +8,19 @@
 
 Copyright (C) The Qt Company Ltd. and other contributors.
 
-SolidarCAD использует Qt Core, Widgets, OpenGLWidgets и PrintSupport. Текущий
-локальный профиль разработки — Qt 6.11.1; CMake допускает Qt 6.5 и новее.
-Текущий CI-профиль устанавливает Qt 6.8.x и фиксирует разрешённую точную версию
-в SBOM каждой сборки.
-Предполагаемая open-source схема поставки — динамическое связывание с
-соблюдением LGPL-3.0-only. Коммерческая поставка может использовать отдельную
-лицензию Qt. Точные тексты лицензий и notices конкретной сборки должны быть
-включены из установленного Qt distribution.
+Исходное дерево использует Qt Core, Gui, Widgets, OpenGLWidgets и PrintSupport.
+Windows MVP собирается с Qt 6.8.3; его переносимый пакет динамически поставляет
+Qt Core, Gui, Network, OpenGL, OpenGLWidgets, SVG и Widgets, а также плагины,
+выбранные `windeployqt`.
+
+Open-source поставка использует условия LGPL-3.0-only для применимых модулей.
+Канонические тексты лицензий из официальных тегов `qtbase` и `qtsvg` версии
+6.8.3, а также SPDX inventories установленной бинарной сборки находятся в
+`LICENSES/Qt`. DLL и плагины остаются отдельными динамическими библиотеками и
+могут быть заменены пользователем совместимыми сборками Qt.
+
+Соответствующий исходный код Qt 6.8.3 доступен в официальном архиве:
+https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/
 
 Официальная информация: https://www.qt.io/licensing/ и
 https://doc.qt.io/qt-6/licenses-used-in-qt.html
@@ -39,5 +44,5 @@ vcpkg (MIT), CMake (BSD-3-Clause) и компилятор являются build
 дистрибутив, соответствующие лицензии нужно включить в release notices.
 
 Direct-build inventory воспроизводимо создаётся `scripts/generate_sbom.py`;
-release inventory по-прежнему должен дополняться результатом сканирования
-фактического staging-каталога.
+release inventory дополняется результатом сканирования фактического
+staging-каталога.

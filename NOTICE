@@ -1,0 +1,15 @@
+SolidarCAD
+Copyright (c) 2026 Молотков Михаил Алексеевич
+
+Unless a file or directory states otherwise, the SolidarCAD source code and
+project documentation in this repository are licensed under the Mozilla
+Public License, version 2.0. The complete license text is in LICENSE.
+
+The corresponding source code for official builds is available at:
+https://github.com/ilikecinepol/SolidarCAD
+
+Third-party components retain their own licenses. See DEPENDENCIES.md,
+THIRD_PARTY_NOTICES.md and the LICENSES directory.
+
+The MPL-2.0 license does not grant rights to the SolidarCAD name, product
+identity, logos or other trademarks.

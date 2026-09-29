@@ -254,4 +254,27 @@ if(WIN32)
   )
 endif()
 
-install(TARGETS solidar RUNTIME DESTINATION bin)
+if(WIN32)
+  # Produce a self-contained portable installation.  CMake collects the OCCT
+  # dependency graph; Qt's deployment script adds the platform plugin and the
+  # rest of the Qt runtime required by the application.
+  install(TARGETS solidar
+    RUNTIME_DEPENDENCIES
+      DIRECTORIES
+        "$<TARGET_FILE_DIR:TKernel>"
+        "$<TARGET_FILE_DIR:Qt6::Core>"
+      PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
+      POST_EXCLUDE_REGEXES ".*[\\\\/][Ss]ystem32[\\\\/].*\\.dll"
+    RUNTIME DESTINATION bin
+  )
+
+  qt_generate_deploy_app_script(
+    TARGET solidar
+    OUTPUT_SCRIPT SOLIDAR_QT_DEPLOY_SCRIPT
+    NO_TRANSLATIONS
+    NO_UNSUPPORTED_PLATFORM_ERROR
+  )
+  install(SCRIPT ${SOLIDAR_QT_DEPLOY_SCRIPT})
+else()
+  install(TARGETS solidar RUNTIME DESTINATION bin)
+endif()

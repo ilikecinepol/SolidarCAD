@@ -82,4 +82,15 @@ jobs:
         run: cmake --build --preset release
 
       - name: Verify Release install foundation
-        run: cmake --install build/release --prefix build/stage
+        run: cmake --install build/release
+
+      - name: Package portable release
+        if: runner.os == 'Windows'
+        run: cpack --config build/release/CPackConfig.cmake
+
+      - name: Upload portable release
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: solidarcad-portable-${{ matrix.os }}
+          path: build/release/SolidarCAD-*

@@ -18,11 +18,11 @@
       "name": "SolidarCAD",
       "SPDXID": "SPDXRef-SolidarCAD",
       "versionInfo": "0.1.0",
-      "downloadLocation": "NOASSERTION",
+      "downloadLocation": "https://github.com/ilikecinepol/SolidarCAD",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION"
+      "licenseDeclared": "MPL-2.0",
+      "copyrightText": "Copyright (c) 2026 Молотков Михаил Алексеевич"
     },
     {
       "name": "Qt",

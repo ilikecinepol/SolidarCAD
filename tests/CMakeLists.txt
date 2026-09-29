@@ -424,10 +424,12 @@ if(WIN32)
     extrude_tool_session_tests
     pocket_feature_tests
     project_file_tests
+    drawing_source_tests
     stl_exporter_tests
     step_exchange_tests
     editor_smoke_tests
     model_ribbon_tests
+    tool_icon_tests
     part_design_history_ui_tests
     feature_removal_tests
     history_timeline_geometry_tests

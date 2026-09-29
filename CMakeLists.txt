@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(POLICY CMP0207)
+  cmake_policy(SET CMP0207 NEW)
+endif()
+
 # Qt Creator injects Visual Studio's vcpkg toolchain before project().  The
 # minimal OCCT toolkits may already be available in the repository-local build
 # tree even though the complete manifest package is not installed yet.  Avoid
@@ -50,6 +54,16 @@ if(CMAKE_GENERATOR MATCHES "NMake Makefiles JOM"
 endif()
 
 project(SolidarCAD VERSION 0.1.0 LANGUAGES CXX)
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/stage" CACHE PATH
+      "Default self-contained staging directory" FORCE)
+endif()
+
+if(MSVC)
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION bin)
+  include(InstallRequiredSystemLibraries)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -133,3 +147,30 @@ if(SOLIDAR_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+install(FILES
+  LICENSE
+  NOTICE
+  README.md
+  DEPENDENCIES.md
+  THIRD_PARTY_NOTICES.md
+  DESTINATION share/SolidarCAD
+)
+install(DIRECTORY LICENSES/ DESTINATION share/SolidarCAD/LICENSES)
+if(EXISTS "${OpenCASCADE_DIR}/copyright")
+  install(FILES "${OpenCASCADE_DIR}/copyright"
+          DESTINATION share/SolidarCAD/LICENSES/OCCT)
+endif()
+
+set(CPACK_PACKAGE_NAME "SolidarCAD")
+set(CPACK_PACKAGE_VENDOR "SolidarCAD")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME
+    "SolidarCAD-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP")
+else()
+  set(CPACK_GENERATOR "TGZ")
+endif()
+include(CPack)

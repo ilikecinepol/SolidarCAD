@@ -87,12 +87,6 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
       QString::fromUtf8("Проекция существующего ребра в эскиз"));
   auto* arc = toolButton(ToolIconKind::Arc,
                          QString::fromUtf8("Дуга по 3 точкам"), this);
-  auto* polygon = toolButton(ToolIconKind::Polygon,
-                             QString::fromUtf8("Полигон"), this, false);
-  auto* slot = toolButton(ToolIconKind::Slot,
-                          QString::fromUtf8("Слот"), this, false);
-  auto* text = toolButton(ToolIconKind::Text,
-                          QString::fromUtf8("Текст"), this, false);
   auto* toolGroup = new QButtonGroup(this);
   toolGroup->setExclusive(true);
   for (auto* button : {line, rectangle, circle, arc, projection})
@@ -105,20 +99,15 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   creationLayout->addWidget(circle);
   creationLayout->addWidget(projection);
   creationLayout->addWidget(arc);
-  creationLayout->addWidget(polygon);
-  creationLayout->addWidget(slot);
-  creationLayout->addWidget(text);
   root->addWidget(groupWidget(
       QString::fromUtf8("СОЗДАНИЕ"), creationLayout, this,
-      {line, rectangle, circle, projection, arc, polygon, slot, text}));
+      {line, rectangle, circle, projection, arc}));
 
   auto* separator1 = new QFrame(this);
   separator1->setFrameShape(QFrame::VLine);
   separator1->setObjectName("separator");
   root->addWidget(separator1);
 
-  auto* mirror = toolButton(ToolIconKind::SketchMirror,
-                            QString::fromUtf8("Зеркало"), this, false);
   auto* remove = new QPushButton(this);
   remove->setIcon(toolIcon(ToolIconKind::Delete));
   remove->setIconSize(QSize(30, 30));
@@ -139,7 +128,6 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   clear->setCheckable(false);
   auto* editingLayout = new QHBoxLayout;
   editingLayout->setSpacing(3);
-  editingLayout->addWidget(mirror);
   editingLayout->addWidget(remove);
   editingLayout->addWidget(clear);
   root->addWidget(groupWidget(QString::fromUtf8("РЕДАКТИРОВАНИЕ"),
