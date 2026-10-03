@@ -232,6 +232,9 @@ add_library(solidar_home
 )
 target_include_directories(solidar_home PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(solidar_home PUBLIC solidar_project solidar_theme Qt6::Widgets)
+target_compile_definitions(solidar_home
+  PRIVATE SOLIDAR_PROJECT_VERSION="${PROJECT_VERSION}"
+)
 solidar_warnings(solidar_home)
 
 add_executable(solidar

@@ -15,7 +15,7 @@ ctest --preset ci -L compliance
 | Scenario | Existing coverage before this gate | Complete before? | Gap addressed |
 |---|---|---:|---|
 | Document, IDs, Dirty/Valid/Error | `document_tests` | Partial | The critical path still depended on C `assert`; the new E2E checks stable IDs and states independently of `NDEBUG`. |
-| Sketch geometry | `document_tests`, `sketch_regression_tests` | Partial | Line, rectangle and circle were covered; the core model has no Arc primitive yet, so Arc remains outside the current supported API. |
+| Sketch geometry | `document_tests`, `sketch_regression_tests`, `project_file_tests` | Mostly | Lines, rectangles, circles and native arcs are covered, including arc constraints, project round-trip and Line + Arc extrusion. Polygon, Slot and Text remain outside the MVP. |
 | Sketch constraints | `sketch_regression_tests` | Mostly | Added an explicit Point-on-Circle followed by geometry creation, movement, solve and constraint removal. |
 | Extrude | `extrude_feature_tests`, three Extrude regression tests | Yes | Added it to the unified user workflow and parameter cascade. |
 | Sketch-on-Face and topology reference | `extrude_feature_tests`, `parametric_feature_chain_tests` | Partial | Added attachment persistence and rebuild checks; references still use the documented legacy subshape index. |
@@ -58,7 +58,9 @@ the mandatory regression suite. A real OpenGL context is intentionally not a
 hard CI dependency because availability differs between Windows and Ubuntu
 runners.
 
-Before release, perform the manual GPU gate on both Windows and Ubuntu:
+Before the Windows x64 MVP release, perform the manual GPU gate on the target
+Windows configuration. Repeat it on Ubuntu before advertising a supported
+Linux binary; Ubuntu remains a CI-validated source-build target for this MVP.
 
 - inspect Box, Cylinder, Fillet, Chamfer, Shell, and Extrude -> Chamfer -> Shell;
 - verify Shaded, Shaded with Edges, and Wireframe modes;
@@ -99,7 +101,7 @@ GPU checks.
 Run this manual gate for at least 15–20 minutes with a real GPU context. Repeat
 each tool two or three times, including both Apply/reopen and Cancel/reopen:
 
-1. Rectangle, circle and polygon sketches followed by Extrude.
+1. Rectangle, circle and closed Line + Arc sketches followed by Extrude.
 2. Sketch-on-Face followed by Extrude and Pocket.
 3. Fillet, Chamfer, Mirror, Linear Pattern and Circular Pattern.
 4. Revolve at 30, 90, 180 and 360 degrees.

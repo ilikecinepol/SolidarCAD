@@ -5,6 +5,7 @@ else()
 endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_executable(document_tests document_tests.cpp)
 target_link_libraries(document_tests PRIVATE solidar_model)
@@ -316,6 +317,12 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/compliance_artifacts_tests.cmake
 )
 
+add_test(
+  NAME release_artifact_script_tests
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/release_artifact_script_tests.py
+)
+
 set_tests_properties(
   document_tests
   extrude_feature_tests
@@ -399,7 +406,7 @@ set_property(TEST project_switch_ui_tests
              PROPERTY LABELS "regression;ui-smoke")
 
 set_tests_properties(
-  compliance_artifacts_tests
+  compliance_artifacts_tests release_artifact_script_tests
   PROPERTIES LABELS "compliance"
 )
 

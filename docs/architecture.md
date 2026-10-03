@@ -23,17 +23,20 @@ Renderer
 
 ## Dependency rules
 
-- `model` has no Qt or Open CASCADE dependency.
+- `solidar_model` is Qt-free, but links Open CASCADE for B-Rep feature rebuilds.
+- Generated OCCT shapes are transient results; parameters, stable IDs and
+  topology references remain the persistent source of truth.
 - UI modifies a document through commands; it never owns canonical geometry.
 - Geometry adapters return values and diagnostics without referencing widgets.
 - Persisted entities use stable IDs, not pointers or tree indices.
 - Every operation must be reproducible from its parameters and upstream IDs.
 
-## First vertical slice
+## Implemented foundation
 
-The prototype already models a sketch/extrude history and rebuilds its preview
-when dimensions change. The next slice will replace the preview with an Open
-CASCADE `TopoDS_Shape`, while preserving the same document-facing interface.
+The current model rebuilds Open CASCADE `TopoDS_Shape` results for Extrude,
+Pocket, Revolve, Fillet, Chamfer, Shell, Draft, Mirror and pattern features.
+Sketch edits propagate through the feature history, while save/load persists
+only the definitions needed to reproduce those shapes.
 # Revolve feature
 
 `RevolveFeature` is a history-based `ShapeFeature`. It stores only its profile

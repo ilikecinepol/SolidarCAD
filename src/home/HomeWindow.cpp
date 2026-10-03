@@ -126,7 +126,10 @@ void HomeWindow::buildUi() {
   sidebarLayout->addWidget(settingsButton_);
   sidebarLayout->addStretch();
 
-  auto* version = new QLabel(QString::fromUtf8("Открытая параметрическая САПР\nВерсия 0.1.0"), sidebar);
+  auto* version = new QLabel(
+      QString::fromUtf8("Открытая параметрическая САПР\nВерсия %1")
+          .arg(QString::fromLatin1(SOLIDAR_PROJECT_VERSION)),
+      sidebar);
   version->setObjectName("versionLabel");
   sidebarLayout->addWidget(version);
 

@@ -407,8 +407,8 @@ void MainWindow::openProject() {
 }
 
 bool MainWindow::loadProject(const QString& path, QString* error) {
-  project::ProjectData data;
-  if (!project::ProjectFile::load(path, &data, error)) return false;
+  project::ProjectData projectData;
+  if (!project::ProjectFile::load(path, &projectData, error)) return false;
   Document restoredDocument;
   QString modelError;
   const bool hasParametricHistory = project::ProjectFile::loadDocument(
@@ -451,7 +451,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
 
   // Only now is it safe to destroy the old model/B-Rep graph.
   document_ = hasParametricHistory ? std::move(restoredDocument) : Document{};
-  if (!hasParametricHistory) document_.setBox(data.box);
+  if (!hasParametricHistory) document_.setBox(projectData.box);
   selectedExtrusionSurface_.clear();
   currentSketchSupport_ = QStringLiteral("XY");
   currentSketchPlacement_ = SketchPlacement::xy();
@@ -459,8 +459,8 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   sketchHistory_.clear();
   viewport_->resetScene();
   viewport_->setBox(document_.box());
-  for (std::size_t index = 0; index < data.sketches.size(); ++index) {
-    const auto& saved = data.sketches[index];
+  for (std::size_t index = 0; index < projectData.sketches.size(); ++index) {
+    const auto& saved = projectData.sketches[index];
     DocumentSketch* modelSketch =
         hasParametricHistory && index < document_.sketches().size()
             ? &document_.sketches()[index]
@@ -480,8 +480,8 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   }
   sketchCount_ = sketchHistory_.size();
   hasExtrusion_ = hasParametricHistory ? !document_.bodies().empty()
-                                       : data.hasExtrusion;
-  extrusionSourceSketch_ = data.extrusionSourceSketch;
+                                       : projectData.hasExtrusion;
+  extrusionSourceSketch_ = projectData.extrusionSourceSketch;
   if (hasExtrusion_ && extrusionSourceSketch_ &&
       *extrusionSourceSketch_ < sketchHistory_.size()) {
     const auto& source = sketchHistory_[*extrusionSourceSketch_];
@@ -1685,12 +1685,12 @@ void MainWindow::buildUi() {
       chamferToolSession_.setEdges(viewport_->selectedBodyEdges());
       updateChamferToolPreview();
       if (!chamferToolSession_.edges().empty())
-        viewport_->focusToolParameterField(false);
+        static_cast<void>(viewport_->focusToolParameterField(false));
     } else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       filletToolSession_.setEdges(viewport_->selectedBodyEdges());
       updateFilletToolPreview();
       if (!filletToolSession_.edges().empty())
-        viewport_->focusToolParameterField(false);
+        static_cast<void>(viewport_->focusToolParameterField(false));
     }
   });
   connect(viewport_, &Viewport::bodyFaceSelectionChanged, this, [this] {
@@ -1701,19 +1701,19 @@ void MainWindow::buildUi() {
       updateFaceExtrudeToolPreview();
       // Keep keyboard focus in the viewport after face selection so the next
       // Tab enters the on-canvas distance field, not the right-hand dock.
-      viewport_->focusToolParameterField(false);
+      static_cast<void>(viewport_->focusToolParameterField(false));
     } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       shellToolSession_.setRemovedFaces(viewport_->selectedBodyFaces());
       updateShellToolPreview();
       // Keep keyboard focus in the viewport after face selection so the next
       // Tab enters the on-canvas thickness field, not the right-hand dock.
-      viewport_->focusToolParameterField(false);
+      static_cast<void>(viewport_->focusToolParameterField(false));
     } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
       draftToolSession_.setFaces(viewport_->selectedBodyFaces());
       updateDraftToolPreview();
       // Keep keyboard focus in the viewport after face selection so the next
       // Tab enters the on-canvas angle field.
-      viewport_->focusToolParameterField(false);
+      static_cast<void>(viewport_->focusToolParameterField(false));
     }
   });
   connect(toolParametersPanel_, &ToolParametersPanel::optionChanged, this,
@@ -1815,7 +1815,7 @@ void MainWindow::buildUi() {
   // right-hand Part Design panel. WidgetWithChildrenShortcut catches Tab even
   // when a spinbox/checkbox inside the dock currently owns keyboard focus.
   const auto focusViewportHud = [this](bool backward) {
-    viewport_->focusToolParameterField(backward);
+    static_cast<void>(viewport_->focusToolParameterField(backward));
   };
   auto* hudTabShortcut =
       new QShortcut(QKeySequence(Qt::Key_Tab), toolParametersDock_);
@@ -2435,7 +2435,7 @@ void MainWindow::buildUi() {
               revolveAxisCombo_->setCurrentIndex(comboIndex);
             }
             updateRevolveToolPreview();
-            viewport_->focusToolParameterField(false);
+            static_cast<void>(viewport_->focusToolParameterField(false));
             statusBar()->showMessage(QString::fromUtf8("Задайте угол дугой или полем у манипулятора"));
           });
   connect(viewport_, &Viewport::moveBodyPicked, this, [this](BodyId bodyId) {
@@ -2452,7 +2452,7 @@ void MainWindow::buildUi() {
     moveBodyValue_->setText(QString::fromStdString(body->name()));
     viewport_->showMovePreview();
     updateMoveToolPreview();
-    viewport_->focusToolParameterField(false);
+    static_cast<void>(viewport_->focusToolParameterField(false));
     statusBar()->showMessage(
         QString::fromUtf8("Потяните стрелку X, Y или Z либо введите смещение"));
   });
@@ -3296,7 +3296,8 @@ void MainWindow::createFillet() {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFilletToolPreview();
-  if (!edges.empty()) viewport_->focusToolParameterField(false);
+  if (!edges.empty())
+    static_cast<void>(viewport_->focusToolParameterField(false));
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
@@ -4188,7 +4189,8 @@ void MainWindow::createChamfer() {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateChamferToolPreview();
-  if (!edges.empty()) viewport_->focusToolParameterField(false);
+  if (!edges.empty())
+    static_cast<void>(viewport_->focusToolParameterField(false));
   if (edges.empty())
     statusBar()->showMessage(
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
@@ -4221,7 +4223,7 @@ void MainWindow::createShell() {
   updateShellToolPreview();
   // Shell HUD owns CAD Tab focus; do not leave focus on the ribbon button when
   // the operation starts from a preselected face.
-  viewport_->focusToolParameterField(false);
+  static_cast<void>(viewport_->focusToolParameterField(false));
 }
 
 void MainWindow::updateShellToolPreview() {
@@ -4344,7 +4346,7 @@ void MainWindow::createDraft() {
   toolParametersDock_->raise();
   updateDraftToolPreview();
   // Draft HUD owns CAD Tab focus for the same preselection workflow as Shell.
-  viewport_->focusToolParameterField(false);
+  static_cast<void>(viewport_->focusToolParameterField(false));
 }
 
 void MainWindow::updateDraftToolPreview() {
@@ -4478,7 +4480,7 @@ void MainWindow::createSketchExtrude(std::size_t sketchIndex) {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
-  viewport_->focusToolParameterField(false);
+  static_cast<void>(viewport_->focusToolParameterField(false));
 }
 
 void MainWindow::createFaceExtrude(const FaceReference& face) {
@@ -4514,7 +4516,7 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
-  viewport_->focusToolParameterField(false);
+  static_cast<void>(viewport_->focusToolParameterField(false));
 }
 
 void MainWindow::updateFaceExtrudeToolPreview() {
@@ -4691,7 +4693,7 @@ void MainWindow::editFaceExtrudeStep(Body* body, ExtrudeFeature* extrude,
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
-  viewport_->focusToolParameterField(false);
+  static_cast<void>(viewport_->focusToolParameterField(false));
   statusBar()->showMessage(
       QString::fromUtf8("Редактирование выдавливания грани"), 3000);
 }

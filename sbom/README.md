@@ -9,13 +9,12 @@ python scripts/generate_sbom.py
 
 Рассинхронизация проверяется через `python scripts/generate_sbom.py --check`.
 CI дополнительно создаёт SBOM с фактически установленной версией Qt и публикует
-его как build artifact. Файл пока не является полным release SBOM: транзитивные
-Qt/OCCT-компоненты и хэши бинарников добавляются из фактического staging.
+его как build artifact. После CPack команда
+`python scripts/finalize_release.py --root . --build-dir build/release`
+проверяет наличие в ZIP исполняемого файла, Qt, OCCT, platform plugin и
+лицензионных материалов, а затем создаёт `.zip.sha256` и release-profile
+`.spdx.json` рядом с архивом.
 
-Перед релизом нужно:
-
-1. разрешить точные версии Qt, OCCT, toolchain и транзитивных пакетов;
-2. просканировать staging-каталог;
-3. добавить SHA-256 поставляемых файлов;
-4. синхронизировать notices и `LICENSES/`;
-5. сохранить SBOM рядом с release artifacts.
+Этот SPDX-файл фиксирует прямые входы сборки, а SHA-256 защищает весь
+бинарный архив. Это не следует выдавать за полный файловый SBOM с
+хэшами каждой транзитивной DLL.

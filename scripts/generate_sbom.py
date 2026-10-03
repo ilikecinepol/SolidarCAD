@@ -29,12 +29,17 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None,
     metadata = json.loads((root / "sbom/components.json").read_text("utf-8"))
     manifest = json.loads((root / "vcpkg.json").read_text("utf-8"))
     cmake_text = (root / "CMakeLists.txt").read_text("utf-8")
-    match = re.search(r"cmake_minimum_required\s*\(VERSION\s+([^\s\)]+)", cmake_text)
-    if not match:
+    minimum_match = re.search(
+        r"cmake_minimum_required\s*\(VERSION\s+([^\s\)]+)", cmake_text)
+    if not minimum_match:
         raise ValueError("cmake_minimum_required version was not found")
+    project_match = re.search(
+        r"project\s*\(\s*SolidarCAD\s+VERSION\s+([^\s\)]+)", cmake_text)
+    if not project_match:
+        raise ValueError("SolidarCAD project version was not found")
     qt = qt_version or metadata["qt_version"]
     occt = occt_version or metadata["occt_version"]
-    project = metadata["project_version"]
+    project = project_match.group(1)
     baseline = manifest["builtin-baseline"]
     packages = [
         package("SolidarCAD", "SPDXRef-SolidarCAD", project,
@@ -47,7 +52,8 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None,
                 "https://github.com/Open-Cascade-SAS/OCCT"),
         package("vcpkg registry baseline", "SPDXRef-vcpkg-baseline", baseline,
                 "MIT", f"https://github.com/microsoft/vcpkg/commit/{baseline}"),
-        package("CMake minimum build profile", "SPDXRef-CMake", match.group(1),
+        package("CMake minimum build profile", "SPDXRef-CMake",
+                minimum_match.group(1),
                 "BSD-3-Clause", "https://cmake.org/"),
     ]
     packages[2]["externalRefs"] = [{

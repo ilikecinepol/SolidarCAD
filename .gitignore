@@ -9,6 +9,12 @@
 *.user
 *.autosave
 compile_commands.json
+
+# Python helper/test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Local patch/backup artifacts
 *.bak
 .solidcad_backups/

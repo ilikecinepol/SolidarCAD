@@ -1,18 +1,29 @@
 # Солидарность CAD
 
-Solidar CAD (Солидарность CAD) is an early open-source, cross-platform parametric CAD application
-for Windows and Ubuntu. The first milestone is a dependable part-design workflow:
-constrained 2D sketch → extrusion → editable feature history.
+Solidar CAD (Солидарность CAD) is an early open-source parametric CAD
+application. Source builds are validated on Windows and Ubuntu; the 0.1.0 MVP
+binary distribution targets Windows x64. The first milestone is a dependable
+part-design workflow: constrained 2D sketch → solid features → editable history.
+
+## Download and run
+
+The MVP is distributed as a portable Windows x64 ZIP. Extract the complete
+archive and run `bin/solidar.exe`; installation is not required. The executable
+is not code-signed in 0.1.0, so Windows may show a reputation warning on first
+launch. Linux is currently supported as a source build, not as an end-user
+binary package.
 
 ## MVP scope
 
 - standalone Home screen with create/open project actions
-- versioned `.solidar` project files with editable Sketch/Extrude/Pocket/Fillet/Chamfer history
+- versioned `.solidar` project files with editable Sketch, Extrude, Pocket,
+  Revolve, Fillet, Chamfer, Shell, Draft, Mirror, Move and pattern history
 - independently linkable Home, Sketch and 3D View modules
 - Qt 6 desktop shell with model tree and parameter editor
 - 2D sketch workspace with lines, rectangles, circles, arcs, projection and
   geometric constraints
-- interactive orbit/zoom viewport
+- interactive orbit/zoom viewport with direct 3D selection, manipulators and
+  measurement ruler
 - cascading parametric history with Dirty/Valid/Error states
 - platform-neutral document model with a smoke test
 
@@ -80,15 +91,26 @@ cmake --preset release
 cmake --build --preset release
 cmake --install build/release
 cpack --config build/release/CPackConfig.cmake
+python scripts/finalize_release.py --root . --build-dir build/release
 ```
 
 The install step creates a runnable tree in `build/release/stage`. CPack creates
-a portable Windows ZIP including runtime dependencies and third-party notices;
-GitHub Actions builds and uploads it as a workflow artifact. The Linux install
-tree remains a developer validation artifact rather than an MVP distribution.
-Publishing a public release still requires a clean-machine smoke test. The
-portable archive already includes the canonical Qt 6.8.3 license texts and the
-binary-package SPDX inventories used to verify the deployed Qt modules.
+a portable Windows ZIP including runtime dependencies and third-party notices.
+The finalization step rejects an incomplete archive and creates its SHA-256 and
+release-profile SPDX sidecars. GitHub Actions uploads all three files together.
+The Linux install tree remains a developer validation artifact rather than an
+MVP distribution. Publishing a public release still requires a clean-machine
+smoke test. The portable archive includes the canonical Qt 6.8.3 license texts
+and the binary-package SPDX inventories used to verify the deployed Qt modules.
+
+## Known MVP limitations
+
+- single-part modelling only; assemblies are not implemented;
+- Polygon, Slot, Text and sketch mirroring are not exposed as commands;
+- the drawing workbench is not a complete production ESKD workflow;
+- the Windows package is portable and unsigned;
+- Linux has CI coverage but no supported MVP binary distribution;
+- complex topological edits can still require reselecting a face or edge.
 
 ## Roadmap
 
@@ -106,6 +128,8 @@ profile and its current conformance boundary.
 See [docs/modules.md](docs/modules.md) for feature ownership and module boundaries.
 See [docs/testing.md](docs/testing.md) for CTest labels and the mandatory CAD
 regression coverage.
+See [docs/release-checklist.md](docs/release-checklist.md) for the release gate
+and clean-machine acceptance procedure.
 See [docs/persistent-topology.md](docs/persistent-topology.md) for the v1 face
 and edge reference model, fallback rules and known limitations.
 See [docs/reports/2026-08-28-parametric-3d-status.md](docs/reports/2026-08-28-parametric-3d-status.md)
@@ -121,7 +145,11 @@ services may use other terms and are not covered by this license unless stated.
 Third-party components retain their respective licenses; see
 [DEPENDENCIES.md](DEPENDENCIES.md) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Release changes and user-visible limitations are recorded in
+[CHANGELOG.md](CHANGELOG.md).
+
 # Parametric 3D features
 
-SolidarCAD supports history-based Extrude, Pocket, Fillet, Chamfer and Revolve features.
-The Russian UI exposes Revolve as **«Инструмент вращения»**.
+SolidarCAD supports history-based Extrude, Pocket, Revolve, Fillet, Chamfer,
+Shell, Draft, Mirror, Linear Pattern and Circular Pattern features. The Russian
+UI exposes Revolve as **«Инструмент вращения»**.

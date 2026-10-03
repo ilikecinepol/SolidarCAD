@@ -7,6 +7,7 @@ endif()
 set(required_files
   LICENSE
   NOTICE
+  CHANGELOG.md
   DEPENDENCIES.md
   THIRD_PARTY_NOTICES.md
   LICENSES/README.md
@@ -17,8 +18,10 @@ set(required_files
   LICENSES/Qt/SBOM/qtsvg-6.8.3.spdx
   LICENSES/OCCT/README.md
   docs/dependency-policy.md
+  docs/release-checklist.md
   sbom/README.md
   sbom/components.json
+  scripts/finalize_release.py
   scripts/generate_sbom.py
   sbom/solidarcad.spdx.json)
 
@@ -30,9 +33,24 @@ endforeach()
 
 file(READ "${SOURCE_DIR}/vcpkg.json" vcpkg_manifest)
 string(JSON baseline GET "${vcpkg_manifest}" builtin-baseline)
+string(JSON manifest_project_version GET "${vcpkg_manifest}" version-string)
 string(JSON dependency_name GET "${vcpkg_manifest}" dependencies 0 name)
 if(NOT dependency_name STREQUAL "opencascade")
   message(FATAL_ERROR "Expected the direct vcpkg dependency to be opencascade")
+endif()
+
+file(READ "${SOURCE_DIR}/CMakeLists.txt" root_cmake)
+string(REGEX MATCH
+       "project\\([ \t\r\n]*SolidarCAD[ \t\r\n]+VERSION[ \t\r\n]+([0-9]+\\.[0-9]+\\.[0-9]+)"
+       project_declaration "${root_cmake}")
+if(NOT project_declaration)
+  message(FATAL_ERROR "Could not read the SolidarCAD version from CMakeLists.txt")
+endif()
+set(cmake_project_version "${CMAKE_MATCH_1}")
+if(NOT manifest_project_version STREQUAL cmake_project_version)
+  message(FATAL_ERROR
+          "Version mismatch: CMake=${cmake_project_version}, "
+          "vcpkg=${manifest_project_version}")
 endif()
 
 file(READ "${SOURCE_DIR}/DEPENDENCIES.md" dependencies)
@@ -65,6 +83,38 @@ endif()
 string(JSON package_count LENGTH "${sbom}" packages)
 if(package_count LESS 3)
   message(FATAL_ERROR "SBOM must describe SolidarCAD, Qt, and OCCT")
+endif()
+math(EXPR last_package_index "${package_count} - 1")
+set(sbom_project_version "")
+foreach(package_index RANGE 0 ${last_package_index})
+  string(JSON package_name GET "${sbom}" packages ${package_index} name)
+  if(package_name STREQUAL "SolidarCAD")
+    string(JSON sbom_project_version GET
+           "${sbom}" packages ${package_index} versionInfo)
+    break()
+  endif()
+endforeach()
+if(NOT sbom_project_version)
+  message(FATAL_ERROR "SBOM does not contain the SolidarCAD package")
+endif()
+if(NOT sbom_project_version STREQUAL cmake_project_version)
+  message(FATAL_ERROR
+          "Version mismatch: CMake=${cmake_project_version}, "
+          "SBOM=${sbom_project_version}")
+endif()
+
+file(READ "${SOURCE_DIR}/CHANGELOG.md" changelog)
+string(FIND "${changelog}" "## ${cmake_project_version}" changelog_version)
+if(changelog_version EQUAL -1)
+  message(FATAL_ERROR
+          "CHANGELOG.md has no section for ${cmake_project_version}")
+endif()
+
+file(READ "${SOURCE_DIR}/src/home/HomeWindow.cpp" home_window_source)
+string(FIND "${home_window_source}" "SOLIDAR_PROJECT_VERSION" ui_version)
+if(ui_version EQUAL -1)
+  message(FATAL_ERROR
+          "The Home screen version is not derived from PROJECT_VERSION")
 endif()
 
 if(WIN32)
