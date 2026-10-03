@@ -24,6 +24,43 @@ gp_Vec directionVector(PrincipalAxis axis, double distance) {
   return {0, 0, distance};
 }
 }  // namespace
+
+ShapeFeature::ShapePtr buildLinearPatternShape(const TopoDS_Shape& source,
+                                               PrincipalAxis direction,
+                                               int count, double spacingMm,
+                                               std::string* error) {
+  if (count < 2) {
+    if (error) *error = "Linear Pattern count must be at least 2";
+    return {};
+  }
+  if (!std::isfinite(spacingMm) || spacingMm <= 0.0) {
+    if (error)
+      *error = "Linear Pattern spacing must be finite and positive";
+    return {};
+  }
+  if (source.IsNull()) {
+    if (error) *error = "Linear Pattern base shape is missing";
+    return {};
+  }
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  builder.Add(compound, source);
+  for (int index = 1; index < count; ++index) {
+    gp_Trsf transform;
+    transform.SetTranslation(
+        directionVector(direction, spacingMm * static_cast<double>(index)));
+    BRepBuilderAPI_Transform copy(source, transform, true);
+    if (!copy.IsDone() || copy.Shape().IsNull()) {
+      if (error) *error = "Linear Pattern transformation failed";
+      return {};
+    }
+    builder.Add(compound, copy.Shape());
+  }
+  if (error) error->clear();
+  return std::make_shared<TopoDS_Shape>(compound);
+}
+
 LinearPatternFeature::LinearPatternFeature(FeatureId source, PrincipalAxis axis,
                                            int count, double spacing,
                                            std::string name)
@@ -44,19 +81,21 @@ void LinearPatternFeature::setSpacingMm(double value) noexcept { if (spacingMm_ 
 std::string LinearPatternFeature::typeName() const { return "LinearPattern"; }
 bool LinearPatternFeature::rebuild(const RebuildContext& context) {
   clearShape();
-  if (count_ < 2) { markError("Linear Pattern count must be at least 2"); return false; }
-  if (!std::isfinite(spacingMm_) || spacingMm_ <= 0) { markError("Linear Pattern spacing must be finite and positive"); return false; }
-  if (!context.previousShape || context.previousShape->IsNull()) { markError("Linear Pattern base shape is missing"); return false; }
-  if (!validSource(this, context, sourceFeatureId_)) { markError("Linear Pattern source Feature could not be resolved"); return false; }
-  BRep_Builder builder; TopoDS_Compound compound; builder.MakeCompound(compound);
-  builder.Add(compound, *context.previousShape);
-  for (int i = 1; i < count_; ++i) {
-    gp_Trsf transform; transform.SetTranslation(directionVector(direction_, spacingMm_ * i));
-    BRepBuilderAPI_Transform copy(*context.previousShape, transform, true);
-    if (!copy.IsDone() || copy.Shape().IsNull()) { markError("Linear Pattern transformation failed"); return false; }
-    builder.Add(compound, copy.Shape());
+  if (!context.previousShape || context.previousShape->IsNull()) {
+    markError("Linear Pattern base shape is missing");
+    return false;
   }
-  setShape(std::make_shared<TopoDS_Shape>(compound)); markValid(); return true;
+  if (!validSource(this, context, sourceFeatureId_)) { markError("Linear Pattern source Feature could not be resolved"); return false; }
+  std::string error;
+  const auto result = buildLinearPatternShape(
+      *context.previousShape, direction_, count_, spacingMm_, &error);
+  if (!result) {
+    markError(error);
+    return false;
+  }
+  setShape(result);
+  markValid();
+  return true;
 }
 std::unique_ptr<Feature> LinearPatternFeature::clone() const { return std::make_unique<LinearPatternFeature>(*this); }
 }  // namespace solidar

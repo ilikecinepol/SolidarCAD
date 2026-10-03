@@ -1,9 +1,15 @@
 #pragma once
 
+#include <string>
+
 #include "model/PatternTypes.h"
 #include "model/ShapeFeature.h"
 
 namespace solidar {
+
+[[nodiscard]] ShapeFeature::ShapePtr buildMirrorShape(
+    const TopoDS_Shape& source, MirrorPlane plane,
+    std::string* error = nullptr);
 
 class MirrorFeature final : public ShapeFeature {
  public:

@@ -85,6 +85,21 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool sketchPlaneSelectionActive() const noexcept;
   void resetScene();
   void beginSketchPlaneSelection();
+  void beginMirrorBodySelection();
+  void beginMirrorPlaneSelection();
+  void showMirrorPlaneSelection(int planeIndex);
+  [[nodiscard]] bool mirrorBodySelectionActive() const noexcept;
+  [[nodiscard]] bool mirrorPlaneSelectionActive() const noexcept;
+  void beginLinearPatternBodySelection();
+  void beginLinearPatternAxisSelection();
+  void showLinearPatternAxisSelection(int axisIndex);
+  [[nodiscard]] bool linearPatternBodySelectionActive() const noexcept;
+  [[nodiscard]] bool linearPatternAxisSelectionActive() const noexcept;
+  void beginCircularPatternBodySelection();
+  void beginCircularPatternAxisSelection();
+  void showCircularPatternAxisSelection(int axisIndex);
+  [[nodiscard]] bool circularPatternBodySelectionActive() const noexcept;
+  [[nodiscard]] bool circularPatternAxisSelectionActive() const noexcept;
   void beginExtrusionSurfaceSelection();
   void beginRevolveAxisSelection(std::size_t sketchIndex);
   void showExtrusionManipulator(double lengthMm);
@@ -122,6 +137,7 @@ class Viewport final : public QOpenGLWidget {
   // ordinals (so a body selection renders with the standard selected-face
   // tint); otherwise it is the sub-element face selection.
   [[nodiscard]] std::vector<std::size_t> effectiveSelectedFaceIndices() const;
+  [[nodiscard]] std::vector<std::size_t> effectiveHoveredFaceIndices() const;
   [[nodiscard]] std::optional<std::size_t> hoveredBodyEdgeIndex() const noexcept;
   void setSelectionFilter(SelectionFilter filter) noexcept;
   [[nodiscard]] SelectionFilter selectionFilter() const noexcept;
@@ -132,6 +148,8 @@ class Viewport final : public QOpenGLWidget {
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
   [[nodiscard]] double toolManipulatorHudValue() const noexcept;
+  [[nodiscard]] const std::optional<LinearToolManipulator>&
+  linearToolManipulator() const noexcept { return toolManipulator_; }
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
   [[nodiscard]] const std::optional<AngularToolManipulator>&
   angularToolManipulator() const noexcept { return angularToolManipulator_; }
@@ -178,6 +196,12 @@ class Viewport final : public QOpenGLWidget {
  signals:
   void selectionChanged(const QString& description);
   void sketchPlanePicked(const QString& planeName);
+  void mirrorBodyPicked(BodyId bodyId);
+  void mirrorPlanePicked(int planeIndex);
+  void linearPatternBodyPicked(BodyId bodyId);
+  void linearPatternAxisPicked(int axisIndex);
+  void circularPatternBodyPicked(BodyId bodyId);
+  void circularPatternAxisPicked(int axisIndex);
   void extrusionSurfacePicked(const QString& surfaceName);
   // Native FaceReference capture for face extrusion. Emitted alongside the
   // legacy string signal only when a real B-Rep body face was picked (never
@@ -227,8 +251,11 @@ class Viewport final : public QOpenGLWidget {
   ViewCubeHit cubeHover_, cubePressed_;
   Qt::CursorShape cursorBeforeCube_{Qt::ArrowCursor};
   void updateSketchPlaneHover(QPointF position);
+  void updateToolBodyHover(QPointF position);
+  void updateMirrorPlaneHover(QPointF position);
   void updateExtrusionHover(QPointF position);
   [[nodiscard]] qulonglong revolveAxisTokenAt(QPointF scenePosition) const;
+  [[nodiscard]] qulonglong principalAxisTokenAt(QPointF scenePosition) const;
   void pickFallbackBodyFace(QPointF position);
   void refreshSelectedExtrusionPolygon();
   [[nodiscard]] QPointF extrusionScreenOffset(double lengthMm) const;
@@ -260,7 +287,21 @@ class Viewport final : public QOpenGLWidget {
       std::size_t index) const noexcept;
   [[nodiscard]] std::optional<FaceReference> faceReferenceForGlobalIndex(
       std::size_t index) const noexcept;
-  enum class PickMode { None, SketchPlane, ExtrusionSurface, RevolveAxis };
+  enum class PickMode {
+    None,
+    SketchPlane,
+    ExtrusionSurface,
+    RevolveAxis,
+    MirrorBody,
+    MirrorPlane,
+    MirrorPreview,
+    LinearPatternBody,
+    LinearPatternAxis,
+    LinearPatternPreview,
+    CircularPatternBody,
+    CircularPatternAxis,
+    CircularPatternPreview
+  };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
   BodyRenderMesh bodyRenderMesh_;
@@ -316,6 +357,7 @@ class Viewport final : public QOpenGLWidget {
   bool edgeMultiSelectionMode_{false};
   // Transient whole-body (model-level) selection published via bodiesSelected.
   std::vector<BodyId> selectedBodyIds_;
+  BodyId hoveredToolBodyId_{kInvalidBodyId};
   SelectionFilter selectionFilter_{SelectionFilter::Any};
   int selectedBasePlane_{-1};
   int selectedVertex_{-1};
@@ -335,6 +377,7 @@ class Viewport final : public QOpenGLWidget {
   std::size_t selectedExtrusionSketchIndex_{static_cast<std::size_t>(-1)};
   std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
   qulonglong hoveredRevolveAxisToken_{0};
+  int selectedPatternAxis_{-1};
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
   ToolParameterHud* toolParameterHud_{nullptr};
   std::string toolHudParameterId_;

@@ -963,6 +963,30 @@ bool Viewport::sketchPlaneSelectionActive() const noexcept {
   return pickMode_ == PickMode::SketchPlane;
 }
 
+bool Viewport::mirrorBodySelectionActive() const noexcept {
+  return pickMode_ == PickMode::MirrorBody;
+}
+
+bool Viewport::mirrorPlaneSelectionActive() const noexcept {
+  return pickMode_ == PickMode::MirrorPlane;
+}
+
+bool Viewport::linearPatternBodySelectionActive() const noexcept {
+  return pickMode_ == PickMode::LinearPatternBody;
+}
+
+bool Viewport::linearPatternAxisSelectionActive() const noexcept {
+  return pickMode_ == PickMode::LinearPatternAxis;
+}
+
+bool Viewport::circularPatternBodySelectionActive() const noexcept {
+  return pickMode_ == PickMode::CircularPatternBody;
+}
+
+bool Viewport::circularPatternAxisSelectionActive() const noexcept {
+  return pickMode_ == PickMode::CircularPatternAxis;
+}
+
 void Viewport::resetScene() {
   orientationAnimation_->stop();
   clearCubeHover();
@@ -999,6 +1023,8 @@ void Viewport::resetScene() {
   selectedBodyEdgeIndices_.clear();
   selectedBodyEdgeReferences_.clear();
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedPatternAxis_ = -1;
   clearWholeBodySelection();
   selectedBasePlane_ = -1;
   selectedVertex_ = -1;
@@ -1049,6 +1075,148 @@ void Viewport::beginSketchPlaneSelection() {
   selectedOrigin_ = false;
   for (bool& visible : basePlanesVisible_) visible = true;
   setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::beginMirrorBodySelection() {
+  pickMode_ = PickMode::MirrorBody;
+  selectionFilter_ = SelectionFilter::Face;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  selectedBasePlane_ = -1;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  clearWholeBodySelection();
+  for (bool& visible : basePlanesVisible_) visible = false;
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::beginMirrorPlaneSelection() {
+  pickMode_ = PickMode::MirrorPlane;
+  // Mirror keeps the chosen source Body highlighted while the reference plane
+  // is being picked. Assign the filter directly: the public Plane transition
+  // intentionally clears whole-body selection for ordinary selection tools.
+  selectionFilter_ = SelectionFilter::Plane;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedBasePlane_ = -1;
+  for (bool& visible : basePlanesVisible_) visible = true;
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::showMirrorPlaneSelection(int planeIndex) {
+  if (planeIndex < 0 || planeIndex > 2) return;
+  pickMode_ = PickMode::MirrorPreview;
+  selectionFilter_ = SelectionFilter::Any;
+  selectedBasePlane_ = planeIndex;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  for (bool& visible : basePlanesVisible_) visible = true;
+  unsetCursor();
+  update();
+}
+
+void Viewport::beginLinearPatternBodySelection() {
+  pickMode_ = PickMode::LinearPatternBody;
+  selectionFilter_ = SelectionFilter::Face;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedPatternAxis_ = -1;
+  hoveredRevolveAxisToken_ = 0;
+  clearWholeBodySelection();
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::beginLinearPatternAxisSelection() {
+  pickMode_ = PickMode::LinearPatternAxis;
+  // Keep the source Body selected while the reference direction is picked.
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedPatternAxis_ = -1;
+  hoveredRevolveAxisToken_ = 0;
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::showLinearPatternAxisSelection(int axisIndex) {
+  if (axisIndex < 0 || axisIndex > 2) return;
+  pickMode_ = PickMode::LinearPatternPreview;
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  hoveredRevolveAxisToken_ = 0;
+  selectedPatternAxis_ = axisIndex;
+  unsetCursor();
+  update();
+}
+
+void Viewport::beginCircularPatternBodySelection() {
+  pickMode_ = PickMode::CircularPatternBody;
+  selectionFilter_ = SelectionFilter::Face;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedPatternAxis_ = -1;
+  hoveredRevolveAxisToken_ = 0;
+  clearWholeBodySelection();
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::beginCircularPatternAxisSelection() {
+  pickMode_ = PickMode::CircularPatternAxis;
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedPatternAxis_ = -1;
+  hoveredRevolveAxisToken_ = 0;
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::showCircularPatternAxisSelection(int axisIndex) {
+  if (axisIndex < 0 || axisIndex > 2) return;
+  pickMode_ = PickMode::CircularPatternPreview;
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  hoveredRevolveAxisToken_ = 0;
+  selectedPatternAxis_ = axisIndex;
+  unsetCursor();
   update();
 }
 
@@ -1313,6 +1481,25 @@ std::vector<std::size_t> Viewport::effectiveSelectedFaceIndices() const {
     if (std::find(selectedBodyIds_.begin(), selectedBodyIds_.end(),
                   range.bodyId) == selectedBodyIds_.end())
       continue;
+    for (std::size_t face = range.firstFace;
+         face < range.firstFace + range.faceCount; ++face)
+      indices.push_back(face);
+  }
+  return indices;
+}
+
+std::vector<std::size_t> Viewport::effectiveHoveredFaceIndices() const {
+  if ((pickMode_ != PickMode::MirrorBody &&
+       pickMode_ != PickMode::LinearPatternBody &&
+       pickMode_ != PickMode::CircularPatternBody) ||
+      hoveredToolBodyId_ == kInvalidBodyId) {
+    return hoveredBodyFaceIndex_ == static_cast<std::size_t>(-1)
+               ? std::vector<std::size_t>{}
+               : std::vector<std::size_t>{hoveredBodyFaceIndex_};
+  }
+  std::vector<std::size_t> indices;
+  for (const auto& range : bodyTopologyRanges_) {
+    if (range.bodyId != hoveredToolBodyId_) continue;
     for (std::size_t face = range.firstFace;
          face < range.firstFace + range.faceCount; ++face)
       indices.push_back(face);
@@ -1653,6 +1840,20 @@ void Viewport::clearCubeHover() {
 
 void Viewport::leaveEvent(QEvent* event) {
   clearCubeHover();
+  if (pickMode_ == PickMode::MirrorBody ||
+      pickMode_ == PickMode::LinearPatternBody ||
+      pickMode_ == PickMode::CircularPatternBody) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    hoveredToolBodyId_ = kInvalidBodyId;
+    update();
+  } else if (pickMode_ == PickMode::MirrorPlane) {
+    selectedBasePlane_ = -1;
+    update();
+  } else if (pickMode_ == PickMode::LinearPatternAxis ||
+             pickMode_ == PickMode::CircularPatternAxis) {
+    hoveredRevolveAxisToken_ = 0;
+    update();
+  }
   QOpenGLWidget::leaveEvent(event);
 }
 float Viewport::cameraYawDegrees() const noexcept { return yaw_; }
@@ -1759,7 +1960,6 @@ void Viewport::refreshSelectedExtrusionPolygon() {
     }
     return;
   }
-
   // Selected regions are model data, not screen artefacts. Reproject every
   // region after zoom, orbit, pan or a viewport resize so all Ctrl-selected
   // contours remain coincident with their sketches.
@@ -1914,7 +2114,11 @@ void Viewport::paintGL() {
     painter.setPen(QPen(selectedBasePlane_ == plane
                             ? QColor("#075eff") : planeColors[plane].darker(125),
                         selectedBasePlane_ == plane
-                            ? 3.0 : pickMode_ == PickMode::SketchPlane ? 2.0 : 1.0,
+                            ? 3.0
+                            : (pickMode_ == PickMode::SketchPlane ||
+                               pickMode_ == PickMode::MirrorPlane)
+                                  ? 2.0
+                                  : 1.0,
                         selectedBasePlane_ == plane ? Qt::SolidLine : Qt::DashLine));
     painter.drawPolygon(polygon);
     painter.drawText(polygon.boundingRect().center(),
@@ -1932,16 +2136,16 @@ void Viewport::paintGL() {
     const std::vector<std::size_t> selectedEdges =
         replaceSourcePresentation ? std::vector<std::size_t>{}
                                   : selectedBodyEdgeIndices_;
-    const std::size_t hoveredFace =
-        replaceSourcePresentation ? static_cast<std::size_t>(-1)
-                                  : hoveredBodyFaceIndex_;
+    const std::vector<std::size_t> hoveredFaces =
+        replaceSourcePresentation ? std::vector<std::size_t>{}
+                                  : effectiveHoveredFaceIndices();
     const std::size_t hoveredEdge =
         replaceSourcePresentation ? static_cast<std::size_t>(-1)
                                   : hoveredBodyEdgeIndex_;
     renderer_.render(bodyRenderMesh_, hasToolPreview ? &toolPreviewRenderMesh_ : nullptr,
                      size(), static_cast<float>(devicePixelRatioF()), yaw_, pitch_,
                      zoom_, cameraPan_, displayMode_, selectedFaces,
-                     hoveredFace, selectedEdges, hoveredEdge,
+                     hoveredFaces, selectedEdges, hoveredEdge,
                      hasToolCutPreview ? &toolCutPreviewRenderMesh_ : nullptr);
     painter.endNativePainting();
     if (!renderer_.error().isEmpty()) {
@@ -2485,9 +2689,25 @@ void Viewport::paintGL() {
     }
   }
 
-  if (pickMode_ == PickMode::RevolveAxis) {
+  if (pickMode_ == PickMode::RevolveAxis ||
+      pickMode_ == PickMode::LinearPatternAxis ||
+      pickMode_ == PickMode::LinearPatternPreview ||
+      pickMode_ == PickMode::CircularPatternAxis ||
+      pickMode_ == PickMode::CircularPatternPreview) {
     const bool hasSketchCandidate =
+        pickMode_ == PickMode::RevolveAxis &&
         revolveAxisSketchIndex_ < displaySketches_.size();
+    qulonglong emphasizedAxisToken = hoveredRevolveAxisToken_;
+    if (pickMode_ == PickMode::LinearPatternPreview ||
+        pickMode_ == PickMode::CircularPatternPreview) {
+      emphasizedAxisToken = selectedPatternAxis_ == 0
+                                ? kGlobalXAxisToken
+                            : selectedPatternAxis_ == 1
+                                ? kGlobalYAxisToken
+                            : selectedPatternAxis_ == 2
+                                ? kGlobalZAxisToken
+                                : 0;
+    }
     const Point3d center = bodyRenderMesh_.center();
     painter.setBrush(Qt::NoBrush);
     const auto globalScreenPoint = [&](double x, double y, double z) {
@@ -2517,18 +2737,19 @@ void Viewport::paintGL() {
       painter.drawLine(screenPoint(0.0, -1000.0),
                        screenPoint(0.0, 1000.0));
     }
-    // Revolve axis hover: redraw only the candidate in the same cyan language
-    // used by native 3D edge hover. Selection is still committed only on click.
-    if (hoveredRevolveAxisToken_ != 0) {
+    // Axis hover/selection uses the same cyan language as native 3D hover.
+    // A candidate is committed only on click; the pattern keeps it highlighted
+    // while its parameters are being edited.
+    if (emphasizedAxisToken != 0) {
       painter.setPen(QPen(QColor("#00a6ff"), 5.0, Qt::SolidLine,
                           Qt::RoundCap, Qt::RoundJoin));
-      if (hoveredRevolveAxisToken_ == kGlobalXAxisToken) {
+      if (emphasizedAxisToken == kGlobalXAxisToken) {
         painter.drawLine(globalScreenPoint(-1000.0, 0.0, 0.0),
                          globalScreenPoint(1000.0, 0.0, 0.0));
-      } else if (hoveredRevolveAxisToken_ == kGlobalYAxisToken) {
+      } else if (emphasizedAxisToken == kGlobalYAxisToken) {
         painter.drawLine(globalScreenPoint(0.0, -1000.0, 0.0),
                          globalScreenPoint(0.0, 1000.0, 0.0));
-      } else if (hoveredRevolveAxisToken_ == kGlobalZAxisToken) {
+      } else if (emphasizedAxisToken == kGlobalZAxisToken) {
         painter.drawLine(globalScreenPoint(0.0, 0.0, -1000.0),
                          globalScreenPoint(0.0, 0.0, 1000.0));
       } else if (hasSketchCandidate) {
@@ -2540,10 +2761,10 @@ void Viewport::paintGL() {
                                   pitch_, zoom_)
               .screen;
         };
-        if (hoveredRevolveAxisToken_ == 1) {
+        if (emphasizedAxisToken == 1) {
           painter.drawLine(screenPoint(-1000.0, 0.0),
                            screenPoint(1000.0, 0.0));
-        } else if (hoveredRevolveAxisToken_ == 2) {
+        } else if (emphasizedAxisToken == 2) {
           painter.drawLine(screenPoint(0.0, -1000.0),
                            screenPoint(0.0, 1000.0));
         } else {
@@ -2551,7 +2772,7 @@ void Viewport::paintGL() {
                i < hoveredCandidate.geometry.lines().size(); ++i) {
             if (static_cast<qulonglong>(
                     hoveredCandidate.geometry.lineId(i)) + 3 !=
-                hoveredRevolveAxisToken_)
+                emphasizedAxisToken)
               continue;
             const auto& line = hoveredCandidate.geometry.lines()[i];
             painter.drawLine(screenPoint(line.start.xMm, line.start.yMm),
@@ -2805,6 +3026,43 @@ qulonglong Viewport::revolveAxisTokenAt(QPointF scenePosition) const {
 
   return bestToken;
 }
+
+qulonglong Viewport::principalAxisTokenAt(QPointF scenePosition) const {
+  if (pickMode_ != PickMode::LinearPatternAxis &&
+      pickMode_ != PickMode::CircularPatternAxis)
+    return 0;
+  const Point3d center = bodyRenderMesh_.center();
+  double bestDistance = 12.0;
+  qulonglong bestToken = 0;
+  const auto considerSegment = [&](const Point3d& aWorld,
+                                   const Point3d& bWorld,
+                                   qulonglong token) {
+    const QPointF a =
+        projectBodyPoint(aWorld, center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF b =
+        projectBodyPoint(bWorld, center, size(), yaw_, pitch_, zoom_).screen;
+    const QPointF ab = b - a;
+    const double length2 = QPointF::dotProduct(ab, ab);
+    const double t =
+        length2 > 1e-9
+            ? std::clamp(QPointF::dotProduct(scenePosition - a, ab) / length2,
+                         0.0, 1.0)
+            : 0.0;
+    const double distance = QLineF(scenePosition, a + ab * t).length();
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestToken = token;
+    }
+  };
+  considerSegment({-1000.0, 0.0, 0.0}, {1000.0, 0.0, 0.0},
+                  kGlobalXAxisToken);
+  considerSegment({0.0, -1000.0, 0.0}, {0.0, 1000.0, 0.0},
+                  kGlobalYAxisToken);
+  considerSegment({0.0, 0.0, -1000.0}, {0.0, 0.0, 1000.0},
+                  kGlobalZAxisToken);
+  return bestToken;
+}
+
 void Viewport::mousePressEvent(QMouseEvent* event) {
   setFocus(Qt::MouseFocusReason);
   lastMousePosition_ = event->position().toPoint();
@@ -2856,6 +3114,111 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       return;
     }
   }
+  if (pickMode_ == PickMode::MirrorBody) {
+    updateToolBodyHover(scenePosition);
+    if (hoveredToolBodyId_ != kInvalidBodyId) {
+      const BodyId pickedBody = hoveredToolBodyId_;
+      pickMode_ = PickMode::None;
+      selectionFilter_ = SelectionFilter::Any;
+      hoveredToolBodyId_ = kInvalidBodyId;
+      hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+      setSelectedBodies({pickedBody});
+      emit mirrorBodyPicked(pickedBody);
+    }
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::LinearPatternBody) {
+    updateToolBodyHover(scenePosition);
+    if (hoveredToolBodyId_ != kInvalidBodyId) {
+      const BodyId pickedBody = hoveredToolBodyId_;
+      pickMode_ = PickMode::None;
+      selectionFilter_ = SelectionFilter::Any;
+      hoveredToolBodyId_ = kInvalidBodyId;
+      hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+      setSelectedBodies({pickedBody});
+      emit linearPatternBodyPicked(pickedBody);
+    }
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::CircularPatternBody) {
+    updateToolBodyHover(scenePosition);
+    if (hoveredToolBodyId_ != kInvalidBodyId) {
+      const BodyId pickedBody = hoveredToolBodyId_;
+      pickMode_ = PickMode::None;
+      selectionFilter_ = SelectionFilter::Any;
+      hoveredToolBodyId_ = kInvalidBodyId;
+      hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+      setSelectedBodies({pickedBody});
+      emit circularPatternBodyPicked(pickedBody);
+    }
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::MirrorPlane) {
+    updateMirrorPlaneHover(scenePosition);
+    if (selectedBasePlane_ >= 0) {
+      const int pickedPlane = selectedBasePlane_;
+      pickMode_ = PickMode::MirrorPreview;
+      selectionFilter_ = SelectionFilter::Any;
+      unsetCursor();
+      emit mirrorPlanePicked(pickedPlane);
+    }
+    event->accept();
+    update();
+    return;
+  }
+  if (pickMode_ == PickMode::MirrorPreview) {
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::LinearPatternAxis) {
+    const qulonglong axisToken = principalAxisTokenAt(scenePosition);
+    int axisIndex = -1;
+    if (axisToken == kGlobalXAxisToken)
+      axisIndex = 0;
+    else if (axisToken == kGlobalYAxisToken)
+      axisIndex = 1;
+    else if (axisToken == kGlobalZAxisToken)
+      axisIndex = 2;
+    if (axisIndex >= 0) {
+      selectedPatternAxis_ = axisIndex;
+      hoveredRevolveAxisToken_ = 0;
+      pickMode_ = PickMode::LinearPatternPreview;
+      selectionFilter_ = SelectionFilter::Any;
+      unsetCursor();
+      emit linearPatternAxisPicked(axisIndex);
+    }
+    event->accept();
+    update();
+    return;
+  }
+  if (pickMode_ == PickMode::LinearPatternPreview) {
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::CircularPatternAxis) {
+    const qulonglong axisToken = principalAxisTokenAt(scenePosition);
+    int axisIndex = -1;
+    if (axisToken == kGlobalXAxisToken)
+      axisIndex = 0;
+    else if (axisToken == kGlobalYAxisToken)
+      axisIndex = 1;
+    else if (axisToken == kGlobalZAxisToken)
+      axisIndex = 2;
+    if (axisIndex >= 0) {
+      selectedPatternAxis_ = axisIndex;
+      hoveredRevolveAxisToken_ = 0;
+      pickMode_ = PickMode::CircularPatternPreview;
+      selectionFilter_ = SelectionFilter::Any;
+      unsetCursor();
+      emit circularPatternAxisPicked(axisIndex);
+    }
+    event->accept();
+    update();
+    return;
+  }
   if (pickMode_ == PickMode::RevolveAxis) {
     const qulonglong axisToken = revolveAxisTokenAt(scenePosition);
     if (axisToken != 0) {
@@ -2882,6 +3245,10 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
         return;
       }
     }
+  }
+  if (pickMode_ == PickMode::CircularPatternPreview) {
+    event->accept();
+    return;
   }
   if (extrusionManipulatorVisible_) {
     const QPointF handle = extrusionManipulatorAnchor_ +
@@ -3775,6 +4142,55 @@ void Viewport::cancelMarquee() {
   update();
 }
 
+void Viewport::updateToolBodyHover(QPointF position) {
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  if (!solidVisible_ || bodyRenderMesh_.triangles().empty()) return;
+
+  const Point3d center = bodyRenderMesh_.center();
+  double nearestDepth = -std::numeric_limits<double>::max();
+  for (const auto& triangle : bodyRenderMesh_.triangles()) {
+    const auto a = projectBodyPoint(triangle.a, center, size(), yaw_, pitch_, zoom_);
+    const auto b = projectBodyPoint(triangle.b, center, size(), yaw_, pitch_, zoom_);
+    const auto c = projectBodyPoint(triangle.c, center, size(), yaw_, pitch_, zoom_);
+    const auto depth = triangleDepthAt(position, a, b, c);
+    if (!depth || *depth <= nearestDepth) continue;
+    nearestDepth = *depth;
+    hoveredBodyFaceIndex_ = triangle.faceIndex;
+  }
+  if (hoveredBodyFaceIndex_ == static_cast<std::size_t>(-1)) return;
+  if (const auto face = faceReferenceForGlobalIndex(hoveredBodyFaceIndex_))
+    hoveredToolBodyId_ = face->bodyId;
+}
+
+void Viewport::updateMirrorPlaneHover(QPointF position) {
+  selectedBasePlane_ = -1;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+
+  const float x = static_cast<float>(box_.widthMm) * 0.5F;
+  const float y = static_cast<float>(box_.depthMm) * 0.5F;
+  const float planeSize = std::max(35.0F, std::max(x, y) * 1.35F);
+  const std::array<std::array<Point3, 4>, 3> planes{{
+      {{{-planeSize, -planeSize, 0}, {planeSize, -planeSize, 0},
+         {planeSize, planeSize, 0}, {-planeSize, planeSize, 0}}},
+      {{{-planeSize, 0, -planeSize}, {planeSize, 0, -planeSize},
+         {planeSize, 0, planeSize}, {-planeSize, 0, planeSize}}},
+      {{{0, -planeSize, -planeSize}, {0, planeSize, -planeSize},
+         {0, planeSize, planeSize}, {0, -planeSize, planeSize}}}}};
+  for (int plane = 2; plane >= 0; --plane) {
+    if (!basePlanesVisible_[plane]) continue;
+    QPolygonF polygon;
+    for (const auto& point : planes[plane])
+      polygon << project(point, size(), yaw_, pitch_, zoom_);
+    if (!polygon.containsPoint(position, Qt::OddEvenFill)) continue;
+    selectedBasePlane_ = plane;
+    return;
+  }
+}
+
 void Viewport::updateSketchPlaneHover(QPointF position) {
   extrusionHoverPolygon_.clear();
   extrusionHoverPath_ = {};
@@ -4495,6 +4911,92 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::MirrorBody) {
+    updateToolBodyHover(event->position() - cameraPan_);
+    setCursor(hoveredToolBodyId_ != kInvalidBodyId ? Qt::PointingHandCursor
+                                                     : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::LinearPatternBody) {
+    updateToolBodyHover(event->position() - cameraPan_);
+    setCursor(hoveredToolBodyId_ != kInvalidBodyId ? Qt::PointingHandCursor
+                                                   : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::CircularPatternBody) {
+    updateToolBodyHover(event->position() - cameraPan_);
+    setCursor(hoveredToolBodyId_ != kInvalidBodyId ? Qt::PointingHandCursor
+                                                   : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::MirrorPlane) {
+    updateMirrorPlaneHover(event->position() - cameraPan_);
+    setCursor(selectedBasePlane_ >= 0 ? Qt::PointingHandCursor
+                                     : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::MirrorPreview) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    hoveredToolBodyId_ = kInvalidBodyId;
+    unsetCursor();
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::LinearPatternAxis) {
+    const qulonglong previous = hoveredRevolveAxisToken_;
+    hoveredRevolveAxisToken_ =
+        principalAxisTokenAt(event->position() - cameraPan_);
+    setCursor(hoveredRevolveAxisToken_ != 0 ? Qt::PointingHandCursor
+                                           : Qt::CrossCursor);
+    if (previous != hoveredRevolveAxisToken_) update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::CircularPatternAxis) {
+    const qulonglong previous = hoveredRevolveAxisToken_;
+    hoveredRevolveAxisToken_ =
+        principalAxisTokenAt(event->position() - cameraPan_);
+    setCursor(hoveredRevolveAxisToken_ != 0 ? Qt::PointingHandCursor
+                                           : Qt::CrossCursor);
+    if (previous != hoveredRevolveAxisToken_) update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::LinearPatternPreview) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    hoveredToolBodyId_ = kInvalidBodyId;
+    unsetCursor();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::CircularPatternPreview) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    hoveredToolBodyId_ = kInvalidBodyId;
+    unsetCursor();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
       pickMode_ == PickMode::RevolveAxis) {
     const qulonglong previous = hoveredRevolveAxisToken_;
     hoveredRevolveAxisToken_ =
@@ -4690,14 +5192,21 @@ void Viewport::cancelActiveInteraction() {
 }
 
 void Viewport::resetToolInteraction() {
-  const bool wasSketchPlane = pickMode_ == PickMode::SketchPlane;
+  const bool wasConstructionPlane =
+      pickMode_ == PickMode::SketchPlane ||
+      pickMode_ == PickMode::MirrorPlane ||
+      pickMode_ == PickMode::MirrorPreview;
   pickMode_ = PickMode::None;
   setSelectionFilter(SelectionFilter::Any);
   clearLegacyExtrusionPreview();
   clearToolPreviewShape();
   clearToolManipulator();
   cancelMarquee();
-  if (wasSketchPlane)
+  hoveredToolBodyId_ = kInvalidBodyId;
+  selectedBasePlane_ = -1;
+  selectedPatternAxis_ = -1;
+  hoveredRevolveAxisToken_ = 0;
+  if (wasConstructionPlane)
     for (bool& visible : basePlanesVisible_) visible = false;
   unsetCursor();
   update();
@@ -4707,7 +5216,9 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
   // the viewport. The right-hand tool panel remains mouse-accessible, but it
   // is not part of this CAD parameter loop.
   if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
-      pickMode_ == PickMode::None) {
+      (pickMode_ == PickMode::None ||
+       pickMode_ == PickMode::LinearPatternPreview ||
+       pickMode_ == PickMode::CircularPatternPreview)) {
     const bool backward = event->key() == Qt::Key_Backtab ||
                           event->modifiers().testFlag(Qt::ShiftModifier);
 

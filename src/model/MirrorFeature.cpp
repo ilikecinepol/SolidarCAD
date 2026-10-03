@@ -25,6 +25,29 @@ gp_Dir normal(MirrorPlane plane) {
 }
 }  // namespace
 
+ShapeFeature::ShapePtr buildMirrorShape(const TopoDS_Shape& source,
+                                        MirrorPlane plane,
+                                        std::string* error) {
+  if (source.IsNull()) {
+    if (error) *error = "Mirror base shape is missing";
+    return {};
+  }
+  gp_Trsf transform;
+  transform.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), normal(plane)));
+  BRepBuilderAPI_Transform reflected(source, transform, true);
+  if (!reflected.IsDone() || reflected.Shape().IsNull()) {
+    if (error) *error = "Mirror transformation failed";
+    return {};
+  }
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  builder.Add(compound, source);
+  builder.Add(compound, reflected.Shape());
+  if (error) error->clear();
+  return std::make_shared<TopoDS_Shape>(compound);
+}
+
 MirrorFeature::MirrorFeature(FeatureId source, MirrorPlane plane,
                              std::string name)
     : ShapeFeature(name.empty() ? "Mirror" : std::move(name)),
@@ -50,19 +73,13 @@ bool MirrorFeature::rebuild(const RebuildContext& context) {
     markError("Mirror source Feature could not be resolved");
     return false;
   }
-  gp_Trsf transform;
-  transform.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), normal(plane_)));
-  BRepBuilderAPI_Transform reflected(*context.previousShape, transform, true);
-  if (!reflected.IsDone() || reflected.Shape().IsNull()) {
-    markError("Mirror transformation failed");
+  std::string error;
+  const auto result = buildMirrorShape(*context.previousShape, plane_, &error);
+  if (!result) {
+    markError(error);
     return false;
   }
-  BRep_Builder builder;
-  TopoDS_Compound compound;
-  builder.MakeCompound(compound);
-  builder.Add(compound, *context.previousShape);
-  builder.Add(compound, reflected.Shape());
-  setShape(std::make_shared<TopoDS_Shape>(compound));
+  setShape(result);
   markValid();
   return true;
 }

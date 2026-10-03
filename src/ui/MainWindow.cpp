@@ -290,6 +290,9 @@ void MainWindow::resetTransientModelingUi() {
   selectedExtrusionSurface_.clear();
   if (toolParametersDock_) toolParametersDock_->hide();
   if (revolveDock_) revolveDock_->hide();
+  if (mirrorDock_) mirrorDock_->hide();
+  if (linearPatternDock_) linearPatternDock_->hide();
+  if (circularPatternDock_) circularPatternDock_->hide();
   if (extrusionDock_) extrusionDock_->hide();
 }
 
@@ -420,10 +423,16 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   draftToolSession_.cancel();
   faceExtrudeSession_.cancel();
   revolveToolSession_.cancel();
+  mirrorToolSession_.cancel();
+  linearPatternToolSession_.cancel();
+  circularPatternToolSession_.cancel();
 
   if (modelRibbon_) modelRibbon_->clearActiveTool();
   if (toolParametersDock_) toolParametersDock_->hide();
   if (revolveDock_) revolveDock_->hide();
+  if (mirrorDock_) mirrorDock_->hide();
+  if (linearPatternDock_) linearPatternDock_->hide();
+  if (circularPatternDock_) circularPatternDock_->hide();
   if (extrusionDock_) extrusionDock_->hide();
 
   viewport_->clearToolManipulator();
@@ -899,13 +908,501 @@ void MainWindow::buildUi() {
   });
   connect(viewport_, &Viewport::angularToolManipulatorValueChanged, this,
           [this](double angle) {
-            if (revolveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
-            revolveToolSession_.setAngleFromManipulator(angle);
-            revolveAngleSpin_->setValue(revolveToolSession_.angleDeg());
-            updateRevolveToolPreview();
+            if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              revolveToolSession_.setAngleFromManipulator(angle);
+              revolveAngleSpin_->setValue(revolveToolSession_.angleDeg());
+              updateRevolveToolPreview();
+            } else if (circularPatternToolSession_.lifecycle() !=
+                       ToolLifecycle::Inactive) {
+              circularPatternToolSession_.setAngleDeg(angle);
+              const QSignalBlocker blocker(circularPatternAngleSpin_);
+              circularPatternAngleSpin_->setValue(
+                  circularPatternToolSession_.angleDeg());
+              updateCircularPatternToolPreview();
+            }
           });
   connect(viewport_, &Viewport::revolveProfileSelectionChanged, this,
           &MainWindow::updateRevolveProfileSelection);
+
+  mirrorDock_ = new QDockWidget(QString::fromUtf8("Зеркало"), this);
+  mirrorDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  mirrorDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  mirrorDock_->setObjectName(QStringLiteral("mirrorParametersDock"));
+  auto* mirrorPanel = new QWidget(mirrorDock_);
+  auto* mirrorLayout = new QVBoxLayout(mirrorPanel);
+  mirrorLayout->setContentsMargins(16, 14, 16, 14);
+  mirrorLayout->setSpacing(12);
+  const auto* mirrorHelp = partDesignToolHelp(PartDesignToolKind::Mirror);
+  auto* mirrorTitle = new QLabel(mirrorHelp->title.toUpper(), mirrorPanel);
+  QFont mirrorTitleFont = mirrorTitle->font();
+  mirrorTitleFont.setBold(true);
+  mirrorTitle->setFont(mirrorTitleFont);
+  auto* mirrorDescription = new QLabel(mirrorHelp->shortDescription,
+                                       mirrorPanel);
+  mirrorDescription->setWordWrap(true);
+  mirrorDescription->setProperty("uiRole", "secondaryText");
+  auto* mirrorForm = new QFormLayout;
+
+  auto* mirrorBodyRow = new QWidget(mirrorPanel);
+  auto* mirrorBodyLayout = new QHBoxLayout(mirrorBodyRow);
+  mirrorBodyLayout->setContentsMargins(0, 0, 0, 0);
+  mirrorBodyValue_ = new QLabel(QString::fromUtf8("Не выбрано"), mirrorBodyRow);
+  mirrorBodyValue_->setObjectName(QStringLiteral("mirrorBodyValue"));
+  mirrorBodySelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), mirrorBodyRow);
+  mirrorBodySelectButton_->setObjectName(
+      QStringLiteral("mirrorBodySelectButton"));
+  mirrorBodyLayout->addWidget(mirrorBodyValue_, 1);
+  mirrorBodyLayout->addWidget(mirrorBodySelectButton_);
+
+  auto* mirrorPlaneRow = new QWidget(mirrorPanel);
+  auto* mirrorPlaneLayout = new QHBoxLayout(mirrorPlaneRow);
+  mirrorPlaneLayout->setContentsMargins(0, 0, 0, 0);
+  mirrorPlaneValue_ = new QLabel(QString::fromUtf8("Не выбрана"),
+                                 mirrorPlaneRow);
+  mirrorPlaneValue_->setObjectName(QStringLiteral("mirrorPlaneValue"));
+  mirrorPlaneSelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), mirrorPlaneRow);
+  mirrorPlaneSelectButton_->setObjectName(
+      QStringLiteral("mirrorPlaneSelectButton"));
+  mirrorPlaneSelectButton_->setEnabled(false);
+  mirrorPlaneLayout->addWidget(mirrorPlaneValue_, 1);
+  mirrorPlaneLayout->addWidget(mirrorPlaneSelectButton_);
+  mirrorForm->addRow(QString::fromUtf8("Тело:"), mirrorBodyRow);
+  mirrorForm->addRow(QString::fromUtf8("Плоскость:"), mirrorPlaneRow);
+
+  mirrorStepHint_ = new QLabel(mirrorHelp->selectionHint, mirrorPanel);
+  mirrorStepHint_->setObjectName(QStringLiteral("mirrorStepHint"));
+  mirrorStepHint_->setWordWrap(true);
+  mirrorStepHint_->setProperty("uiRole", "secondaryText");
+  auto* mirrorButtons = new QHBoxLayout;
+  auto* cancelMirror = new QPushButton(QString::fromUtf8("Отмена"), mirrorPanel);
+  mirrorAcceptButton_ = new QPushButton(QString::fromUtf8("Применить"),
+                                        mirrorPanel);
+  mirrorAcceptButton_->setObjectName(QStringLiteral("primaryAction"));
+  mirrorAcceptButton_->setProperty("uiRole", "primaryAction");
+  mirrorAcceptButton_->setDefault(true);
+  mirrorAcceptButton_->setEnabled(false);
+  mirrorButtons->addWidget(cancelMirror);
+  mirrorButtons->addWidget(mirrorAcceptButton_);
+  mirrorLayout->addWidget(mirrorTitle);
+  mirrorLayout->addWidget(mirrorDescription);
+  mirrorLayout->addLayout(mirrorForm);
+  mirrorLayout->addWidget(mirrorStepHint_);
+  mirrorLayout->addStretch();
+  mirrorLayout->addLayout(mirrorButtons);
+  mirrorDock_->setWidget(mirrorPanel);
+  mirrorDock_->setMinimumWidth(280);
+  addDockWidget(Qt::RightDockWidgetArea, mirrorDock_);
+  mirrorDock_->hide();
+
+  connect(mirrorBodySelectButton_, &QPushButton::clicked, this, [this] {
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingInput);
+    mirrorToolSession_.clearBody();
+    mirrorBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+    mirrorPlaneValue_->setText(QString::fromUtf8("Не выбрана"));
+    mirrorPlaneSelectButton_->setEnabled(false);
+    viewport_->clearToolPreviewShape();
+    viewport_->beginMirrorBodySelection();
+    updateMirrorToolPreview();
+    viewport_->setFocus();
+    statusBar()->showMessage(QString::fromUtf8("1/2 Выберите тело в 3D-виде"));
+  });
+  connect(mirrorPlaneSelectButton_, &QPushButton::clicked, this, [this] {
+    if (mirrorToolSession_.bodyId() == kInvalidBodyId) return;
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingReference);
+    mirrorToolSession_.clearPlane();
+    mirrorPlaneValue_->setText(QString::fromUtf8("Не выбрана"));
+    viewport_->clearToolPreviewShape();
+    viewport_->beginMirrorPlaneSelection();
+    updateMirrorToolPreview();
+    viewport_->setFocus();
+    statusBar()->showMessage(
+        QString::fromUtf8("2/2 Выберите базовую плоскость в 3D-виде"));
+  });
+  connect(mirrorAcceptButton_, &QPushButton::clicked, this,
+          &MainWindow::acceptMirrorTool);
+  connect(cancelMirror, &QPushButton::clicked, this,
+          &MainWindow::cancelMirrorTool);
+  auto* mirrorReturnShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Return), mirrorDock_);
+  mirrorReturnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  mirrorReturnShortcut->setAutoRepeat(false);
+  connect(mirrorReturnShortcut, &QShortcut::activated, this, [this] {
+    if (mirrorDock_->isVisible() && mirrorAcceptButton_->isEnabled())
+      acceptMirrorTool();
+  });
+  auto* mirrorKeypadShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Enter), mirrorDock_);
+  mirrorKeypadShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  mirrorKeypadShortcut->setAutoRepeat(false);
+  connect(mirrorKeypadShortcut, &QShortcut::activated, this, [this] {
+    if (mirrorDock_->isVisible() && mirrorAcceptButton_->isEnabled())
+      acceptMirrorTool();
+  });
+  auto* mirrorEscapeShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Escape), mirrorDock_);
+  mirrorEscapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  mirrorEscapeShortcut->setAutoRepeat(false);
+  connect(mirrorEscapeShortcut, &QShortcut::activated, this,
+          &MainWindow::cancelMirrorTool);
+
+  linearPatternDock_ =
+      new QDockWidget(QString::fromUtf8("Линейный массив"), this);
+  linearPatternDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  linearPatternDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  linearPatternDock_->setObjectName(
+      QStringLiteral("linearPatternParametersDock"));
+  auto* linearPatternPanel = new QWidget(linearPatternDock_);
+  auto* linearPatternLayout = new QVBoxLayout(linearPatternPanel);
+  linearPatternLayout->setContentsMargins(16, 14, 16, 14);
+  linearPatternLayout->setSpacing(12);
+  const auto* linearPatternHelp =
+      partDesignToolHelp(PartDesignToolKind::LinearPattern);
+  auto* linearPatternTitle =
+      new QLabel(linearPatternHelp->title.toUpper(), linearPatternPanel);
+  QFont linearPatternTitleFont = linearPatternTitle->font();
+  linearPatternTitleFont.setBold(true);
+  linearPatternTitle->setFont(linearPatternTitleFont);
+  auto* linearPatternDescription =
+      new QLabel(linearPatternHelp->shortDescription, linearPatternPanel);
+  linearPatternDescription->setWordWrap(true);
+  linearPatternDescription->setProperty("uiRole", "secondaryText");
+  auto* linearPatternForm = new QFormLayout;
+
+  auto* linearPatternBodyRow = new QWidget(linearPatternPanel);
+  auto* linearPatternBodyLayout = new QHBoxLayout(linearPatternBodyRow);
+  linearPatternBodyLayout->setContentsMargins(0, 0, 0, 0);
+  linearPatternBodyValue_ =
+      new QLabel(QString::fromUtf8("Не выбрано"), linearPatternBodyRow);
+  linearPatternBodyValue_->setObjectName(
+      QStringLiteral("linearPatternBodyValue"));
+  linearPatternBodySelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), linearPatternBodyRow);
+  linearPatternBodySelectButton_->setObjectName(
+      QStringLiteral("linearPatternBodySelectButton"));
+  linearPatternBodyLayout->addWidget(linearPatternBodyValue_, 1);
+  linearPatternBodyLayout->addWidget(linearPatternBodySelectButton_);
+
+  auto* linearPatternAxisRow = new QWidget(linearPatternPanel);
+  auto* linearPatternAxisLayout = new QHBoxLayout(linearPatternAxisRow);
+  linearPatternAxisLayout->setContentsMargins(0, 0, 0, 0);
+  linearPatternAxisValue_ =
+      new QLabel(QString::fromUtf8("Не выбрано"), linearPatternAxisRow);
+  linearPatternAxisValue_->setObjectName(
+      QStringLiteral("linearPatternAxisValue"));
+  linearPatternAxisSelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), linearPatternAxisRow);
+  linearPatternAxisSelectButton_->setObjectName(
+      QStringLiteral("linearPatternAxisSelectButton"));
+  linearPatternAxisSelectButton_->setEnabled(false);
+  linearPatternAxisLayout->addWidget(linearPatternAxisValue_, 1);
+  linearPatternAxisLayout->addWidget(linearPatternAxisSelectButton_);
+
+  linearPatternSpacingSpin_ = new QDoubleSpinBox(linearPatternPanel);
+  linearPatternSpacingSpin_->setObjectName(
+      QStringLiteral("linearPatternSpacingSpin"));
+  linearPatternSpacingSpin_->setRange(0.01, 100000.0);
+  linearPatternSpacingSpin_->setDecimals(2);
+  linearPatternSpacingSpin_->setSingleStep(0.1);
+  linearPatternSpacingSpin_->setSuffix(QStringLiteral(" mm"));
+  linearPatternSpacingSpin_->setValue(30.0);
+  linearPatternCountSpin_ = new QSpinBox(linearPatternPanel);
+  linearPatternCountSpin_->setObjectName(
+      QStringLiteral("linearPatternCountSpin"));
+  linearPatternCountSpin_->setRange(2, 100);
+  linearPatternCountSpin_->setValue(3);
+  linearPatternForm->addRow(QString::fromUtf8("Тело:"), linearPatternBodyRow);
+  linearPatternForm->addRow(QString::fromUtf8("Направление:"),
+                            linearPatternAxisRow);
+  linearPatternForm->addRow(QString::fromUtf8("Шаг:"),
+                            linearPatternSpacingSpin_);
+  linearPatternForm->addRow(QString::fromUtf8("Количество:"),
+                            linearPatternCountSpin_);
+
+  linearPatternStepHint_ =
+      new QLabel(linearPatternHelp->selectionHint, linearPatternPanel);
+  linearPatternStepHint_->setObjectName(
+      QStringLiteral("linearPatternStepHint"));
+  linearPatternStepHint_->setWordWrap(true);
+  linearPatternStepHint_->setProperty("uiRole", "secondaryText");
+  auto* linearPatternButtons = new QHBoxLayout;
+  auto* cancelLinearPattern =
+      new QPushButton(QString::fromUtf8("Отмена"), linearPatternPanel);
+  linearPatternAcceptButton_ =
+      new QPushButton(QString::fromUtf8("Применить"), linearPatternPanel);
+  linearPatternAcceptButton_->setObjectName(QStringLiteral("primaryAction"));
+  linearPatternAcceptButton_->setProperty("uiRole", "primaryAction");
+  linearPatternAcceptButton_->setDefault(true);
+  linearPatternAcceptButton_->setEnabled(false);
+  linearPatternButtons->addWidget(cancelLinearPattern);
+  linearPatternButtons->addWidget(linearPatternAcceptButton_);
+  linearPatternLayout->addWidget(linearPatternTitle);
+  linearPatternLayout->addWidget(linearPatternDescription);
+  linearPatternLayout->addLayout(linearPatternForm);
+  linearPatternLayout->addWidget(linearPatternStepHint_);
+  linearPatternLayout->addStretch();
+  linearPatternLayout->addLayout(linearPatternButtons);
+  linearPatternDock_->setWidget(linearPatternPanel);
+  linearPatternDock_->setMinimumWidth(300);
+  addDockWidget(Qt::RightDockWidgetArea, linearPatternDock_);
+  linearPatternDock_->hide();
+
+  connect(linearPatternBodySelectButton_, &QPushButton::clicked, this,
+          [this] {
+            partDesignTools_.beginReselection(
+                ToolSelectionStage::SelectingInput);
+            linearPatternToolSession_.clearBody();
+            linearPatternBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+            linearPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
+            linearPatternAxisSelectButton_->setEnabled(false);
+            viewport_->clearToolPreviewShape();
+            viewport_->clearToolManipulator();
+            viewport_->beginLinearPatternBodySelection();
+            updateLinearPatternToolPreview();
+            viewport_->setFocus();
+            statusBar()->showMessage(
+                QString::fromUtf8("1/2 Выберите тело в 3D-виде"));
+          });
+  connect(linearPatternAxisSelectButton_, &QPushButton::clicked, this,
+          [this] {
+            if (linearPatternToolSession_.bodyId() == kInvalidBodyId) return;
+            partDesignTools_.beginReselection(
+                ToolSelectionStage::SelectingReference);
+            linearPatternToolSession_.clearDirection();
+            linearPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
+            viewport_->clearToolPreviewShape();
+            viewport_->clearToolManipulator();
+            viewport_->beginLinearPatternAxisSelection();
+            updateLinearPatternToolPreview();
+            viewport_->setFocus();
+            statusBar()->showMessage(
+                QString::fromUtf8("2/2 Выберите базовую ось в 3D-виде"));
+          });
+  connect(linearPatternSpacingSpin_,
+          qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+          [this](double value) {
+            if (linearPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            linearPatternToolSession_.setSpacingMm(value);
+            updateLinearPatternToolPreview();
+          });
+  connect(linearPatternCountSpin_, qOverload<int>(&QSpinBox::valueChanged),
+          this, [this](int value) {
+            if (linearPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            linearPatternToolSession_.setCount(value);
+            updateLinearPatternToolPreview();
+          });
+  connect(linearPatternAcceptButton_, &QPushButton::clicked, this,
+          &MainWindow::acceptLinearPatternTool);
+  connect(cancelLinearPattern, &QPushButton::clicked, this,
+          &MainWindow::cancelLinearPatternTool);
+  auto* linearPatternReturnShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Return), linearPatternDock_);
+  linearPatternReturnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  linearPatternReturnShortcut->setAutoRepeat(false);
+  connect(linearPatternReturnShortcut, &QShortcut::activated, this, [this] {
+    if (linearPatternDock_->isVisible() &&
+        linearPatternAcceptButton_->isEnabled())
+      acceptLinearPatternTool();
+  });
+  auto* linearPatternKeypadShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Enter), linearPatternDock_);
+  linearPatternKeypadShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  linearPatternKeypadShortcut->setAutoRepeat(false);
+  connect(linearPatternKeypadShortcut, &QShortcut::activated, this, [this] {
+    if (linearPatternDock_->isVisible() &&
+        linearPatternAcceptButton_->isEnabled())
+      acceptLinearPatternTool();
+  });
+  auto* linearPatternEscapeShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Escape), linearPatternDock_);
+  linearPatternEscapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  linearPatternEscapeShortcut->setAutoRepeat(false);
+  connect(linearPatternEscapeShortcut, &QShortcut::activated, this,
+          &MainWindow::cancelLinearPatternTool);
+
+  circularPatternDock_ =
+      new QDockWidget(QString::fromUtf8("Круговой массив"), this);
+  circularPatternDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  circularPatternDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  circularPatternDock_->setObjectName(
+      QStringLiteral("circularPatternParametersDock"));
+  auto* circularPatternPanel = new QWidget(circularPatternDock_);
+  auto* circularPatternLayout = new QVBoxLayout(circularPatternPanel);
+  circularPatternLayout->setContentsMargins(16, 14, 16, 14);
+  circularPatternLayout->setSpacing(12);
+  const auto* circularPatternHelp =
+      partDesignToolHelp(PartDesignToolKind::CircularPattern);
+  auto* circularPatternTitle =
+      new QLabel(circularPatternHelp->title.toUpper(), circularPatternPanel);
+  QFont circularPatternTitleFont = circularPatternTitle->font();
+  circularPatternTitleFont.setBold(true);
+  circularPatternTitle->setFont(circularPatternTitleFont);
+  auto* circularPatternDescription =
+      new QLabel(circularPatternHelp->shortDescription, circularPatternPanel);
+  circularPatternDescription->setWordWrap(true);
+  circularPatternDescription->setProperty("uiRole", "secondaryText");
+  auto* circularPatternForm = new QFormLayout;
+
+  auto* circularPatternBodyRow = new QWidget(circularPatternPanel);
+  auto* circularPatternBodyLayout = new QHBoxLayout(circularPatternBodyRow);
+  circularPatternBodyLayout->setContentsMargins(0, 0, 0, 0);
+  circularPatternBodyValue_ =
+      new QLabel(QString::fromUtf8("Не выбрано"), circularPatternBodyRow);
+  circularPatternBodyValue_->setObjectName(
+      QStringLiteral("circularPatternBodyValue"));
+  circularPatternBodySelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), circularPatternBodyRow);
+  circularPatternBodySelectButton_->setObjectName(
+      QStringLiteral("circularPatternBodySelectButton"));
+  circularPatternBodyLayout->addWidget(circularPatternBodyValue_, 1);
+  circularPatternBodyLayout->addWidget(circularPatternBodySelectButton_);
+
+  auto* circularPatternAxisRow = new QWidget(circularPatternPanel);
+  auto* circularPatternAxisLayout = new QHBoxLayout(circularPatternAxisRow);
+  circularPatternAxisLayout->setContentsMargins(0, 0, 0, 0);
+  circularPatternAxisValue_ =
+      new QLabel(QString::fromUtf8("Не выбрано"), circularPatternAxisRow);
+  circularPatternAxisValue_->setObjectName(
+      QStringLiteral("circularPatternAxisValue"));
+  circularPatternAxisSelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), circularPatternAxisRow);
+  circularPatternAxisSelectButton_->setObjectName(
+      QStringLiteral("circularPatternAxisSelectButton"));
+  circularPatternAxisSelectButton_->setEnabled(false);
+  circularPatternAxisLayout->addWidget(circularPatternAxisValue_, 1);
+  circularPatternAxisLayout->addWidget(circularPatternAxisSelectButton_);
+
+  circularPatternAngleSpin_ = new QDoubleSpinBox(circularPatternPanel);
+  circularPatternAngleSpin_->setObjectName(
+      QStringLiteral("circularPatternAngleSpin"));
+  circularPatternAngleSpin_->setRange(0.01, 360.0);
+  circularPatternAngleSpin_->setDecimals(2);
+  circularPatternAngleSpin_->setSingleStep(1.0);
+  circularPatternAngleSpin_->setSuffix(QString::fromUtf8(" °"));
+  circularPatternAngleSpin_->setValue(360.0);
+  circularPatternCountSpin_ = new QSpinBox(circularPatternPanel);
+  circularPatternCountSpin_->setObjectName(
+      QStringLiteral("circularPatternCountSpin"));
+  circularPatternCountSpin_->setRange(2, 100);
+  circularPatternCountSpin_->setValue(4);
+  circularPatternForm->addRow(QString::fromUtf8("Тело:"),
+                              circularPatternBodyRow);
+  circularPatternForm->addRow(QString::fromUtf8("Ось:"),
+                              circularPatternAxisRow);
+  circularPatternForm->addRow(QString::fromUtf8("Угол:"),
+                              circularPatternAngleSpin_);
+  circularPatternForm->addRow(QString::fromUtf8("Количество:"),
+                              circularPatternCountSpin_);
+
+  circularPatternStepHint_ =
+      new QLabel(circularPatternHelp->selectionHint, circularPatternPanel);
+  circularPatternStepHint_->setObjectName(
+      QStringLiteral("circularPatternStepHint"));
+  circularPatternStepHint_->setWordWrap(true);
+  circularPatternStepHint_->setProperty("uiRole", "secondaryText");
+  auto* circularPatternButtons = new QHBoxLayout;
+  auto* cancelCircularPattern =
+      new QPushButton(QString::fromUtf8("Отмена"), circularPatternPanel);
+  circularPatternAcceptButton_ =
+      new QPushButton(QString::fromUtf8("Применить"), circularPatternPanel);
+  circularPatternAcceptButton_->setObjectName(QStringLiteral("primaryAction"));
+  circularPatternAcceptButton_->setProperty("uiRole", "primaryAction");
+  circularPatternAcceptButton_->setDefault(true);
+  circularPatternAcceptButton_->setEnabled(false);
+  circularPatternButtons->addWidget(cancelCircularPattern);
+  circularPatternButtons->addWidget(circularPatternAcceptButton_);
+  circularPatternLayout->addWidget(circularPatternTitle);
+  circularPatternLayout->addWidget(circularPatternDescription);
+  circularPatternLayout->addLayout(circularPatternForm);
+  circularPatternLayout->addWidget(circularPatternStepHint_);
+  circularPatternLayout->addStretch();
+  circularPatternLayout->addLayout(circularPatternButtons);
+  circularPatternDock_->setWidget(circularPatternPanel);
+  circularPatternDock_->setMinimumWidth(300);
+  addDockWidget(Qt::RightDockWidgetArea, circularPatternDock_);
+  circularPatternDock_->hide();
+
+  connect(circularPatternBodySelectButton_, &QPushButton::clicked, this,
+          [this] {
+            partDesignTools_.beginReselection(
+                ToolSelectionStage::SelectingInput);
+            circularPatternToolSession_.clearBody();
+            circularPatternBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+            circularPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
+            circularPatternAxisSelectButton_->setEnabled(false);
+            viewport_->clearToolPreviewShape();
+            viewport_->clearToolManipulator();
+            viewport_->beginCircularPatternBodySelection();
+            updateCircularPatternToolPreview();
+            viewport_->setFocus();
+            statusBar()->showMessage(
+                QString::fromUtf8("1/2 Выберите тело в 3D-виде"));
+          });
+  connect(circularPatternAxisSelectButton_, &QPushButton::clicked, this,
+          [this] {
+            if (circularPatternToolSession_.bodyId() == kInvalidBodyId) return;
+            partDesignTools_.beginReselection(
+                ToolSelectionStage::SelectingReference);
+            circularPatternToolSession_.clearAxis();
+            circularPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
+            viewport_->clearToolPreviewShape();
+            viewport_->clearToolManipulator();
+            viewport_->beginCircularPatternAxisSelection();
+            updateCircularPatternToolPreview();
+            viewport_->setFocus();
+            statusBar()->showMessage(
+                QString::fromUtf8("2/2 Выберите базовую ось в 3D-виде"));
+          });
+  connect(circularPatternAngleSpin_,
+          qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+          [this](double value) {
+            if (circularPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            circularPatternToolSession_.setAngleDeg(value);
+            updateCircularPatternToolPreview();
+          });
+  connect(circularPatternCountSpin_, qOverload<int>(&QSpinBox::valueChanged),
+          this, [this](int value) {
+            if (circularPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            circularPatternToolSession_.setCount(value);
+            updateCircularPatternToolPreview();
+          });
+  connect(circularPatternAcceptButton_, &QPushButton::clicked, this,
+          &MainWindow::acceptCircularPatternTool);
+  connect(cancelCircularPattern, &QPushButton::clicked, this,
+          &MainWindow::cancelCircularPatternTool);
+  auto* circularPatternReturnShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Return), circularPatternDock_);
+  circularPatternReturnShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  circularPatternReturnShortcut->setAutoRepeat(false);
+  connect(circularPatternReturnShortcut, &QShortcut::activated, this, [this] {
+    if (circularPatternDock_->isVisible() &&
+        circularPatternAcceptButton_->isEnabled())
+      acceptCircularPatternTool();
+  });
+  auto* circularPatternKeypadShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Enter), circularPatternDock_);
+  circularPatternKeypadShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  circularPatternKeypadShortcut->setAutoRepeat(false);
+  connect(circularPatternKeypadShortcut, &QShortcut::activated, this, [this] {
+    if (circularPatternDock_->isVisible() &&
+        circularPatternAcceptButton_->isEnabled())
+      acceptCircularPatternTool();
+  });
+  auto* circularPatternEscapeShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Escape), circularPatternDock_);
+  circularPatternEscapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  circularPatternEscapeShortcut->setAutoRepeat(false);
+  connect(circularPatternEscapeShortcut, &QShortcut::activated, this,
+          &MainWindow::cancelCircularPatternTool);
 
   toolParametersDock_ = new QDockWidget(QString::fromUtf8("Параметры инструмента"), this);
   toolParametersDock_->setAllowedAreas(Qt::RightDockWidgetArea);
@@ -1015,7 +1512,15 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::toolManipulatorValueChanged, this,
           [this](double value) {
-            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+            if (linearPatternToolSession_.lifecycle() !=
+                ToolLifecycle::Inactive) {
+              linearPatternToolSession_.setSpacingMm(value);
+              const QSignalBlocker blocker(linearPatternSpacingSpin_);
+              linearPatternSpacingSpin_->setValue(
+                  linearPatternToolSession_.spacingMm());
+              updateLinearPatternToolPreview();
+            } else if (chamferToolSession_.lifecycle() !=
+                       ToolLifecycle::Inactive) {
               chamferToolSession_.setDistanceFromManipulator(value);
               toolParametersPanel_->setParameterValue(chamferToolSession_.distanceMm());
               updateChamferToolPreview();
@@ -1116,6 +1621,12 @@ void MainWindow::buildUi() {
       acceptFilletTool();
     else if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptRevolveTool();
+    else if (linearPatternToolSession_.lifecycle() !=
+             ToolLifecycle::Inactive)
+      acceptLinearPatternTool();
+    else if (circularPatternToolSession_.lifecycle() !=
+             ToolLifecycle::Inactive)
+      acceptCircularPatternTool();
   });
 
   const auto acceptActiveTool = [this] {
@@ -1756,9 +2267,146 @@ void MainWindow::buildUi() {
             viewport_->focusToolParameterField(false);
             statusBar()->showMessage(QString::fromUtf8("Задайте угол дугой или полем у манипулятора"));
           });
+  connect(viewport_, &Viewport::mirrorBodyPicked, this,
+          [this](BodyId bodyId) {
+            if (mirrorToolSession_.lifecycle() == ToolLifecycle::Inactive)
+              return;
+            Body* body = document_.findBody(bodyId);
+            if (!body || !body->activeFeature() || !body->resultShape()) {
+              statusBar()->showMessage(
+                  QString::fromUtf8("Выбранное тело не содержит геометрии"),
+                  3000);
+              return;
+            }
+            mirrorToolSession_.setBody(body->id(), body->activeFeature()->id(),
+                                       body->resultShape());
+            partDesignTools_.finishReselection();
+            mirrorBodyValue_->setText(QString::fromStdString(body->name()));
+            mirrorPlaneValue_->setText(QString::fromUtf8("Не выбрана"));
+            mirrorPlaneSelectButton_->setEnabled(true);
+            viewport_->beginMirrorPlaneSelection();
+            updateMirrorToolPreview();
+            statusBar()->showMessage(
+                QString::fromUtf8("2/2 Выберите базовую плоскость в 3D-виде"));
+          });
+  connect(viewport_, &Viewport::mirrorPlanePicked, this,
+          [this](int planeIndex) {
+            if (mirrorToolSession_.lifecycle() == ToolLifecycle::Inactive ||
+                planeIndex < 0 || planeIndex > 2)
+              return;
+            const auto plane = static_cast<MirrorPlane>(planeIndex);
+            mirrorToolSession_.setPlane(plane);
+            partDesignTools_.finishReselection();
+            mirrorPlaneValue_->setText(
+                plane == MirrorPlane::XY
+                    ? QStringLiteral("XY")
+                    : plane == MirrorPlane::XZ ? QStringLiteral("XZ")
+                                               : QStringLiteral("YZ"));
+            updateMirrorToolPreview();
+            statusBar()->showMessage(
+                QString::fromUtf8("Предпросмотр зеркала построен"), 3000);
+          });
+  connect(viewport_, &Viewport::linearPatternBodyPicked, this,
+          [this](BodyId bodyId) {
+            if (linearPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            Body* body = document_.findBody(bodyId);
+            if (!body || !body->activeFeature() || !body->resultShape()) {
+              statusBar()->showMessage(
+                  QString::fromUtf8("Выбранное тело не содержит геометрии"),
+                  3000);
+              return;
+            }
+            linearPatternToolSession_.setBody(
+                body->id(), body->activeFeature()->id(), body->resultShape());
+            partDesignTools_.finishReselection();
+            linearPatternBodyValue_->setText(
+                QString::fromStdString(body->name()));
+            linearPatternAxisValue_->setText(
+                QString::fromUtf8("Не выбрано"));
+            linearPatternAxisSelectButton_->setEnabled(true);
+            viewport_->beginLinearPatternAxisSelection();
+            updateLinearPatternToolPreview();
+            statusBar()->showMessage(
+                QString::fromUtf8("2/2 Выберите базовую ось в 3D-виде"));
+          });
+  connect(viewport_, &Viewport::linearPatternAxisPicked, this,
+          [this](int axisIndex) {
+            if (linearPatternToolSession_.lifecycle() ==
+                    ToolLifecycle::Inactive ||
+                axisIndex < 0 || axisIndex > 2)
+              return;
+            const auto direction = static_cast<PrincipalAxis>(axisIndex);
+            linearPatternToolSession_.setDirection(direction);
+            partDesignTools_.finishReselection();
+            linearPatternAxisValue_->setText(
+                axisIndex == 0 ? QStringLiteral("X")
+                : axisIndex == 1 ? QStringLiteral("Y")
+                                 : QStringLiteral("Z"));
+            viewport_->showLinearPatternAxisSelection(axisIndex);
+            updateLinearPatternToolPreview();
+            statusBar()->showMessage(
+                QString::fromUtf8("Предпросмотр линейного массива построен"),
+                3000);
+          });
+  connect(viewport_, &Viewport::circularPatternBodyPicked, this,
+          [this](BodyId bodyId) {
+            if (circularPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            Body* body = document_.findBody(bodyId);
+            if (!body || !body->activeFeature() || !body->resultShape()) {
+              statusBar()->showMessage(
+                  QString::fromUtf8("Выбранное тело не содержит геометрии"),
+                  3000);
+              return;
+            }
+            circularPatternToolSession_.setBody(
+                body->id(), body->activeFeature()->id(), body->resultShape());
+            partDesignTools_.finishReselection();
+            circularPatternBodyValue_->setText(
+                QString::fromStdString(body->name()));
+            circularPatternAxisValue_->setText(
+                QString::fromUtf8("Не выбрано"));
+            circularPatternAxisSelectButton_->setEnabled(true);
+            viewport_->beginCircularPatternAxisSelection();
+            updateCircularPatternToolPreview();
+            statusBar()->showMessage(
+                QString::fromUtf8("2/2 Выберите базовую ось в 3D-виде"));
+          });
+  connect(viewport_, &Viewport::circularPatternAxisPicked, this,
+          [this](int axisIndex) {
+            if (circularPatternToolSession_.lifecycle() ==
+                    ToolLifecycle::Inactive ||
+                axisIndex < 0 || axisIndex > 2)
+              return;
+            const auto axis = static_cast<PrincipalAxis>(axisIndex);
+            circularPatternToolSession_.setAxis(axis);
+            partDesignTools_.finishReselection();
+            circularPatternAxisValue_->setText(
+                axisIndex == 0 ? QStringLiteral("X")
+                : axisIndex == 1 ? QStringLiteral("Y")
+                                 : QStringLiteral("Z"));
+            viewport_->showCircularPatternAxisSelection(axisIndex);
+            updateCircularPatternToolPreview();
+            statusBar()->showMessage(
+                QString::fromUtf8("Предпросмотр кругового массива построен"),
+                3000);
+          });
   partDesignTools_.registerTool(
       PartDesignToolKind::Revolve,
       {&revolveToolSession_, [this] { cancelRevolveTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::Mirror,
+      {&mirrorToolSession_, [this] { cancelMirrorTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::LinearPattern,
+      {&linearPatternToolSession_, [this] { cancelLinearPatternTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::CircularPattern,
+      {&circularPatternToolSession_,
+       [this] { cancelCircularPatternTool(); }, {}});
   partDesignTools_.registerTool(
       PartDesignToolKind::Fillet,
       {&filletToolSession_, [this] { cancelFilletTool(); }, {}});
@@ -1785,7 +2433,18 @@ void MainWindow::buildUi() {
             if (text == QStringLiteral("__cancel_tools__") ||
                 text == QStringLiteral("__cancel_sketch_plane__")) {
               if (partDesignTools_.handleEscape()) {
-                updateRevolveToolPreview();
+                if (partDesignTools_.activeTool() ==
+                    PartDesignToolKind::Revolve)
+                  updateRevolveToolPreview();
+                else if (partDesignTools_.activeTool() ==
+                         PartDesignToolKind::Mirror)
+                  updateMirrorToolPreview();
+                else if (partDesignTools_.activeTool() ==
+                         PartDesignToolKind::LinearPattern)
+                  updateLinearPatternToolPreview();
+                else if (partDesignTools_.activeTool() ==
+                         PartDesignToolKind::CircularPattern)
+                  updateCircularPatternToolPreview();
                 statusBar()->showMessage(
                     QString::fromUtf8("Повторный выбор отменён"), 2000);
                 return;
@@ -2538,52 +3197,108 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         updateDraftToolPreview();
         return;
       }
-      const Document previous = document_;
-      bool accepted = false;
       if (auto* mirror = dynamic_cast<MirrorFeature*>(feature)) {
-        const QStringList choices{"XY", "XZ", "YZ"};
-        const QString selected = QInputDialog::getItem(
-            this, QString::fromUtf8("Редактировать зеркало"),
-            QString::fromUtf8("Плоскость:"), choices,
-            static_cast<int>(mirror->plane()), false, &accepted);
-        if (!accepted) return;
-        mirror->setPlane(static_cast<MirrorPlane>(choices.indexOf(selected)));
-      } else if (auto* linear = dynamic_cast<LinearPatternFeature*>(feature)) {
-        const int count = QInputDialog::getInt(
-            this, QString::fromUtf8("Линейный массив"),
-            QString::fromUtf8("Количество:"), linear->count(), 2, 100, 1,
-            &accepted);
-        if (!accepted) return;
-        const double spacing = QInputDialog::getDouble(
-            this, QString::fromUtf8("Линейный массив"),
-            QString::fromUtf8("Шаг, mm:"), linear->spacingMm(), 0.01,
-            100000.0, 2, &accepted);
-        if (!accepted) return;
-        linear->setCount(count); linear->setSpacingMm(spacing);
-      } else if (auto* circular =
-                     dynamic_cast<CircularPatternFeature*>(feature)) {
-        const int count = QInputDialog::getInt(
-            this, QString::fromUtf8("Круговой массив"),
-            QString::fromUtf8("Количество:"), circular->count(), 2, 100, 1,
-            &accepted);
-        if (!accepted) return;
-        const double angle = QInputDialog::getDouble(
-            this, QString::fromUtf8("Круговой массив"),
-            QString::fromUtf8("Угол, °:"), circular->angleDeg(), 0.01, 360.0,
-            2, &accepted);
-        if (!accepted) return;
-        circular->setCount(count); circular->setAngleDeg(angle);
-      } else {
+        if (index == 0) return;
+        const auto source = body.features()[index - 1]->shape();
+        if (!source) return;
+        partDesignTools_.activate(PartDesignToolKind::Mirror);
+        mirrorToolSession_.begin(mirror->id());
+        mirrorToolSession_.setBody(body.id(), body.features()[index - 1]->id(),
+                                   source);
+        mirrorToolSession_.setPlane(mirror->plane());
+        mirrorBodyValue_->setText(QString::fromStdString(body.name()));
+        mirrorPlaneValue_->setText(
+            mirror->plane() == MirrorPlane::XY
+                ? QStringLiteral("XY")
+                : mirror->plane() == MirrorPlane::XZ ? QStringLiteral("XZ")
+                                                     : QStringLiteral("YZ"));
+        // A Mirror feature belongs to its Body; editing changes the reference
+        // plane only. Body re-selection is intentionally available on creation
+        // and disabled here to avoid moving a history feature across Bodies.
+        mirrorBodySelectButton_->setEnabled(false);
+        mirrorPlaneSelectButton_->setEnabled(true);
+        viewport_->setSelectedBodies({body.id()});
+        viewport_->showMirrorPlaneSelection(
+            static_cast<int>(mirror->plane()));
+        updateMirrorToolPreview();
+        mirrorDock_->show();
+        mirrorDock_->raise();
+        statusBar()->showMessage(
+            QString::fromUtf8("Редактирование зеркала: выберите плоскость в 3D-виде"));
         return;
       }
-      body.markDirtyFrom(index);
-      if (!document_.recompute()) {
-        rebuildFeatureTree(); refreshBodyViewFromDocument(); rebuildHistoryPanel();
-        statusBar()->showMessage(QString::fromStdString(document_.rebuildError()));
+      if (auto* linear = dynamic_cast<LinearPatternFeature*>(feature)) {
+        if (index == 0) return;
+        const auto source = body.features()[index - 1]->shape();
+        if (!source) return;
+        partDesignTools_.activate(PartDesignToolKind::LinearPattern);
+        linearPatternToolSession_.begin(linear->spacingMm(), linear->count(),
+                                        linear->id());
+        linearPatternToolSession_.setBody(
+            body.id(), body.features()[index - 1]->id(), source);
+        linearPatternToolSession_.setDirection(linear->direction());
+        linearPatternBodyValue_->setText(QString::fromStdString(body.name()));
+        linearPatternAxisValue_->setText(
+            linear->direction() == PrincipalAxis::X
+                ? QStringLiteral("X")
+                : linear->direction() == PrincipalAxis::Y
+                      ? QStringLiteral("Y")
+                      : QStringLiteral("Z"));
+        {
+          const QSignalBlocker spacingBlocker(linearPatternSpacingSpin_);
+          const QSignalBlocker countBlocker(linearPatternCountSpin_);
+          linearPatternSpacingSpin_->setValue(linear->spacingMm());
+          linearPatternCountSpin_->setValue(linear->count());
+        }
+        // The feature stays in its owning Body while editing; only direction
+        // and numeric parameters may be changed.
+        linearPatternBodySelectButton_->setEnabled(false);
+        linearPatternAxisSelectButton_->setEnabled(true);
+        viewport_->setSelectedBodies({body.id()});
+        viewport_->showLinearPatternAxisSelection(
+            static_cast<int>(linear->direction()));
+        updateLinearPatternToolPreview();
+        linearPatternDock_->show();
+        linearPatternDock_->raise();
+        statusBar()->showMessage(QString::fromUtf8(
+            "Редактирование линейного массива: выберите ось или задайте параметры"));
         return;
       }
-      pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
-      refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+      if (auto* circular = dynamic_cast<CircularPatternFeature*>(feature)) {
+        if (index == 0) return;
+        const auto source = body.features()[index - 1]->shape();
+        if (!source) return;
+        partDesignTools_.activate(PartDesignToolKind::CircularPattern);
+        circularPatternToolSession_.begin(
+            circular->angleDeg(), circular->count(), circular->id());
+        circularPatternToolSession_.setBody(
+            body.id(), body.features()[index - 1]->id(), source);
+        circularPatternToolSession_.setAxis(circular->axis());
+        circularPatternBodyValue_->setText(QString::fromStdString(body.name()));
+        circularPatternAxisValue_->setText(
+            circular->axis() == PrincipalAxis::X
+                ? QStringLiteral("X")
+                : circular->axis() == PrincipalAxis::Y
+                      ? QStringLiteral("Y")
+                      : QStringLiteral("Z"));
+        {
+          const QSignalBlocker angleBlocker(circularPatternAngleSpin_);
+          const QSignalBlocker countBlocker(circularPatternCountSpin_);
+          circularPatternAngleSpin_->setValue(circular->angleDeg());
+          circularPatternCountSpin_->setValue(circular->count());
+        }
+        circularPatternBodySelectButton_->setEnabled(false);
+        circularPatternAxisSelectButton_->setEnabled(true);
+        viewport_->setSelectedBodies({body.id()});
+        viewport_->showCircularPatternAxisSelection(
+            static_cast<int>(circular->axis()));
+        updateCircularPatternToolPreview();
+        circularPatternDock_->show();
+        circularPatternDock_->raise();
+        statusBar()->showMessage(QString::fromUtf8(
+            "Редактирование кругового массива: выберите ось или задайте параметры"));
+        return;
+      }
       return;
     }
   }
@@ -2592,70 +3307,417 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
 void MainWindow::createMirror() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
-  Body* body = document_.activeBody();
-  if (!body || !body->activeFeature()) return;
-  const QStringList planes{QStringLiteral("XY"), QStringLiteral("XZ"),
-                           QStringLiteral("YZ")};
-  bool accepted = false;
-  const QString selected = QInputDialog::getItem(
-      this, QString::fromUtf8("ЗЕРКАЛО"), QString::fromUtf8("Плоскость:"),
-      planes, 2, false, &accepted);
-  if (!accepted) { modelRibbon_->clearActiveTool(); return; }
-  const Document previous = document_;
-  const auto plane = selected == "XY" ? MirrorPlane::XY
-                     : selected == "XZ" ? MirrorPlane::XZ : MirrorPlane::YZ;
-  body->addFeature(std::make_unique<MirrorFeature>(
-      body->activeFeature()->id(), plane,
-      "Mirror " + std::to_string(body->features().size() + 1)));
-  if (!document_.recompute()) { document_ = previous; refreshBodyViewFromDocument(); return; }
-  pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
-  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
+  const bool hasBody = std::any_of(
+      document_.bodies().begin(), document_.bodies().end(),
+      [](const Body& body) { return body.activeFeature() && body.resultShape(); });
+  if (!hasBody) {
+    QMessageBox::information(this, QString::fromUtf8("Зеркало"),
+                             QString::fromUtf8("Сначала создайте тело."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  partDesignTools_.activate(PartDesignToolKind::Mirror);
+  mirrorToolSession_.begin();
+  mirrorBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+  mirrorPlaneValue_->setText(QString::fromUtf8("Не выбрана"));
+  mirrorBodySelectButton_->setEnabled(true);
+  mirrorPlaneSelectButton_->setEnabled(false);
+  mirrorAcceptButton_->setEnabled(false);
+  mirrorDock_->show();
+  mirrorDock_->raise();
+  viewport_->beginMirrorBodySelection();
+  updateMirrorToolPreview();
+  statusBar()->showMessage(QString::fromUtf8("1/2 Выберите тело в 3D-виде"));
+}
+
+void MainWindow::updateMirrorToolPreview() {
+  if (mirrorToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  const bool valid =
+      mirrorToolSession_.lifecycle() == ToolLifecycle::PreviewValid;
+  mirrorAcceptButton_->setEnabled(valid);
+  if (valid && mirrorToolSession_.previewShape()) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
+    viewport_->setToolPreviewShape(mirrorToolSession_.bodyId(),
+                                   mirrorToolSession_.sourceFeatureId(),
+                                   mirrorToolSession_.previewShape());
+    mirrorStepHint_->setText(QString::fromUtf8(
+        "Предпросмотр построен. Нажмите «Применить» для создания зеркала."));
+    mirrorStepHint_->setProperty("uiRole", "secondaryText");
+  } else {
+    viewport_->clearToolPreviewShape();
+    const bool failed =
+        mirrorToolSession_.lifecycle() == ToolLifecycle::PreviewInvalid;
+    mirrorStepHint_->setText(
+        failed
+            ? QString::fromStdString(mirrorToolSession_.error())
+            : QString::fromUtf8("Сейчас: ") +
+                  partDesignToolStepHint(PartDesignToolKind::Mirror,
+                                         mirrorToolSession_.selectionStage()));
+    mirrorStepHint_->setProperty("uiRole",
+                                 failed ? "danger" : "secondaryText");
+  }
+  mirrorStepHint_->style()->unpolish(mirrorStepHint_);
+  mirrorStepHint_->style()->polish(mirrorStepHint_);
+}
+
+void MainWindow::cancelMirrorTool() {
+  if (mirrorToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  mirrorToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Mirror);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  mirrorDock_->hide();
   modelRibbon_->clearActiveTool();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(QString::fromUtf8("Инструмент зеркала отменён"),
+                           2000);
+}
+
+void MainWindow::acceptMirrorTool() {
+  if (mirrorToolSession_.lifecycle() != ToolLifecycle::PreviewValid ||
+      !mirrorToolSession_.plane())
+    return;
+  Body* body = document_.findBody(mirrorToolSession_.bodyId());
+  if (!body) return;
+  const Document previous = document_;
+  if (const auto editingId = mirrorToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* mirror =
+          dynamic_cast<MirrorFeature*>(body->features()[index].get());
+      if (!mirror || mirror->id() != *editingId) continue;
+      mirror->setPlane(*mirrorToolSession_.plane());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    if (!body->activeFeature() ||
+        body->activeFeature()->id() != mirrorToolSession_.sourceFeatureId()) {
+      mirrorStepHint_->setText(QString::fromUtf8(
+          "Исходное тело изменилось. Выберите его заново."));
+      mirrorStepHint_->setProperty("uiRole", "danger");
+      return;
+    }
+    body->addFeature(std::make_unique<MirrorFeature>(
+        mirrorToolSession_.sourceFeatureId(), *mirrorToolSession_.plane(),
+        "Mirror " + std::to_string(body->features().size() + 1)));
+  }
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    mirrorStepHint_->setText(error);
+    mirrorStepHint_->setProperty("uiRole", "danger");
+    mirrorStepHint_->style()->unpolish(mirrorStepHint_);
+    mirrorStepHint_->style()->polish(mirrorStepHint_);
+    return;
+  }
+  mirrorToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Mirror);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  mirrorDock_->hide();
+  pushUndoAction([this, previous] {
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  modelRibbon_->clearActiveTool();
+  statusBar()->showMessage(QString::fromUtf8("Зеркало применено"), 3000);
 }
 
 void MainWindow::createLinearPattern() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
-  Body* body = document_.activeBody();
-  if (!body || !body->activeFeature()) return;
-  QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("ЛИНЕЙНЫЙ МАССИВ"));
-  QFormLayout form(&dialog); QComboBox axis; axis.addItems({"X", "Y", "Z"});
-  QSpinBox count; count.setRange(2, 100); count.setValue(3);
-  QDoubleSpinBox spacing; spacing.setRange(0.01, 100000); spacing.setSuffix(" mm"); spacing.setValue(30);
-  QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-  form.addRow(QString::fromUtf8("Направление:"), &axis); form.addRow(QString::fromUtf8("Количество:"), &count);
-  form.addRow(QString::fromUtf8("Шаг:"), &spacing); form.addRow(&buttons);
-  connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  if (dialog.exec() != QDialog::Accepted) { modelRibbon_->clearActiveTool(); return; }
+  const bool hasBody = std::any_of(
+      document_.bodies().begin(), document_.bodies().end(),
+      [](const Body& body) { return body.activeFeature() && body.resultShape(); });
+  if (!hasBody) {
+    QMessageBox::information(this, QString::fromUtf8("Линейный массив"),
+                             QString::fromUtf8("Сначала создайте тело."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  partDesignTools_.activate(PartDesignToolKind::LinearPattern);
+  linearPatternToolSession_.begin(30.0, 3);
+  linearPatternBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+  linearPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
+  linearPatternBodySelectButton_->setEnabled(true);
+  linearPatternAxisSelectButton_->setEnabled(false);
+  linearPatternAcceptButton_->setEnabled(false);
+  {
+    const QSignalBlocker spacingBlocker(linearPatternSpacingSpin_);
+    const QSignalBlocker countBlocker(linearPatternCountSpin_);
+    linearPatternSpacingSpin_->setValue(30.0);
+    linearPatternCountSpin_->setValue(3);
+  }
+  linearPatternDock_->show();
+  linearPatternDock_->raise();
+  viewport_->beginLinearPatternBodySelection();
+  updateLinearPatternToolPreview();
+  statusBar()->showMessage(QString::fromUtf8("1/2 Выберите тело в 3D-виде"));
+}
+
+void MainWindow::updateLinearPatternToolPreview() {
+  if (linearPatternToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  const bool valid =
+      linearPatternToolSession_.lifecycle() == ToolLifecycle::PreviewValid;
+  linearPatternAcceptButton_->setEnabled(valid);
+  if (valid && linearPatternToolSession_.previewShape()) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
+    viewport_->setToolPreviewShape(linearPatternToolSession_.bodyId(),
+                                   linearPatternToolSession_.sourceFeatureId(),
+                                   linearPatternToolSession_.previewShape());
+    if (const auto manipulator = linearPatternToolSession_.manipulator())
+      viewport_->setToolManipulator(*manipulator);
+    linearPatternStepHint_->setText(QString::fromUtf8(
+        "Потяните стрелку для изменения шага или задайте шаг и количество числом."));
+    linearPatternStepHint_->setProperty("uiRole", "secondaryText");
+  } else {
+    viewport_->clearToolPreviewShape();
+    viewport_->clearToolManipulator();
+    const bool failed = linearPatternToolSession_.lifecycle() ==
+                        ToolLifecycle::PreviewInvalid;
+    linearPatternStepHint_->setText(
+        failed
+            ? QString::fromStdString(linearPatternToolSession_.error())
+            : QString::fromUtf8("Сейчас: ") +
+                  partDesignToolStepHint(
+                      PartDesignToolKind::LinearPattern,
+                      linearPatternToolSession_.selectionStage()));
+    linearPatternStepHint_->setProperty("uiRole",
+                                        failed ? "danger" : "secondaryText");
+  }
+  linearPatternStepHint_->style()->unpolish(linearPatternStepHint_);
+  linearPatternStepHint_->style()->polish(linearPatternStepHint_);
+}
+
+void MainWindow::cancelLinearPatternTool() {
+  if (linearPatternToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  linearPatternToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::LinearPattern);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  linearPatternDock_->hide();
+  modelRibbon_->clearActiveTool();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(
+      QString::fromUtf8("Инструмент линейного массива отменён"), 2000);
+}
+
+void MainWindow::acceptLinearPatternTool() {
+  if (linearPatternToolSession_.lifecycle() != ToolLifecycle::PreviewValid ||
+      !linearPatternToolSession_.direction())
+    return;
+  Body* body = document_.findBody(linearPatternToolSession_.bodyId());
+  if (!body) return;
   const Document previous = document_;
-  const auto direction = static_cast<PrincipalAxis>(axis.currentIndex());
-  body->addFeature(std::make_unique<LinearPatternFeature>(body->activeFeature()->id(), direction, count.value(), spacing.value()));
-  if (!document_.recompute()) { document_ = previous; refreshBodyViewFromDocument(); return; }
-  pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
-  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); modelRibbon_->clearActiveTool();
+  if (const auto editingId = linearPatternToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* linear =
+          dynamic_cast<LinearPatternFeature*>(body->features()[index].get());
+      if (!linear || linear->id() != *editingId) continue;
+      linear->setDirection(*linearPatternToolSession_.direction());
+      linear->setSpacingMm(linearPatternToolSession_.spacingMm());
+      linear->setCount(linearPatternToolSession_.count());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    if (!body->activeFeature() ||
+        body->activeFeature()->id() !=
+            linearPatternToolSession_.sourceFeatureId()) {
+      linearPatternStepHint_->setText(QString::fromUtf8(
+          "Исходное тело изменилось. Выберите его заново."));
+      linearPatternStepHint_->setProperty("uiRole", "danger");
+      return;
+    }
+    body->addFeature(std::make_unique<LinearPatternFeature>(
+        linearPatternToolSession_.sourceFeatureId(),
+        *linearPatternToolSession_.direction(),
+        linearPatternToolSession_.count(),
+        linearPatternToolSession_.spacingMm(),
+        "Linear Pattern " + std::to_string(body->features().size() + 1)));
+  }
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    linearPatternStepHint_->setText(error);
+    linearPatternStepHint_->setProperty("uiRole", "danger");
+    linearPatternStepHint_->style()->unpolish(linearPatternStepHint_);
+    linearPatternStepHint_->style()->polish(linearPatternStepHint_);
+    return;
+  }
+  linearPatternToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::LinearPattern);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  linearPatternDock_->hide();
+  pushUndoAction([this, previous] {
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  modelRibbon_->clearActiveTool();
+  statusBar()->showMessage(QString::fromUtf8("Линейный массив применён"),
+                           3000);
 }
 
 void MainWindow::createCircularPattern() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
-  Body* body = document_.activeBody();
-  if (!body || !body->activeFeature()) return;
-  QDialog dialog(this); dialog.setWindowTitle(QString::fromUtf8("КРУГОВОЙ МАССИВ"));
-  QFormLayout form(&dialog); QComboBox axis; axis.addItems({"X", "Y", "Z"}); axis.setCurrentIndex(2);
-  QSpinBox count; count.setRange(2, 100); count.setValue(4);
-  QDoubleSpinBox angle; angle.setRange(0.01, 360); angle.setSuffix(QString::fromUtf8("°")); angle.setValue(360);
-  QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-  form.addRow(QString::fromUtf8("Ось:"), &axis); form.addRow(QString::fromUtf8("Количество:"), &count);
-  form.addRow(QString::fromUtf8("Угол:"), &angle); form.addRow(&buttons);
-  connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  if (dialog.exec() != QDialog::Accepted) { modelRibbon_->clearActiveTool(); return; }
+  const bool hasBody = std::any_of(
+      document_.bodies().begin(), document_.bodies().end(),
+      [](const Body& body) { return body.activeFeature() && body.resultShape(); });
+  if (!hasBody) {
+    QMessageBox::information(this, QString::fromUtf8("Круговой массив"),
+                             QString::fromUtf8("Сначала создайте тело."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  partDesignTools_.activate(PartDesignToolKind::CircularPattern);
+  circularPatternToolSession_.begin(360.0, 4);
+  circularPatternBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+  circularPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
+  circularPatternBodySelectButton_->setEnabled(true);
+  circularPatternAxisSelectButton_->setEnabled(false);
+  circularPatternAcceptButton_->setEnabled(false);
+  {
+    const QSignalBlocker angleBlocker(circularPatternAngleSpin_);
+    const QSignalBlocker countBlocker(circularPatternCountSpin_);
+    circularPatternAngleSpin_->setValue(360.0);
+    circularPatternCountSpin_->setValue(4);
+  }
+  circularPatternDock_->show();
+  circularPatternDock_->raise();
+  viewport_->beginCircularPatternBodySelection();
+  updateCircularPatternToolPreview();
+  statusBar()->showMessage(QString::fromUtf8("1/2 Выберите тело в 3D-виде"));
+}
+
+void MainWindow::updateCircularPatternToolPreview() {
+  if (circularPatternToolSession_.lifecycle() == ToolLifecycle::Inactive)
+    return;
+  const bool valid = circularPatternToolSession_.lifecycle() ==
+                     ToolLifecycle::PreviewValid;
+  circularPatternAcceptButton_->setEnabled(valid);
+  if (valid && circularPatternToolSession_.previewShape()) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
+    viewport_->setToolPreviewShape(
+        circularPatternToolSession_.bodyId(),
+        circularPatternToolSession_.sourceFeatureId(),
+        circularPatternToolSession_.previewShape());
+    if (const auto manipulator = circularPatternToolSession_.manipulator())
+      viewport_->setAngularToolManipulator(*manipulator);
+    circularPatternStepHint_->setText(QString::fromUtf8(
+        "Потяните дугу для изменения угла или задайте угол и количество числом."));
+    circularPatternStepHint_->setProperty("uiRole", "secondaryText");
+  } else {
+    viewport_->clearToolPreviewShape();
+    viewport_->clearToolManipulator();
+    const bool failed = circularPatternToolSession_.lifecycle() ==
+                        ToolLifecycle::PreviewInvalid;
+    circularPatternStepHint_->setText(
+        failed
+            ? QString::fromStdString(circularPatternToolSession_.error())
+            : QString::fromUtf8("Сейчас: ") +
+                  partDesignToolStepHint(
+                      PartDesignToolKind::CircularPattern,
+                      circularPatternToolSession_.selectionStage()));
+    circularPatternStepHint_->setProperty(
+        "uiRole", failed ? "danger" : "secondaryText");
+  }
+  circularPatternStepHint_->style()->unpolish(circularPatternStepHint_);
+  circularPatternStepHint_->style()->polish(circularPatternStepHint_);
+}
+
+void MainWindow::cancelCircularPatternTool() {
+  if (circularPatternToolSession_.lifecycle() == ToolLifecycle::Inactive)
+    return;
+  circularPatternToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::CircularPattern);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  circularPatternDock_->hide();
+  modelRibbon_->clearActiveTool();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(
+      QString::fromUtf8("Инструмент кругового массива отменён"), 2000);
+}
+
+void MainWindow::acceptCircularPatternTool() {
+  if (circularPatternToolSession_.lifecycle() !=
+          ToolLifecycle::PreviewValid ||
+      !circularPatternToolSession_.axis())
+    return;
+  Body* body = document_.findBody(circularPatternToolSession_.bodyId());
+  if (!body) return;
   const Document previous = document_;
-  body->addFeature(std::make_unique<CircularPatternFeature>(body->activeFeature()->id(), static_cast<PrincipalAxis>(axis.currentIndex()), count.value(), angle.value()));
-  if (!document_.recompute()) { document_ = previous; refreshBodyViewFromDocument(); return; }
-  pushUndoAction([this, previous] { document_ = previous; refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); });
-  refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel(); modelRibbon_->clearActiveTool();
+  if (const auto editingId = circularPatternToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* circular =
+          dynamic_cast<CircularPatternFeature*>(body->features()[index].get());
+      if (!circular || circular->id() != *editingId) continue;
+      circular->setAxis(*circularPatternToolSession_.axis());
+      circular->setAngleDeg(circularPatternToolSession_.angleDeg());
+      circular->setCount(circularPatternToolSession_.count());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    if (!body->activeFeature() ||
+        body->activeFeature()->id() !=
+            circularPatternToolSession_.sourceFeatureId()) {
+      circularPatternStepHint_->setText(QString::fromUtf8(
+          "Исходное тело изменилось. Выберите его заново."));
+      circularPatternStepHint_->setProperty("uiRole", "danger");
+      return;
+    }
+    body->addFeature(std::make_unique<CircularPatternFeature>(
+        circularPatternToolSession_.sourceFeatureId(),
+        *circularPatternToolSession_.axis(),
+        circularPatternToolSession_.count(),
+        circularPatternToolSession_.angleDeg(),
+        "Circular Pattern " + std::to_string(body->features().size() + 1)));
+  }
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    circularPatternStepHint_->setText(error);
+    circularPatternStepHint_->setProperty("uiRole", "danger");
+    circularPatternStepHint_->style()->unpolish(circularPatternStepHint_);
+    circularPatternStepHint_->style()->polish(circularPatternStepHint_);
+    return;
+  }
+  circularPatternToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::CircularPattern);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  circularPatternDock_->hide();
+  pushUndoAction([this, previous] {
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  modelRibbon_->clearActiveTool();
+  statusBar()->showMessage(QString::fromUtf8("Круговой массив применён"),
+                           3000);
 }
 
 void MainWindow::createChamfer() {
@@ -3554,7 +4616,11 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   partDesignTools_.cancelActive();
   viewport_->clearToolPreviewShape(); viewport_->clearToolManipulator();
   viewport_->setSelectedBodyEdges({}); viewport_->setSelectedBodyFaces({});
-  toolParametersDock_->hide(); revolveDock_->hide();
+  toolParametersDock_->hide();
+  revolveDock_->hide();
+  mirrorDock_->hide();
+  linearPatternDock_->hide();
+  circularPatternDock_->hide();
   historyPosition_ = 1000000;
   refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
 }

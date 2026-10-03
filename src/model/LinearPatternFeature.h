@@ -1,9 +1,16 @@
 #pragma once
 
+#include <string>
+
 #include "model/PatternTypes.h"
 #include "model/ShapeFeature.h"
 
 namespace solidar {
+
+[[nodiscard]] ShapeFeature::ShapePtr buildLinearPatternShape(
+    const TopoDS_Shape& source, PrincipalAxis direction, int count,
+    double spacingMm, std::string* error = nullptr);
+
 class LinearPatternFeature final : public ShapeFeature {
  public:
   LinearPatternFeature(FeatureId sourceFeatureId, PrincipalAxis direction,

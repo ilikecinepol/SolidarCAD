@@ -9,6 +9,9 @@
 #include "model/Document.h"
 #include "model/ChamferToolSession.h"
 #include "model/FilletToolSession.h"
+#include "model/CircularPatternToolSession.h"
+#include "model/LinearPatternToolSession.h"
+#include "model/MirrorToolSession.h"
 #include "model/RevolveToolSession.h"
 #include "model/ShellToolSession.h"
 #include "model/DraftToolSession.h"
@@ -25,6 +28,7 @@ class QAction;
 class QHBoxLayout;
 class QDockWidget;
 class QDoubleSpinBox;
+class QSpinBox;
 class QPushButton;
 class QComboBox;
 class QCheckBox;
@@ -84,8 +88,17 @@ class MainWindow final : public QMainWindow {
   void cancelFilletTool();
   void createChamfer();
   void createMirror();
+  void updateMirrorToolPreview();
+  void acceptMirrorTool();
+  void cancelMirrorTool();
   void createLinearPattern();
+  void updateLinearPatternToolPreview();
+  void acceptLinearPatternTool();
+  void cancelLinearPatternTool();
   void createCircularPattern();
+  void updateCircularPatternToolPreview();
+  void acceptCircularPatternTool();
+  void cancelCircularPatternTool();
   void editPatternFeature(FeatureId featureId);
   void updateChamferToolPreview();
   void acceptChamferTool();
@@ -167,6 +180,9 @@ class MainWindow final : public QMainWindow {
   DraftToolSession draftToolSession_;
   ExtrudeToolSession faceExtrudeSession_;
   RevolveToolSession revolveToolSession_;
+  MirrorToolSession mirrorToolSession_;
+  LinearPatternToolSession linearPatternToolSession_;
+  CircularPatternToolSession circularPatternToolSession_;
   PartDesignToolController partDesignTools_;
   QDockWidget* revolveDock_{nullptr};
   QComboBox* revolveProfileCombo_{nullptr};
@@ -177,6 +193,31 @@ class MainWindow final : public QMainWindow {
   QCheckBox* revolveReverseCheck_{nullptr};
   QPushButton* revolveAcceptButton_{nullptr};
   QLabel* revolveStepHint_{nullptr};
+  QDockWidget* mirrorDock_{nullptr};
+  QLabel* mirrorBodyValue_{nullptr};
+  QLabel* mirrorPlaneValue_{nullptr};
+  QPushButton* mirrorBodySelectButton_{nullptr};
+  QPushButton* mirrorPlaneSelectButton_{nullptr};
+  QPushButton* mirrorAcceptButton_{nullptr};
+  QLabel* mirrorStepHint_{nullptr};
+  QDockWidget* linearPatternDock_{nullptr};
+  QLabel* linearPatternBodyValue_{nullptr};
+  QLabel* linearPatternAxisValue_{nullptr};
+  QPushButton* linearPatternBodySelectButton_{nullptr};
+  QPushButton* linearPatternAxisSelectButton_{nullptr};
+  QDoubleSpinBox* linearPatternSpacingSpin_{nullptr};
+  QSpinBox* linearPatternCountSpin_{nullptr};
+  QPushButton* linearPatternAcceptButton_{nullptr};
+  QLabel* linearPatternStepHint_{nullptr};
+  QDockWidget* circularPatternDock_{nullptr};
+  QLabel* circularPatternBodyValue_{nullptr};
+  QLabel* circularPatternAxisValue_{nullptr};
+  QPushButton* circularPatternBodySelectButton_{nullptr};
+  QPushButton* circularPatternAxisSelectButton_{nullptr};
+  QDoubleSpinBox* circularPatternAngleSpin_{nullptr};
+  QSpinBox* circularPatternCountSpin_{nullptr};
+  QPushButton* circularPatternAcceptButton_{nullptr};
+  QLabel* circularPatternStepHint_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};
   QComboBox* extrusionOperationCombo_{nullptr};
   QCheckBox* extrusionReverseCheck_{nullptr};

@@ -10,9 +10,14 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
+#include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QMouseEvent>
 #include <QPixmap>
+#include <QPushButton>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -805,6 +810,36 @@ int main(int argc, char** argv) {
                    &application, [&](const QString& path) {
     editor = new solidar::MainWindow(settings);
     editor->setProjectPath(path);
+    auto* mirrorDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("mirrorParametersDock"));
+    CHECK(mirrorDock != nullptr);
+    CHECK(mirrorDock->findChildren<QComboBox*>().empty());
+    CHECK(mirrorDock->findChild<QPushButton*>(
+              QStringLiteral("mirrorBodySelectButton")) != nullptr);
+    CHECK(mirrorDock->findChild<QPushButton*>(
+              QStringLiteral("mirrorPlaneSelectButton")) != nullptr);
+    auto* linearPatternDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("linearPatternParametersDock"));
+    CHECK(linearPatternDock != nullptr);
+    CHECK(linearPatternDock->findChildren<QComboBox*>().empty());
+    CHECK(linearPatternDock->findChild<QPushButton*>(
+              QStringLiteral("linearPatternBodySelectButton")) != nullptr);
+    CHECK(linearPatternDock->findChild<QPushButton*>(
+              QStringLiteral("linearPatternAxisSelectButton")) != nullptr);
+    CHECK(linearPatternDock->findChild<QDoubleSpinBox*>(
+              QStringLiteral("linearPatternSpacingSpin")) != nullptr);
+    auto* circularPatternDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("circularPatternParametersDock"));
+    CHECK(circularPatternDock != nullptr);
+    CHECK(circularPatternDock->findChildren<QComboBox*>().empty());
+    CHECK(circularPatternDock->findChild<QPushButton*>(
+              QStringLiteral("circularPatternBodySelectButton")) != nullptr);
+    CHECK(circularPatternDock->findChild<QPushButton*>(
+              QStringLiteral("circularPatternAxisSelectButton")) != nullptr);
+    CHECK(circularPatternDock->findChild<QDoubleSpinBox*>(
+              QStringLiteral("circularPatternAngleSpin")) != nullptr);
+    CHECK(circularPatternDock->findChild<QSpinBox*>(
+              QStringLiteral("circularPatternCountSpin")) != nullptr);
     home.hide();
     // Construction/destruction is tested without exposing a native OpenGL
     // surface; rendering is covered by the application-level smoke launch.

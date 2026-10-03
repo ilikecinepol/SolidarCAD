@@ -48,10 +48,16 @@ add_library(solidar_model
   model/PatternTypes.h
   model/MirrorFeature.cpp
   model/MirrorFeature.h
+  model/MirrorToolSession.cpp
+  model/MirrorToolSession.h
   model/LinearPatternFeature.cpp
   model/LinearPatternFeature.h
+  model/LinearPatternToolSession.cpp
+  model/LinearPatternToolSession.h
   model/CircularPatternFeature.cpp
   model/CircularPatternFeature.h
+  model/CircularPatternToolSession.cpp
+  model/CircularPatternToolSession.h
   model/ToolSession.h
   model/PartDesignToolFramework.h
   model/PartDesignToolFramework.cpp

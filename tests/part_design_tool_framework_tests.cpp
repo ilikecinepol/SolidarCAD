@@ -55,13 +55,26 @@ int main() {
     CHECK(!help->detailedDescription.isEmpty());
   }
   const auto& mirror = definitions[5];
+  CHECK(solidar::acceptsSelection(mirror.selections[0],
+                                  solidar::SelectionType::Body));
+  CHECK(!solidar::acceptsSelection(mirror.selections[0],
+                                   solidar::SelectionType::Feature));
   CHECK(solidar::acceptsSelection(mirror.selections[1],
                                   solidar::SelectionType::Plane));
   CHECK(!solidar::acceptsSelection(mirror.selections[1],
                                    solidar::SelectionType::Body));
+  const auto& linear = definitions[6];
+  CHECK(solidar::acceptsSelection(linear.selections[0],
+                                  solidar::SelectionType::Body));
+  CHECK(!solidar::acceptsSelection(linear.selections[0],
+                                   solidar::SelectionType::Feature));
+  CHECK(solidar::acceptsSelection(linear.selections[1],
+                                  solidar::SelectionType::Axis));
   const auto& circular = definitions[7];
   CHECK(solidar::acceptsSelection(circular.selections[0],
-                                  solidar::SelectionType::Feature));
+                                  solidar::SelectionType::Body));
+  CHECK(!solidar::acceptsSelection(circular.selections[0],
+                                   solidar::SelectionType::Feature));
   CHECK(solidar::acceptsSelection(circular.selections[1],
                                   solidar::SelectionType::Axis));
   const auto& revolveDefinition = definitions[2];

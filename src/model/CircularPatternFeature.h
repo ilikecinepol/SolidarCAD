@@ -1,9 +1,16 @@
 #pragma once
 
+#include <string>
+
 #include "model/PatternTypes.h"
 #include "model/ShapeFeature.h"
 
 namespace solidar {
+
+[[nodiscard]] ShapeFeature::ShapePtr buildCircularPatternShape(
+    const TopoDS_Shape& source, PrincipalAxis axis, int count,
+    double angleDeg, std::string* error = nullptr);
+
 class CircularPatternFeature final : public ShapeFeature {
  public:
   CircularPatternFeature(FeatureId sourceFeatureId, PrincipalAxis axis,

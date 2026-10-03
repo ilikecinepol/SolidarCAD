@@ -5,6 +5,7 @@
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/MirrorFeature.h"
+#include "model/MirrorToolSession.h"
 #define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 int main() {
   solidar::Document document;
@@ -22,6 +23,31 @@ int main() {
   CHECK(solidar::test::near(solidar::test::volumeOf(*body.resultShape()), 1000.0));
   const auto bounds = solidar::test::boundsOf(*body.resultShape());
   CHECK(solidar::test::near(bounds.minX, -20.0) && solidar::test::near(bounds.maxX, 20.0));
+
+  // The interactive tool is a two-stage transaction: Body, then Plane. The
+  // preview is generated without mutating Document history.
+  solidar::MirrorToolSession session;
+  session.begin();
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
+  CHECK(session.selectionStage() ==
+        solidar::ToolSelectionStage::SelectingInput);
+  CHECK(session.selectionRequirement()->type == solidar::SelectionType::Body);
+  session.setBody(body.id(), extrusionId, body.features().front()->shape());
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingReference);
+  CHECK(session.selectionRequirement()->type == solidar::SelectionType::Plane);
+  session.setPlane(solidar::MirrorPlane::YZ);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(session.previewShape());
+  CHECK(solidar::test::solidCount(*session.previewShape()) == 2);
+  CHECK(solidar::test::near(solidar::test::volumeOf(*session.previewShape()),
+                            1000.0));
+  CHECK(body.features().size() == 2);
+  session.clearPlane();
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingReference);
+  CHECK(!session.previewShape());
+  session.cancel();
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
+
   mirrorPtr->setPlane(solidar::MirrorPlane::XZ); body.markDirtyFrom(1);
   CHECK(document.recompute() && mirrorPtr->id() == mirrorId);
   solidar::sketch::Sketch wider; wider.addRectangle({10, 0}, {25, 10});

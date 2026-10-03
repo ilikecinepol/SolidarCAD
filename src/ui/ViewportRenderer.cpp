@@ -49,7 +49,8 @@ const char* surfaceFragmentShader = R"(
   flat in int vFaceIndex;
   uniform int uSelectedFaces[32];
   uniform int uSelectedCount;
-  uniform int uHoveredFace;
+  uniform int uHoveredFaces[32];
+  uniform int uHoveredCount;
   uniform bool uPreview;
   uniform bool uCutPreview;
   out vec4 color;
@@ -66,8 +67,11 @@ const char* surfaceFragmentShader = R"(
     bool selected = false;
     for (int i = 0; i < uSelectedCount; ++i)
       selected = selected || vFaceIndex == uSelectedFaces[i];
+    bool hovered = false;
+    for (int i = 0; i < uHoveredCount; ++i)
+      hovered = hovered || vFaceIndex == uHoveredFaces[i];
     if (selected) base = mix(base, vec3(0.10, 0.43, 0.94), 0.58);
-    else if (vFaceIndex == uHoveredFace)
+    else if (hovered)
       base = mix(base, vec3(0.25, 0.65, 1.0), 0.38);
     float alpha = uCutPreview ? 0.439 : 1.0;
     color = vec4(base * (0.46 + 0.38 * diffuse + 0.16 * fillDiffuse) +
@@ -277,8 +281,9 @@ QMatrix4x4 ViewportRenderer::projectionMatrix(
 
 void ViewportRenderer::drawSurfaces(
     GpuMesh& gpu, const QMatrix4x4& matrix, float yawDeg, float pitchDeg,
-    const std::vector<std::size_t>& selectedFaces, std::size_t hoveredFace,
-    bool preview, bool cutPreview) {
+    const std::vector<std::size_t>& selectedFaces,
+    const std::vector<std::size_t>& hoveredFaces, bool preview,
+    bool cutPreview) {
   if (gpu.indexCount == 0) return;
   const float yaw = yawDeg * std::numbers::pi_v<float> / 180.0F;
   const float pitch = pitchDeg * std::numbers::pi_v<float> / 180.0F;
@@ -288,6 +293,8 @@ void ViewportRenderer::drawSurfaces(
   normalMatrix(2, 0) = -std::sin(yaw) * std::sin(pitch); normalMatrix(2, 1) = -std::cos(yaw) * std::sin(pitch); normalMatrix(2, 2) = -std::cos(pitch);
   int count = 0;
   const auto selected = highlightArray(selectedFaces, count);
+  int hoveredCount = 0;
+  const auto hovered = highlightArray(hoveredFaces, hoveredCount);
   surfaceProgram_.bind();
   surfaceProgram_.setUniformValue("uMvp", matrix);
   surfaceProgram_.setUniformValue("uNormalMatrix", normalMatrix);
@@ -296,7 +303,11 @@ void ViewportRenderer::drawSurfaces(
         ("uSelectedFaces[" + std::to_string(i) + "]").c_str(), selected[i]);
   }
   surfaceProgram_.setUniformValue("uSelectedCount", count);
-  surfaceProgram_.setUniformValue("uHoveredFace", hoveredFace == std::size_t(-1) ? -1 : static_cast<int>(hoveredFace));
+  for (int i = 0; i < hoveredCount; ++i) {
+    surfaceProgram_.setUniformValue(
+        ("uHoveredFaces[" + std::to_string(i) + "]").c_str(), hovered[i]);
+  }
+  surfaceProgram_.setUniformValue("uHoveredCount", hoveredCount);
   surfaceProgram_.setUniformValue("uPreview", preview);
   surfaceProgram_.setUniformValue("uCutPreview", cutPreview);
   QOpenGLVertexArrayObject::Binder binder(&gpu.surfaceVao);
@@ -334,7 +345,8 @@ void ViewportRenderer::render(
     const BodyRenderMesh& source, const BodyRenderMesh* preview,
     const QSize& logicalSize, float dpr, float yawDeg, float pitchDeg,
     float zoom, QPointF pan, ViewportDisplayMode mode,
-    const std::vector<std::size_t>& selectedFaces, std::size_t hoveredFace,
+    const std::vector<std::size_t>& selectedFaces,
+    const std::vector<std::size_t>& hoveredFaces,
     const std::vector<std::size_t>& selectedEdges, std::size_t hoveredEdge,
     const BodyRenderMesh* cutPreview) {
   if (!initialized_ && !initialize()) return;
@@ -373,15 +385,16 @@ void ViewportRenderer::render(
     gl->glPolygonOffset(1.0F, 1.0F);
     drawSurfaces(gpu, matrix, yawDeg, pitchDeg,
                  preview ? std::vector<std::size_t>{} : selectedFaces,
-                 preview ? std::size_t(-1) : hoveredFace, preview != nullptr);
+                 preview ? std::vector<std::size_t>{} : hoveredFaces,
+                 preview != nullptr);
     // A live tool preview reuses the source topology for face/edge picking but
     // the preview mesh carries its own face indices. Keep the source body's
     // highlighted (selected/hovered) faces visible by re-drawing them on top,
     // exactly as edges are handled below. The preview pass is drawn first so
     // the highlighted source faces read through the translucent preview.
-    if (preview && (!selectedFaces.empty() || hoveredFace != std::size_t(-1)))
-      drawSurfaces(*source_, matrix, yawDeg, pitchDeg, selectedFaces, hoveredFace,
-                   false);
+    if (preview && (!selectedFaces.empty() || !hoveredFaces.empty()))
+      drawSurfaces(*source_, matrix, yawDeg, pitchDeg, selectedFaces,
+                   hoveredFaces, false);
 
     // Visual-only subtractive volume. Use the same translucent red palette as
     // the legacy sketch-extrude Cut preview. The boolean-result preview remains
@@ -393,8 +406,7 @@ void ViewportRenderer::render(
       // Pull coincident cutter faces slightly toward the camera so the red
       // overlay remains visible on the walls/floor of the resulting cavity.
       gl->glPolygonOffset(-1.0F, -1.0F);
-      drawSurfaces(*cutPreview_, matrix, yawDeg, pitchDeg, {},
-                   std::size_t(-1), false, true);
+      drawSurfaces(*cutPreview_, matrix, yawDeg, pitchDeg, {}, {}, false, true);
       gl->glDepthMask(GL_TRUE);
       gl->glDisable(GL_BLEND);
       gl->glPolygonOffset(1.0F, 1.0F);

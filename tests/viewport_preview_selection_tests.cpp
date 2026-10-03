@@ -161,6 +161,121 @@ int main(int argc, char** argv) {
   const solidar::ViewportCameraState sourceCamera{
       viewport.cameraYawDegrees(), viewport.cameraPitchDegrees(), 1.0F, {},
       viewport.size(), 1.0F, {20.0, 15.0, 10.0}, 1.0};
+
+  // Mirror's Body picker treats the complete model-level Body as one object:
+  // hovering any visible face highlights all of its faces, and clicking emits
+  // the stable BodyId instead of a face/edge reference.
+  {
+    solidar::Viewport mirrorView;
+    mirrorView.resize(800, 600);
+    mirrorView.setBodyShape(source, bodyId, sourceFeatureId);
+    mirrorView.setSolidVisible(true);
+    int bodyPicks = 0;
+    solidar::BodyId pickedBody = solidar::kInvalidBodyId;
+    QObject::connect(&mirrorView, &solidar::Viewport::mirrorBodyPicked,
+                     &mirrorView, [&](solidar::BodyId id) {
+                       ++bodyPicks;
+                       pickedBody = id;
+                     });
+    const QPointF bodyPoint = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    mirrorView.beginMirrorBodySelection();
+    mouse(mirrorView, QEvent::MouseMove, bodyPoint, Qt::NoButton,
+          Qt::NoButton);
+    CHECK(mirrorView.effectiveHoveredFaceIndices().size() == 6);
+    mouse(mirrorView, QEvent::MouseButtonPress, bodyPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(bodyPicks == 1);
+    CHECK(pickedBody == bodyId);
+    CHECK(mirrorView.selectedBodies() ==
+          std::vector<solidar::BodyId>{bodyId});
+    CHECK(mirrorView.selectedBodyFaces().empty());
+    CHECK(mirrorView.selectedBodyEdges().empty());
+  }
+
+  // Linear Pattern uses the same whole-Body hover language, then exposes only
+  // the three principal axes as direction candidates.
+  {
+    solidar::Viewport patternView;
+    patternView.resize(800, 600);
+    patternView.setBodyShape(source, bodyId, sourceFeatureId);
+    patternView.setSolidVisible(true);
+    int bodyPicks = 0;
+    solidar::BodyId pickedBody = solidar::kInvalidBodyId;
+    int axisPicks = 0;
+    int pickedAxis = -1;
+    QObject::connect(&patternView,
+                     &solidar::Viewport::linearPatternBodyPicked,
+                     &patternView, [&](solidar::BodyId id) {
+                       ++bodyPicks;
+                       pickedBody = id;
+                     });
+    QObject::connect(&patternView,
+                     &solidar::Viewport::linearPatternAxisPicked,
+                     &patternView, [&](int axis) {
+                       ++axisPicks;
+                       pickedAxis = axis;
+                     });
+    const QPointF bodyPoint = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    patternView.beginLinearPatternBodySelection();
+    mouse(patternView, QEvent::MouseMove, bodyPoint, Qt::NoButton,
+          Qt::NoButton);
+    CHECK(patternView.effectiveHoveredFaceIndices().size() == 6);
+    mouse(patternView, QEvent::MouseButtonPress, bodyPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(bodyPicks == 1);
+    CHECK(pickedBody == bodyId);
+    patternView.beginLinearPatternAxisSelection();
+    const QPointF xAxisPoint = sourceCamera.worldToScreen({100.0, 0.0, 0.0});
+    mouse(patternView, QEvent::MouseMove, xAxisPoint, Qt::NoButton,
+          Qt::NoButton);
+    mouse(patternView, QEvent::MouseButtonPress, xAxisPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(axisPicks == 1);
+    CHECK(pickedAxis == 0);
+  }
+
+  // Circular Pattern shares the same whole-Body and principal-axis picking
+  // contract; only its parameter manipulator is angular after selection.
+  {
+    solidar::Viewport patternView;
+    patternView.resize(800, 600);
+    patternView.setBodyShape(source, bodyId, sourceFeatureId);
+    patternView.setSolidVisible(true);
+    int bodyPicks = 0;
+    solidar::BodyId pickedBody = solidar::kInvalidBodyId;
+    int axisPicks = 0;
+    int pickedAxis = -1;
+    QObject::connect(&patternView,
+                     &solidar::Viewport::circularPatternBodyPicked,
+                     &patternView, [&](solidar::BodyId id) {
+                       ++bodyPicks;
+                       pickedBody = id;
+                     });
+    QObject::connect(&patternView,
+                     &solidar::Viewport::circularPatternAxisPicked,
+                     &patternView, [&](int axis) {
+                       ++axisPicks;
+                       pickedAxis = axis;
+                     });
+    const QPointF bodyPoint = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    patternView.beginCircularPatternBodySelection();
+    mouse(patternView, QEvent::MouseMove, bodyPoint, Qt::NoButton,
+          Qt::NoButton);
+    CHECK(patternView.effectiveHoveredFaceIndices().size() == 6);
+    mouse(patternView, QEvent::MouseButtonPress, bodyPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(bodyPicks == 1);
+    CHECK(pickedBody == bodyId);
+    patternView.beginCircularPatternAxisSelection();
+    const QPointF zAxisPoint = sourceCamera.worldToScreen({0.0, 0.0, 100.0});
+    mouse(patternView, QEvent::MouseMove, zAxisPoint, Qt::NoButton,
+          Qt::NoButton);
+    mouse(patternView, QEvent::MouseButtonPress, zAxisPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(axisPicks == 1);
+    CHECK(pickedAxis == 2);
+  }
+
   // Hover remains source-topology based even before a tool has selected an
   // edge, which is the state Chamfer and Fillet start in.
   mouse(viewport, QEvent::MouseMove, sourceCamera.worldToScreen({0, 0, 0}),

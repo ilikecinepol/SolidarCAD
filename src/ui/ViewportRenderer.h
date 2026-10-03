@@ -29,7 +29,8 @@ class ViewportRenderer final {
               float pitchDeg, float zoom, QPointF pan,
               ViewportDisplayMode mode,
               const std::vector<std::size_t>& selectedFaces,
-              std::size_t hoveredFace, const std::vector<std::size_t>& selectedEdges,
+              const std::vector<std::size_t>& hoveredFaces,
+              const std::vector<std::size_t>& selectedEdges,
               std::size_t hoveredEdge,
               const BodyRenderMesh* cutPreview = nullptr);
 
@@ -48,7 +49,7 @@ class ViewportRenderer final {
   void drawSurfaces(GpuMesh& gpu, const QMatrix4x4& matrix,
                     float yawDeg, float pitchDeg,
                     const std::vector<std::size_t>& selectedFaces,
-                    std::size_t hoveredFace, bool preview,
+                    const std::vector<std::size_t>& hoveredFaces, bool preview,
                     bool cutPreview = false);
   void drawEdges(GpuMesh& gpu, const QMatrix4x4& matrix,
                  const std::vector<std::size_t>& selectedEdges,

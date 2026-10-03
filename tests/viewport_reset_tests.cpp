@@ -98,6 +98,65 @@ int main(int argc, char** argv) {
   CHECK(!viewport.angularToolManipulator().has_value());
   CHECK(viewport.solidFeatures().empty());
 
+  // Mirror owns two explicit viewport pick modes. Body selection persists
+  // while choosing a Plane; reset/cancel removes both the mode and the forced
+  // construction-plane visibility.
+  viewport.setBodyShape(box, bodyId, featureId);
+  viewport.setSolidVisible(true);
+  viewport.beginMirrorBodySelection();
+  CHECK(viewport.mirrorBodySelectionActive());
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Face);
+  viewport.setSelectedBodies({bodyId});
+  viewport.beginMirrorPlaneSelection();
+  CHECK(viewport.mirrorPlaneSelectionActive());
+  CHECK(viewport.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+  CHECK(viewport.basePlaneVisible(0));
+  CHECK(viewport.basePlaneVisible(1));
+  CHECK(viewport.basePlaneVisible(2));
+  viewport.showMirrorPlaneSelection(1);
+  CHECK(!viewport.mirrorPlaneSelectionActive());
+  viewport.resetToolInteraction();
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+  CHECK(!viewport.basePlaneVisible(0));
+  CHECK(!viewport.basePlaneVisible(1));
+  CHECK(!viewport.basePlaneVisible(2));
+
+  viewport.setBodyShape(box, bodyId, featureId);
+  viewport.setSolidVisible(true);
+  viewport.beginLinearPatternBodySelection();
+  CHECK(viewport.linearPatternBodySelectionActive());
+  viewport.setSelectedBodies({bodyId});
+  viewport.beginLinearPatternAxisSelection();
+  CHECK(viewport.linearPatternAxisSelectionActive());
+  CHECK(viewport.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+  viewport.showLinearPatternAxisSelection(0);
+  CHECK(!viewport.linearPatternAxisSelectionActive());
+  viewport.setToolManipulator({{}, {1.0, 0.0, 0.0}, 30.0, 0.01,
+                                   100000.0});
+  viewport.resetToolInteraction();
+  CHECK(!viewport.linearPatternBodySelectionActive());
+  CHECK(!viewport.linearPatternAxisSelectionActive());
+  CHECK(!viewport.linearToolManipulator().has_value());
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+
+  viewport.setBodyShape(box, bodyId, featureId);
+  viewport.setSolidVisible(true);
+  viewport.beginCircularPatternBodySelection();
+  CHECK(viewport.circularPatternBodySelectionActive());
+  viewport.setSelectedBodies({bodyId});
+  viewport.beginCircularPatternAxisSelection();
+  CHECK(viewport.circularPatternAxisSelectionActive());
+  CHECK(viewport.selectedBodies() == std::vector<solidar::BodyId>{bodyId});
+  viewport.showCircularPatternAxisSelection(2);
+  CHECK(!viewport.circularPatternAxisSelectionActive());
+  viewport.setAngularToolManipulator(
+      {{}, {0.0, 0.0, 1.0}, 30.0, 180.0});
+  viewport.resetToolInteraction();
+  CHECK(!viewport.circularPatternBodySelectionActive());
+  CHECK(!viewport.circularPatternAxisSelectionActive());
+  CHECK(!viewport.angularToolManipulator().has_value());
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+
   // The viewport remains reusable: repopulate and reset again. The edge
   // selection is set after the Face filter because switching to faces clears
   // the now-incompatible edge selection.
