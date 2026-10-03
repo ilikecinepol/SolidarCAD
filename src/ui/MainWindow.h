@@ -207,6 +207,7 @@ class MainWindow final : public QMainWindow {
   QPushButton* linearPatternAxisSelectButton_{nullptr};
   QDoubleSpinBox* linearPatternSpacingSpin_{nullptr};
   QSpinBox* linearPatternCountSpin_{nullptr};
+  QComboBox* linearPatternOperationCombo_{nullptr};
   QPushButton* linearPatternAcceptButton_{nullptr};
   QLabel* linearPatternStepHint_{nullptr};
   QDockWidget* circularPatternDock_{nullptr};
@@ -216,6 +217,7 @@ class MainWindow final : public QMainWindow {
   QPushButton* circularPatternAxisSelectButton_{nullptr};
   QDoubleSpinBox* circularPatternAngleSpin_{nullptr};
   QSpinBox* circularPatternCountSpin_{nullptr};
+  QComboBox* circularPatternOperationCombo_{nullptr};
   QPushButton* circularPatternAcceptButton_{nullptr};
   QLabel* circularPatternStepHint_{nullptr};
   QDoubleSpinBox* extrusionLengthSpin_{nullptr};

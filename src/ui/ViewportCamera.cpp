@@ -6,6 +6,14 @@
 
 namespace solidar {
 
+float steppedViewportZoom(float currentZoom, int wheelDelta) noexcept {
+  if (!std::isfinite(currentZoom)) currentZoom = 1.0F;
+  if (wheelDelta > 0) currentZoom *= 1.1F;
+  if (wheelDelta < 0) currentZoom *= 0.9F;
+  return std::clamp(currentZoom, kMinimumViewportZoom,
+                    kMaximumViewportZoom);
+}
+
 QMatrix4x4 ViewportCameraState::worldToClip() const {
   const double w = std::max(1, logicalSize.width());
   const double h = std::max(1, logicalSize.height());

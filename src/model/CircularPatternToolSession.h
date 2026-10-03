@@ -11,6 +11,7 @@ namespace solidar {
 class CircularPatternToolSession final : public ToolSession {
  public:
   void begin(double angleDeg = 360.0, int count = 4,
+             PatternOperation operation = PatternOperation::NewBody,
              std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setBody(BodyId bodyId, FeatureId sourceFeatureId,
                ShapeFeature::ShapePtr sourceShape);
@@ -19,12 +20,14 @@ class CircularPatternToolSession final : public ToolSession {
   void clearAxis();
   void setAngleDeg(double angleDeg);
   void setCount(int count);
+  void setOperation(PatternOperation operation);
 
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
   [[nodiscard]] const std::optional<PrincipalAxis>& axis() const noexcept;
   [[nodiscard]] double angleDeg() const noexcept;
   [[nodiscard]] int count() const noexcept;
+  [[nodiscard]] PatternOperation operation() const noexcept;
   [[nodiscard]] std::optional<FeatureId> editingFeatureId() const noexcept override;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -44,6 +47,7 @@ class CircularPatternToolSession final : public ToolSession {
   std::optional<PrincipalAxis> axis_;
   NumericParameterState angle_;
   int count_{4};
+  PatternOperation operation_{PatternOperation::NewBody};
   std::optional<FeatureId> editingFeatureId_;
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;

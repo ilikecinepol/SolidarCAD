@@ -162,6 +162,19 @@ int main() {
     }
   }
 
+  // Wheel zoom must continue well past the old 0.25 floor so long patterns
+  // and other large models can be brought fully into view.
+  float zoom = 1.0F;
+  for (int step = 0; step < 80; ++step)
+    zoom = steppedViewportZoom(zoom, -120);
+  CHECK(zoom < 0.25F);
+  CHECK(zoom >= kMinimumViewportZoom);
+  for (int step = 0; step < 200; ++step)
+    zoom = steppedViewportZoom(zoom, -120);
+  CHECK(close(zoom, kMinimumViewportZoom, 1e-7));
+  CHECK(close(steppedViewportZoom(zoom, 0), zoom, 1e-7));
+  CHECK(steppedViewportZoom(zoom, 120) > zoom);
+
   // Edge manipulator geometry is translation-invariant.
   const TopoDS_Shape box = BRepPrimAPI_MakeBox(30, 20, 10).Shape();
   TopExp_Explorer firstEdge(box, TopAbs_EDGE);

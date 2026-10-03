@@ -30,6 +30,12 @@ QString operationText(ExtrudeOperation operation) {
   return QString::fromUtf8("Вырез");
 }
 
+QString operationText(PatternOperation operation) {
+  return operation == PatternOperation::NewBody
+             ? QString::fromUtf8("Новое тело")
+             : QString::fromUtf8("Добавление");
+}
+
 QString planeText(MirrorPlane plane) {
   if (plane == MirrorPlane::XY) return QStringLiteral("XY");
   if (plane == MirrorPlane::XZ) return QStringLiteral("XZ");
@@ -67,11 +73,13 @@ HistoryStep featureStep(const Body& body, const ShapeFeature& feature,
   } else if (const auto* v = dynamic_cast<const LinearPatternFeature*>(&feature)) {
     step.type = HistoryStepType::LinearPattern; kind = PartDesignToolKind::LinearPattern;
     parameters << QString::fromUtf8("Количество: %1").arg(v->count())
-               << QString::fromUtf8("Шаг: %1 мм").arg(v->spacingMm(), 0, 'f', 2);
+               << QString::fromUtf8("Шаг: %1 мм").arg(v->spacingMm(), 0, 'f', 2)
+               << QString::fromUtf8("Операция: %1").arg(operationText(v->operation()));
   } else if (const auto* v = dynamic_cast<const CircularPatternFeature*>(&feature)) {
     step.type = HistoryStepType::CircularPattern; kind = PartDesignToolKind::CircularPattern;
     parameters << QString::fromUtf8("Количество: %1").arg(v->count())
-               << QString::fromUtf8("Угол: %1°").arg(v->angleDeg(), 0, 'f', 2);
+               << QString::fromUtf8("Угол: %1°").arg(v->angleDeg(), 0, 'f', 2)
+               << QString::fromUtf8("Операция: %1").arg(operationText(v->operation()));
   } else if (const auto* v = dynamic_cast<const ShellFeature*>(&feature)) {
     step.type = HistoryStepType::Shell; kind = PartDesignToolKind::Shell;
     parameters << QString::fromUtf8("Толщина: %1 мм").arg(v->thicknessMm(), 0, 'f', 2)

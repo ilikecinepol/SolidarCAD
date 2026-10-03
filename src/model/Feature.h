@@ -47,6 +47,8 @@ class Feature {
 
   [[nodiscard]] virtual std::string typeName() const = 0;
   [[nodiscard]] virtual bool dependsOnSketch(SketchId sketchId) const noexcept;
+  [[nodiscard]] virtual bool dependsOnFeature(
+      FeatureId featureId) const noexcept;
   virtual bool rebuild(const RebuildContext& context) = 0;
   [[nodiscard]] virtual std::unique_ptr<Feature> clone() const = 0;
 

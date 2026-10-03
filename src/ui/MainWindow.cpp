@@ -1112,6 +1112,11 @@ void MainWindow::buildUi() {
       QStringLiteral("linearPatternCountSpin"));
   linearPatternCountSpin_->setRange(2, 100);
   linearPatternCountSpin_->setValue(3);
+  linearPatternOperationCombo_ = new QComboBox(linearPatternPanel);
+  linearPatternOperationCombo_->setObjectName(
+      QStringLiteral("linearPatternOperationCombo"));
+  linearPatternOperationCombo_->addItems(
+      {QString::fromUtf8("Новое тело"), QString::fromUtf8("Добавить")});
   linearPatternForm->addRow(QString::fromUtf8("Тело:"), linearPatternBodyRow);
   linearPatternForm->addRow(QString::fromUtf8("Направление:"),
                             linearPatternAxisRow);
@@ -1119,6 +1124,8 @@ void MainWindow::buildUi() {
                             linearPatternSpacingSpin_);
   linearPatternForm->addRow(QString::fromUtf8("Количество:"),
                             linearPatternCountSpin_);
+  linearPatternForm->addRow(QString::fromUtf8("Операция:"),
+                            linearPatternOperationCombo_);
 
   linearPatternStepHint_ =
       new QLabel(linearPatternHelp->selectionHint, linearPatternPanel);
@@ -1194,6 +1201,16 @@ void MainWindow::buildUi() {
                 ToolLifecycle::Inactive)
               return;
             linearPatternToolSession_.setCount(value);
+            updateLinearPatternToolPreview();
+          });
+  connect(linearPatternOperationCombo_, &QComboBox::currentIndexChanged, this,
+          [this](int index) {
+            if (linearPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            linearPatternToolSession_.setOperation(
+                index == 0 ? PatternOperation::NewBody
+                           : PatternOperation::Join);
             updateLinearPatternToolPreview();
           });
   connect(linearPatternAcceptButton_, &QPushButton::clicked, this,
@@ -1290,6 +1307,11 @@ void MainWindow::buildUi() {
       QStringLiteral("circularPatternCountSpin"));
   circularPatternCountSpin_->setRange(2, 100);
   circularPatternCountSpin_->setValue(4);
+  circularPatternOperationCombo_ = new QComboBox(circularPatternPanel);
+  circularPatternOperationCombo_->setObjectName(
+      QStringLiteral("circularPatternOperationCombo"));
+  circularPatternOperationCombo_->addItems(
+      {QString::fromUtf8("Новое тело"), QString::fromUtf8("Добавить")});
   circularPatternForm->addRow(QString::fromUtf8("Тело:"),
                               circularPatternBodyRow);
   circularPatternForm->addRow(QString::fromUtf8("Ось:"),
@@ -1298,6 +1320,8 @@ void MainWindow::buildUi() {
                               circularPatternAngleSpin_);
   circularPatternForm->addRow(QString::fromUtf8("Количество:"),
                               circularPatternCountSpin_);
+  circularPatternForm->addRow(QString::fromUtf8("Операция:"),
+                              circularPatternOperationCombo_);
 
   circularPatternStepHint_ =
       new QLabel(circularPatternHelp->selectionHint, circularPatternPanel);
@@ -1373,6 +1397,16 @@ void MainWindow::buildUi() {
                 ToolLifecycle::Inactive)
               return;
             circularPatternToolSession_.setCount(value);
+            updateCircularPatternToolPreview();
+          });
+  connect(circularPatternOperationCombo_, &QComboBox::currentIndexChanged,
+          this, [this](int index) {
+            if (circularPatternToolSession_.lifecycle() ==
+                ToolLifecycle::Inactive)
+              return;
+            circularPatternToolSession_.setOperation(
+                index == 0 ? PatternOperation::NewBody
+                           : PatternOperation::Join);
             updateCircularPatternToolPreview();
           });
   connect(circularPatternAcceptButton_, &QPushButton::clicked, this,
@@ -3228,16 +3262,33 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         return;
       }
       if (auto* linear = dynamic_cast<LinearPatternFeature*>(feature)) {
-        if (index == 0) return;
-        const auto source = body.features()[index - 1]->shape();
+        Body* sourceBody = &body;
+        ShapeFeature::ShapePtr source;
+        FeatureId sourceFeatureId = linear->sourceFeatureId();
+        if (linear->operation() == PatternOperation::Join) {
+          if (index == 0) return;
+          source = body.features()[index - 1]->shape();
+          sourceFeatureId = body.features()[index - 1]->id();
+        } else {
+          sourceBody = document_.findBody(linear->sourceBodyId());
+          if (sourceBody)
+            for (const auto& candidate : sourceBody->features())
+              if (candidate->id() == linear->sourceFeatureId()) {
+                source = candidate->shape();
+                break;
+              }
+        }
+        if (!sourceBody) return;
         if (!source) return;
         partDesignTools_.activate(PartDesignToolKind::LinearPattern);
-        linearPatternToolSession_.begin(linear->spacingMm(), linear->count(),
-                                        linear->id());
+        linearPatternToolSession_.begin(
+            linear->spacingMm(), linear->count(), linear->operation(),
+            linear->id());
         linearPatternToolSession_.setBody(
-            body.id(), body.features()[index - 1]->id(), source);
+            sourceBody->id(), sourceFeatureId, source);
         linearPatternToolSession_.setDirection(linear->direction());
-        linearPatternBodyValue_->setText(QString::fromStdString(body.name()));
+        linearPatternBodyValue_->setText(
+            QString::fromStdString(sourceBody->name()));
         linearPatternAxisValue_->setText(
             linear->direction() == PrincipalAxis::X
                 ? QStringLiteral("X")
@@ -3247,14 +3298,18 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         {
           const QSignalBlocker spacingBlocker(linearPatternSpacingSpin_);
           const QSignalBlocker countBlocker(linearPatternCountSpin_);
+          const QSignalBlocker operationBlocker(linearPatternOperationCombo_);
           linearPatternSpacingSpin_->setValue(linear->spacingMm());
           linearPatternCountSpin_->setValue(linear->count());
+          linearPatternOperationCombo_->setCurrentIndex(
+              linear->operation() == PatternOperation::NewBody ? 0 : 1);
         }
         // The feature stays in its owning Body while editing; only direction
         // and numeric parameters may be changed.
         linearPatternBodySelectButton_->setEnabled(false);
         linearPatternAxisSelectButton_->setEnabled(true);
-        viewport_->setSelectedBodies({body.id()});
+        linearPatternOperationCombo_->setEnabled(false);
+        viewport_->setSelectedBodies({sourceBody->id()});
         viewport_->showLinearPatternAxisSelection(
             static_cast<int>(linear->direction()));
         updateLinearPatternToolPreview();
@@ -3265,16 +3320,33 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         return;
       }
       if (auto* circular = dynamic_cast<CircularPatternFeature*>(feature)) {
-        if (index == 0) return;
-        const auto source = body.features()[index - 1]->shape();
+        Body* sourceBody = &body;
+        ShapeFeature::ShapePtr source;
+        FeatureId sourceFeatureId = circular->sourceFeatureId();
+        if (circular->operation() == PatternOperation::Join) {
+          if (index == 0) return;
+          source = body.features()[index - 1]->shape();
+          sourceFeatureId = body.features()[index - 1]->id();
+        } else {
+          sourceBody = document_.findBody(circular->sourceBodyId());
+          if (sourceBody)
+            for (const auto& candidate : sourceBody->features())
+              if (candidate->id() == circular->sourceFeatureId()) {
+                source = candidate->shape();
+                break;
+              }
+        }
+        if (!sourceBody) return;
         if (!source) return;
         partDesignTools_.activate(PartDesignToolKind::CircularPattern);
         circularPatternToolSession_.begin(
-            circular->angleDeg(), circular->count(), circular->id());
+            circular->angleDeg(), circular->count(), circular->operation(),
+            circular->id());
         circularPatternToolSession_.setBody(
-            body.id(), body.features()[index - 1]->id(), source);
+            sourceBody->id(), sourceFeatureId, source);
         circularPatternToolSession_.setAxis(circular->axis());
-        circularPatternBodyValue_->setText(QString::fromStdString(body.name()));
+        circularPatternBodyValue_->setText(
+            QString::fromStdString(sourceBody->name()));
         circularPatternAxisValue_->setText(
             circular->axis() == PrincipalAxis::X
                 ? QStringLiteral("X")
@@ -3284,12 +3356,16 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         {
           const QSignalBlocker angleBlocker(circularPatternAngleSpin_);
           const QSignalBlocker countBlocker(circularPatternCountSpin_);
+          const QSignalBlocker operationBlocker(circularPatternOperationCombo_);
           circularPatternAngleSpin_->setValue(circular->angleDeg());
           circularPatternCountSpin_->setValue(circular->count());
+          circularPatternOperationCombo_->setCurrentIndex(
+              circular->operation() == PatternOperation::NewBody ? 0 : 1);
         }
         circularPatternBodySelectButton_->setEnabled(false);
         circularPatternAxisSelectButton_->setEnabled(true);
-        viewport_->setSelectedBodies({body.id()});
+        circularPatternOperationCombo_->setEnabled(false);
+        viewport_->setSelectedBodies({sourceBody->id()});
         viewport_->showCircularPatternAxisSelection(
             static_cast<int>(circular->axis()));
         updateCircularPatternToolPreview();
@@ -3448,12 +3524,15 @@ void MainWindow::createLinearPattern() {
   linearPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
   linearPatternBodySelectButton_->setEnabled(true);
   linearPatternAxisSelectButton_->setEnabled(false);
+  linearPatternOperationCombo_->setEnabled(true);
   linearPatternAcceptButton_->setEnabled(false);
   {
     const QSignalBlocker spacingBlocker(linearPatternSpacingSpin_);
     const QSignalBlocker countBlocker(linearPatternCountSpin_);
+    const QSignalBlocker operationBlocker(linearPatternOperationCombo_);
     linearPatternSpacingSpin_->setValue(30.0);
     linearPatternCountSpin_->setValue(3);
+    linearPatternOperationCombo_->setCurrentIndex(0);
   }
   linearPatternDock_->show();
   linearPatternDock_->raise();
@@ -3514,35 +3593,43 @@ void MainWindow::acceptLinearPatternTool() {
   if (linearPatternToolSession_.lifecycle() != ToolLifecycle::PreviewValid ||
       !linearPatternToolSession_.direction())
     return;
-  Body* body = document_.findBody(linearPatternToolSession_.bodyId());
-  if (!body) return;
+  Body* sourceBody = document_.findBody(linearPatternToolSession_.bodyId());
+  if (!sourceBody) return;
   const Document previous = document_;
   if (const auto editingId = linearPatternToolSession_.editingFeatureId()) {
-    for (std::size_t index = 0; index < body->features().size(); ++index) {
-      auto* linear =
-          dynamic_cast<LinearPatternFeature*>(body->features()[index].get());
-      if (!linear || linear->id() != *editingId) continue;
-      linear->setDirection(*linearPatternToolSession_.direction());
-      linear->setSpacingMm(linearPatternToolSession_.spacingMm());
-      linear->setCount(linearPatternToolSession_.count());
-      body->markDirtyFrom(index);
-      break;
-    }
+    for (Body& owner : document_.bodies())
+      for (std::size_t index = 0; index < owner.features().size(); ++index) {
+        auto* linear = dynamic_cast<LinearPatternFeature*>(
+            owner.features()[index].get());
+        if (!linear || linear->id() != *editingId) continue;
+        linear->setDirection(*linearPatternToolSession_.direction());
+        linear->setSpacingMm(linearPatternToolSession_.spacingMm());
+        linear->setCount(linearPatternToolSession_.count());
+        owner.markDirtyFrom(index);
+        break;
+      }
   } else {
-    if (!body->activeFeature() ||
-        body->activeFeature()->id() !=
+    if (!sourceBody->activeFeature() ||
+        sourceBody->activeFeature()->id() !=
             linearPatternToolSession_.sourceFeatureId()) {
       linearPatternStepHint_->setText(QString::fromUtf8(
           "Исходное тело изменилось. Выберите его заново."));
       linearPatternStepHint_->setProperty("uiRole", "danger");
       return;
     }
-    body->addFeature(std::make_unique<LinearPatternFeature>(
-        linearPatternToolSession_.sourceFeatureId(),
+    const BodyId sourceBodyId = sourceBody->id();
+    Body* targetBody = linearPatternToolSession_.operation() ==
+                               PatternOperation::NewBody
+                           ? &document_.addBody()
+                           : sourceBody;
+    targetBody->addFeature(std::make_unique<LinearPatternFeature>(
+        sourceBodyId, linearPatternToolSession_.sourceFeatureId(),
         *linearPatternToolSession_.direction(),
         linearPatternToolSession_.count(),
         linearPatternToolSession_.spacingMm(),
-        "Linear Pattern " + std::to_string(body->features().size() + 1)));
+        linearPatternToolSession_.operation(),
+        "Linear Pattern " +
+            std::to_string(targetBody->features().size() + 1)));
   }
   if (!document_.recompute()) {
     const QString error = QString::fromStdString(document_.rebuildError());
@@ -3591,12 +3678,15 @@ void MainWindow::createCircularPattern() {
   circularPatternAxisValue_->setText(QString::fromUtf8("Не выбрано"));
   circularPatternBodySelectButton_->setEnabled(true);
   circularPatternAxisSelectButton_->setEnabled(false);
+  circularPatternOperationCombo_->setEnabled(true);
   circularPatternAcceptButton_->setEnabled(false);
   {
     const QSignalBlocker angleBlocker(circularPatternAngleSpin_);
     const QSignalBlocker countBlocker(circularPatternCountSpin_);
+    const QSignalBlocker operationBlocker(circularPatternOperationCombo_);
     circularPatternAngleSpin_->setValue(360.0);
     circularPatternCountSpin_->setValue(4);
+    circularPatternOperationCombo_->setCurrentIndex(0);
   }
   circularPatternDock_->show();
   circularPatternDock_->raise();
@@ -3661,35 +3751,43 @@ void MainWindow::acceptCircularPatternTool() {
           ToolLifecycle::PreviewValid ||
       !circularPatternToolSession_.axis())
     return;
-  Body* body = document_.findBody(circularPatternToolSession_.bodyId());
-  if (!body) return;
+  Body* sourceBody = document_.findBody(circularPatternToolSession_.bodyId());
+  if (!sourceBody) return;
   const Document previous = document_;
   if (const auto editingId = circularPatternToolSession_.editingFeatureId()) {
-    for (std::size_t index = 0; index < body->features().size(); ++index) {
-      auto* circular =
-          dynamic_cast<CircularPatternFeature*>(body->features()[index].get());
-      if (!circular || circular->id() != *editingId) continue;
-      circular->setAxis(*circularPatternToolSession_.axis());
-      circular->setAngleDeg(circularPatternToolSession_.angleDeg());
-      circular->setCount(circularPatternToolSession_.count());
-      body->markDirtyFrom(index);
-      break;
-    }
+    for (Body& owner : document_.bodies())
+      for (std::size_t index = 0; index < owner.features().size(); ++index) {
+        auto* circular = dynamic_cast<CircularPatternFeature*>(
+            owner.features()[index].get());
+        if (!circular || circular->id() != *editingId) continue;
+        circular->setAxis(*circularPatternToolSession_.axis());
+        circular->setAngleDeg(circularPatternToolSession_.angleDeg());
+        circular->setCount(circularPatternToolSession_.count());
+        owner.markDirtyFrom(index);
+        break;
+      }
   } else {
-    if (!body->activeFeature() ||
-        body->activeFeature()->id() !=
+    if (!sourceBody->activeFeature() ||
+        sourceBody->activeFeature()->id() !=
             circularPatternToolSession_.sourceFeatureId()) {
       circularPatternStepHint_->setText(QString::fromUtf8(
           "Исходное тело изменилось. Выберите его заново."));
       circularPatternStepHint_->setProperty("uiRole", "danger");
       return;
     }
-    body->addFeature(std::make_unique<CircularPatternFeature>(
-        circularPatternToolSession_.sourceFeatureId(),
+    const BodyId sourceBodyId = sourceBody->id();
+    Body* targetBody = circularPatternToolSession_.operation() ==
+                               PatternOperation::NewBody
+                           ? &document_.addBody()
+                           : sourceBody;
+    targetBody->addFeature(std::make_unique<CircularPatternFeature>(
+        sourceBodyId, circularPatternToolSession_.sourceFeatureId(),
         *circularPatternToolSession_.axis(),
         circularPatternToolSession_.count(),
         circularPatternToolSession_.angleDeg(),
-        "Circular Pattern " + std::to_string(body->features().size() + 1)));
+        circularPatternToolSession_.operation(),
+        "Circular Pattern " +
+            std::to_string(targetBody->features().size() + 1)));
   }
   if (!document_.recompute()) {
     const QString error = QString::fromStdString(document_.rebuildError());

@@ -111,6 +111,35 @@ const Body* Document::activeBody() const noexcept {
 }
 
 bool Document::rebuild() {
+  // Cross-Body features (for example a pattern created as a new Body) are not
+  // downstream in either Body's local history. Propagate dirtiness through
+  // stable FeatureIds before rebuilding Bodies in document order.
+  std::set<FeatureId> dirtyFeatures;
+  for (const auto& body : bodies_)
+    for (const auto& feature : body.features())
+      if (feature->isDirty() || feature->isFailed())
+        dirtyFeatures.insert(feature->id());
+  bool expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (auto& body : bodies_) {
+      const auto& features = body.features();
+      for (std::size_t index = 0; index < features.size(); ++index) {
+        const bool dependsOnDirty = std::any_of(
+            dirtyFeatures.begin(), dirtyFeatures.end(),
+            [&feature = features[index]](FeatureId id) {
+              return feature->dependsOnFeature(id);
+            });
+        if (!dependsOnDirty) continue;
+        body.markDirtyFrom(index);
+        for (std::size_t downstream = index; downstream < features.size();
+             ++downstream)
+          expanded = dirtyFeatures.insert(features[downstream]->id()).second ||
+                     expanded;
+        break;
+      }
+    }
+  }
   const RebuildContext context{*this};
   bool valid = true;
   for (auto& body : bodies_)
@@ -220,6 +249,7 @@ bool Document::removeBodyCascade(BodyId bodyId, std::string* error) {
 
   std::set<FeatureId> removedFeatures;
   std::set<SketchId> removedSketches;
+  std::set<BodyId> removedBodies{bodyId};
   for (const auto& feature : target->features())
     removedFeatures.insert(feature->id());
 
@@ -229,24 +259,28 @@ bool Document::removeBodyCascade(BodyId bodyId, std::string* error) {
     for (const auto& sketch : sketches_) {
       const bool ownedByRemovedFeature =
           sketch.support.type == SketchSupportType::Face &&
-          (sketch.support.face.bodyId == bodyId ||
+          (removedBodies.contains(sketch.support.face.bodyId) ||
            removedFeatures.contains(sketch.support.face.featureId));
       if (ownedByRemovedFeature && removedSketches.insert(sketch.id).second)
         changed = true;
     }
 
     // A feature in another Body may consume a face-attached sketch owned by
-    // the removed Body. Remove that feature and its downstream chain rather
-    // than leaving a dangling support/reference.
+    // the removed Body or directly reference one of its Features. Remove that
+    // feature and its downstream chain rather than leaving a dangling
+    // support/reference.
     for (const Body& body : bodies_) {
-      if (body.id() == bodyId) continue;
+      if (removedBodies.contains(body.id())) continue;
       std::optional<std::size_t> firstDependent;
       for (std::size_t index = 0; index < body.features().size(); ++index) {
-        for (const auto sketchId : removedSketches)
-          if (body.features()[index]->dependsOnSketch(sketchId)) {
-            firstDependent = index;
-            break;
-          }
+        const auto& feature = body.features()[index];
+        const bool sketchDependent = std::any_of(
+            removedSketches.begin(), removedSketches.end(),
+            [&feature](SketchId id) { return feature->dependsOnSketch(id); });
+        const bool featureDependent = std::any_of(
+            removedFeatures.begin(), removedFeatures.end(),
+            [&feature](FeatureId id) { return feature->dependsOnFeature(id); });
+        if (sketchDependent || featureDependent) firstDependent = index;
         if (firstDependent) break;
       }
       if (!firstDependent) continue;
@@ -258,7 +292,7 @@ bool Document::removeBodyCascade(BodyId bodyId, std::string* error) {
   }
 
   for (Body& body : bodies_) {
-    if (body.id() == bodyId) continue;
+    if (removedBodies.contains(body.id())) continue;
     for (std::size_t index = 0; index < body.features().size(); ++index) {
       if (!removedFeatures.contains(body.features()[index]->id())) continue;
       body.eraseFeaturesFrom(index);
@@ -272,8 +306,8 @@ bool Document::removeBodyCascade(BodyId bodyId, std::string* error) {
                       }),
                   sketches_.end());
   bodies_.erase(std::remove_if(bodies_.begin(), bodies_.end(),
-                               [bodyId](const Body& body) {
-                                 return body.id() == bodyId;
+                               [&removedBodies](const Body& body) {
+                                 return removedBodies.contains(body.id());
                                }),
                 bodies_.end());
   return true;

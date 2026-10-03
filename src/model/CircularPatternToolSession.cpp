@@ -11,7 +11,7 @@
 namespace solidar {
 
 void CircularPatternToolSession::begin(
-    double angleDeg, int count,
+    double angleDeg, int count, PatternOperation operation,
     std::optional<FeatureId> editingFeatureId) {
   bodyId_ = kInvalidBodyId;
   sourceFeatureId_ = kInvalidFeatureId;
@@ -19,6 +19,7 @@ void CircularPatternToolSession::begin(
   axis_.reset();
   angle_.reset(angleDeg, 0.01, 360.0);
   count_ = std::clamp(count, 2, 100);
+  operation_ = operation;
   editingFeatureId_ = editingFeatureId;
   previewShape_.reset();
   error_.clear();
@@ -65,6 +66,11 @@ void CircularPatternToolSession::setCount(int count) {
   updatePreview();
 }
 
+void CircularPatternToolSession::setOperation(PatternOperation operation) {
+  operation_ = operation;
+  updatePreview();
+}
+
 BodyId CircularPatternToolSession::bodyId() const noexcept { return bodyId_; }
 
 FeatureId CircularPatternToolSession::sourceFeatureId() const noexcept {
@@ -81,6 +87,10 @@ double CircularPatternToolSession::angleDeg() const noexcept {
 }
 
 int CircularPatternToolSession::count() const noexcept { return count_; }
+
+PatternOperation CircularPatternToolSession::operation() const noexcept {
+  return operation_;
+}
 
 std::optional<FeatureId>
 CircularPatternToolSession::editingFeatureId() const noexcept {
@@ -181,6 +191,7 @@ void CircularPatternToolSession::cancel() noexcept {
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   axis_.reset();
+  operation_ = PatternOperation::NewBody;
   editingFeatureId_.reset();
   previewShape_.reset();
   error_.clear();

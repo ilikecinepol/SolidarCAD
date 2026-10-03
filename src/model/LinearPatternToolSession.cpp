@@ -10,7 +10,7 @@
 namespace solidar {
 
 void LinearPatternToolSession::begin(
-    double spacingMm, int count,
+    double spacingMm, int count, PatternOperation operation,
     std::optional<FeatureId> editingFeatureId) {
   bodyId_ = kInvalidBodyId;
   sourceFeatureId_ = kInvalidFeatureId;
@@ -18,6 +18,7 @@ void LinearPatternToolSession::begin(
   direction_.reset();
   spacing_.reset(spacingMm, 0.01, 100000.0);
   count_ = std::clamp(count, 2, 100);
+  operation_ = operation;
   editingFeatureId_ = editingFeatureId;
   previewShape_.reset();
   error_.clear();
@@ -63,6 +64,11 @@ void LinearPatternToolSession::setCount(int count) {
   updatePreview();
 }
 
+void LinearPatternToolSession::setOperation(PatternOperation operation) {
+  operation_ = operation;
+  updatePreview();
+}
+
 BodyId LinearPatternToolSession::bodyId() const noexcept { return bodyId_; }
 
 FeatureId LinearPatternToolSession::sourceFeatureId() const noexcept {
@@ -79,6 +85,10 @@ double LinearPatternToolSession::spacingMm() const noexcept {
 }
 
 int LinearPatternToolSession::count() const noexcept { return count_; }
+
+PatternOperation LinearPatternToolSession::operation() const noexcept {
+  return operation_;
+}
 
 std::optional<FeatureId>
 LinearPatternToolSession::editingFeatureId() const noexcept {
@@ -172,6 +182,7 @@ void LinearPatternToolSession::cancel() noexcept {
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   direction_.reset();
+  operation_ = PatternOperation::NewBody;
   editingFeatureId_.reset();
   previewShape_.reset();
   error_.clear();

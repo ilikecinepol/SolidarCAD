@@ -1794,7 +1794,8 @@ void Viewport::fitAll() {
   const double projectedHeight = std::max(1.0, maxY - minY);
   zoom_ = static_cast<float>(std::clamp(
       0.88 * std::min(width() / projectedWidth, height() / projectedHeight),
-      0.02, 100.0));
+      static_cast<double>(kMinimumViewportZoom),
+      static_cast<double>(kMaximumViewportZoom)));
   const QPointF viewportCenter(width() * 0.5, height() * 0.52);
   const QPointF boundsCenter((minX + maxX) * 0.5, (minY + maxY) * 0.5);
   cameraPan_ = viewportCenter -
@@ -5133,8 +5134,13 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
 
 void Viewport::wheelEvent(QWheelEvent* event) {
   orientationAnimation_->stop();
-  zoom_ = std::clamp(zoom_ * (event->angleDelta().y() > 0 ? 1.1F : 0.9F),
-                     0.25F, 5.0F);
+  const int wheelDelta = event->angleDelta().y();
+  if (wheelDelta == 0) {
+    event->ignore();
+    return;
+  }
+  zoom_ = steppedViewportZoom(zoom_, wheelDelta);
+  event->accept();
   update();
 }
 bool Viewport::eventFilter(QObject* watched, QEvent* event) {

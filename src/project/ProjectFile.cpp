@@ -649,16 +649,20 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         saved["plane"] = static_cast<int>(mirror->plane());
       } else if (const auto* linear =
                      dynamic_cast<const LinearPatternFeature*>(feature.get())) {
+        saved["sourceBodyId"] = static_cast<qint64>(linear->sourceBodyId());
         saved["sourceFeatureId"] = static_cast<qint64>(linear->sourceFeatureId());
         saved["direction"] = static_cast<int>(linear->direction());
         saved["count"] = linear->count();
         saved["spacingMm"] = linear->spacingMm();
+        saved["operation"] = static_cast<int>(linear->operation());
       } else if (const auto* circular =
                      dynamic_cast<const CircularPatternFeature*>(feature.get())) {
+        saved["sourceBodyId"] = static_cast<qint64>(circular->sourceBodyId());
         saved["sourceFeatureId"] = static_cast<qint64>(circular->sourceFeatureId());
         saved["axis"] = static_cast<int>(circular->axis());
         saved["count"] = circular->count();
         saved["angleDeg"] = circular->angleDeg();
+        saved["operation"] = static_cast<int>(circular->operation());
       } else if (const auto* shell =
                      dynamic_cast<const ShellFeature*>(feature.get())) {
         saved["sourceFeatureId"] = static_cast<qint64>(shell->sourceFeatureId());
@@ -857,15 +861,23 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
             static_cast<MirrorPlane>(saved.value("plane").toInt()), name));
       } else if (type == QStringLiteral("LinearPattern")) {
         body.addFeature(std::make_unique<LinearPatternFeature>(
-            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            id,
+            static_cast<BodyId>(saved.value("sourceBodyId").toInteger()),
+            static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
             static_cast<PrincipalAxis>(saved.value("direction").toInt()),
             saved.value("count").toInt(), saved.value("spacingMm").toDouble(),
+            static_cast<PatternOperation>(saved.value("operation").toInt(
+                static_cast<int>(PatternOperation::Join))),
             name));
       } else if (type == QStringLiteral("CircularPattern")) {
         body.addFeature(std::make_unique<CircularPatternFeature>(
-            id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            id,
+            static_cast<BodyId>(saved.value("sourceBodyId").toInteger()),
+            static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
             static_cast<PrincipalAxis>(saved.value("axis").toInt()),
             saved.value("count").toInt(), saved.value("angleDeg").toDouble(),
+            static_cast<PatternOperation>(saved.value("operation").toInt(
+                static_cast<int>(PatternOperation::Join))),
             name));
       } else if (type == QStringLiteral("Shell")) {
         std::vector<FaceReference> faces;

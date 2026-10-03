@@ -8,6 +8,12 @@
 
 namespace solidar {
 
+inline constexpr float kMinimumViewportZoom = 0.001F;
+inline constexpr float kMaximumViewportZoom = 100.0F;
+
+[[nodiscard]] float steppedViewportZoom(float currentZoom,
+                                        int wheelDelta) noexcept;
+
 struct ViewportCameraState {
   float yawDeg{-35.0F};
   float pitchDeg{25.0F};

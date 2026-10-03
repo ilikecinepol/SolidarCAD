@@ -29,6 +29,7 @@ bool Feature::isFailed() const noexcept { return state_ == FeatureState::Error; 
 const std::string& Feature::error() const noexcept { return error_; }
 
 bool Feature::dependsOnSketch(SketchId) const noexcept { return false; }
+bool Feature::dependsOnFeature(FeatureId) const noexcept { return false; }
 
 void Feature::setDirty(bool dirty) noexcept {
   if (dirty) {

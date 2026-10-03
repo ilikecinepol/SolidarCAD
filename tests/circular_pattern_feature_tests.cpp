@@ -48,5 +48,31 @@ int main() {
   ptr->setCount(3); ptr->setAngleDeg(90); body.markDirtyFrom(1); CHECK(document.recompute());
   CHECK(ptr->id() == id && solidar::test::solidCount(*body.resultShape()) == 3);
   ptr->setAngleDeg(0); body.markDirtyFrom(1); CHECK(!document.recompute() && !ptr->hasShape());
-  ptr->setAngleDeg(180); body.markDirtyFrom(1); CHECK(document.recompute()); return EXIT_SUCCESS;
+  ptr->setAngleDeg(180); body.markDirtyFrom(1); CHECK(document.recompute());
+
+  solidar::Document separate;
+  auto& sourceSketch = separate.addSketch();
+  sourceSketch.geometry.addRectangle({10, 0}, {20, 5});
+  auto& sourceBody = separate.addBody("Source");
+  auto sourceFeature =
+      std::make_unique<solidar::ExtrudeFeature>(sourceSketch.id, 5.0);
+  auto* sourcePtr = sourceFeature.get();
+  const auto sourceBodyId = sourceBody.id();
+  const auto sourceFeatureId = sourceFeature->id();
+  sourceBody.addFeature(std::move(sourceFeature));
+  auto& patternBody = separate.addBody("Circular copies");
+  patternBody.addFeature(std::make_unique<solidar::CircularPatternFeature>(
+      sourceBodyId, sourceFeatureId, solidar::PrincipalAxis::Z, 4, 360.0,
+      solidar::PatternOperation::NewBody));
+  CHECK(separate.recompute());
+  CHECK(separate.bodies().size() == 2);
+  CHECK(solidar::test::solidCount(*separate.bodies()[0].resultShape()) == 1);
+  CHECK(solidar::test::solidCount(*separate.bodies()[1].resultShape()) == 3);
+  const double before = solidar::test::volumeOf(
+      *separate.bodies()[1].resultShape());
+  sourcePtr->setLengthMm(8.0);
+  separate.bodies()[0].markDirtyFrom(0);
+  CHECK(separate.recompute());
+  CHECK(solidar::test::volumeOf(*separate.bodies()[1].resultShape()) > before);
+  return EXIT_SUCCESS;
 }
