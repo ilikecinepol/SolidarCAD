@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <iostream>
 
+#include "model/Document.h"
+#include "model/RevolveToolSession.h"
 #include "ui/Viewport.h"
 #include "ui/ViewportCamera.h"
 
@@ -314,6 +316,161 @@ int main(int argc, char** argv) {
     // Whole outer rectangle would reach x=-20. The top-right partition starts
     // at x=0, proving the picked region is the inner bounded face.
     CHECK(minimumX > -1.0);
+  }
+
+  // Revolve keeps profile picking active while it waits for an axis. This is
+  // the interaction seam that lets Ctrl add a second region and then lets the
+  // very next click choose an arbitrary straight sketch line as the axis.
+  {
+    solidar::Viewport revolveView;
+    revolveView.resize(800, 600);
+    solidar::sketch::Sketch revolveSketch;
+    revolveSketch.addRectangle({25.0, 25.0}, {45.0, 45.0});
+    revolveSketch.addRectangle({60.0, 25.0}, {80.0, 45.0});
+    revolveSketch.addLine({20.0, -30.0}, {80.0, -30.0});
+    const auto constructionIndex = revolveSketch.lines().size() - 1;
+    revolveSketch.setElementDashed(
+        revolveSketch.lines()[constructionIndex].elementId, true);
+    const auto constructionId = revolveSketch.lineId(constructionIndex);
+    const auto revolvePlacement = solidar::SketchPlacement::xy();
+    revolveView.addSketch(revolveSketch, QStringLiteral("XY"),
+                          revolvePlacement);
+    const solidar::ViewportCameraState revolveCamera{
+        revolveView.cameraYawDegrees(), revolveView.cameraPitchDegrees(),
+        1.0F, {}, revolveView.size()};
+    const QPointF firstRegion =
+        revolveCamera.worldToScreen(revolvePlacement.toWorld(35.0, 35.0));
+    const QPointF secondRegion =
+        revolveCamera.worldToScreen(revolvePlacement.toWorld(70.0, 35.0));
+    const QPointF constructionAxis =
+        revolveCamera.worldToScreen(revolvePlacement.toWorld(50.0, -30.0));
+
+    int surfacePicks = 0;
+    int profileChanges = 0;
+    qulonglong pickedAxis = 0;
+    QObject::connect(&revolveView,
+                     &solidar::Viewport::extrusionSurfacePicked,
+                     &revolveView, [&](const QString&) { ++surfacePicks; });
+    QObject::connect(&revolveView,
+                     &solidar::Viewport::revolveProfileSelectionChanged,
+                     &revolveView, [&](std::size_t) { ++profileChanges; });
+    QObject::connect(&revolveView, &solidar::Viewport::revolveAxisPicked,
+                     &revolveView,
+                     [&](qulonglong token) { pickedAxis = token; });
+
+    revolveView.beginExtrusionSurfaceSelection();
+    mouse(revolveView, QEvent::MouseButtonPress, firstRegion,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(surfacePicks == 1);
+    CHECK(revolveView.selectedProfileRegionCount() == 1);
+
+    revolveView.beginRevolveAxisSelection(0);
+    mouseMod(revolveView, QEvent::MouseButtonPress, secondRegion,
+             Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    CHECK(profileChanges == 1);
+    CHECK(revolveView.selectedProfileRegionCount() == 2);
+    CHECK(revolveView.extrusionCandidateSketch().lines().size() == 8);
+
+    mouse(revolveView, QEvent::MouseMove, constructionAxis,
+          Qt::NoButton, Qt::NoButton);
+    mouse(revolveView, QEvent::MouseButtonPress, constructionAxis,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(pickedAxis == static_cast<qulonglong>(constructionId) + 3);
+  }
+
+  // A profile drawn with the Line tool has one element id per segment. It must
+  // still be recognized as a bounded region, just like a Rectangle-tool
+  // profile, and not be silently ignored by direct Revolve selection.
+  {
+    solidar::Viewport lineLoopView;
+    lineLoopView.resize(800, 600);
+    solidar::sketch::Sketch lineLoop;
+    lineLoop.addLine({0.0, 0.0}, {0.0, 30.0});
+    lineLoop.addLine({0.0000005, 30.0}, {25.0, 30.0});
+    lineLoop.addLine({25.0000005, 30.0}, {25.0, 0.0});
+    lineLoop.addLine({25.0, -0.0000005}, {0.0, 0.0});
+    CHECK(lineLoop.lines()[0].elementId != lineLoop.lines()[1].elementId);
+    CHECK(lineLoop.isClosed());
+    const auto loopPlacement = solidar::SketchPlacement::xy();
+    lineLoopView.addSketch(lineLoop, QStringLiteral("XY"), loopPlacement);
+    const solidar::ViewportCameraState loopCamera{
+        lineLoopView.cameraYawDegrees(), lineLoopView.cameraPitchDegrees(),
+        1.0F, {}, lineLoopView.size()};
+    const QPointF inside =
+        loopCamera.worldToScreen(loopPlacement.toWorld(12.5, 15.0));
+    int loopPicks = 0;
+    QObject::connect(&lineLoopView,
+                     &solidar::Viewport::extrusionSurfacePicked,
+                     &lineLoopView, [&](const QString&) { ++loopPicks; });
+    lineLoopView.beginExtrusionSurfaceSelection();
+    mouse(lineLoopView, QEvent::MouseButtonPress, inside,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(loopPicks == 1);
+    CHECK(lineLoopView.selectedProfileRegionCount() == 1);
+    CHECK(lineLoopView.extrusionCandidateSketch().isClosed());
+  }
+
+  // Preserve the source coordinates of a picked Line-tool face. A projected
+  // screen polygon is not precise enough when one of the original boundary
+  // lines is also the revolve axis: even a tiny separation can invalidate a
+  // partial OCCT revolution.
+  {
+    solidar::Document triangleDocument;
+    auto& triangle = triangleDocument.addSketch("Triangle profile");
+    triangle.geometry.addLine({0.0, 0.0}, {25.0, 30.0});
+    triangle.geometry.addLine({25.0000005, 30.0}, {25.0, 0.0});
+    triangle.geometry.addLine({25.0, -0.0000005}, {0.0, 0.0});
+    CHECK(triangle.geometry.isClosed());
+    const auto boundaryAxis = triangle.geometry.lineId(2);
+
+    solidar::Viewport triangleView;
+    triangleView.resize(800, 600);
+    triangleView.addSketch(triangle.geometry, QStringLiteral("XY"),
+                           triangle.placement);
+    const solidar::ViewportCameraState triangleCamera{
+        triangleView.cameraYawDegrees(), triangleView.cameraPitchDegrees(),
+        1.0F, {}, triangleView.size()};
+    const QPointF inside = triangleCamera.worldToScreen(
+        triangle.placement.toWorld(18.0, 10.0));
+    triangleView.beginExtrusionSurfaceSelection();
+    mouse(triangleView, QEvent::MouseButtonPress, inside,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(triangleView.selectedProfileRegionCount() == 1);
+
+    solidar::RevolveToolSession triangleSession;
+    triangleSession.begin(triangleDocument, solidar::kInvalidBodyId,
+                          solidar::kInvalidFeatureId);
+    triangleSession.setProfile(triangle.id,
+                               triangleView.extrusionCandidateSketch());
+    triangleSession.setAngleFromPanel(232.08);
+    triangleSession.setAxis({solidar::AxisReferenceType::SketchLine,
+                             triangle.id, boundaryAxis});
+    if (triangleSession.lifecycle() != solidar::ToolLifecycle::PreviewValid)
+      std::cerr << triangleSession.error() << '\n';
+    CHECK(triangleSession.lifecycle() ==
+          solidar::ToolLifecycle::PreviewValid);
+    CHECK(triangleSession.previewShape());
+  }
+
+  // The axis button is useful before a profile has been chosen: global axes
+  // remain pickable even though there is no owning sketch yet.
+  {
+    solidar::Viewport globalAxisView;
+    globalAxisView.resize(800, 600);
+    const solidar::ViewportCameraState axisCamera{
+        globalAxisView.cameraYawDegrees(), globalAxisView.cameraPitchDegrees(),
+        1.0F, {}, globalAxisView.size()};
+    const QPointF globalX = axisCamera.worldToScreen({40.0, 0.0, 0.0});
+    qulonglong pickedAxis = 0;
+    QObject::connect(&globalAxisView,
+                     &solidar::Viewport::revolveAxisPicked,
+                     &globalAxisView,
+                     [&](qulonglong token) { pickedAxis = token; });
+    globalAxisView.beginRevolveAxisSelection(
+        static_cast<std::size_t>(-1));
+    mouse(globalAxisView, QEvent::MouseButtonPress, globalX,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(pickedAxis == solidar::Viewport::kGlobalXAxisToken);
   }
 
   return EXIT_SUCCESS;

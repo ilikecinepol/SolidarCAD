@@ -156,6 +156,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] float cameraYawDegrees() const noexcept;
   [[nodiscard]] float cameraPitchDegrees() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
+  [[nodiscard]] std::size_t selectedProfileRegionCount() const noexcept;
   [[nodiscard]] QRectF extrusionPreviewBaseBounds() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
@@ -199,6 +200,10 @@ class Viewport final : public QOpenGLWidget {
   // Matches the Revolve axis combo data: 1/2 are sketch X/Y axes,
   // values >= 3 encode a sketch line id plus three.
   void revolveAxisPicked(qulonglong axisToken);
+  // Emitted while Revolve is already waiting for an axis and the user
+  // Ctrl-adds/removes another profile region. The candidate geometry and
+  // sketch index are read through the public profile-selection accessors.
+  void revolveProfileSelectionChanged(std::size_t sketchIndex);
   // Direct interaction: a visible closed sketch profile was pressed in normal
   // mode. MainWindow maps the display index to a SketchId and starts the
   // sketch Extrude session (contract 4).

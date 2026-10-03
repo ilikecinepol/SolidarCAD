@@ -64,6 +64,9 @@ int main() {
                                   solidar::SelectionType::Feature));
   CHECK(solidar::acceptsSelection(circular.selections[1],
                                   solidar::SelectionType::Axis));
+  const auto& revolveDefinition = definitions[2];
+  CHECK(revolveDefinition.selections.front().multiSelect);
+  CHECK(revolveDefinition.selections.front().maximumCount > 1);
   CHECK(solidar::partDesignToolStepHint(
             solidar::PartDesignToolKind::Revolve,
             solidar::ToolSelectionStage::SelectingInput) ==

@@ -196,7 +196,7 @@ sketch::Point sketchSubtract(sketch::Point a, sketch::Point b) {
 }
 
 std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
-    const sketch::Sketch& geometry, bool* hadInteriorSplit) {
+    const sketch::Sketch& geometry) {
   struct SourceSegment {
     sketch::Point a;
     sketch::Point b;
@@ -212,7 +212,6 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
     source.push_back({line.start, line.end});
   }
 
-  bool split = false;
   constexpr double parameterTolerance = 1e-8;
   for (std::size_t i = 0; i < source.size(); ++i) {
     const sketch::Point p = source[i].a;
@@ -238,14 +237,8 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
       const double uc = std::clamp(u, 0.0, 1.0);
       source[i].cuts.push_back(tc);
       source[j].cuts.push_back(uc);
-      if ((tc > parameterTolerance && tc < 1.0 - parameterTolerance) ||
-          (uc > parameterTolerance && uc < 1.0 - parameterTolerance))
-        split = true;
     }
   }
-
-  if (hadInteriorSplit) *hadInteriorSplit = split;
-  if (!split) return {};
 
   struct SplitSegment {
     sketch::Point a;
@@ -280,7 +273,7 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
   const auto vertexIndex = [&vertices](sketch::Point point) {
     for (std::size_t i = 0; i < vertices.size(); ++i) {
       if (std::hypot(vertices[i].xMm - point.xMm,
-                     vertices[i].yMm - point.yMm) <= 1e-7)
+                     vertices[i].yMm - point.yMm) <= 1e-6)
         return static_cast<int>(i);
     }
     vertices.push_back(point);
@@ -1238,6 +1231,8 @@ void Viewport::beginRevolveAxisSelection(std::size_t sketchIndex) {
   pickMode_ = PickMode::RevolveAxis;
   revolveAxisSketchIndex_ = sketchIndex;
   hoveredRevolveAxisToken_ = 0;
+  extrusionHoverPolygon_.clear();
+  extrusionHoverPath_ = {};
   setCursor(Qt::CrossCursor);
   update();
 }
@@ -1665,6 +1660,10 @@ float Viewport::cameraPitchDegrees() const noexcept { return pitch_; }
 
 const sketch::Sketch& Viewport::extrusionCandidateSketch() const noexcept {
   return selectedExtrusionSketch_;
+}
+
+std::size_t Viewport::selectedProfileRegionCount() const noexcept {
+  return selectedExtrusionRegionSketches_.size();
 }
 
 QRectF Viewport::extrusionPreviewBaseBounds() const noexcept {
@@ -2486,13 +2485,10 @@ void Viewport::paintGL() {
     }
   }
 
-  if (pickMode_ == PickMode::RevolveAxis &&
-      revolveAxisSketchIndex_ < displaySketches_.size()) {
-    const auto& placement = displaySketches_[revolveAxisSketchIndex_].placement;
+  if (pickMode_ == PickMode::RevolveAxis) {
+    const bool hasSketchCandidate =
+        revolveAxisSketchIndex_ < displaySketches_.size();
     const Point3d center = bodyRenderMesh_.center();
-    const auto screenPoint = [&](double x, double y) {
-      return projectBodyPoint(placement.toWorld(x, y), center, size(), yaw_, pitch_, zoom_).screen;
-    };
     painter.setBrush(Qt::NoBrush);
     const auto globalScreenPoint = [&](double x, double y, double z) {
       return projectBodyPoint({x, y, z}, center, size(), yaw_, pitch_, zoom_).screen;
@@ -2506,10 +2502,21 @@ void Viewport::paintGL() {
     painter.setPen(QPen(QColor("#2474d2"), 3.0));
     painter.drawLine(globalScreenPoint(0.0, 0.0, -1000.0),
                      globalScreenPoint(0.0, 0.0, 1000.0));
-    painter.setPen(QPen(QColor("#ef7d00"), 2.4, Qt::DashLine));
-    painter.drawLine(screenPoint(-1000.0, 0.0), screenPoint(1000.0, 0.0));
-    painter.setPen(QPen(QColor("#e34850"), 2.4, Qt::DashLine));
-    painter.drawLine(screenPoint(0.0, -1000.0), screenPoint(0.0, 1000.0));
+    if (hasSketchCandidate) {
+      const auto& placement =
+          displaySketches_[revolveAxisSketchIndex_].placement;
+      const auto screenPoint = [&](double x, double y) {
+        return projectBodyPoint(placement.toWorld(x, y), center, size(), yaw_,
+                                pitch_, zoom_)
+            .screen;
+      };
+      painter.setPen(QPen(QColor("#ef7d00"), 2.4, Qt::DashLine));
+      painter.drawLine(screenPoint(-1000.0, 0.0),
+                       screenPoint(1000.0, 0.0));
+      painter.setPen(QPen(QColor("#e34850"), 2.4, Qt::DashLine));
+      painter.drawLine(screenPoint(0.0, -1000.0),
+                       screenPoint(0.0, 1000.0));
+    }
     // Revolve axis hover: redraw only the candidate in the same cyan language
     // used by native 3D edge hover. Selection is still committed only on click.
     if (hoveredRevolveAxisToken_ != 0) {
@@ -2524,36 +2531,54 @@ void Viewport::paintGL() {
       } else if (hoveredRevolveAxisToken_ == kGlobalZAxisToken) {
         painter.drawLine(globalScreenPoint(0.0, 0.0, -1000.0),
                          globalScreenPoint(0.0, 0.0, 1000.0));
-      } else if (hoveredRevolveAxisToken_ == 1) {
-        painter.drawLine(screenPoint(-1000.0, 0.0),
-                         screenPoint(1000.0, 0.0));
-      } else if (hoveredRevolveAxisToken_ == 2) {
-        painter.drawLine(screenPoint(0.0, -1000.0),
-                         screenPoint(0.0, 1000.0));
-      } else {
+      } else if (hasSketchCandidate) {
         const auto& hoveredCandidate =
             displaySketches_[revolveAxisSketchIndex_];
-        for (std::size_t i = 0; i < hoveredCandidate.geometry.lines().size();
-             ++i) {
-          if (static_cast<qulonglong>(
-                  hoveredCandidate.geometry.lineId(i)) + 3 !=
-              hoveredRevolveAxisToken_)
-            continue;
-          const auto& line = hoveredCandidate.geometry.lines()[i];
-          painter.drawLine(
-              screenPoint(line.start.xMm, line.start.yMm),
-              screenPoint(line.end.xMm, line.end.yMm));
-          break;
+        const auto& placement = hoveredCandidate.placement;
+        const auto screenPoint = [&](double x, double y) {
+          return projectBodyPoint(placement.toWorld(x, y), center, size(), yaw_,
+                                  pitch_, zoom_)
+              .screen;
+        };
+        if (hoveredRevolveAxisToken_ == 1) {
+          painter.drawLine(screenPoint(-1000.0, 0.0),
+                           screenPoint(1000.0, 0.0));
+        } else if (hoveredRevolveAxisToken_ == 2) {
+          painter.drawLine(screenPoint(0.0, -1000.0),
+                           screenPoint(0.0, 1000.0));
+        } else {
+          for (std::size_t i = 0;
+               i < hoveredCandidate.geometry.lines().size(); ++i) {
+            if (static_cast<qulonglong>(
+                    hoveredCandidate.geometry.lineId(i)) + 3 !=
+                hoveredRevolveAxisToken_)
+              continue;
+            const auto& line = hoveredCandidate.geometry.lines()[i];
+            painter.drawLine(screenPoint(line.start.xMm, line.start.yMm),
+                             screenPoint(line.end.xMm, line.end.yMm));
+            break;
+          }
         }
       }
     }
   }
 
   if ((pickMode_ == PickMode::ExtrusionSurface ||
-       pickMode_ == PickMode::SketchPlane) &&
+       pickMode_ == PickMode::RevolveAxis) &&
+      !selectedExtrusionPaths_.empty()) {
+    painter.setBrush(QColor(7, 94, 255, 38));
+    painter.setPen(QPen(QColor("#075eff"), 2.6));
+    for (const auto& selectedPath : selectedExtrusionPaths_)
+      painter.drawPath(selectedPath);
+  }
+
+  if ((pickMode_ == PickMode::ExtrusionSurface ||
+       pickMode_ == PickMode::SketchPlane ||
+       (pickMode_ == PickMode::RevolveAxis &&
+        hoveredRevolveAxisToken_ == 0)) &&
       !extrusionHoverPolygon_.isEmpty()) {
-    painter.setBrush(QColor(10, 105, 245, 55));
-    painter.setPen(QPen(QColor("#0969e8"), 2.2));
+    painter.setBrush(QColor(0, 166, 255, 48));
+    painter.setPen(QPen(QColor("#00a6ff"), 2.2));
     if (!extrusionHoverPath_.isEmpty())
       painter.drawPath(extrusionHoverPath_);
     else
@@ -2729,11 +2754,7 @@ void Viewport::paintGL() {
 }
 
 qulonglong Viewport::revolveAxisTokenAt(QPointF scenePosition) const {
-  if (pickMode_ != PickMode::RevolveAxis ||
-      revolveAxisSketchIndex_ >= displaySketches_.size())
-    return 0;
-
-  const auto& candidate = displaySketches_[revolveAxisSketchIndex_];
+  if (pickMode_ != PickMode::RevolveAxis) return 0;
   const Point3d center = bodyRenderMesh_.center();
   double bestDistance = 12.0;
   qulonglong bestToken = 0;
@@ -2765,6 +2786,9 @@ qulonglong Viewport::revolveAxisTokenAt(QPointF scenePosition) const {
                   kGlobalYAxisToken);
   considerSegment({0.0, 0.0, -1000.0}, {0.0, 0.0, 1000.0},
                   kGlobalZAxisToken);
+
+  if (revolveAxisSketchIndex_ >= displaySketches_.size()) return bestToken;
+  const auto& candidate = displaySketches_[revolveAxisSketchIndex_];
 
   considerSegment(candidate.placement.toWorld(-1000.0, 0.0),
                   candidate.placement.toWorld(1000.0, 0.0), 1);
@@ -2836,6 +2860,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     const qulonglong axisToken = revolveAxisTokenAt(scenePosition);
     if (axisToken != 0) {
       hoveredRevolveAxisToken_ = 0;
+      extrusionHoverPolygon_.clear();
+      extrusionHoverPath_ = {};
       pickMode_ = PickMode::None;
       unsetCursor();
       emit revolveAxisPicked(axisToken);
@@ -2866,11 +2892,18 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       return;
     }
   }
-  if (pickMode_ == PickMode::ExtrusionSurface) {
+  if (pickMode_ == PickMode::ExtrusionSurface ||
+      pickMode_ == PickMode::RevolveAxis) {
     updateExtrusionHover(scenePosition);
+    if (pickMode_ == PickMode::RevolveAxis &&
+        hoveredExtrusionSketchIndex_ == static_cast<std::size_t>(-1)) {
+      extrusionHoverPolygon_.clear();
+      extrusionHoverPath_ = {};
+    }
     update();
   }
-  if (pickMode_ == PickMode::ExtrusionSurface &&
+  const bool revolveProfilePick = pickMode_ == PickMode::RevolveAxis;
+  if ((pickMode_ == PickMode::ExtrusionSurface || revolveProfilePick) &&
       !extrusionHoverPolygon_.isEmpty()) {
     const bool append = event->modifiers().testFlag(Qt::ControlModifier);
     if (!append || selectedExtrusionSketchIndex_ != hoveredExtrusionSketchIndex_) {
@@ -2918,6 +2951,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     if (selectedExtrusionPaths_.empty()) {
       selectedExtrusionPolygon_.clear();
       hideExtrusionManipulator();
+      if (revolveProfilePick)
+        emit revolveProfileSelectionChanged(selectedExtrusionSketchIndex_);
       update();
       return;
     }
@@ -2926,11 +2961,14 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       selectedBounds = selectedBounds.united(path.boundingRect());
     selectedExtrusionPolygon_ = selectedExtrusionPolygons_.front();
     extrusionManipulatorAnchor_ = selectedBounds.center();
-    if (!append) {
+    if (!append && !revolveProfilePick) {
       pickMode_ = PickMode::None;
       unsetCursor();
     }
-    emit extrusionSurfacePicked(hoveredExtrusionSurface_);
+    if (revolveProfilePick)
+      emit revolveProfileSelectionChanged(selectedExtrusionSketchIndex_);
+    else
+      emit extrusionSurfacePicked(hoveredExtrusionSurface_);
     if (hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1))
       if (const auto face = faceReferenceForGlobalIndex(hoveredBodyFaceIndex_))
         emit extrusionFacePicked(*face);
@@ -3882,6 +3920,9 @@ void Viewport::updateExtrusionHover(QPointF position) {
   std::vector<QPolygonF> contours;
   sketch::Sketch exactArcProfile;
   QPolygonF exactArcPolygon;
+  std::vector<std::vector<sketch::Point>> exactLineFaces;
+  std::vector<QPolygonF> exactLineFacePolygons;
+  bool lineFacesAreWholeProfile = false;
   QString regionSupport;
   std::size_t regionSketchIndex = static_cast<std::size_t>(-1);
   const ViewportCameraState camera{yaw_, pitch_, zoom_, {}, size()};
@@ -3930,18 +3971,22 @@ void Viewport::updateExtrusionHover(QPointF position) {
     // original outer rectangle and therefore highlights the whole square.
     // Split T-junctions/crossings into a planar graph and enumerate its bounded
     // faces. The cursor can then select the exact sub-region.
-    bool hadInteriorSplit = false;
-    const auto graphFaces =
-        planarSketchLineFaces(displayed.geometry, &hadInteriorSplit);
+    const auto graphFaces = planarSketchLineFaces(displayed.geometry);
+    const bool hasLineGraphFaces = !graphFaces.empty();
 
-    if (hadInteriorSplit && !graphFaces.empty()) {
+    std::vector<std::vector<sketch::Point>> validGraphFaces;
+    std::vector<QPolygonF> graphFacePolygons;
+    if (hasLineGraphFaces) {
       for (const auto& face : graphFaces) {
         QPolygonF polygon;
         for (const auto point : face)
           polygon << projectContourPoint(point);
         if (polygon.size() >= 3 &&
-            std::abs(signedArea(polygon)) > 1e-6)
+            std::abs(signedArea(polygon)) > 1e-6) {
+          validGraphFaces.push_back(face);
+          graphFacePolygons.push_back(polygon);
           sketchContours.push_back(std::move(polygon));
+        }
       }
     } else {
       std::vector<std::size_t> ids;
@@ -4003,6 +4048,15 @@ void Viewport::updateExtrusionHover(QPointF position) {
     }
     regionSupport = displayed.supportName;
     regionSketchIndex = displayedIndex;
+    exactLineFaces = std::move(validGraphFaces);
+    exactLineFacePolygons = std::move(graphFacePolygons);
+    lineFacesAreWholeProfile =
+        std::none_of(displayed.geometry.circles().begin(),
+                     displayed.geometry.circles().end(),
+                     [](const sketch::Circle& circle) { return !circle.dashed; }) &&
+        std::none_of(displayed.geometry.arcs().begin(),
+                     displayed.geometry.arcs().end(),
+                     [](const sketch::Arc& arc) { return !arc.dashed; });
   }
   // No sketch contour was hit: fall through so a finished body's planar face
   // can still be picked as the extrusion source. Without this the extrusion
@@ -4020,7 +4074,74 @@ void Viewport::updateExtrusionHover(QPointF position) {
     return;
   }
 
-  if (contours.size() >= 2) {
+  // Line-graph faces already carry the authoritative sketch-plane points.
+  // Keep those exact coordinates instead of projecting to the screen and
+  // numerically inverting the projection. That round trip is visually
+  // harmless, but it can move a boundary by a few ulps away from a selected
+  // source line used as the revolution axis and make OCCT reject the solid.
+  if (lineFacesAreWholeProfile && !exactLineFaces.empty() &&
+      exactLineFaces.size() == exactLineFacePolygons.size()) {
+    int selectedFace = -1;
+    double selectedArea = std::numeric_limits<double>::max();
+    for (int index = 0;
+         index < static_cast<int>(exactLineFacePolygons.size()); ++index) {
+      const auto& polygon = exactLineFacePolygons[index];
+      if (!polygon.containsPoint(position, Qt::OddEvenFill)) continue;
+      const double area = std::abs(signedArea(polygon));
+      if (area < selectedArea) {
+        selectedArea = area;
+        selectedFace = index;
+      }
+    }
+    if (selectedFace >= 0) {
+      QPainterPath selectedRegion;
+      selectedRegion.setFillRule(Qt::OddEvenFill);
+      QPainterPath outerPath;
+      outerPath.addPolygon(exactLineFacePolygons[selectedFace]);
+      outerPath.closeSubpath();
+      selectedRegion.addPolygon(exactLineFacePolygons[selectedFace]);
+      selectedRegion.closeSubpath();
+
+      sketch::Sketch selectedGeometry;
+      const auto appendBoundary = [&selectedGeometry](
+                                      const std::vector<sketch::Point>& face) {
+        for (std::size_t index = 0; index < face.size(); ++index)
+          selectedGeometry.addLine(face[index],
+                                   face[(index + 1) % face.size()]);
+      };
+      appendBoundary(exactLineFaces[selectedFace]);
+
+      // A disconnected line loop strictly inside the selected loop is a hole.
+      // Preserve its exact boundary too. Clicking inside that inner loop picks
+      // it as the smaller face above, so it becomes a standalone region.
+      for (int index = 0;
+           index < static_cast<int>(exactLineFacePolygons.size()); ++index) {
+        if (index == selectedFace) continue;
+        QPainterPath candidatePath;
+        candidatePath.addPolygon(exactLineFacePolygons[index]);
+        candidatePath.closeSubpath();
+        if (!outerPath.contains(candidatePath) ||
+            candidatePath.contains(position))
+          continue;
+        selectedRegion.addPolygon(exactLineFacePolygons[index]);
+        selectedRegion.closeSubpath();
+        appendBoundary(exactLineFaces[index]);
+      }
+
+      extrusionHoverPolygon_ = exactLineFacePolygons[selectedFace];
+      extrusionHoverPath_ = selectedRegion;
+      hoveredExtrusionSketch_ = std::move(selectedGeometry);
+      hoveredExtrusionSupport_ = regionSupport;
+      hoveredExtrusionSurface_ = QString::fromUtf8("Замкнутая область");
+      hoveredExtrusionSketchIndex_ = regionSketchIndex;
+      return;
+    }
+  }
+
+  if (contours.size() >= 2 ||
+      (contours.size() == 1 && regionSketchIndex < displaySketches_.size() &&
+       !planarSketchLineFaces(
+            displaySketches_[regionSketchIndex].geometry).empty())) {
     QPainterPath region;
     bool initialized = false;
     for (const auto& contour : contours) {
@@ -4378,9 +4499,23 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     const qulonglong previous = hoveredRevolveAxisToken_;
     hoveredRevolveAxisToken_ =
         revolveAxisTokenAt(event->position() - cameraPan_);
-    setCursor(hoveredRevolveAxisToken_ != 0 ? Qt::PointingHandCursor
-                                           : Qt::CrossCursor);
-    if (previous != hoveredRevolveAxisToken_) update();
+    if (hoveredRevolveAxisToken_ != 0) {
+      extrusionHoverPolygon_.clear();
+      extrusionHoverPath_ = {};
+    } else {
+      updateExtrusionHover(event->position() - cameraPan_);
+      if (hoveredExtrusionSketchIndex_ == static_cast<std::size_t>(-1)) {
+        extrusionHoverPolygon_.clear();
+        extrusionHoverPath_ = {};
+      }
+    }
+    setCursor(hoveredRevolveAxisToken_ != 0 ||
+                      !extrusionHoverPolygon_.isEmpty()
+                  ? Qt::PointingHandCursor
+                  : Qt::CrossCursor);
+    if (previous != hoveredRevolveAxisToken_ ||
+        hoveredRevolveAxisToken_ == 0)
+      update();
     event->accept();
     return;
   }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/ShapeFeature.h"
@@ -39,6 +41,9 @@ class RevolveFeature final : public ShapeFeature {
   [[nodiscard]] ExtrudeOperation operation() const noexcept;
   [[nodiscard]] bool reversed() const noexcept;
   void setProfileSketchId(SketchId value) noexcept;
+  [[nodiscard]] const std::optional<sketch::Sketch>&
+  profileOverride() const noexcept;
+  void setProfileOverride(std::optional<sketch::Sketch> profile);
   void setAxis(AxisReference value) noexcept;
   void setAngleDeg(double value) noexcept;
   void setOperation(ExtrudeOperation value) noexcept;
@@ -51,6 +56,7 @@ class RevolveFeature final : public ShapeFeature {
 
  private:
   SketchId profileSketchId_{kInvalidSketchId};
+  std::optional<sketch::Sketch> profileOverride_;
   AxisReference axis_{};
   double angleDeg_{360.0};
   ExtrudeOperation operation_{ExtrudeOperation::NewBody};

@@ -260,6 +260,9 @@ int main(int argc, char* argv[]) {
             solidar::AxisReferenceType::SketchHorizontalAxis,
             revolveSketchId, solidar::sketch::kInvalidGeometryId},
         270.0, "Revolve", solidar::ExtrudeOperation::NewBody);
+    solidar::sketch::Sketch revolvePickedProfile;
+    revolvePickedProfile.addRectangle({10.0, 5.0}, {30.0, 15.0});
+    revolve->setProfileOverride(revolvePickedProfile);
     auto* revolvePtr = revolve.get();
     const auto revolveId = revolvePtr->id();
     revolveBody.addFeature(std::move(revolve));
@@ -417,6 +420,8 @@ int main(int argc, char* argv[]) {
     CHECK(restoredExtrude && restoredPocket && restoredFillet &&
           restoredChamfer &&
           restoredRevolve);
+    CHECK(restoredRevolve->profileOverride().has_value());
+    CHECK(restoredRevolve->profileOverride()->lines().size() == 4);
     CHECK(restoredFillet->edge().signature);
     CHECK(restoredChamfer->edge().signature);
     CHECK(restoredExtrude->id() == extrudeId);

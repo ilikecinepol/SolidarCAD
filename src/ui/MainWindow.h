@@ -77,6 +77,7 @@ class MainWindow final : public QMainWindow {
   void acceptRevolveTool();
   void cancelRevolveTool();
   void rebuildRevolveAxisChoices();
+  void updateRevolveProfileSelection(std::size_t sketchIndex);
   void createFillet();
   void updateFilletToolPreview();
   void acceptFilletTool();
@@ -169,6 +170,7 @@ class MainWindow final : public QMainWindow {
   PartDesignToolController partDesignTools_;
   QDockWidget* revolveDock_{nullptr};
   QComboBox* revolveProfileCombo_{nullptr};
+  QLabel* revolveProfileSummary_{nullptr};
   QComboBox* revolveAxisCombo_{nullptr};
   QDoubleSpinBox* revolveAngleSpin_{nullptr};
   QComboBox* revolveOperationCombo_{nullptr};

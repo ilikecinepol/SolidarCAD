@@ -17,6 +17,7 @@ void RevolveToolSession::begin(const Document& document, BodyId bodyId,
   baseShape_ = std::move(baseShape);
   editingFeatureId_ = editingFeatureId;
   profileSketchId_ = kInvalidSketchId;
+  profileOverride_.reset();
   axis_.reset();
   angleDeg_ = 360.0;
   operation_ = baseShape_ ? ExtrudeOperation::Join : ExtrudeOperation::NewBody;
@@ -25,8 +26,17 @@ void RevolveToolSession::begin(const Document& document, BodyId bodyId,
   previewShape_.reset();
   error_.clear();
 }
-void RevolveToolSession::setProfile(SketchId value) { profileSketchId_ = value; updatePreview(); }
-void RevolveToolSession::clearProfile() { profileSketchId_ = kInvalidSketchId; updatePreview(); }
+void RevolveToolSession::setProfile(
+    SketchId value, std::optional<sketch::Sketch> profileOverride) {
+  profileSketchId_ = value;
+  profileOverride_ = std::move(profileOverride);
+  updatePreview();
+}
+void RevolveToolSession::clearProfile() {
+  profileSketchId_ = kInvalidSketchId;
+  profileOverride_.reset();
+  updatePreview();
+}
 void RevolveToolSession::setAxis(AxisReference value) { axis_ = value; updatePreview(); }
 void RevolveToolSession::clearAxis() { axis_.reset(); updatePreview(); }
 void RevolveToolSession::setAngleFromPanel(double value) { angleDeg_ = value; updatePreview(); }
@@ -34,6 +44,10 @@ void RevolveToolSession::setAngleFromManipulator(double value) { angleDeg_ = std
 void RevolveToolSession::setOperation(ExtrudeOperation value) { operation_ = value; updatePreview(); }
 void RevolveToolSession::setReversed(bool value) { reversed_ = value; updatePreview(); }
 SketchId RevolveToolSession::profileSketchId() const noexcept { return profileSketchId_; }
+const std::optional<sketch::Sketch>&
+RevolveToolSession::profileOverride() const noexcept {
+  return profileOverride_;
+}
 const std::optional<AxisReference>& RevolveToolSession::axis() const noexcept { return axis_; }
 double RevolveToolSession::angleDeg() const noexcept { return angleDeg_; }
 ExtrudeOperation RevolveToolSession::operation() const noexcept { return operation_; }
@@ -52,7 +66,8 @@ ToolSelectionStage RevolveToolSession::selectionStage() const noexcept {
 }
 std::optional<SelectionRequirement> RevolveToolSession::selectionRequirement() const {
   if (selectionStage() == ToolSelectionStage::SelectingInput)
-    return SelectionRequirement{SelectionType::Sketch, "Select profile", 1, 1, false};
+    return SelectionRequirement{SelectionType::Sketch, "Select profiles", 1,
+                                static_cast<std::size_t>(-1), true};
   if (selectionStage() == ToolSelectionStage::SelectingReference)
     return SelectionRequirement{SelectionType::Axis, "Select revolution axis", 1, 1, false};
   return std::nullopt;
@@ -67,8 +82,9 @@ std::shared_ptr<const TopoDS_Shape> RevolveToolSession::previewShape() const { r
 const std::string& RevolveToolSession::error() const noexcept { return error_; }
 
 bool RevolveToolSession::updatePreview() {
-  previewShape_.reset(); error_.clear();
+  error_.clear();
   if (!document_ || profileSketchId_ == kInvalidSketchId || !axis_) {
+    previewShape_.reset();
     lifecycle_ = profileSketchId_ == kInvalidSketchId
                      ? ToolLifecycle::SelectingInput
                      : ToolLifecycle::SelectingReference;
@@ -76,6 +92,7 @@ bool RevolveToolSession::updatePreview() {
   }
   RevolveFeature preview(profileSketchId_, *axis_, angleDeg_, "Revolve preview",
                          operation_, reversed_);
+  preview.setProfileOverride(profileOverride_);
   const TopoDS_Shape* previous =
       operation_ == ExtrudeOperation::NewBody ? nullptr
                                                : (baseShape_ ? baseShape_.get() : nullptr);
@@ -120,7 +137,7 @@ std::optional<AngularToolManipulator> RevolveToolSession::manipulator() const {
 void RevolveToolSession::cancel() noexcept {
   document_ = nullptr; baseShape_.reset(); previewShape_.reset(); axis_.reset();
   editingFeatureId_.reset();
-  profileSketchId_ = kInvalidSketchId; error_.clear();
+  profileSketchId_ = kInvalidSketchId; profileOverride_.reset(); error_.clear();
   lifecycle_ = ToolLifecycle::Inactive;
 }
 }  // namespace solidar

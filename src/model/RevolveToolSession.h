@@ -12,7 +12,9 @@ class RevolveToolSession final : public ToolSession {
   void begin(const Document& document, BodyId bodyId, FeatureId sourceFeatureId,
              ShapeFeature::ShapePtr baseShape = {},
              std::optional<FeatureId> editingFeatureId = std::nullopt);
-  void setProfile(SketchId profileSketchId);
+  void setProfile(
+      SketchId profileSketchId,
+      std::optional<sketch::Sketch> profileOverride = std::nullopt);
   void clearProfile();
   void setAxis(AxisReference axis);
   void clearAxis();
@@ -22,6 +24,8 @@ class RevolveToolSession final : public ToolSession {
   void setReversed(bool reversed);
 
   [[nodiscard]] SketchId profileSketchId() const noexcept;
+  [[nodiscard]] const std::optional<sketch::Sketch>&
+  profileOverride() const noexcept;
   [[nodiscard]] const std::optional<AxisReference>& axis() const noexcept;
   [[nodiscard]] double angleDeg() const noexcept;
   [[nodiscard]] ExtrudeOperation operation() const noexcept;
@@ -46,6 +50,7 @@ class RevolveToolSession final : public ToolSession {
   std::optional<FeatureId> editingFeatureId_;
   ShapeFeature::ShapePtr baseShape_;
   SketchId profileSketchId_{kInvalidSketchId};
+  std::optional<sketch::Sketch> profileOverride_;
   std::optional<AxisReference> axis_;
   double angleDeg_{360.0};
   ExtrudeOperation operation_{ExtrudeOperation::NewBody};

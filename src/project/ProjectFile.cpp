@@ -602,6 +602,9 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         saved["angleDeg"] = revolve->angleDeg();
         saved["operation"] = static_cast<int>(revolve->operation());
         saved["reversed"] = revolve->reversed();
+        if (revolve->profileOverride())
+          saved["profileOverride"] =
+              savedExtrudeProfileGeometry(*revolve->profileOverride());
       } else if (const auto* pocket =
                      dynamic_cast<const PocketFeature*>(feature.get())) {
         saved["sketchId"] = static_cast<qint64>(pocket->profileSketchId());
@@ -805,11 +808,15 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
             static_cast<AxisReferenceType>(saved.value("axisType").toInt()),
             static_cast<SketchId>(saved.value("axisSketchId").toInteger()),
             static_cast<sketch::GeometryId>(saved.value("axisLineId").toInteger())};
-        body.addFeature(std::make_unique<RevolveFeature>(
+        auto feature = std::make_unique<RevolveFeature>(
             id, static_cast<SketchId>(saved.value("profileSketchId").toInteger()),
             axis, saved.value("angleDeg").toDouble(360.0), name,
             static_cast<ExtrudeOperation>(saved.value("operation").toInt()),
-            saved.value("reversed").toBool()));
+            saved.value("reversed").toBool());
+        if (saved.value("profileOverride").isObject())
+          feature->setProfileOverride(
+              loadedExtrudeProfileGeometry(saved.value("profileOverride")));
+        body.addFeature(std::move(feature));
       } else if (type == QStringLiteral("Pocket")) {
         body.addFeature(std::make_unique<PocketFeature>(
             id, static_cast<SketchId>(saved.value("sketchId").toInteger()),

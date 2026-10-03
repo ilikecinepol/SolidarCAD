@@ -382,6 +382,25 @@ bool isSupportedSketchProfile(const DocumentSketch& profile,
   }
 }
 
+bool buildSketchProfileFaces(const DocumentSketch& profile,
+                             std::vector<TopoDS_Face>* regions,
+                             std::string* error) {
+  if (!regions) {
+    if (error) *error = "Profile region output is missing";
+    return false;
+  }
+  if (!isSupportedSketchProfile(profile, error)) return false;
+  try {
+    return buildClassifiedRegionFaces(profile, regions, error);
+  } catch (const Standard_Failure&) {
+    if (error) *error = "Could not build multiple profile regions";
+    return false;
+  } catch (...) {
+    if (error) *error = "Unexpected profile region geometry error";
+    return false;
+  }
+}
+
 bool buildExtrusionFromSketch(const DocumentSketch& profile,
                               const TopoDS_Shape* baseShape,
                               double lengthMm, ExtrudeOperation operation,

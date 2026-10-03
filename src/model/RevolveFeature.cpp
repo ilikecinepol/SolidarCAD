@@ -2,6 +2,7 @@
 
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
@@ -15,8 +16,9 @@
 #include <exception>
 #include <numbers>
 #include <utility>
+#include <vector>
 
-#include "model/SketchProfileBuilder.h"
+#include "model/SketchExtrudeBuilder.h"
 
 namespace solidar {
 namespace {
@@ -61,6 +63,13 @@ bool resolveAxis(const Document& document, const AxisReference& reference,
                    gp_Dir(direction.x, direction.y, direction.z));
   return true;
 }
+
+std::size_t solidCount(const TopoDS_Shape& shape) {
+  std::size_t count = 0;
+  for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next())
+    ++count;
+  return count;
+}
 }
 
 RevolveFeature::RevolveFeature(SketchId profile, AxisReference axis,
@@ -80,7 +89,21 @@ const AxisReference& RevolveFeature::axis() const noexcept { return axis_; }
 double RevolveFeature::angleDeg() const noexcept { return angleDeg_; }
 ExtrudeOperation RevolveFeature::operation() const noexcept { return operation_; }
 bool RevolveFeature::reversed() const noexcept { return reversed_; }
-void RevolveFeature::setProfileSketchId(SketchId value) noexcept { if (profileSketchId_ != value) { profileSketchId_ = value; setDirty(); } }
+void RevolveFeature::setProfileSketchId(SketchId value) noexcept {
+  if (profileSketchId_ == value) return;
+  profileSketchId_ = value;
+  profileOverride_.reset();
+  setDirty();
+}
+const std::optional<sketch::Sketch>&
+RevolveFeature::profileOverride() const noexcept {
+  return profileOverride_;
+}
+void RevolveFeature::setProfileOverride(
+    std::optional<sketch::Sketch> profile) {
+  profileOverride_ = std::move(profile);
+  setDirty();
+}
 void RevolveFeature::setAxis(AxisReference value) noexcept { if (axis_ != value) { axis_ = value; setDirty(); } }
 void RevolveFeature::setAngleDeg(double value) noexcept { if (angleDeg_ != value) { angleDeg_ = value; setDirty(); } }
 void RevolveFeature::setOperation(ExtrudeOperation value) noexcept { if (operation_ != value) { operation_ = value; setDirty(); } }
@@ -99,9 +122,11 @@ bool RevolveFeature::rebuild(const RebuildContext& context) {
   const auto* profile = context.document.findSketch(profileSketchId_);
   if (!profile) { markError("Revolve profile sketch was not found"); return false; }
   try {
-    TopoDS_Face face;
+    DocumentSketch selectedProfile = *profile;
+    if (profileOverride_) selectedProfile.geometry = *profileOverride_;
     std::string error;
-    if (!buildPlanarFaceFromSketch(*profile, &face, &error)) {
+    std::vector<TopoDS_Face> regionFaces;
+    if (!buildSketchProfileFaces(selectedProfile, &regionFaces, &error)) {
       markError("Revolve " + error); return false;
     }
     gp_Ax1 axis;
@@ -110,12 +135,36 @@ bool RevolveFeature::rebuild(const RebuildContext& context) {
     }
     const double radians = angleDeg_ * std::numbers::pi / 180.0 *
                            (reversed_ ? -1.0 : 1.0);
-    BRepPrimAPI_MakeRevol builder(face, axis, radians, true);
-    builder.Build();
-    if (!builder.IsDone() || builder.Shape().IsNull()) {
-      markError("Revolve could not build a valid shape"); return false;
+    std::vector<TopoDS_Shape> revolvedRegions;
+    revolvedRegions.reserve(regionFaces.size());
+    for (const auto& face : regionFaces) {
+      BRepPrimAPI_MakeRevol builder(face, axis, radians, true);
+      builder.Build();
+      if (!builder.IsDone() || builder.Shape().IsNull() ||
+          solidCount(builder.Shape()) == 0) {
+        markError("Revolve could not build a valid selected region");
+        return false;
+      }
+      BRepCheck_Analyzer analyzer(builder.Shape());
+      if (!analyzer.IsValid()) {
+        markError("Revolve selected region result is invalid");
+        return false;
+      }
+      revolvedRegions.push_back(builder.Shape());
     }
-    TopoDS_Shape result = builder.Shape();
+
+    TopoDS_Shape revolveTool = revolvedRegions.front();
+    for (std::size_t index = 1; index < revolvedRegions.size(); ++index) {
+      BRepAlgoAPI_Fuse fuse(revolveTool, revolvedRegions[index]);
+      fuse.Build();
+      if (!fuse.IsDone() || fuse.Shape().IsNull()) {
+        markError("Revolve could not combine selected profile regions");
+        return false;
+      }
+      revolveTool = fuse.Shape();
+    }
+
+    TopoDS_Shape result = revolveTool;
     if (operation_ == ExtrudeOperation::NewBody) {
       if (context.previousShape && !context.previousShape->IsNull()) {
         markError("Revolve New Body must be the first feature of a Body"); return false;
@@ -128,17 +177,22 @@ bool RevolveFeature::rebuild(const RebuildContext& context) {
         return false;
       }
       if (operation_ == ExtrudeOperation::Join) {
-        BRepAlgoAPI_Fuse boolean(*context.previousShape, result); boolean.Build();
+        BRepAlgoAPI_Fuse boolean(*context.previousShape, revolveTool); boolean.Build();
         if (!boolean.IsDone() || boolean.Shape().IsNull()) { markError("Revolve Join boolean fuse failed"); return false; }
         result = boolean.Shape();
       } else {
-        BRepAlgoAPI_Cut boolean(*context.previousShape, result); boolean.Build();
+        BRepAlgoAPI_Cut boolean(*context.previousShape, revolveTool); boolean.Build();
         if (!boolean.IsDone() || boolean.Shape().IsNull()) { markError("Revolve Cut boolean cut failed"); return false; }
         result = boolean.Shape();
       }
     }
-    TopExp_Explorer solids(result, TopAbs_SOLID);
-    if (!solids.More()) { markError("Revolve result does not contain a solid"); return false; }
+    if (solidCount(result) == 0) {
+      markError("Revolve result does not contain a solid"); return false;
+    }
+    BRepCheck_Analyzer resultAnalyzer(result);
+    if (!resultAnalyzer.IsValid()) {
+      markError("Revolve result is invalid"); return false;
+    }
     setShape(std::make_shared<TopoDS_Shape>(result)); markValid(); return true;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();
