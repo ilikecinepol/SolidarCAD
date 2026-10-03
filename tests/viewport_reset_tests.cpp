@@ -123,6 +123,20 @@ int main(int argc, char** argv) {
 
   viewport.setBodyShape(box, bodyId, featureId);
   viewport.setSolidVisible(true);
+  viewport.beginMoveBodySelection();
+  CHECK(viewport.moveBodySelectionActive());
+  viewport.setSelectedBodies({bodyId});
+  viewport.showMovePreview();
+  viewport.setTranslationToolManipulator(
+      {{5.0, 10.0, 15.0}, {1.0, 2.0, 3.0}, -100000.0, 100000.0});
+  CHECK(viewport.translationToolManipulator().has_value());
+  viewport.resetToolInteraction();
+  CHECK(!viewport.moveBodySelectionActive());
+  CHECK(!viewport.translationToolManipulator().has_value());
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+
+  viewport.setBodyShape(box, bodyId, featureId);
+  viewport.setSolidVisible(true);
   viewport.beginLinearPatternBodySelection();
   CHECK(viewport.linearPatternBodySelectionActive());
   viewport.setSelectedBodies({bodyId});

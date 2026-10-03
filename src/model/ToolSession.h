@@ -35,6 +35,13 @@ struct LinearToolManipulator {
   bool directional{false};
 };
 
+struct TranslationToolManipulator {
+  Point3d origin{};
+  Vector3d offsetMm{};
+  double minimumMm{-100000.0};
+  double maximumMm{100000.0};
+};
+
 struct AngularToolManipulator {
   Point3d origin{};
   Vector3d axis{1.0, 0.0, 0.0};

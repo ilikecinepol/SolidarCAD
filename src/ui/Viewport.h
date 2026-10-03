@@ -5,6 +5,7 @@
 #include <QPolygonF>
 #include <QString>
 #include <QOpenGLWidget>
+#include <array>
 #include <vector>
 #include <optional>
 #include <string>
@@ -90,6 +91,9 @@ class Viewport final : public QOpenGLWidget {
   void showMirrorPlaneSelection(int planeIndex);
   [[nodiscard]] bool mirrorBodySelectionActive() const noexcept;
   [[nodiscard]] bool mirrorPlaneSelectionActive() const noexcept;
+  void beginMoveBodySelection();
+  void showMovePreview();
+  [[nodiscard]] bool moveBodySelectionActive() const noexcept;
   void beginLinearPatternBodySelection();
   void beginLinearPatternAxisSelection();
   void showLinearPatternAxisSelection(int axisIndex);
@@ -150,6 +154,12 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] double toolManipulatorHudValue() const noexcept;
   [[nodiscard]] const std::optional<LinearToolManipulator>&
   linearToolManipulator() const noexcept { return toolManipulator_; }
+  void setTranslationToolManipulator(
+      const TranslationToolManipulator& manipulator);
+  [[nodiscard]] const std::optional<TranslationToolManipulator>&
+  translationToolManipulator() const noexcept {
+    return translationToolManipulator_;
+  }
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
   [[nodiscard]] const std::optional<AngularToolManipulator>&
   angularToolManipulator() const noexcept { return angularToolManipulator_; }
@@ -198,6 +208,7 @@ class Viewport final : public QOpenGLWidget {
   void sketchPlanePicked(const QString& planeName);
   void mirrorBodyPicked(BodyId bodyId);
   void mirrorPlanePicked(int planeIndex);
+  void moveBodyPicked(BodyId bodyId);
   void linearPatternBodyPicked(BodyId bodyId);
   void linearPatternAxisPicked(int axisIndex);
   void circularPatternBodyPicked(BodyId bodyId);
@@ -216,6 +227,7 @@ class Viewport final : public QOpenGLWidget {
   // setSelectedBodies; MainWindow consumption is intentionally deferred.
   void bodiesSelected(const std::vector<BodyId>& ids);
   void toolManipulatorValueChanged(double valueMm);
+  void translationToolManipulatorValueChanged(int axisIndex, double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
   // Emitted after a HUD field commit via Enter (after the value has been routed
   // to the session preview). MainWindow uses it to perform the active tool's
@@ -270,6 +282,8 @@ class Viewport final : public QOpenGLWidget {
   };
   [[nodiscard]] std::optional<ManipulatorLayoutResult> toolManipulatorLayout()
       const;
+  [[nodiscard]] std::array<ManipulatorLayoutResult, 3>
+  translationManipulatorLayouts() const;
   [[nodiscard]] std::optional<AngularVisual> angularVisual() const;
   void rebuildSelectedExtrusionSketch();
   void updateBodyHover(QPointF position);
@@ -295,6 +309,8 @@ class Viewport final : public QOpenGLWidget {
     MirrorBody,
     MirrorPlane,
     MirrorPreview,
+    MoveBody,
+    MovePreview,
     LinearPatternBody,
     LinearPatternAxis,
     LinearPatternPreview,
@@ -389,9 +405,12 @@ class Viewport final : public QOpenGLWidget {
   bool selectedExtrusionOnBodyCap_{false};
   bool draggingExtrusionHandle_{false};
   std::optional<LinearToolManipulator> toolManipulator_;
+  std::optional<TranslationToolManipulator> translationToolManipulator_;
   std::optional<AngularToolManipulator> angularToolManipulator_;
   ManipulatorStyle manipulatorStyle_;
   bool draggingToolManipulator_{false};
+  bool draggingTranslationToolManipulator_{false};
+  int activeTranslationAxis_{-1};
   std::optional<LinearDragSnapshot> linearDragSnapshot_;
   bool draggingAngularToolManipulator_{false};
   bool panningView_{false};

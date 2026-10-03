@@ -11,7 +11,7 @@ class QToolButton;
 namespace solidar {
 
 enum class HistoryStepType {
-  Sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Mirror,
+  Sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Move, Mirror,
   LinearPattern, CircularPattern, Shell, Draft
 };
 

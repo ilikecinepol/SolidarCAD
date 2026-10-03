@@ -28,6 +28,7 @@
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/MirrorFeature.h"
+#include "model/MoveFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/CircularPatternFeature.h"
 #include "model/DraftFeature.h"
@@ -647,6 +648,14 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
                      dynamic_cast<const MirrorFeature*>(feature.get())) {
         saved["sourceFeatureId"] = static_cast<qint64>(mirror->sourceFeatureId());
         saved["plane"] = static_cast<int>(mirror->plane());
+      } else if (const auto* move =
+                     dynamic_cast<const MoveFeature*>(feature.get())) {
+        const auto offset = move->offsetMm();
+        saved["sourceFeatureId"] =
+            static_cast<qint64>(move->sourceFeatureId());
+        saved["offsetXmm"] = offset.x;
+        saved["offsetYmm"] = offset.y;
+        saved["offsetZmm"] = offset.z;
       } else if (const auto* linear =
                      dynamic_cast<const LinearPatternFeature*>(feature.get())) {
         saved["sourceBodyId"] = static_cast<qint64>(linear->sourceBodyId());
@@ -859,6 +868,14 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
         body.addFeature(std::make_unique<MirrorFeature>(
             id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
             static_cast<MirrorPlane>(saved.value("plane").toInt()), name));
+      } else if (type == QStringLiteral("Move")) {
+        body.addFeature(std::make_unique<MoveFeature>(
+            id,
+            static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
+            Vector3d{saved.value("offsetXmm").toDouble(),
+                     saved.value("offsetYmm").toDouble(),
+                     saved.value("offsetZmm").toDouble()},
+            name));
       } else if (type == QStringLiteral("LinearPattern")) {
         body.addFeature(std::make_unique<LinearPatternFeature>(
             id,

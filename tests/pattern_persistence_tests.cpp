@@ -8,6 +8,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/MirrorFeature.h"
+#include "model/MoveFeature.h"
 #include "project/ProjectFile.h"
 #include "TestGeometryUtils.h"
 #define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
@@ -17,7 +18,10 @@ int main(int argc, char** argv) {
   auto& body = document.addBody();
   auto extrude = std::make_unique<solidar::ExtrudeFeature>(sketch.id, 5.0);
   const auto extrudeId = extrude->id(); body.addFeature(std::move(extrude));
-  auto mirror = std::make_unique<solidar::MirrorFeature>(extrudeId, solidar::MirrorPlane::YZ);
+  auto move = std::make_unique<solidar::MoveFeature>(
+      extrudeId, solidar::Vector3d{5.0, -6.0, 7.0});
+  const auto moveId = move->id(); body.addFeature(std::move(move));
+  auto mirror = std::make_unique<solidar::MirrorFeature>(moveId, solidar::MirrorPlane::YZ);
   const auto mirrorId = mirror->id(); body.addFeature(std::move(mirror));
   auto linear = std::make_unique<solidar::LinearPatternFeature>(mirrorId, solidar::PrincipalAxis::Y, 3, 40.0);
   const auto linearId = linear->id(); body.addFeature(std::move(linear));
@@ -35,9 +39,15 @@ int main(int argc, char** argv) {
   CHECK(restored.recompute());
   CHECK(restored.bodies().size() == 2);
   const auto* loaded = restored.findBody(sourceBodyId); CHECK(loaded);
-  CHECK(loaded->features().size() == 4);
-  CHECK(loaded->features()[1]->id() == mirrorId && loaded->features()[2]->id() == linearId && loaded->features()[3]->id() == circularId);
-  CHECK(loaded->features()[3]->isValid() && loaded->resultShape());
+  CHECK(loaded->features().size() == 5);
+  const auto* loadedMove = dynamic_cast<const solidar::MoveFeature*>(
+      loaded->features()[1].get());
+  CHECK(loadedMove && loadedMove->id() == moveId);
+  CHECK(solidar::test::near(loadedMove->offsetMm().x, 5.0));
+  CHECK(solidar::test::near(loadedMove->offsetMm().y, -6.0));
+  CHECK(solidar::test::near(loadedMove->offsetMm().z, 7.0));
+  CHECK(loaded->features()[2]->id() == mirrorId && loaded->features()[3]->id() == linearId && loaded->features()[4]->id() == circularId);
+  CHECK(loaded->features()[4]->isValid() && loaded->resultShape());
   const auto* loadedCopies = restored.activeBody();
   CHECK(loadedCopies && loadedCopies->features().size() == 1);
   const auto* loadedPattern = dynamic_cast<const solidar::LinearPatternFeature*>(

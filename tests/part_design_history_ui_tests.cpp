@@ -12,6 +12,7 @@
 #include "model/FilletFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/MirrorFeature.h"
+#include "model/MoveFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/ShellFeature.h"
@@ -121,8 +122,12 @@ int main(int argc, char** argv) {
       persistedSketch.id, 5.0);
   const auto persistedExtrudeId = persistedExtrude->id();
   persistedBody.addFeature(std::move(persistedExtrude));
+  auto persistedMove = std::make_unique<solidar::MoveFeature>(
+      persistedExtrudeId, solidar::Vector3d{7.0, -3.0, 2.0});
+  const auto persistedMoveId = persistedMove->id();
+  persistedBody.addFeature(std::move(persistedMove));
   auto persistedMirror = std::make_unique<solidar::MirrorFeature>(
-      persistedExtrudeId, solidar::MirrorPlane::YZ);
+      persistedMoveId, solidar::MirrorPlane::YZ);
   const auto persistedMirrorId = persistedMirror->id();
   persistedBody.addFeature(std::move(persistedMirror));
   auto persistedLinear = std::make_unique<solidar::LinearPatternFeature>(
@@ -131,6 +136,9 @@ int main(int argc, char** argv) {
   persistedBody.addFeature(std::move(persistedLinear));
   CHECK(persisted.recompute());
   const auto persistedSteps = solidar::buildPartDesignHistory(persisted, persistedBody);
+  CHECK(persistedSteps.size() == 5);
+  CHECK(persistedSteps[2].type == solidar::HistoryStepType::Move);
+  CHECK(persistedSteps[2].featureId == persistedMoveId);
   QTemporaryDir directory; CHECK(directory.isValid());
   const QString path = directory.filePath(QStringLiteral("history.solidar"));
   QString error;

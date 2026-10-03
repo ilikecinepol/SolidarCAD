@@ -234,6 +234,33 @@ int main(int argc, char** argv) {
     CHECK(pickedAxis == 0);
   }
 
+  // Move selects the same stable whole Body and transitions directly to its
+  // three-axis manipulator preview (there is no intermediate reference pick).
+  {
+    solidar::Viewport moveView;
+    moveView.resize(800, 600);
+    moveView.setBodyShape(source, bodyId, sourceFeatureId);
+    moveView.setSolidVisible(true);
+    int bodyPicks = 0;
+    solidar::BodyId pickedBody = solidar::kInvalidBodyId;
+    QObject::connect(&moveView, &solidar::Viewport::moveBodyPicked,
+                     &moveView, [&](solidar::BodyId id) {
+                       ++bodyPicks;
+                       pickedBody = id;
+                     });
+    const QPointF bodyPoint = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    moveView.beginMoveBodySelection();
+    mouse(moveView, QEvent::MouseMove, bodyPoint, Qt::NoButton,
+          Qt::NoButton);
+    CHECK(moveView.effectiveHoveredFaceIndices().size() == 6);
+    mouse(moveView, QEvent::MouseButtonPress, bodyPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(bodyPicks == 1);
+    CHECK(pickedBody == bodyId);
+    CHECK(moveView.selectedBodies() ==
+          std::vector<solidar::BodyId>{bodyId});
+  }
+
   // Circular Pattern shares the same whole-Body and principal-axis picking
   // contract; only its parameter manipulator is angular after selection.
   {

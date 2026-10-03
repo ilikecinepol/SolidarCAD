@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
   assert(creation->findChild<QToolButton*>("revolveCommand"));
   assert(editing->findChild<QToolButton*>("filletCommand"));
   assert(editing->findChild<QToolButton*>("chamferCommand"));
+  assert(editing->findChild<QToolButton*>("moveCommand"));
   assert(!creation->findChild<QToolButton*>("filletCommand"));
 
   const auto commands = ribbon.findChildren<QToolButton*>();
@@ -57,7 +58,7 @@ int main(int argc, char** argv) {
     assert(!command->accessibleName().isEmpty());
     assert(!command->accessibleDescription().isEmpty());
   }
-  assert(documentedCommands == 10);
+  assert(documentedCommands == 11);
   assert(!ribbon.findChild<QToolButton*>("fitCommand"));
   assert(!ribbon.findChild<QToolButton*>("isoCommand"));
   const std::initializer_list<solidar::PartDesignToolKind> historyKinds{
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
       solidar::PartDesignToolKind::Revolve,
       solidar::PartDesignToolKind::Fillet,
       solidar::PartDesignToolKind::Chamfer,
+      solidar::PartDesignToolKind::Move,
       solidar::PartDesignToolKind::Mirror,
       solidar::PartDesignToolKind::LinearPattern,
       solidar::PartDesignToolKind::CircularPattern,
@@ -88,7 +90,7 @@ int main(int argc, char** argv) {
   assert(!compactButton.toolTip().isEmpty() && compactButton.isChecked());
 
   assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
-  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 7);
+  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 8);
   assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
 
   solidar::ToolParametersPanel panel;

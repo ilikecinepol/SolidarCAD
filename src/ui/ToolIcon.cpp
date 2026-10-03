@@ -101,6 +101,15 @@ void drawTool(QPainter& p, ToolIconKind kind) {
       p.drawPolyline(QPolygonF{{13, 38}, {13, 27}, {27, 13}, {38, 13}});
       dimensionLine(p, {9, 18}, {18, 9});
       break;
+    case ToolIconKind::Move:
+      point(p, {19, 29}, 2.0);
+      p.drawLine(19, 29, 39, 29);
+      arrowHead(p, {40, 29}, {1, 0});
+      p.drawLine(19, 29, 19, 8);
+      arrowHead(p, {19, 7}, {0, -1});
+      p.drawLine(19, 29, 8, 40);
+      arrowHead(p, {7, 41}, {-1, 1});
+      break;
     case ToolIconKind::Shell:
       drawCube(p);
       p.drawPolygon(QPolygonF{{15, 18}, {24, 13}, {32, 17}, {24, 21}});

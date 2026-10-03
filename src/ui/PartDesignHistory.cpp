@@ -10,6 +10,7 @@
 #include "model/FilletFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/MirrorFeature.h"
+#include "model/MoveFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/ShellFeature.h"
@@ -67,6 +68,12 @@ HistoryStep featureStep(const Body& body, const ShapeFeature& feature,
     step.type = HistoryStepType::Chamfer; kind = PartDesignToolKind::Chamfer;
     parameters << QString::fromUtf8("Размер: %1 мм").arg(v->distanceMm(), 0, 'f', 2)
                << QString::fromUtf8("Рёбер: %1").arg(v->edges().size());
+  } else if (const auto* v = dynamic_cast<const MoveFeature*>(&feature)) {
+    step.type = HistoryStepType::Move; kind = PartDesignToolKind::Move;
+    const auto offset = v->offsetMm();
+    parameters << QString::fromUtf8("X: %1 мм").arg(offset.x, 0, 'f', 2)
+               << QString::fromUtf8("Y: %1 мм").arg(offset.y, 0, 'f', 2)
+               << QString::fromUtf8("Z: %1 мм").arg(offset.z, 0, 'f', 2);
   } else if (const auto* v = dynamic_cast<const MirrorFeature*>(&feature)) {
     step.type = HistoryStepType::Mirror; kind = PartDesignToolKind::Mirror;
     parameters << QString::fromUtf8("Плоскость: %1").arg(planeText(v->plane()));

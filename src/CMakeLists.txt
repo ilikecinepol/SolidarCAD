@@ -50,6 +50,10 @@ add_library(solidar_model
   model/MirrorFeature.h
   model/MirrorToolSession.cpp
   model/MirrorToolSession.h
+  model/MoveFeature.cpp
+  model/MoveFeature.h
+  model/MoveToolSession.cpp
+  model/MoveToolSession.h
   model/LinearPatternFeature.cpp
   model/LinearPatternFeature.h
   model/LinearPatternToolSession.cpp

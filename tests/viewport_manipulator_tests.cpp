@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QLineF>
 #include <QMouseEvent>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -57,6 +58,28 @@ solidar::ManipulatorLayoutResult linearLayout(
 QPointF linearHandle(const solidar::Viewport& view,
                      const solidar::LinearToolManipulator& manipulator) {
   return linearLayout(view, manipulator).handle;
+}
+
+QPointF translationHandle(
+    const solidar::Viewport& view,
+    const solidar::TranslationToolManipulator& manipulator, int axisIndex) {
+  const std::array<solidar::Vector3d, 3> axes{{{1.0, 0.0, 0.0},
+                                               {0.0, 1.0, 0.0},
+                                               {0.0, 0.0, 1.0}}};
+  const std::array<QPointF, 3> fallbacks{{{1.0, 0.0},
+                                          {-0.7, 0.7},
+                                          {0.0, -1.0}}};
+  solidar::ViewportCameraState camera{
+      view.cameraYawDegrees(), view.cameraPitchDegrees(), 1.0F, {}, view.size(),
+      1.0F, manipulator.origin, 1.0};
+  const QPointF anchor = camera.worldToScreen(manipulator.origin);
+  const auto axis = axes[axisIndex];
+  const solidar::Point3d endpoint{manipulator.origin.x + axis.x,
+                                   manipulator.origin.y + axis.y,
+                                   manipulator.origin.z + axis.z};
+  const auto stable = solidar::stableProjectedDirection(
+      camera.worldToScreen(endpoint) - anchor, fallbacks[axisIndex], 2.0);
+  return anchor + stable.normalizedDirection * 64.0;
 }
 
 solidar::Vector3d normalizedVector(solidar::Vector3d value) {
@@ -180,6 +203,50 @@ int main(int argc, char** argv) {
   CHECK(std::abs(lastValue - manip.minimumMm) < 1e-9);
   mouse(dragView, QEvent::MouseButtonRelease, handle, Qt::LeftButton,
         Qt::NoButton);
+
+  // Move's triad reports the dragged axis independently and supports signed
+  // coordinates. Dragging X must not mutate the Y/Z values owned by the tool
+  // session.
+  {
+    const solidar::TranslationToolManipulator translation{
+        {0.0, 0.0, 0.0}, {5.0, -7.0, 9.0}, -100.0, 100.0};
+    solidar::Viewport moveView;
+    moveView.resize(800, 600);
+    moveView.setTranslationToolManipulator(translation);
+    CHECK(moveView.translationToolManipulator().has_value());
+    const QPointF moveHandle = translationHandle(moveView, translation, 0);
+    const QPointF moveAnchor = solidar::ViewportCameraState{
+                                   moveView.cameraYawDegrees(),
+                                   moveView.cameraPitchDegrees(), 1.0F, {},
+                                   moveView.size(), 1.0F, translation.origin,
+                                   1.0}
+                                   .worldToScreen(translation.origin);
+    const QPointF direction =
+        (moveHandle - moveAnchor) / QLineF(moveAnchor, moveHandle).length();
+    int emittedAxis = -1;
+    double emittedValue = translation.offsetMm.x;
+    QObject::connect(
+        &moveView,
+        &solidar::Viewport::translationToolManipulatorValueChanged,
+        &moveView, [&](int axis, double value) {
+          emittedAxis = axis;
+          emittedValue = value;
+        });
+    mouse(moveView, QEvent::MouseButtonPress, moveHandle, Qt::LeftButton,
+          Qt::LeftButton);
+    mouse(moveView, QEvent::MouseMove, moveHandle + direction * 20.0,
+          Qt::NoButton, Qt::LeftButton);
+    CHECK(emittedAxis == 0);
+    CHECK(emittedValue > translation.offsetMm.x);
+    CHECK(moveView.translationToolManipulator()->offsetMm.y ==
+          translation.offsetMm.y);
+    CHECK(moveView.translationToolManipulator()->offsetMm.z ==
+          translation.offsetMm.z);
+    mouse(moveView, QEvent::MouseButtonRelease, moveHandle, Qt::LeftButton,
+          Qt::NoButton);
+    moveView.clearToolManipulator();
+    CHECK(!moveView.translationToolManipulator().has_value());
+  }
 
   // Zero-value (Fillet/Chamfer-like) manipulator: the presentation direction is
   // value-independent, so dragging along the ACTUAL drawn arrow must increase

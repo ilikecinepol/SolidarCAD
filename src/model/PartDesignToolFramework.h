@@ -17,6 +17,7 @@ enum class PartDesignToolKind {
   Revolve,
   Fillet,
   Chamfer,
+  Move,
   Mirror,
   LinearPattern,
   CircularPattern,

@@ -597,6 +597,12 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
       emit angularToolManipulatorValueChanged(value);
     else if (id == QStringLiteral("distance"))
       emit toolManipulatorValueChanged(value);
+    else if (id == QStringLiteral("offset_x"))
+      emit translationToolManipulatorValueChanged(0, value);
+    else if (id == QStringLiteral("offset_y"))
+      emit translationToolManipulatorValueChanged(1, value);
+    else if (id == QStringLiteral("offset_z"))
+      emit translationToolManipulatorValueChanged(2, value);
   };
   connect(toolParameterHud_, &ToolParameterHud::valueChanged, this,
           routeToolHudValue);
@@ -728,6 +734,20 @@ void drawToolArrow(QPainter& painter, QPointF start, QPointF tip,
   painter.setBrush(QColor("#ffffff"));
   painter.setPen(QPen(color, 3.0));
   painter.drawEllipse(tip, style.handleRadius, style.handleRadius);
+}
+
+void drawTranslationGizmo(
+    QPainter& painter,
+    const std::array<ManipulatorLayoutResult, 3>& layouts,
+    const std::array<QColor, 3>& colors) {
+  const std::array<QString, 3> labels{
+      QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")};
+  for (int axis = 0; axis < 3; ++axis) {
+    drawToolArrow(painter, layouts[axis].anchor, layouts[axis].handle,
+                  colors[axis]);
+    painter.setPen(colors[axis]);
+    painter.drawText(layouts[axis].handle + QPointF(9.0, -9.0), labels[axis]);
+  }
 }
 
 void drawToolArrowHead(QPainter& painter, QPointF preceding, QPointF tip,
@@ -973,6 +993,10 @@ bool Viewport::mirrorPlaneSelectionActive() const noexcept {
   return pickMode_ == PickMode::MirrorPlane;
 }
 
+bool Viewport::moveBodySelectionActive() const noexcept {
+  return pickMode_ == PickMode::MoveBody;
+}
+
 bool Viewport::linearPatternBodySelectionActive() const noexcept {
   return pickMode_ == PickMode::LinearPatternBody;
 }
@@ -1040,9 +1064,12 @@ void Viewport::resetScene() {
   // no stale drag snapshot/HUD can emit a value into a ToolSession whose source
   // Body belonged to the previous Document.
   toolManipulator_.reset();
+  translationToolManipulator_.reset();
   angularToolManipulator_.reset();
   linearDragSnapshot_.reset();
   draggingToolManipulator_ = false;
+  draggingTranslationToolManipulator_ = false;
+  activeTranslationAxis_ = -1;
   draggingAngularToolManipulator_ = false;
   toolHudParameterId_.clear();
   if (toolParameterHud_) toolParameterHud_->hide();
@@ -1129,6 +1156,33 @@ void Viewport::showMirrorPlaneSelection(int planeIndex) {
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredToolBodyId_ = kInvalidBodyId;
   for (bool& visible : basePlanesVisible_) visible = true;
+  unsetCursor();
+  update();
+}
+
+void Viewport::beginMoveBodySelection() {
+  pickMode_ = PickMode::MoveBody;
+  selectionFilter_ = SelectionFilter::Face;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  clearWholeBodySelection();
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::showMovePreview() {
+  pickMode_ = PickMode::MovePreview;
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
   unsetCursor();
   update();
 }
@@ -1492,6 +1546,7 @@ std::vector<std::size_t> Viewport::effectiveSelectedFaceIndices() const {
 
 std::vector<std::size_t> Viewport::effectiveHoveredFaceIndices() const {
   if ((pickMode_ != PickMode::MirrorBody &&
+       pickMode_ != PickMode::MoveBody &&
        pickMode_ != PickMode::LinearPatternBody &&
        pickMode_ != PickMode::CircularPatternBody) ||
       hoveredToolBodyId_ == kInvalidBodyId) {
@@ -1599,6 +1654,7 @@ void Viewport::commitFaceSelection(std::size_t globalIndex, bool toggle) {
 void Viewport::setToolManipulator(const LinearToolManipulator& manipulator) {
   const bool hudWasVisible = toolParameterHud_->isVisible();
   toolManipulator_ = manipulator;
+  translationToolManipulator_.reset();
   angularToolManipulator_.reset();
   // The HUD/panel show the ABSOLUTE length for directional manipulators; the
   // sign only reflects the drag direction, not a separate user-facing control.
@@ -1637,11 +1693,49 @@ double Viewport::toolManipulatorHudValue() const noexcept {
   return toolParameterHud_->value("distance");
 }
 
+void Viewport::setTranslationToolManipulator(
+    const TranslationToolManipulator& manipulator) {
+  const bool hudWasVisible = toolParameterHud_->isVisible();
+  translationToolManipulator_ = manipulator;
+  toolManipulator_.reset();
+  angularToolManipulator_.reset();
+  if (toolHudParameterId_ != "translation") {
+    toolParameterHud_->setParameters({
+        {"offset_x", "X", ToolParameterType::Distance,
+         manipulator.offsetMm.x, manipulator.minimumMm, manipulator.maximumMm,
+         0.1, "mm", true, ToolManipulatorType::Linear},
+        {"offset_y", "Y", ToolParameterType::Distance,
+         manipulator.offsetMm.y, manipulator.minimumMm, manipulator.maximumMm,
+         0.1, "mm", true, ToolManipulatorType::Linear},
+        {"offset_z", "Z", ToolParameterType::Distance,
+         manipulator.offsetMm.z, manipulator.minimumMm, manipulator.maximumMm,
+         0.1, "mm", true, ToolManipulatorType::Linear}});
+    toolHudParameterId_ = "translation";
+  } else {
+    toolParameterHud_->setValue("offset_x", manipulator.offsetMm.x);
+    toolParameterHud_->setValue("offset_y", manipulator.offsetMm.y);
+    toolParameterHud_->setValue("offset_z", manipulator.offsetMm.z);
+  }
+
+  const QPointF anchor = cameraPan_ + projectBodyPoint(
+      manipulator.origin, manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
+  toolParameterHud_->move(
+      std::clamp(static_cast<int>(anchor.x() + 78), 4,
+                 std::max(4, width() - toolParameterHud_->width() - 4)),
+      std::clamp(static_cast<int>(anchor.y() - 20), 4,
+                 std::max(4, height() - toolParameterHud_->height() - 4)));
+  toolParameterHud_->show();
+  toolParameterHud_->raise();
+  if (!hudWasVisible) toolParameterHud_->focusFirstField();
+  update();
+}
+
 void Viewport::setAngularToolManipulator(
     const AngularToolManipulator& manipulator) {
   const bool hudWasVisible = toolParameterHud_->isVisible();
   angularToolManipulator_ = manipulator;
   toolManipulator_.reset();
+  translationToolManipulator_.reset();
   if (toolHudParameterId_ != "angle") {
     toolParameterHud_->setParameters({
         {"angle", "Angle", ToolParameterType::Angle, manipulator.angleDeg,
@@ -1670,11 +1764,14 @@ void Viewport::setAngularToolManipulator(
 
 void Viewport::clearToolManipulator() {
   toolManipulator_.reset();
+  translationToolManipulator_.reset();
   angularToolManipulator_.reset();
   toolParameterHud_->hide();
   toolHudParameterId_.clear();
   linearDragSnapshot_.reset();
   draggingToolManipulator_ = false;
+  draggingTranslationToolManipulator_ = false;
+  activeTranslationAxis_ = -1;
   draggingAngularToolManipulator_ = false;
   update();
 }
@@ -1750,6 +1847,37 @@ std::optional<ManipulatorLayoutResult> Viewport::toolManipulatorLayout() const {
        {QRectF(width() - 126.0 - cameraPan_.x(), 8.0 - cameraPan_.y(), 116.0,
                116.0)}},
       style);
+}
+
+std::array<ManipulatorLayoutResult, 3>
+Viewport::translationManipulatorLayouts() const {
+  std::array<ManipulatorLayoutResult, 3> result{};
+  if (!translationToolManipulator_) return result;
+  const auto& manipulator = *translationToolManipulator_;
+  const QPointF anchor = projectBodyPoint(manipulator.origin, manipulator.origin,
+                                          size(), yaw_, pitch_, zoom_).screen;
+  const std::array<Vector3d, 3> axes{{{1.0, 0.0, 0.0},
+                                      {0.0, 1.0, 0.0},
+                                      {0.0, 0.0, 1.0}}};
+  const std::array<QPointF, 3> fallbacks{{{1.0, 0.0},
+                                          {-0.7, 0.7},
+                                          {0.0, -1.0}}};
+  for (int axis = 0; axis < 3; ++axis) {
+    const Point3d endpoint = offsetPoint(manipulator.origin, axes[axis], 1.0);
+    const QPointF projected = projectBodyPoint(
+        endpoint, manipulator.origin, size(), yaw_, pitch_, zoom_).screen;
+    const auto stable = stableProjectedDirection(
+        projected - anchor, fallbacks[axis],
+        manipulatorStyle_.nearEndOnThresholdPx);
+    result[axis] = {anchor,
+                    anchor + stable.normalizedDirection * 64.0,
+                    {},
+                    1.0,
+                    64.0,
+                    stable.normalizedDirection,
+                    stable.usedFallback};
+  }
+  return result;
 }
 
 std::optional<Viewport::AngularVisual> Viewport::angularVisual() const {
@@ -1844,6 +1972,7 @@ void Viewport::clearCubeHover() {
 void Viewport::leaveEvent(QEvent* event) {
   clearCubeHover();
   if (pickMode_ == PickMode::MirrorBody ||
+      pickMode_ == PickMode::MoveBody ||
       pickMode_ == PickMode::LinearPatternBody ||
       pickMode_ == PickMode::CircularPatternBody) {
     hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
@@ -2307,6 +2436,25 @@ void Viewport::paintGL() {
       if (toolParameterHud_ && toolParameterHud_->isVisible()) {
         toolParameterHud_->move((layout->hudTopLeft + cameraPan_).toPoint());
       }
+    }
+  }
+  if (translationToolManipulator_) {
+    const auto layouts = translationManipulatorLayouts();
+    drawTranslationGizmo(
+        painter, layouts,
+        std::array<QColor, 3>{theme.axisX, theme.axisY, theme.axisZ});
+    if (toolParameterHud_ && toolParameterHud_->isVisible()) {
+      const auto rightmost = std::max_element(
+          layouts.begin(), layouts.end(), [](const auto& left, const auto& right) {
+            return left.handle.x() < right.handle.x();
+          });
+      const QPointF hudPosition =
+          rightmost->handle + cameraPan_ + QPointF(16.0, -20.0);
+      toolParameterHud_->move(
+          std::clamp(static_cast<int>(hudPosition.x()), 4,
+                     std::max(4, width() - toolParameterHud_->width() - 4)),
+          std::clamp(static_cast<int>(hudPosition.y()), 4,
+                     std::max(4, height() - toolParameterHud_->height() - 4)));
     }
   }
   if (angularToolManipulator_) {
@@ -3078,6 +3226,36 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   }
   if (event->button() != Qt::LeftButton) return;
   const QPointF scenePosition = event->position() - cameraPan_;
+  if (translationToolManipulator_) {
+    const auto layouts = translationManipulatorLayouts();
+    for (int axis = 0; axis < 3; ++axis) {
+      if (QLineF(scenePosition, layouts[axis].handle).length() > 18.0)
+        continue;
+      const std::array<Vector3d, 3> worldAxes{{{1.0, 0.0, 0.0},
+                                               {0.0, 1.0, 0.0},
+                                               {0.0, 0.0, 1.0}}};
+      const auto& manipulator = *translationToolManipulator_;
+      const QPointF start = projectBodyPoint(
+          manipulator.origin, manipulator.origin, size(), yaw_, pitch_, zoom_)
+                                .screen;
+      const QPointF unitEnd = projectBodyPoint(
+          offsetPoint(manipulator.origin, worldAxes[axis], 1.0),
+          manipulator.origin, size(), yaw_, pitch_, zoom_)
+                                  .screen;
+      const QPointF dragAxis = robustLinearDragAxis(
+          unitEnd - start, layouts[axis].direction,
+          manipulatorStyle_.nearEndOnThresholdPx);
+      const std::array<double, 3> values{{manipulator.offsetMm.x,
+                                          manipulator.offsetMm.y,
+                                          manipulator.offsetMm.z}};
+      activeTranslationAxis_ = axis;
+      linearDragSnapshot_ = {scenePosition, dragAxis, values[axis]};
+      draggingTranslationToolManipulator_ = true;
+      setCursor(Qt::SizeAllCursor);
+      event->accept();
+      return;
+    }
+  }
   if (toolManipulator_) {
     const Point3d center = toolManipulator_->origin;
     const QPointF start = projectBodyPoint(toolManipulator_->origin, center,
@@ -3116,6 +3294,20 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
       setSelectedBodies({pickedBody});
       emit mirrorBodyPicked(pickedBody);
+    }
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::MoveBody) {
+    updateToolBodyHover(scenePosition);
+    if (hoveredToolBodyId_ != kInvalidBodyId) {
+      const BodyId pickedBody = hoveredToolBodyId_;
+      pickMode_ = PickMode::MovePreview;
+      selectionFilter_ = SelectionFilter::Any;
+      hoveredToolBodyId_ = kInvalidBodyId;
+      hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+      setSelectedBodies({pickedBody});
+      emit moveBodyPicked(pickedBody);
     }
     event->accept();
     return;
@@ -3239,6 +3431,10 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     }
   }
   if (pickMode_ == PickMode::CircularPatternPreview) {
+    event->accept();
+    return;
+  }
+  if (pickMode_ == PickMode::MovePreview) {
     event->accept();
     return;
   }
@@ -4871,6 +5067,26 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
       return;
     }
   }
+  if (draggingTranslationToolManipulator_ && translationToolManipulator_ &&
+      activeTranslationAxis_ >= 0 && activeTranslationAxis_ < 3 &&
+      event->buttons().testFlag(Qt::LeftButton)) {
+    if (linearDragSnapshot_) {
+      const double value = linearValueFromDrag(
+          *linearDragSnapshot_, event->position() - cameraPan_,
+          translationToolManipulator_->minimumMm,
+          translationToolManipulator_->maximumMm);
+      if (activeTranslationAxis_ == 0)
+        translationToolManipulator_->offsetMm.x = value;
+      else if (activeTranslationAxis_ == 1)
+        translationToolManipulator_->offsetMm.y = value;
+      else
+        translationToolManipulator_->offsetMm.z = value;
+      emit translationToolManipulatorValueChanged(activeTranslationAxis_,
+                                                  value);
+      update();
+    }
+    return;
+  }
   if (draggingToolManipulator_ && toolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
     if (linearDragSnapshot_) {
@@ -4911,6 +5127,14 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
+  if (event->buttons() == Qt::NoButton && pickMode_ == PickMode::MoveBody) {
+    updateToolBodyHover(event->position() - cameraPan_);
+    setCursor(hoveredToolBodyId_ != kInvalidBodyId ? Qt::PointingHandCursor
+                                                   : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
   if (event->buttons() == Qt::NoButton &&
       pickMode_ == PickMode::LinearPatternBody) {
     updateToolBodyHover(event->position() - cameraPan_);
@@ -4940,6 +5164,15 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
   }
   if (event->buttons() == Qt::NoButton &&
       pickMode_ == PickMode::MirrorPreview) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    hoveredToolBodyId_ = kInvalidBodyId;
+    unsetCursor();
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton && pickMode_ == PickMode::MovePreview) {
     hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
     hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     hoveredToolBodyId_ = kInvalidBodyId;
@@ -5108,6 +5341,15 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
+  if (event->button() == Qt::LeftButton &&
+      draggingTranslationToolManipulator_) {
+    draggingTranslationToolManipulator_ = false;
+    activeTranslationAxis_ = -1;
+    linearDragSnapshot_.reset();
+    unsetCursor();
+    event->accept();
+    return;
+  }
   if (event->button() == Qt::LeftButton && draggingAngularToolManipulator_) {
     draggingAngularToolManipulator_ = false;
     unsetCursor(); event->accept(); return;
@@ -5214,6 +5456,7 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
   // is not part of this CAD parameter loop.
   if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
       (pickMode_ == PickMode::None ||
+       pickMode_ == PickMode::MovePreview ||
        pickMode_ == PickMode::LinearPatternPreview ||
        pickMode_ == PickMode::CircularPatternPreview)) {
     const bool backward = event->key() == Qt::Key_Backtab ||

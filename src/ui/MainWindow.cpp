@@ -16,6 +16,7 @@
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/MirrorFeature.h"
+#include "model/MoveFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/CircularPatternFeature.h"
 
@@ -291,6 +292,7 @@ void MainWindow::resetTransientModelingUi() {
   if (toolParametersDock_) toolParametersDock_->hide();
   if (revolveDock_) revolveDock_->hide();
   if (mirrorDock_) mirrorDock_->hide();
+  if (moveDock_) moveDock_->hide();
   if (linearPatternDock_) linearPatternDock_->hide();
   if (circularPatternDock_) circularPatternDock_->hide();
   if (extrusionDock_) extrusionDock_->hide();
@@ -424,6 +426,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   faceExtrudeSession_.cancel();
   revolveToolSession_.cancel();
   mirrorToolSession_.cancel();
+  moveToolSession_.cancel();
   linearPatternToolSession_.cancel();
   circularPatternToolSession_.cancel();
 
@@ -431,6 +434,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
   if (toolParametersDock_) toolParametersDock_->hide();
   if (revolveDock_) revolveDock_->hide();
   if (mirrorDock_) mirrorDock_->hide();
+  if (moveDock_) moveDock_->hide();
   if (linearPatternDock_) linearPatternDock_->hide();
   if (circularPatternDock_) circularPatternDock_->hide();
   if (extrusionDock_) extrusionDock_->hide();
@@ -1047,6 +1051,106 @@ void MainWindow::buildUi() {
   connect(mirrorEscapeShortcut, &QShortcut::activated, this,
           &MainWindow::cancelMirrorTool);
 
+  moveDock_ = new QDockWidget(QString::fromUtf8("Перемещение"), this);
+  moveDock_->setAllowedAreas(Qt::RightDockWidgetArea);
+  moveDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  moveDock_->setObjectName(QStringLiteral("moveParametersDock"));
+  auto* movePanel = new QWidget(moveDock_);
+  auto* moveLayout = new QVBoxLayout(movePanel);
+  moveLayout->setContentsMargins(16, 14, 16, 14);
+  moveLayout->setSpacing(12);
+  const auto* moveHelp = partDesignToolHelp(PartDesignToolKind::Move);
+  auto* moveTitle = new QLabel(moveHelp->title.toUpper(), movePanel);
+  QFont moveTitleFont = moveTitle->font();
+  moveTitleFont.setBold(true);
+  moveTitle->setFont(moveTitleFont);
+  auto* moveDescription = new QLabel(moveHelp->shortDescription, movePanel);
+  moveDescription->setWordWrap(true);
+  moveDescription->setProperty("uiRole", "secondaryText");
+  auto* moveForm = new QFormLayout;
+
+  auto* moveBodyRow = new QWidget(movePanel);
+  auto* moveBodyLayout = new QHBoxLayout(moveBodyRow);
+  moveBodyLayout->setContentsMargins(0, 0, 0, 0);
+  moveBodyValue_ = new QLabel(QString::fromUtf8("Не выбрано"), moveBodyRow);
+  moveBodyValue_->setObjectName(QStringLiteral("moveBodyValue"));
+  moveBodySelectButton_ = new QPushButton(
+      QString::fromUtf8("Выбрать в 3D"), moveBodyRow);
+  moveBodySelectButton_->setObjectName(QStringLiteral("moveBodySelectButton"));
+  moveBodyLayout->addWidget(moveBodyValue_, 1);
+  moveBodyLayout->addWidget(moveBodySelectButton_);
+
+  const auto makeMoveSpin = [movePanel](const char* objectName) {
+    auto* spin = new QDoubleSpinBox(movePanel);
+    spin->setObjectName(QLatin1String(objectName));
+    spin->setRange(-100000.0, 100000.0);
+    spin->setDecimals(2);
+    spin->setSingleStep(0.1);
+    spin->setSuffix(QStringLiteral(" mm"));
+    return spin;
+  };
+  moveXSpin_ = makeMoveSpin("moveXSpin");
+  moveYSpin_ = makeMoveSpin("moveYSpin");
+  moveZSpin_ = makeMoveSpin("moveZSpin");
+  moveForm->addRow(QString::fromUtf8("Тело:"), moveBodyRow);
+  moveForm->addRow(QStringLiteral("X:"), moveXSpin_);
+  moveForm->addRow(QStringLiteral("Y:"), moveYSpin_);
+  moveForm->addRow(QStringLiteral("Z:"), moveZSpin_);
+
+  moveStepHint_ = new QLabel(moveHelp->selectionHint, movePanel);
+  moveStepHint_->setObjectName(QStringLiteral("moveStepHint"));
+  moveStepHint_->setWordWrap(true);
+  moveStepHint_->setProperty("uiRole", "secondaryText");
+  auto* moveButtons = new QHBoxLayout;
+  auto* cancelMove = new QPushButton(QString::fromUtf8("Отмена"), movePanel);
+  moveAcceptButton_ = new QPushButton(QString::fromUtf8("Применить"), movePanel);
+  moveAcceptButton_->setObjectName(QStringLiteral("primaryAction"));
+  moveAcceptButton_->setProperty("uiRole", "primaryAction");
+  moveAcceptButton_->setDefault(true);
+  moveAcceptButton_->setEnabled(false);
+  moveButtons->addWidget(cancelMove);
+  moveButtons->addWidget(moveAcceptButton_);
+  moveLayout->addWidget(moveTitle);
+  moveLayout->addWidget(moveDescription);
+  moveLayout->addLayout(moveForm);
+  moveLayout->addWidget(moveStepHint_);
+  moveLayout->addStretch();
+  moveLayout->addLayout(moveButtons);
+  moveDock_->setWidget(movePanel);
+  moveDock_->setMinimumWidth(280);
+  addDockWidget(Qt::RightDockWidgetArea, moveDock_);
+  moveDock_->hide();
+
+  connect(moveBodySelectButton_, &QPushButton::clicked, this, [this] {
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingInput);
+    moveToolSession_.clearBody();
+    moveBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+    viewport_->clearToolPreviewShape();
+    viewport_->clearToolManipulator();
+    viewport_->beginMoveBodySelection();
+    updateMoveToolPreview();
+    viewport_->setFocus();
+    statusBar()->showMessage(QString::fromUtf8("Выберите тело в 3D-виде"));
+  });
+  const auto moveValueChanged = [this](double) {
+    moveToolSession_.setOffsetMm(
+        {moveXSpin_->value(), moveYSpin_->value(), moveZSpin_->value()});
+    updateMoveToolPreview();
+  };
+  connect(moveXSpin_, &QDoubleSpinBox::valueChanged, this, moveValueChanged);
+  connect(moveYSpin_, &QDoubleSpinBox::valueChanged, this, moveValueChanged);
+  connect(moveZSpin_, &QDoubleSpinBox::valueChanged, this, moveValueChanged);
+  connect(moveAcceptButton_, &QPushButton::clicked, this,
+          &MainWindow::acceptMoveTool);
+  connect(cancelMove, &QPushButton::clicked, this,
+          &MainWindow::cancelMoveTool);
+  auto* moveEscapeShortcut =
+      new QShortcut(QKeySequence(Qt::Key_Escape), moveDock_);
+  moveEscapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  moveEscapeShortcut->setAutoRepeat(false);
+  connect(moveEscapeShortcut, &QShortcut::activated, this,
+          &MainWindow::cancelMoveTool);
+
   linearPatternDock_ =
       new QDockWidget(QString::fromUtf8("Линейный массив"), this);
   linearPatternDock_->setAllowedAreas(Qt::RightDockWidgetArea);
@@ -1653,6 +1757,8 @@ void MainWindow::buildUi() {
       acceptDraftTool();
     else if (filletToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptFilletTool();
+    else if (moveToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptMoveTool();
     else if (revolveToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptRevolveTool();
     else if (linearPatternToolSession_.lifecycle() !=
@@ -2082,6 +2188,8 @@ void MainWindow::buildUi() {
           &MainWindow::createFillet);
   connect(modelRibbon_, &ModelRibbon::chamferRequested, this,
           &MainWindow::createChamfer);
+  connect(modelRibbon_, &ModelRibbon::moveRequested, this,
+          &MainWindow::createMove);
   connect(modelRibbon_, &ModelRibbon::shellRequested, this,
           &MainWindow::createShell);
   connect(modelRibbon_, &ModelRibbon::draftRequested, this,
@@ -2301,6 +2409,38 @@ void MainWindow::buildUi() {
             viewport_->focusToolParameterField(false);
             statusBar()->showMessage(QString::fromUtf8("Задайте угол дугой или полем у манипулятора"));
           });
+  connect(viewport_, &Viewport::moveBodyPicked, this, [this](BodyId bodyId) {
+    if (moveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+    Body* body = document_.findBody(bodyId);
+    if (!body || !body->activeFeature() || !body->resultShape()) {
+      statusBar()->showMessage(
+          QString::fromUtf8("Выбранное тело не содержит геометрии"), 3000);
+      return;
+    }
+    moveToolSession_.setBody(body->id(), body->activeFeature()->id(),
+                             body->resultShape());
+    partDesignTools_.finishReselection();
+    moveBodyValue_->setText(QString::fromStdString(body->name()));
+    viewport_->showMovePreview();
+    updateMoveToolPreview();
+    viewport_->focusToolParameterField(false);
+    statusBar()->showMessage(
+        QString::fromUtf8("Потяните стрелку X, Y или Z либо введите смещение"));
+  });
+  connect(viewport_, &Viewport::translationToolManipulatorValueChanged, this,
+          [this](int axisIndex, double value) {
+            if (moveToolSession_.lifecycle() == ToolLifecycle::Inactive)
+              return;
+            moveToolSession_.setOffsetComponent(axisIndex, value);
+            const auto offset = moveToolSession_.offsetMm();
+            const QSignalBlocker xBlocker(moveXSpin_);
+            const QSignalBlocker yBlocker(moveYSpin_);
+            const QSignalBlocker zBlocker(moveZSpin_);
+            moveXSpin_->setValue(offset.x);
+            moveYSpin_->setValue(offset.y);
+            moveZSpin_->setValue(offset.z);
+            updateMoveToolPreview();
+          });
   connect(viewport_, &Viewport::mirrorBodyPicked, this,
           [this](BodyId bodyId) {
             if (mirrorToolSession_.lifecycle() == ToolLifecycle::Inactive)
@@ -2435,6 +2575,9 @@ void MainWindow::buildUi() {
       PartDesignToolKind::Mirror,
       {&mirrorToolSession_, [this] { cancelMirrorTool(); }, {}});
   partDesignTools_.registerTool(
+      PartDesignToolKind::Move,
+      {&moveToolSession_, [this] { cancelMoveTool(); }, {}});
+  partDesignTools_.registerTool(
       PartDesignToolKind::LinearPattern,
       {&linearPatternToolSession_, [this] { cancelLinearPatternTool(); }, {}});
   partDesignTools_.registerTool(
@@ -2473,6 +2616,9 @@ void MainWindow::buildUi() {
                 else if (partDesignTools_.activeTool() ==
                          PartDesignToolKind::Mirror)
                   updateMirrorToolPreview();
+                else if (partDesignTools_.activeTool() ==
+                         PartDesignToolKind::Move)
+                  updateMoveToolPreview();
                 else if (partDesignTools_.activeTool() ==
                          PartDesignToolKind::LinearPattern)
                   updateLinearPatternToolPreview();
@@ -3231,6 +3377,34 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         updateDraftToolPreview();
         return;
       }
+      if (auto* move = dynamic_cast<MoveFeature*>(feature)) {
+        if (index == 0) return;
+        const auto source = body.features()[index - 1]->shape();
+        if (!source) return;
+        partDesignTools_.activate(PartDesignToolKind::Move);
+        moveToolSession_.begin(move->offsetMm(), move->id());
+        moveToolSession_.setBody(body.id(), body.features()[index - 1]->id(),
+                                 source);
+        moveBodyValue_->setText(QString::fromStdString(body.name()));
+        moveBodySelectButton_->setEnabled(false);
+        {
+          const QSignalBlocker xBlocker(moveXSpin_);
+          const QSignalBlocker yBlocker(moveYSpin_);
+          const QSignalBlocker zBlocker(moveZSpin_);
+          const auto offset = move->offsetMm();
+          moveXSpin_->setValue(offset.x);
+          moveYSpin_->setValue(offset.y);
+          moveZSpin_->setValue(offset.z);
+        }
+        viewport_->setSelectedBodies({body.id()});
+        viewport_->showMovePreview();
+        updateMoveToolPreview();
+        moveDock_->show();
+        moveDock_->raise();
+        statusBar()->showMessage(
+            QString::fromUtf8("Редактирование перемещения: потяните стрелку или задайте координаты"));
+        return;
+      }
       if (auto* mirror = dynamic_cast<MirrorFeature*>(feature)) {
         if (index == 0) return;
         const auto source = body.features()[index - 1]->shape();
@@ -3378,6 +3552,136 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
       return;
     }
   }
+}
+
+void MainWindow::createMove() {
+  if (!ensureHistoryAtEnd()) return;
+  resetTransientModelingUi();
+  const bool hasBody = std::any_of(
+      document_.bodies().begin(), document_.bodies().end(),
+      [](const Body& body) { return body.activeFeature() && body.resultShape(); });
+  if (!hasBody) {
+    QMessageBox::information(this, QString::fromUtf8("Перемещение"),
+                             QString::fromUtf8("Сначала создайте тело."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  partDesignTools_.activate(PartDesignToolKind::Move);
+  moveToolSession_.begin();
+  moveBodyValue_->setText(QString::fromUtf8("Не выбрано"));
+  moveBodySelectButton_->setEnabled(true);
+  moveAcceptButton_->setEnabled(false);
+  {
+    const QSignalBlocker xBlocker(moveXSpin_);
+    const QSignalBlocker yBlocker(moveYSpin_);
+    const QSignalBlocker zBlocker(moveZSpin_);
+    moveXSpin_->setValue(0.0);
+    moveYSpin_->setValue(0.0);
+    moveZSpin_->setValue(0.0);
+  }
+  moveDock_->show();
+  moveDock_->raise();
+  viewport_->beginMoveBodySelection();
+  updateMoveToolPreview();
+  statusBar()->showMessage(QString::fromUtf8("Выберите тело в 3D-виде"));
+}
+
+void MainWindow::updateMoveToolPreview() {
+  if (moveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  const bool valid =
+      moveToolSession_.lifecycle() == ToolLifecycle::PreviewValid;
+  moveAcceptButton_->setEnabled(valid);
+  if (valid && moveToolSession_.previewShape()) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
+    viewport_->setToolPreviewShape(moveToolSession_.bodyId(),
+                                   moveToolSession_.sourceFeatureId(),
+                                   moveToolSession_.previewShape());
+    if (const auto manipulator = moveToolSession_.manipulator())
+      viewport_->setTranslationToolManipulator(*manipulator);
+    moveStepHint_->setText(QString::fromUtf8(
+        "Потяните цветную стрелку X, Y или Z либо задайте точные смещения."));
+    moveStepHint_->setProperty("uiRole", "secondaryText");
+  } else {
+    viewport_->clearToolPreviewShape();
+    viewport_->clearToolManipulator();
+    const bool failed =
+        moveToolSession_.lifecycle() == ToolLifecycle::PreviewInvalid;
+    moveStepHint_->setText(
+        failed ? QString::fromStdString(moveToolSession_.error())
+               : QString::fromUtf8("Сейчас: ") +
+                     partDesignToolStepHint(PartDesignToolKind::Move,
+                                            moveToolSession_.selectionStage()));
+    moveStepHint_->setProperty("uiRole",
+                               failed ? "danger" : "secondaryText");
+  }
+  moveStepHint_->style()->unpolish(moveStepHint_);
+  moveStepHint_->style()->polish(moveStepHint_);
+}
+
+void MainWindow::cancelMoveTool() {
+  if (moveToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  moveToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Move);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  moveDock_->hide();
+  modelRibbon_->clearActiveTool();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(QString::fromUtf8("Перемещение отменено"), 2000);
+}
+
+void MainWindow::acceptMoveTool() {
+  if (moveToolSession_.lifecycle() != ToolLifecycle::PreviewValid) return;
+  Body* body = document_.findBody(moveToolSession_.bodyId());
+  if (!body) return;
+  const Document previous = document_;
+  if (const auto editingId = moveToolSession_.editingFeatureId()) {
+    for (std::size_t index = 0; index < body->features().size(); ++index) {
+      auto* move = dynamic_cast<MoveFeature*>(body->features()[index].get());
+      if (!move || move->id() != *editingId) continue;
+      move->setOffsetMm(moveToolSession_.offsetMm());
+      body->markDirtyFrom(index);
+      break;
+    }
+  } else {
+    if (!body->activeFeature() ||
+        body->activeFeature()->id() != moveToolSession_.sourceFeatureId()) {
+      moveStepHint_->setText(QString::fromUtf8(
+          "Исходное тело изменилось. Выберите его заново."));
+      moveStepHint_->setProperty("uiRole", "danger");
+      return;
+    }
+    body->addFeature(std::make_unique<MoveFeature>(
+        moveToolSession_.sourceFeatureId(), moveToolSession_.offsetMm(),
+        "Move " + std::to_string(body->features().size() + 1)));
+  }
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    moveStepHint_->setText(error);
+    moveStepHint_->setProperty("uiRole", "danger");
+    moveStepHint_->style()->unpolish(moveStepHint_);
+    moveStepHint_->style()->polish(moveStepHint_);
+    return;
+  }
+  moveToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::Move);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  moveDock_->hide();
+  pushUndoAction([this, previous] {
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  modelRibbon_->clearActiveTool();
+  statusBar()->showMessage(QString::fromUtf8("Перемещение применено"), 3000);
 }
 
 void MainWindow::createMirror() {

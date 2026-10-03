@@ -114,6 +114,10 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   chamfer->setObjectName("chamferCommand");
   chamfer->setCheckable(true);
   toolGroup_->addButton(chamfer);
+  auto* move = commandButton(QStringLiteral("move"), this);
+  move->setObjectName("moveCommand");
+  move->setCheckable(true);
+  toolGroup_->addButton(move);
   auto* shell = commandButton(QStringLiteral("shell"), this);
   auto* draft = commandButton(QStringLiteral("draft"), this);
   shell->setObjectName("shellCommand");
@@ -140,13 +144,14 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   editing->setSpacing(5);
   editing->addWidget(fillet);
   editing->addWidget(chamfer);
+  editing->addWidget(move);
   editing->addWidget(shell);
   editing->addWidget(draft);
   editing->addWidget(mirror);
   editing->addWidget(linearPattern);
   editing->addWidget(circularPattern);
   root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
-                        {fillet, chamfer, shell, draft, mirror, linearPattern,
+                        {fillet, chamfer, move, shell, draft, mirror, linearPattern,
                          circularPattern}));
   root->addWidget(separator(this));
 
@@ -207,6 +212,7 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::filletRequested);
   connect(chamfer, &QToolButton::clicked, this,
           &ModelRibbon::chamferRequested);
+  connect(move, &QToolButton::clicked, this, &ModelRibbon::moveRequested);
   connect(shell, &QToolButton::clicked, this, &ModelRibbon::shellRequested);
   connect(draft, &QToolButton::clicked, this, &ModelRibbon::draftRequested);
   connect(mirror, &QToolButton::clicked, this, &ModelRibbon::mirrorRequested);

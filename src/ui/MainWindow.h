@@ -12,6 +12,7 @@
 #include "model/CircularPatternToolSession.h"
 #include "model/LinearPatternToolSession.h"
 #include "model/MirrorToolSession.h"
+#include "model/MoveToolSession.h"
 #include "model/RevolveToolSession.h"
 #include "model/ShellToolSession.h"
 #include "model/DraftToolSession.h"
@@ -91,6 +92,10 @@ class MainWindow final : public QMainWindow {
   void updateMirrorToolPreview();
   void acceptMirrorTool();
   void cancelMirrorTool();
+  void createMove();
+  void updateMoveToolPreview();
+  void acceptMoveTool();
+  void cancelMoveTool();
   void createLinearPattern();
   void updateLinearPatternToolPreview();
   void acceptLinearPatternTool();
@@ -181,6 +186,7 @@ class MainWindow final : public QMainWindow {
   ExtrudeToolSession faceExtrudeSession_;
   RevolveToolSession revolveToolSession_;
   MirrorToolSession mirrorToolSession_;
+  MoveToolSession moveToolSession_;
   LinearPatternToolSession linearPatternToolSession_;
   CircularPatternToolSession circularPatternToolSession_;
   PartDesignToolController partDesignTools_;
@@ -200,6 +206,14 @@ class MainWindow final : public QMainWindow {
   QPushButton* mirrorPlaneSelectButton_{nullptr};
   QPushButton* mirrorAcceptButton_{nullptr};
   QLabel* mirrorStepHint_{nullptr};
+  QDockWidget* moveDock_{nullptr};
+  QLabel* moveBodyValue_{nullptr};
+  QPushButton* moveBodySelectButton_{nullptr};
+  QDoubleSpinBox* moveXSpin_{nullptr};
+  QDoubleSpinBox* moveYSpin_{nullptr};
+  QDoubleSpinBox* moveZSpin_{nullptr};
+  QPushButton* moveAcceptButton_{nullptr};
+  QLabel* moveStepHint_{nullptr};
   QDockWidget* linearPatternDock_{nullptr};
   QLabel* linearPatternBodyValue_{nullptr};
   QLabel* linearPatternAxisValue_{nullptr};

@@ -818,6 +818,18 @@ int main(int argc, char** argv) {
               QStringLiteral("mirrorBodySelectButton")) != nullptr);
     CHECK(mirrorDock->findChild<QPushButton*>(
               QStringLiteral("mirrorPlaneSelectButton")) != nullptr);
+    auto* moveDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("moveParametersDock"));
+    CHECK(moveDock != nullptr);
+    CHECK(moveDock->findChildren<QComboBox*>().empty());
+    CHECK(moveDock->findChild<QPushButton*>(
+              QStringLiteral("moveBodySelectButton")) != nullptr);
+    CHECK(moveDock->findChild<QDoubleSpinBox*>(
+              QStringLiteral("moveXSpin")) != nullptr);
+    CHECK(moveDock->findChild<QDoubleSpinBox*>(
+              QStringLiteral("moveYSpin")) != nullptr);
+    CHECK(moveDock->findChild<QDoubleSpinBox*>(
+              QStringLiteral("moveZSpin")) != nullptr);
     auto* linearPatternDock = editor->findChild<QDockWidget*>(
         QStringLiteral("linearPatternParametersDock"));
     CHECK(linearPatternDock != nullptr);

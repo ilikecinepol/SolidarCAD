@@ -287,7 +287,7 @@ add_executable(parametric_history_tests parametric_history_tests.cpp)
 target_link_libraries(parametric_history_tests PRIVATE solidar_model)
 add_test(NAME parametric_history_tests COMMAND parametric_history_tests)
 
-foreach(pattern_test mirror_feature_tests linear_pattern_feature_tests circular_pattern_feature_tests)
+foreach(pattern_test move_feature_tests mirror_feature_tests linear_pattern_feature_tests circular_pattern_feature_tests)
   add_executable(${pattern_test} ${pattern_test}.cpp)
   target_link_libraries(${pattern_test} PRIVATE solidar_model)
   add_test(NAME ${pattern_test} COMMAND ${pattern_test})
@@ -361,6 +361,7 @@ set_tests_properties(
   parametric_history_tests
   persistent_topology_tests
   project_lifecycle_tests
+  move_feature_tests
   mirror_feature_tests
   linear_pattern_feature_tests
   circular_pattern_feature_tests
@@ -459,6 +460,7 @@ if(WIN32)
     draft_feature_tests
     parametric_history_tests
     persistent_topology_tests
+    move_feature_tests
     mirror_feature_tests
     linear_pattern_feature_tests
     circular_pattern_feature_tests
