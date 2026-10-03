@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "model/PartDesignToolFramework.h"
+#include "ui/ThemeManager.h"
 #include "ui/tools/ToolParameterHud.h"
 
 #define CHECK(condition)                                                   \
@@ -65,6 +66,22 @@ solidar::ToolParameterDescriptor countParam(int value) {
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication application(argc, argv);
+
+  // Selected numeric text must remain readable in both themes. The viewport
+  // Extrude spinbox and the reusable tool HUD inherit this application palette.
+  for (const auto theme : {solidar::ResolvedTheme::Light,
+                           solidar::ResolvedTheme::Dark}) {
+    solidar::ThemeManager::instance().apply(theme);
+    solidar::ToolParameterHud hud;
+    hud.setParameters({distanceParam("distance", 25.0)});
+    auto* editor = hud.findChild<QDoubleSpinBox*>("distance");
+    auto* line = spinLineEdit(editor);
+    CHECK(line != nullptr);
+    const auto colors = solidar::ThemeManager::instance().colors(theme);
+    CHECK(line->palette().color(QPalette::Highlight) == colors.accent);
+    CHECK(line->palette().color(QPalette::HighlightedText) == colors.onAccent);
+  }
+  solidar::ThemeManager::instance().apply(solidar::ResolvedTheme::Light);
 
   // Test 1: single field — Return commits exactly once.
   {

@@ -1,4 +1,5 @@
 #include <QColor>
+#include <QtGlobal>
 
 #include <cstdlib>
 #include <iostream>
@@ -35,6 +36,8 @@ int main() {
     CHECK(c.window != c.textPrimary);
     CHECK(c.surface != c.textPrimary);
     CHECK(c.accent != c.surface);
+    CHECK(c.onAccent != c.accent);
+    CHECK(std::abs(qGray(c.onAccent.rgb()) - qGray(c.accent.rgb())) >= 80);
     CHECK(c.textDisabled != c.textPrimary);
     CHECK(c.viewportBackground.isValid());
     CHECK(c.gridMinor.isValid() && c.gridMajor.isValid());

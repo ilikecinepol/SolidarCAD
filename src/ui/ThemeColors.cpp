@@ -20,6 +20,7 @@ ThemeColors lightThemeColors() {
   c.accentHover = QColor("#005fdf");
   c.accentPressed = QColor("#0050bd");
   c.accentSoft = QColor("#e5f0ff");
+  c.onAccent = QColor("#ffffff");
 
   c.selection = QColor("#e5f0ff");
   c.selectionText = QColor("#075fdd");
@@ -66,6 +67,7 @@ ThemeColors darkThemeColors() {
   c.accentHover = QColor("#60a2ff");
   c.accentPressed = QColor("#2577e8");
   c.accentSoft = QColor("#25344a");
+  c.onAccent = QColor("#ffffff");
 
   c.selection = QColor("#2b3c55");
   c.selectionText = QColor("#cfe4ff");

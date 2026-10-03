@@ -23,6 +23,7 @@ struct ThemeColors {
   QColor accentHover;
   QColor accentPressed;
   QColor accentSoft;
+  QColor onAccent;
 
   QColor selection;
   QColor selectionText;

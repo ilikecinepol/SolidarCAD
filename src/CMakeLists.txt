@@ -167,6 +167,8 @@ add_library(solidar_viewport3d
   ui/BodyRenderMesh.cpp
   ui/BodyRenderMesh.h
   ui/EdgeSelectionState.h
+  ui/ExtrusionPreviewGeometry.cpp
+  ui/ExtrusionPreviewGeometry.h
   ui/ManipulatorLayout.cpp
   ui/ManipulatorLayout.h
   ui/ModelRibbon.cpp

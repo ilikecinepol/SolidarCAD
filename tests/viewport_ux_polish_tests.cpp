@@ -1,4 +1,5 @@
 #include "model/EdgeManipulatorGeometry.h"
+#include "ui/ExtrusionPreviewGeometry.h"
 #include "ui/ManipulatorLayout.h"
 #include "ui/ViewportCamera.h"
 
@@ -174,6 +175,19 @@ int main() {
   CHECK(close(zoom, kMinimumViewportZoom, 1e-7));
   CHECK(close(steppedViewportZoom(zoom, 0), zoom, 1e-7));
   CHECK(steppedViewportZoom(zoom, 120) > zoom);
+
+  // A polygonal Extrude preview outlines every longitudinal edge, while a
+  // curved contour keeps only its silhouettes instead of vertical hatching.
+  QPainterPath rectanglePath;
+  rectanglePath.addRect(QRectF(10.0, 20.0, 80.0, 50.0));
+  const auto rectangleGenerators =
+      extrusionPreviewGenerators(rectanglePath, {25.0, -18.0}, false);
+  CHECK(rectangleGenerators.size() == 4);
+  QPainterPath circlePath;
+  circlePath.addEllipse(QPointF(50.0, 50.0), 30.0, 30.0);
+  const auto circleGenerators =
+      extrusionPreviewGenerators(circlePath, {25.0, -18.0}, true);
+  CHECK(circleGenerators.size() == 2);
 
   // Edge manipulator geometry is translation-invariant.
   const TopoDS_Shape box = BRepPrimAPI_MakeBox(30, 20, 10).Shape();

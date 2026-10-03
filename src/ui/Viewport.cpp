@@ -9,6 +9,7 @@
 #include "ui/ViewportCamera.h"
 #include "ui/ViewportPicking.h"
 #include "ui/tools/ToolParameterHud.h"
+#include "ui/ExtrusionPreviewGeometry.h"
 #include "model/TopologyReferenceResolver.h"
 
 #include <BRepBndLib.hxx>
@@ -577,6 +578,7 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
   extrusionLengthEditor_ = new QDoubleSpinBox(this);
+  extrusionLengthEditor_->setObjectName(QStringLiteral("extrusionLengthHud"));
   extrusionLengthEditor_->setRange(-100000.0, 100000.0);
   extrusionLengthEditor_->setDecimals(2);
   extrusionLengthEditor_->setSuffix(QStringLiteral(" mm"));
@@ -2873,7 +2875,16 @@ void Viewport::paintGL() {
         bodyGradient.setColorAt(0.0, bodyStart);
         bodyGradient.setColorAt(0.55, previewColor);
         bodyGradient.setColorAt(1.0, bodyEnd);
-        painter.setPen(Qt::NoPen);
+        const sketch::Sketch& regionGeometry =
+            regionIndex < selectedExtrusionRegionSketches_.size()
+                ? selectedExtrusionRegionSketches_[regionIndex]
+                : selectedExtrusionSketch_;
+        const bool curvedBoundary = !regionGeometry.circles().empty() ||
+                                    !regionGeometry.arcs().empty();
+        QColor sideEdge = previewEdge;
+        sideEdge.setAlpha(165);
+        painter.setPen(curvedBoundary ? Qt::NoPen
+                                     : QPen(sideEdge, 1.35));
         painter.setBrush(bodyGradient);
         // Draw faces independently without a pen. A single winding path can
         // cancel adjacent quads with opposite winding, which made the body
@@ -2890,31 +2901,11 @@ void Viewport::paintGL() {
                              : QColor(248, 164, 170, 145));
         painter.drawPath(capPath);
 
-        // Only silhouette generators are outlined. Avoid drawing every
-        // tessellation edge of a circular contour as vertical hatching.
-        if (offset.manhattanLength() > 1.0) {
-          const QPointF perpendicular(-offset.y(), offset.x());
-          for (const auto& boundary : basePath.toSubpathPolygons()) {
-            if (boundary.isEmpty()) continue;
-            auto minPoint = boundary.front();
-            auto maxPoint = boundary.front();
-            double minProjection = QPointF::dotProduct(minPoint, perpendicular);
-            double maxProjection = minProjection;
-            for (const QPointF& point : boundary) {
-              const double projection = QPointF::dotProduct(point, perpendicular);
-              if (projection < minProjection) {
-                minProjection = projection;
-                minPoint = point;
-              }
-              if (projection > maxProjection) {
-                maxProjection = projection;
-                maxPoint = point;
-              }
-            }
-            painter.drawLine(minPoint, minPoint + offset);
-            painter.drawLine(maxPoint, maxPoint + offset);
-          }
-        }
+        // Polygonal profiles expose every longitudinal edge; curved profiles
+        // retain two silhouette generators so circles remain visually clean.
+        for (const QLineF& generator :
+             extrusionPreviewGenerators(basePath, offset, curvedBoundary))
+          painter.drawLine(generator);
       }
     }
     drawToolArrow(painter, extrusionManipulatorAnchor_, tip, previewEdge);

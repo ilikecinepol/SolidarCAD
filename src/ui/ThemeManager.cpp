@@ -24,6 +24,7 @@ QString substituteColors(QString qss, const ThemeColors& c) {
       {"$accent", c.accent.name(QColor::HexRgb)},
       {"$accentHover", c.accentHover.name(QColor::HexRgb)},
       {"$accentSoft", c.accentSoft.name(QColor::HexRgb)},
+      {"$onAccent", c.onAccent.name(QColor::HexRgb)},
       {"$selection", c.selection.name(QColor::HexRgb)},
       {"$selectionText", c.selectionText.name(QColor::HexRgb)},
       {"$danger", c.danger.name(QColor::HexRgb)},
@@ -103,7 +104,7 @@ void ThemeManager::applyPalette(const ThemeColors& c) {
   palette.setColor(QPalette::ButtonText, c.textPrimary);
   palette.setColor(QPalette::BrightText, c.textPrimary);
   palette.setColor(QPalette::Highlight, c.accent);
-  palette.setColor(QPalette::HighlightedText, c.selectionText);
+  palette.setColor(QPalette::HighlightedText, c.onAccent);
   palette.setColor(QPalette::PlaceholderText, c.textSecondary);
   palette.setColor(QPalette::Light, c.border);
   palette.setColor(QPalette::Midlight, c.surface);
@@ -141,7 +142,7 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     QPushButton:hover { background: $accentSoft; }
     QPushButton:pressed { background: $accentSoft; }
     QPushButton:disabled { color: $textDisabled; }
-    QPushButton[uiRole="primaryAction"] { background: $accent; color: #ffffff;
+    QPushButton[uiRole="primaryAction"] { background: $accent; color: $onAccent;
       border: none; border-radius: 6px; padding: 8px 14px; font-weight: 600; }
     QPushButton[uiRole="primaryAction"]:hover { background: $accentHover; }
 
@@ -160,6 +161,7 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
       background: $surface; color: $textPrimary; border: 1px solid $borderStrong;
       border-radius: 5px; padding: 3px 6px; }
+    QLineEdit { selection-background-color: $accent; selection-color: $onAccent; }
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
       border: 1px solid $accent; }
     QComboBox QAbstractItemView { background: $surface; color: $textPrimary;
