@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QMenu>
+#include <QSignalBlocker>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -157,6 +158,9 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
 
   auto* views = new QHBoxLayout;
   views->setSpacing(3);
+  rulerButton_ = commandButton(QStringLiteral("ruler"), this);
+  rulerButton_->setObjectName("rulerCommand");
+  rulerButton_->setCheckable(true);
   auto* displayMode = new QToolButton(this);
   displayMode->setObjectName("displayModeCommand");
   displayMode->setText(QString::fromUtf8("Затенённый\nс рёбрами"));
@@ -197,10 +201,11 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
     emit meshQualityRequested(1);
   });
   quality->setMenu(qualityMenu);
+  views->addWidget(rulerButton_);
   views->addWidget(displayMode);
   views->addWidget(quality);
   root->addWidget(group(QString::fromUtf8("ОТОБРАЖЕНИЕ"), views, this,
-                        {displayMode, quality}), 1);
+                        {rulerButton_, displayMode, quality}), 1);
 
   connect(createSketch, &QToolButton::clicked, this,
           &ModelRibbon::createSketchRequested);
@@ -220,12 +225,19 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::linearPatternRequested);
   connect(circularPattern, &QToolButton::clicked, this,
           &ModelRibbon::circularPatternRequested);
+  connect(rulerButton_, &QToolButton::toggled, this,
+          &ModelRibbon::rulerToggled);
 }
 
 void ModelRibbon::clearActiveTool() {
   toolGroup_->setExclusive(false);
   for (auto* button : toolGroup_->buttons()) button->setChecked(false);
   toolGroup_->setExclusive(true);
+}
+
+void ModelRibbon::setRulerActive(bool active) {
+  const QSignalBlocker blocker(rulerButton_);
+  rulerButton_->setChecked(active);
 }
 
 }  // namespace solidar

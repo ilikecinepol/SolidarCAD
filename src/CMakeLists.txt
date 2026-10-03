@@ -195,6 +195,8 @@ add_library(solidar_viewport3d
   ui/ViewportPicking.h
   ui/ViewportRenderer.cpp
   ui/ViewportRenderer.h
+  ui/ViewportRuler.cpp
+  ui/ViewportRuler.h
   ui/interaction/InteractionInputMapper.cpp
   ui/interaction/InteractionInputMapper.h
   ui/interaction/ContextActionResolver.cpp

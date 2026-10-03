@@ -171,6 +171,15 @@ int main(int argc, char** argv) {
   CHECK(!viewport.angularToolManipulator().has_value());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
 
+  viewport.beginRulerMeasurement();
+  CHECK(viewport.rulerMeasurementActive());
+  viewport.resetToolInteraction();
+  CHECK(!viewport.rulerMeasurementActive());
+  viewport.beginRulerMeasurement();
+  CHECK(viewport.rulerMeasurementActive());
+  viewport.resetScene();
+  CHECK(!viewport.rulerMeasurementActive());
+
   // The viewport remains reusable: repopulate and reset again. The edge
   // selection is set after the Face filter because switching to faces clears
   // the now-incompatible edge selection.

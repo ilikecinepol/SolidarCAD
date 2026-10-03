@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
   assert(editing->findChild<QToolButton*>("filletCommand"));
   assert(editing->findChild<QToolButton*>("chamferCommand"));
   assert(editing->findChild<QToolButton*>("moveCommand"));
+  assert(view->findChild<QToolButton*>("rulerCommand"));
   assert(!creation->findChild<QToolButton*>("filletCommand"));
 
   const auto commands = ribbon.findChildren<QToolButton*>();
@@ -58,7 +59,7 @@ int main(int argc, char** argv) {
     assert(!command->accessibleName().isEmpty());
     assert(!command->accessibleDescription().isEmpty());
   }
-  assert(documentedCommands == 11);
+  assert(documentedCommands == 12);
   assert(!ribbon.findChild<QToolButton*>("fitCommand"));
   assert(!ribbon.findChild<QToolButton*>("isoCommand"));
   const std::initializer_list<solidar::PartDesignToolKind> historyKinds{
@@ -76,6 +77,7 @@ int main(int argc, char** argv) {
   for (const auto kind : historyKinds)
     assert(!solidar::partDesignToolIcon(kind).isNull());
   assert(!solidar::modelCommandIcon(QStringLiteral("createSketch")).isNull());
+  assert(!solidar::modelCommandIcon(QStringLiteral("ruler")).isNull());
   solidar::HistoryStep compactStep;
   compactStep.title = QString::fromUtf8("Фаска 1");
   compactStep.tooltip = QString::fromUtf8("Фаска 1\nРазмер: 2 мм");
@@ -91,7 +93,7 @@ int main(int argc, char** argv) {
 
   assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
   assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 8);
-  assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 2);
+  assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
 
   solidar::ToolParametersPanel panel;
   const auto* shellHelp = solidar::partDesignToolHelp(

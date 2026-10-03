@@ -17,6 +17,7 @@
 #include "ui/ViewportPicking.h"
 #include "ui/ManipulatorLayout.h"
 #include "ui/ViewportRenderer.h"
+#include "ui/ViewportRuler.h"
 #include "ui/ViewCube.h"
 #include "model/ToolSession.h"
 
@@ -104,6 +105,10 @@ class Viewport final : public QOpenGLWidget {
   void showCircularPatternAxisSelection(int axisIndex);
   [[nodiscard]] bool circularPatternBodySelectionActive() const noexcept;
   [[nodiscard]] bool circularPatternAxisSelectionActive() const noexcept;
+  void beginRulerMeasurement();
+  void cancelRulerMeasurement();
+  [[nodiscard]] bool rulerMeasurementActive() const noexcept;
+  [[nodiscard]] std::optional<double> rulerDistanceMm() const noexcept;
   void beginExtrusionSurfaceSelection();
   void beginRevolveAxisSelection(std::size_t sketchIndex);
   void showExtrusionManipulator(double lengthMm);
@@ -244,6 +249,9 @@ class Viewport final : public QOpenGLWidget {
   // mode. MainWindow maps the display index to a SketchId and starts the
   // sketch Extrude session (contract 4).
   void directProfilePicked(std::size_t sketchIndex);
+  void rulerActiveChanged(bool active);
+  void rulerPointPicked(int selectedPointCount);
+  void rulerMeasurementChanged(double distanceMm);
 
  protected:
   void initializeGL() override;
@@ -316,7 +324,8 @@ class Viewport final : public QOpenGLWidget {
     LinearPatternPreview,
     CircularPatternBody,
     CircularPatternAxis,
-    CircularPatternPreview
+    CircularPatternPreview,
+    Ruler
   };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
@@ -427,6 +436,7 @@ class Viewport final : public QOpenGLWidget {
   float yaw_{-35.0F};
   float pitch_{25.0F};
   float zoom_{1.0F};
+  ViewportRuler ruler_;
   SketchPlacement workGridPlacement_{SketchPlacement::xy()};
   bool workGridVisible_{true};
 };

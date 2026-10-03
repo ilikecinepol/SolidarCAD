@@ -110,6 +110,19 @@ void drawTool(QPainter& p, ToolIconKind kind) {
       p.drawLine(19, 29, 8, 40);
       arrowHead(p, {7, 41}, {-1, 1});
       break;
+    case ToolIconKind::Ruler:
+      p.save();
+      p.translate(24, 24);
+      p.rotate(-38.0);
+      p.translate(-24, -24);
+      p.drawRoundedRect(QRectF(6, 17, 36, 14), 2.0, 2.0);
+      for (int index = 0; index < 7; ++index) {
+        const qreal x = 10.0 + index * 4.5;
+        const qreal height = index % 2 == 0 ? 7.0 : 4.5;
+        p.drawLine(QPointF(x, 17), QPointF(x, 17 + height));
+      }
+      p.restore();
+      break;
     case ToolIconKind::Shell:
       drawCube(p);
       p.drawPolygon(QPolygonF{{15, 18}, {24, 13}, {32, 17}, {24, 21}});

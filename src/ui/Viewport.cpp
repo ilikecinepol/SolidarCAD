@@ -1013,7 +1013,35 @@ bool Viewport::circularPatternAxisSelectionActive() const noexcept {
   return pickMode_ == PickMode::CircularPatternAxis;
 }
 
+void Viewport::beginRulerMeasurement() {
+  resetToolInteraction();
+  ruler_.begin();
+  pickMode_ = PickMode::Ruler;
+  setCursor(Qt::CrossCursor);
+  emit rulerActiveChanged(true);
+  update();
+}
+
+void Viewport::cancelRulerMeasurement() {
+  if (!ruler_.active()) return;
+  ruler_.cancel();
+  if (pickMode_ == PickMode::Ruler) pickMode_ = PickMode::None;
+  unsetCursor();
+  emit rulerActiveChanged(false);
+  update();
+}
+
+bool Viewport::rulerMeasurementActive() const noexcept {
+  return ruler_.active();
+}
+
+std::optional<double> Viewport::rulerDistanceMm() const noexcept {
+  return ruler_.measuredDistanceMm();
+}
+
 void Viewport::resetScene() {
+  const bool rulerWasActive = ruler_.active();
+  ruler_.cancel();
   orientationAnimation_->stop();
   clearCubeHover();
   cubePressed_ = {};
@@ -1088,6 +1116,7 @@ void Viewport::resetScene() {
   workGridVisible_ = true;
   hideExtrusionManipulator();
   for (bool& visible : basePlanesVisible_) visible = false;
+  if (rulerWasActive) emit rulerActiveChanged(false);
   update();
 }
 
@@ -1984,6 +2013,10 @@ void Viewport::leaveEvent(QEvent* event) {
   } else if (pickMode_ == PickMode::LinearPatternAxis ||
              pickMode_ == PickMode::CircularPatternAxis) {
     hoveredRevolveAxisToken_ = 0;
+    update();
+  } else if (pickMode_ == PickMode::Ruler) {
+    ruler_.clearHover();
+    setCursor(Qt::CrossCursor);
     update();
   }
   QOpenGLWidget::leaveEvent(event);
@@ -3093,6 +3126,11 @@ void Viewport::paintGL() {
 
   painter.restore();
 
+  const ViewportCameraState rulerCamera{
+      yaw_, pitch_, zoom_, cameraPan_, size(), 1.0F, bodyRenderMesh_.center(),
+      std::max(1.0, bodyRenderMesh_.diagonal() * 3.0)};
+  ruler_.paint(painter, rulerCamera, theme);
+
   paintViewCube(painter, viewCubeGeometry(size(), {yaw_,pitch_}),
                 {yaw_,pitch_}, cubeHover_, cubePressed_,
                 ViewCubeStyle{theme.cubeTop, theme.cubeFront, theme.cubeSide,
@@ -3225,6 +3263,26 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     return;
   }
   if (event->button() != Qt::LeftButton) return;
+  if (pickMode_ == PickMode::Ruler) {
+    const ViewportCameraState camera{
+        yaw_, pitch_, zoom_, cameraPan_, size(), 1.0F,
+        bodyRenderMesh_.center(),
+        std::max(1.0, bodyRenderMesh_.diagonal() * 3.0)};
+    static_cast<void>(
+        ruler_.updateHover(bodyRenderMesh_, camera, event->position()));
+    const RulerClickResult result = ruler_.commitHoveredPoint();
+    if (result == RulerClickResult::FirstPoint ||
+        result == RulerClickResult::Restarted)
+      emit rulerPointPicked(1);
+    if (result == RulerClickResult::Completed) {
+      emit rulerPointPicked(2);
+      if (const auto distance = ruler_.measuredDistanceMm())
+        emit rulerMeasurementChanged(*distance);
+    }
+    event->accept();
+    update();
+    return;
+  }
   const QPointF scenePosition = event->position() - cameraPan_;
   if (translationToolManipulator_) {
     const auto layouts = translationManipulatorLayouts();
@@ -5043,6 +5101,18 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     }
     clearCubeHover();
   }
+  if (event->buttons() == Qt::NoButton && pickMode_ == PickMode::Ruler) {
+    const ViewportCameraState camera{
+        yaw_, pitch_, zoom_, cameraPan_, size(), 1.0F,
+        bodyRenderMesh_.center(),
+        std::max(1.0, bodyRenderMesh_.diagonal() * 3.0)};
+    static_cast<void>(
+        ruler_.updateHover(bodyRenderMesh_, camera, event->position()));
+    setCursor(ruler_.hoverPoint() ? Qt::PointingHandCursor : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
   if (draggingAngularToolManipulator_ && angularToolManipulator_ &&
       event->buttons().testFlag(Qt::LeftButton)) {
     if (const auto visual = angularVisual()) {
@@ -5431,6 +5501,8 @@ void Viewport::cancelActiveInteraction() {
 }
 
 void Viewport::resetToolInteraction() {
+  const bool rulerWasActive = ruler_.active();
+  ruler_.cancel();
   const bool wasConstructionPlane =
       pickMode_ == PickMode::SketchPlane ||
       pickMode_ == PickMode::MirrorPlane ||
@@ -5448,6 +5520,7 @@ void Viewport::resetToolInteraction() {
   if (wasConstructionPlane)
     for (bool& visible : basePlanesVisible_) visible = false;
   unsetCursor();
+  if (rulerWasActive) emit rulerActiveChanged(false);
   update();
 }
 void Viewport::keyPressEvent(QKeyEvent* event) {

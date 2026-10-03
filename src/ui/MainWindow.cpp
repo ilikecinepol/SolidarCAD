@@ -39,6 +39,7 @@
 #include <QComboBox>
 #include <QButtonGroup>
 #include <QLabel>
+#include <QLocale>
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QAction>
@@ -2200,6 +2201,34 @@ void MainWindow::buildUi() {
           &MainWindow::createLinearPattern);
   connect(modelRibbon_, &ModelRibbon::circularPatternRequested, this,
           &MainWindow::createCircularPattern);
+  connect(modelRibbon_, &ModelRibbon::rulerToggled, this,
+          [this](bool active) {
+            if (active) {
+              resetTransientModelingUi();
+              viewport_->beginRulerMeasurement();
+              viewport_->setFocus(Qt::MouseFocusReason);
+              statusBar()->showMessage(
+                  QString::fromUtf8("Линейка: выберите первую точку"));
+            } else {
+              viewport_->cancelRulerMeasurement();
+              statusBar()->showMessage(
+                  QString::fromUtf8("Линейка выключена"), 2000);
+            }
+          });
+  connect(viewport_, &Viewport::rulerActiveChanged, modelRibbon_,
+          &ModelRibbon::setRulerActive);
+  connect(viewport_, &Viewport::rulerPointPicked, this,
+          [this](int selectedPointCount) {
+            if (selectedPointCount == 1)
+              statusBar()->showMessage(
+                  QString::fromUtf8("Линейка: выберите вторую точку"));
+          });
+  connect(viewport_, &Viewport::rulerMeasurementChanged, this,
+          [this](double distanceMm) {
+            statusBar()->showMessage(
+                QString::fromUtf8("Расстояние: %1 мм. Щёлкните ещё раз для нового измерения")
+                    .arg(QLocale().toString(distanceMm, 'f', 2)));
+          });
   connect(modelRibbon_, &ModelRibbon::displayModeRequested, viewport_,
           [this](int mode) {
             viewport_->setDisplayMode(static_cast<ViewportDisplayMode>(mode));
