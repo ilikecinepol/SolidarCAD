@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 #include "model/Document.h"
 #include "model/ExtrudeSource.h"
@@ -54,12 +55,22 @@ class ExtrudeFeature final : public ShapeFeature {
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
 
  private:
+  struct ProfileSelectionIds {
+    std::vector<sketch::GeometryId> lineIds;
+    std::vector<sketch::GeometryId> circleIds;
+    std::vector<sketch::GeometryId> arcIds;
+  };
+
   bool rebuildFaceSource(const RebuildContext& context,
                          const FaceExtrudeSource& source);
   bool rebuildSketchSource(const RebuildContext& context);
+  bool resolveProfileOverride(const sketch::Sketch& source,
+                              sketch::Sketch* selected,
+                              std::string* error);
 
   ExtrudeSource source_{SketchExtrudeSource{}};
   std::optional<sketch::Sketch> profileOverride_;
+  std::optional<ProfileSelectionIds> profileSelectionIds_;
   double lengthMm_{0.0};
   ExtrudeOperation operation_{ExtrudeOperation::NewBody};
   bool reversed_{false};

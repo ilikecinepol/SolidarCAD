@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -193,12 +194,89 @@ void lineArcExtrudeRecomputesAfterArcEdit() {
       solidar::test::volumeOf(*extrudePtr->shape()), volumeAfter, 1e-4));
 }
 
+void selectedCircleExtrudeRecomputesAfterDiameterEdit() {
+  solidar::Document document;
+
+  auto& profile = document.addSketch("Two circles");
+  const auto profileId = profile.id;
+  profile.geometry.addCircle({-30.0, 0.0}, 4.0);
+  profile.geometry.addCircle({30.0, 0.0}, 6.0);
+  const auto selectedCircleId = profile.geometry.circleId(1);
+
+  // Direct region picking stores a profile override because the source sketch
+  // contains more than one closed contour. The override must remain linked to
+  // the selected source primitive instead of freezing its initial dimensions.
+  solidar::sketch::Sketch selectedRegion;
+  selectedRegion.addCircle({30.0, 0.0}, 6.0);
+
+  auto& body = document.addBody("Selected circle body");
+  const auto bodyId = body.id();
+  auto extrude = std::make_unique<solidar::ExtrudeFeature>(
+      profileId, 10.0, "Selected circle Extrude");
+  auto* extrudePtr = extrude.get();
+  const auto extrudeId = extrudePtr->id();
+  extrude->setProfileOverride(selectedRegion);
+  body.addFeature(std::move(extrude));
+
+  CHECK(document.recompute());
+  CHECK(extrudePtr->shape());
+  const double volumeBefore = solidar::test::volumeOf(*extrudePtr->shape());
+  CHECK(solidar::test::near(
+      volumeBefore, std::numbers::pi * 6.0 * 6.0 * 10.0, 1e-4));
+
+  auto* editedProfile = document.findSketch(profileId);
+  CHECK(editedProfile);
+  CHECK(editedProfile->geometry.setCircleDiameterById(selectedCircleId, 20.0));
+  CHECK(document.markSketchDirty(profileId));
+  CHECK(extrudePtr->isDirty());
+
+  CHECK(document.recompute());
+  CHECK(extrudePtr->shape());
+  const double volumeAfter = solidar::test::volumeOf(*extrudePtr->shape());
+  CHECK(solidar::test::near(
+      volumeAfter, std::numbers::pi * 10.0 * 10.0 * 10.0, 1e-4));
+  CHECK(volumeAfter > volumeBefore);
+  CHECK(extrudePtr->profileOverride());
+  CHECK(solidar::test::near(
+      extrudePtr->profileOverride()->circles().front().radiusMm, 10.0));
+
+  // Simulate a project saved by the old implementation: the source already
+  // has the new diameter, while its selected-region snapshot is still stale.
+  // Loading must recover the selected primitive unambiguously by its centre.
+  extrudePtr->setProfileOverride(selectedRegion);
+  QTemporaryDir directory;
+  CHECK(directory.isValid());
+  QString error;
+  const QString path = directory.filePath("selected-circle-history.solidar");
+  CHECK(solidar::project::ProjectFile::saveDocument(path, document, &error));
+  solidar::Document restored;
+  CHECK(solidar::project::ProjectFile::loadDocument(path, &restored, &error));
+  auto* restoredProfile = restored.findSketch(profileId);
+  auto* restoredBody = restored.findBody(bodyId);
+  CHECK(restoredProfile);
+  CHECK(restoredBody);
+  CHECK(restoredBody->features().size() == 1);
+  auto* restoredExtrude = dynamic_cast<solidar::ExtrudeFeature*>(
+      restoredBody->features().front().get());
+  CHECK(restoredExtrude);
+  CHECK(restoredExtrude->id() == extrudeId);
+  CHECK(restoredProfile->geometry.setCircleDiameterById(
+      restoredProfile->geometry.circleId(1), 24.0));
+  CHECK(restored.markSketchDirty(profileId));
+  CHECK(restored.recompute());
+  CHECK(restoredExtrude->shape());
+  CHECK(solidar::test::near(
+      solidar::test::volumeOf(*restoredExtrude->shape()),
+      std::numbers::pi * 12.0 * 12.0 * 10.0, 1e-4));
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   try {
     QCoreApplication application(argc, argv);
     lineArcExtrudeRecomputesAfterArcEdit();
+    selectedCircleExtrudeRecomputesAfterDiameterEdit();
 
     solidar::Document document;
 
