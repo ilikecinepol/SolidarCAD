@@ -264,6 +264,8 @@ class Viewport final : public QOpenGLWidget {
   void leaveEvent(QEvent* event) override;
 
  private:
+  friend class MainWindowUndoTestAccess;
+
   void animateOrientation(CameraOrientation target);
   void setStandardView(StandardView view);
   void clearCubeHover();

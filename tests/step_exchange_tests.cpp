@@ -30,6 +30,9 @@
 #include <string>
 
 #include "model/Document.h"
+#include "model/ExtrudeFeature.h"
+#include "model/FilletBuilder.h"
+#include "model/FilletFeature.h"
 #include "model/ImportedShapeFeature.h"
 #include "project/ProjectFile.h"
 
@@ -214,6 +217,49 @@ int main(int argc, char* argv[]) {
   if (!previousSchema.empty())
     CHECK(Interface_Static::SetCVal("write.step.schema",
                                     previousSchema.c_str()));
+
+  // H. A native parametric model exports the final downstream Body result,
+  // not the intermediate Extrude shape.
+  solidar::Document parametric;
+  auto& profile = parametric.addSketch("STEP final-body profile");
+  profile.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+  auto& body = parametric.addBody("STEP final-body Body");
+  auto base = std::make_unique<solidar::ExtrudeFeature>(
+      profile.id, 20.0, "Extrude");
+  const auto baseId = base->id();
+  body.addFeature(std::move(base));
+  CHECK(parametric.recompute());
+  CHECK(body.resultShape());
+  const double intermediateVolume = volume(*body.resultShape());
+
+  std::size_t filletEdge = 0;
+  for (; filletEdge < 64; ++filletEdge) {
+    std::string filletError;
+    if (solidar::buildFilletShape(*body.resultShape(), {filletEdge}, 2.0,
+                                  &filletError))
+      break;
+  }
+  CHECK(filletEdge < 64);
+  body.addFeature(std::make_unique<solidar::FilletFeature>(
+      solidar::EdgeReference{body.id(), baseId, filletEdge}, 2.0, "Fillet"));
+  CHECK(parametric.recompute());
+  CHECK(body.resultShape());
+  const double finalVolume = volume(*body.resultShape());
+  CHECK(std::abs(finalVolume - intermediateVolume) > 1e-4);
+
+  const QString finalBodyPath =
+      temporary.filePath(QStringLiteral("parametric-final-body.step"));
+  CHECK(solidar::io::exportDocumentStep(finalBodyPath, parametric, &error));
+  QFile finalBodyFile(finalBodyPath);
+  CHECK(finalBodyFile.exists());
+  CHECK(finalBodyFile.size() > 0);
+  const auto finalBodyRoundTrip =
+      solidar::io::readStepFile(finalBodyPath, &error);
+  CHECK(finalBodyRoundTrip);
+  CHECK(BRepCheck_Analyzer(*finalBodyRoundTrip).IsValid());
+  CHECK(countSubshapes(*finalBodyRoundTrip, TopAbs_SOLID) == 1);
+  CHECK(near(volume(*finalBodyRoundTrip), finalVolume, 1e-4));
+  CHECK(std::abs(volume(*finalBodyRoundTrip) - intermediateVolume) > 1e-4);
 
   return 0;
 }

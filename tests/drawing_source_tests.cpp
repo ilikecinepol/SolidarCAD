@@ -5,6 +5,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 
 #include <QApplication>
+#include <QDir>
 #include <QImage>
 #include <QPainter>
 #include <QTemporaryDir>
@@ -87,7 +88,8 @@ int main(int argc, char** argv) {
   CHECK(updatedSource.solidCount == 3);
   CHECK(heightOf(*updatedSource.shape) > 14.9);
 
-  QTemporaryDir temporary;
+  QTemporaryDir temporary(QDir::current().filePath(
+      QStringLiteral("drawing-source-tests-XXXXXX")));
   CHECK(temporary.isValid());
   const QString path = temporary.filePath("multi-body.solidar");
   QString error;

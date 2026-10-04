@@ -5,6 +5,7 @@
 #include <BRepPrimAPI_MakeWedge.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <QCoreApplication>
+#include <QDir>
 #include <QTemporaryDir>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -406,7 +407,8 @@ int main(int argc, char** argv) {
       CHECK(near(solidar::test::boundsOf(*body.resultShape()).z(), 40.0));
 
       // I. Save/load roundtrip preserves both sketch and face sources.
-      QTemporaryDir temporary;
+      QTemporaryDir temporary(QDir::current().filePath(
+          QStringLiteral("face-extrude-tests-XXXXXX")));
       CHECK(temporary.isValid());
       const QString path = temporary.filePath("face-extrude.solidar");
       QString saveError;

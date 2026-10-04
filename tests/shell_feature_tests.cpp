@@ -4,6 +4,7 @@
 #include <GProp_GProps.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <QCoreApplication>
+#include <QDir>
 #include <QTemporaryDir>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -130,7 +131,8 @@ int main(int argc, char** argv) {
   CHECK(boundedSession.thicknessMm() >= 0.01);
   CHECK(boundedSession.thicknessMm() < 3.0);
 
-  QTemporaryDir temporary;
+  QTemporaryDir temporary(QDir::current().filePath(
+      QStringLiteral("shell-feature-tests-XXXXXX")));
   assert(temporary.isValid());
   const QString path = temporary.filePath("shell.solidar");
   QString error;

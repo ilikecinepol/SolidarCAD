@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDir>
 #include <QTemporaryDir>
 #include <cstdlib>
 #include <iostream>
@@ -139,7 +140,9 @@ int main(int argc, char** argv) {
   CHECK(persistedSteps.size() == 5);
   CHECK(persistedSteps[2].type == solidar::HistoryStepType::Move);
   CHECK(persistedSteps[2].featureId == persistedMoveId);
-  QTemporaryDir directory; CHECK(directory.isValid());
+  QTemporaryDir directory(QDir::current().filePath(
+      QStringLiteral("part-design-history-ui-tests-XXXXXX")));
+  CHECK(directory.isValid());
   const QString path = directory.filePath(QStringLiteral("history.solidar"));
   QString error;
   CHECK(solidar::project::ProjectFile::saveDocument(path, persisted, &error));

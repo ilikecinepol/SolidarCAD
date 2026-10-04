@@ -4,6 +4,7 @@
 #include <QAction>
 #include <QDockWidget>
 #include <QDir>
+#include <QKeyEvent>
 #include <QMessageBox>
 #include <QStackedWidget>
 #include <QTemporaryDir>
@@ -14,12 +15,15 @@
 #include <iostream>
 #include <memory>
 
+#include "TestGeometryUtils.h"
 #include "app/AppSettings.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletToolSession.h"
+#include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
 #include "ui/MainWindow.h"
 #include "ui/SketchCanvas.h"
+#include "ui/ToolParametersPanel.h"
 #include "ui/Viewport.h"
 #include "ui/tools/PartDesignToolController.h"
 
@@ -69,6 +73,87 @@ class MainWindowUndoTestAccess {
     return window.isWindowModified();
   }
   static void save(MainWindow& window) { window.saveProject(); }
+  static void startSketchExtrude(MainWindow& window, std::size_t index) {
+    window.createSketchExtrude(index);
+  }
+  static bool startTopFaceExtrude(MainWindow& window, double zMm) {
+    Body* body = window.document_.activeBody();
+    if (!body || !body->activeFeature() || !body->resultShape()) return false;
+    const auto faceIndex = test::topPlanarFace(*body->resultShape(), zMm);
+    if (!faceIndex) return false;
+    window.createFaceExtrude(makeFaceReference(
+        *body->resultShape(), body->id(), body->activeFeature()->id(),
+        *faceIndex));
+    return true;
+  }
+  static void dragDirectExtrude(MainWindow& window, double length) {
+    emit window.viewport_->toolManipulatorValueChanged(length);
+    QApplication::processEvents();
+  }
+  static bool pressDirectExtrudeKey(MainWindow& window, Qt::Key key) {
+    window.toolParametersPanel_->focusParameterInput();
+    QApplication::processEvents();
+    QWidget* focus = QApplication::focusWidget();
+    if (!focus) return false;
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+    QApplication::sendEvent(focus, &press);
+    QApplication::sendEvent(focus, &release);
+    QApplication::processEvents();
+    return true;
+  }
+  static void commitDirectExtrudeFromViewport(MainWindow& window) {
+    emit window.viewport_->toolParameterCommitted();
+    QApplication::processEvents();
+  }
+  static ToolLifecycle directExtrudeLifecycle(const MainWindow& window) {
+    return window.faceExtrudeSession_.lifecycle();
+  }
+  static ExtrudeOperation directExtrudeOperation(const MainWindow& window) {
+    return window.faceExtrudeSession_.operation();
+  }
+  static bool directExtrudeReversed(const MainWindow& window) {
+    return window.faceExtrudeSession_.reversed();
+  }
+  static ShapeFeature::ShapePtr directExtrudePreview(const MainWindow& window) {
+    return window.faceExtrudeSession_.previewShape();
+  }
+  static PartDesignToolKind activeTool(const MainWindow& window) {
+    return window.partDesignTools_.activeTool();
+  }
+  static std::size_t undoCount(const MainWindow& window) {
+    return window.modelUndoStack_.size();
+  }
+  static std::size_t bodyFeatureCount(const MainWindow& window) {
+    const Body* body = window.document_.activeBody();
+    return body ? body->features().size() : 0;
+  }
+  static ShapeFeature::ShapePtr bodyShape(const MainWindow& window) {
+    const Body* body = window.document_.activeBody();
+    return body ? body->resultShape() : ShapeFeature::ShapePtr{};
+  }
+  static ShapeFeature::ShapePtr displayedBodyShape(const MainWindow& window) {
+    return window.viewport_->bodyShape_;
+  }
+  static bool viewportHasToolPreview(const MainWindow& window) {
+    return (window.viewport_->toolPreviewShape_ &&
+            !window.viewport_->toolPreviewShape_->IsNull()) ||
+           (window.viewport_->toolCutPreviewShape_ &&
+            !window.viewport_->toolCutPreviewShape_->IsNull());
+  }
+  static std::size_t historyStepCount(const MainWindow& window) {
+    return window.historySteps_.size();
+  }
+  static void applyHistoryPosition(MainWindow& window, int position) {
+    window.applyHistoryPosition(position);
+  }
+  static void moveHistoryToEnd(MainWindow& window) {
+    window.moveHistoryToEnd();
+    window.applyHistoryPosition(window.historyPosition_);
+  }
+  static bool historyAtEnd(const MainWindow& window) {
+    return window.isHistoryAtEnd();
+  }
 };
 
 }  // namespace solidar
@@ -281,6 +366,157 @@ int main(int argc, char** argv) {
     CHECK(fillet.lifecycle() == solidar::ToolLifecycle::Inactive);
     CHECK(fillet.previewShape() == nullptr);
     CHECK(fillet.edges().empty());
+  }
+
+  // End-to-end direct Sketch-on-Face Extrude: signed drag chooses outward
+  // Join or inward Cut, commit creates one history entry, transient state is
+  // cleared, and Undo/Redo plus history scrubbing preserve an editable model.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::Document document;
+    auto& baseSketch = document.addSketch("Direct Extrude base");
+    baseSketch.geometry.addRectangle({-20.0, -15.0}, {20.0, 15.0});
+    auto& body = document.addBody("Direct Extrude body");
+    auto base = std::make_unique<solidar::ExtrudeFeature>(
+        baseSketch.id, 20.0, "Extrude");
+    const auto baseId = base->id();
+    body.addFeature(std::move(base));
+    CHECK(document.recompute());
+    const auto topFace =
+        solidar::test::topPlanarFace(*body.resultShape(), 20.0);
+    CHECK(topFace);
+    const auto support = solidar::makeFaceReference(
+        *body.resultShape(), body.id(), baseId, *topFace);
+    auto& faceSketch = document.addSketch("Direct Extrude face profile");
+    CHECK(document.attachSketchToFace(faceSketch.id, support));
+    faceSketch.geometry.addRectangle({-5.0, -5.0}, {5.0, 5.0});
+    CHECK(document.recompute());
+
+    const QString directPath =
+        directory.filePath(QStringLiteral("direct-face-extrude.solidar"));
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        directPath, document, &error));
+    solidar::MainWindow directEditor(settings);
+    CHECK(directEditor.loadProject(directPath, &error));
+    directEditor.show();
+    directEditor.activateWindow();
+    QApplication::processEvents();
+    CHECK(Access::bodyFeatureCount(directEditor) == 1);
+    const auto baseShape = Access::bodyShape(directEditor);
+    CHECK(baseShape);
+    const double baseVolume = solidar::test::volumeOf(*baseShape);
+
+    Access::startSketchExtrude(directEditor, 1);
+    CHECK(Access::directExtrudeLifecycle(directEditor) ==
+          solidar::ToolLifecycle::PreviewValid);
+    CHECK(Access::directExtrudeOperation(directEditor) ==
+          solidar::ExtrudeOperation::Join);
+    CHECK(!Access::directExtrudeReversed(directEditor));
+    CHECK(Access::directExtrudePreview(directEditor));
+    CHECK(Access::viewportHasToolPreview(directEditor));
+    CHECK(Access::activeTool(directEditor) ==
+          solidar::PartDesignToolKind::Extrude);
+    CHECK(Access::pressDirectExtrudeKey(directEditor, Qt::Key_Escape));
+    CHECK(Access::directExtrudeLifecycle(directEditor) ==
+          solidar::ToolLifecycle::Inactive);
+    CHECK(!Access::directExtrudePreview(directEditor));
+    CHECK(!Access::viewportHasToolPreview(directEditor));
+    CHECK(Access::bodyFeatureCount(directEditor) == 1);
+    CHECK(Access::undoCount(directEditor) == 0);
+
+    Access::startSketchExtrude(directEditor, 1);
+    Access::dragDirectExtrude(directEditor, 8.0);
+    CHECK(Access::viewportHasToolPreview(directEditor));
+    CHECK(Access::pressDirectExtrudeKey(directEditor, Qt::Key_Return));
+    CHECK(Access::bodyFeatureCount(directEditor) == 2);
+    CHECK(Access::undoCount(directEditor) == 1);
+    CHECK(Access::redoCount(directEditor) == 0);
+    CHECK(Access::directExtrudeLifecycle(directEditor) ==
+          solidar::ToolLifecycle::Inactive);
+    CHECK(!Access::directExtrudePreview(directEditor));
+    CHECK(!Access::viewportHasToolPreview(directEditor));
+    CHECK(Access::activeTool(directEditor) ==
+          solidar::PartDesignToolKind::None);
+    CHECK(Access::viewport(directEditor)->selectedBodyFaces().empty());
+    CHECK(Access::viewport(directEditor)->selectionFilter() ==
+          solidar::SelectionFilter::Any);
+    CHECK(!Access::viewport(directEditor)->linearToolManipulator());
+    const auto joinedShape = Access::bodyShape(directEditor);
+    CHECK(joinedShape);
+    CHECK(solidar::test::solidCount(*joinedShape) == 1);
+    const double joinedVolume = solidar::test::volumeOf(*joinedShape);
+    CHECK(joinedVolume > baseVolume);
+
+    // A second Enter/Apply after completion is a no-op, not a duplicate node.
+    Access::commitDirectExtrudeFromViewport(directEditor);
+    CHECK(Access::bodyFeatureCount(directEditor) == 2);
+    CHECK(Access::undoCount(directEditor) == 1);
+
+    Access::undoAction(directEditor)->trigger();
+    CHECK(Access::bodyFeatureCount(directEditor) == 1);
+    CHECK(Access::redoCount(directEditor) == 1);
+    Access::redoAction(directEditor)->trigger();
+    CHECK(Access::bodyFeatureCount(directEditor) == 2);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*Access::bodyShape(directEditor)),
+        joinedVolume, 1e-4));
+
+    CHECK(Access::historyStepCount(directEditor) == 4);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*Access::displayedBodyShape(directEditor)),
+        joinedVolume, 1e-4));
+    Access::applyHistoryPosition(directEditor, 2);
+    CHECK(!Access::historyAtEnd(directEditor));
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*Access::displayedBodyShape(directEditor)),
+        baseVolume, 1e-4));
+    Access::moveHistoryToEnd(directEditor);
+    CHECK(Access::historyAtEnd(directEditor));
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*Access::displayedBodyShape(directEditor)),
+        joinedVolume, 1e-4));
+
+    // Returning to the tip must restore an immediately editable model.
+    CHECK(Access::startTopFaceExtrude(directEditor, 28.0));
+    CHECK(Access::directExtrudeLifecycle(directEditor) ==
+          solidar::ToolLifecycle::PreviewValid);
+    CHECK(Access::viewportHasToolPreview(directEditor));
+    CHECK(Access::pressDirectExtrudeKey(directEditor, Qt::Key_Escape));
+    CHECK(!Access::viewportHasToolPreview(directEditor));
+
+    // Return to the base and create the inward Cut through the same UI path.
+    Access::undoAction(directEditor)->trigger();
+    CHECK(Access::bodyFeatureCount(directEditor) == 1);
+    Access::startSketchExtrude(directEditor, 1);
+    Access::dragDirectExtrude(directEditor, -6.0);
+    CHECK(Access::directExtrudeLifecycle(directEditor) ==
+          solidar::ToolLifecycle::PreviewValid);
+    CHECK(Access::directExtrudeOperation(directEditor) ==
+          solidar::ExtrudeOperation::Cut);
+    CHECK(Access::directExtrudeReversed(directEditor));
+    CHECK(solidar::test::volumeOf(
+              *Access::directExtrudePreview(directEditor)) < baseVolume);
+    CHECK(Access::viewportHasToolPreview(directEditor));
+    Access::commitDirectExtrudeFromViewport(directEditor);
+    CHECK(Access::bodyFeatureCount(directEditor) == 2);
+    CHECK(Access::undoCount(directEditor) == 1);
+    CHECK(Access::redoCount(directEditor) == 0);
+    const auto cutShape = Access::bodyShape(directEditor);
+    CHECK(cutShape);
+    CHECK(solidar::test::solidCount(*cutShape) == 1);
+    const double cutVolume = solidar::test::volumeOf(*cutShape);
+    CHECK(cutVolume < baseVolume);
+    CHECK(!Access::viewportHasToolPreview(directEditor));
+    CHECK(!Access::viewport(directEditor)->linearToolManipulator());
+    CHECK(Access::viewport(directEditor)->selectedBodyFaces().empty());
+
+    Access::undoAction(directEditor)->trigger();
+    CHECK(Access::bodyFeatureCount(directEditor) == 1);
+    Access::redoAction(directEditor)->trigger();
+    CHECK(Access::bodyFeatureCount(directEditor) == 2);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*Access::bodyShape(directEditor)), cutVolume,
+        1e-4));
   }
 
   // Removing a Body must synchronize the legacy sketch count/source index

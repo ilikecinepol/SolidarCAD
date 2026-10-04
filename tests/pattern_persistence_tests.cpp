@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QDir>
 #include <QTemporaryDir>
 #include <cstdlib>
 #include <iostream>
@@ -32,7 +33,10 @@ int main(int argc, char** argv) {
   copies.addFeature(std::make_unique<solidar::LinearPatternFeature>(
       sourceBodyId, circularId, solidar::PrincipalAxis::X, 2, 100.0,
       solidar::PatternOperation::NewBody));
-  CHECK(document.recompute()); QTemporaryDir directory; CHECK(directory.isValid());
+  CHECK(document.recompute());
+  QTemporaryDir directory(QDir::current().filePath(
+      QStringLiteral("pattern-persistence-tests-XXXXXX")));
+  CHECK(directory.isValid());
   QString error; const QString path = directory.filePath("patterns.solidar");
   CHECK(solidar::project::ProjectFile::saveDocument(path, document, &error));
   solidar::Document restored; CHECK(solidar::project::ProjectFile::loadDocument(path, &restored, &error));

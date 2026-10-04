@@ -18,6 +18,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
+#include "model/LinearPatternFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/TopologyReferenceResolver.h"
@@ -244,7 +245,8 @@ void selectedCircleExtrudeRecomputesAfterDiameterEdit() {
   // has the new diameter, while its selected-region snapshot is still stale.
   // Loading must recover the selected primitive unambiguously by its centre.
   extrudePtr->setProfileOverride(selectedRegion);
-  QTemporaryDir directory;
+  QTemporaryDir directory(QDir::current().filePath(
+      QStringLiteral("selected-circle-tests-XXXXXX")));
   CHECK(directory.isValid());
   QString error;
   const QString path = directory.filePath("selected-circle-history.solidar");
@@ -360,13 +362,19 @@ int main(int argc, char* argv[]) {
     const auto chamferId = chamferPtr->id();
     chamferBody->addFeature(std::move(chamfer));
     CHECK(document.recompute());
+    auto pattern = std::make_unique<solidar::LinearPatternFeature>(
+        chamferId, solidar::PrincipalAxis::X, 2, 120.0, "Linear Pattern");
+    auto* patternPtr = pattern.get();
+    const auto patternId = patternPtr->id();
+    chamferBody->addFeature(std::move(pattern));
+    CHECK(document.recompute());
     auto* partBodyPtr = document.findBody(partBodyId);
     auto* revolveBodyPtr = document.findBody(revolveBodyId);
     CHECK(partBodyPtr && revolveBodyPtr);
     checkAllValid(document);
     CHECK(document.bodies().size() == 2);
     CHECK(document.sketches().size() == 3);
-    CHECK(partBodyPtr->features().size() == 4);
+    CHECK(partBodyPtr->features().size() == 5);
     CHECK(revolveBodyPtr->features().size() == 1);
     CHECK(document.rebuildError().empty());
 
@@ -382,6 +390,7 @@ int main(int argc, char* argv[]) {
     CHECK(pocketPtr->isDirty());
     CHECK(filletPtr->isDirty());
     CHECK(chamferPtr->isDirty());
+    CHECK(patternPtr->isDirty());
     if (!document.recompute())
       throw TestFailure("dependent Chamfer recompute failed: " +
                         document.rebuildError());
@@ -393,6 +402,29 @@ int main(int argc, char* argv[]) {
     CHECK(pocketPtr->id() == pocketId);
     CHECK(filletPtr->id() == filletId);
     CHECK(chamferPtr->id() == chamferId);
+    CHECK(patternPtr->id() == patternId);
+
+    // A broken root profile must clear every real downstream B-Rep. Restoring
+    // the same Sketch rebuilds the complete chain without recreating Features.
+    solidar::sketch::Sketch openProfile;
+    openProfile.addLine({0.0, 0.0}, {80.0, 0.0});
+    openProfile.addLine({80.0, 0.0}, {80.0, 40.0});
+    CHECK(document.replaceSketchGeometry(baseSketchId, openProfile));
+    CHECK(!document.recompute());
+    CHECK(extrudePtr->isFailed() && !extrudePtr->hasShape());
+    CHECK(pocketPtr->isFailed() && !pocketPtr->hasShape());
+    CHECK(filletPtr->isFailed() && !filletPtr->hasShape());
+    CHECK(chamferPtr->isFailed() && !chamferPtr->hasShape());
+    CHECK(patternPtr->isFailed() && !patternPtr->hasShape());
+    CHECK(!partBodyPtr->resultShape());
+    CHECK(extrudePtr->id() == extrudeId);
+    CHECK(pocketPtr->id() == pocketId);
+    CHECK(filletPtr->id() == filletId);
+    CHECK(chamferPtr->id() == chamferId);
+    CHECK(patternPtr->id() == patternId);
+    CHECK(document.replaceSketchGeometry(baseSketchId, widerProfile));
+    CHECK(document.recompute());
+    checkAllValid(document);
 
     // Editing every supported 3D parameter must change real B-Rep geometry.
     partVolume = solidar::test::volumeOf(*partBodyPtr->resultShape());
@@ -439,6 +471,9 @@ int main(int argc, char* argv[]) {
     CHECK(!document.recompute());
     CHECK(filletPtr->isFailed());
     CHECK(!filletPtr->hasShape());
+    CHECK(chamferPtr->isFailed() && !chamferPtr->hasShape());
+    CHECK(patternPtr->isFailed() && !patternPtr->hasShape());
+    CHECK(!partBodyPtr->resultShape());
     CHECK(!filletPtr->error().empty());
     CHECK(document.rebuildError() == filletPtr->error());
     filletPtr->setRadiusMm(2.0);
@@ -471,7 +506,7 @@ int main(int argc, char* argv[]) {
     auto* restoredPart = restored.findBody(partBodyId);
     auto* restoredRevolveBody = restored.findBody(revolveBodyId);
     CHECK(restoredPart && restoredRevolveBody);
-    CHECK(restoredPart->features().size() == 4);
+    CHECK(restoredPart->features().size() == 5);
     CHECK(restoredRevolveBody->features().size() == 1);
     CHECK(restored.findSketch(baseSketchId));
     const auto* restoredPocketSketch = restored.findSketch(pocketSketchId);
@@ -493,10 +528,13 @@ int main(int argc, char* argv[]) {
         restoredPart->features()[2].get());
     const auto* restoredChamfer = dynamic_cast<const solidar::ChamferFeature*>(
         restoredPart->features()[3].get());
+    const auto* restoredPattern =
+        dynamic_cast<const solidar::LinearPatternFeature*>(
+            restoredPart->features()[4].get());
     const auto* restoredRevolve = dynamic_cast<const solidar::RevolveFeature*>(
         restoredRevolveBody->features()[0].get());
     CHECK(restoredExtrude && restoredPocket && restoredFillet &&
-          restoredChamfer &&
+          restoredChamfer && restoredPattern &&
           restoredRevolve);
     CHECK(restoredRevolve->profileOverride().has_value());
     CHECK(restoredRevolve->profileOverride()->lines().size() == 4);
@@ -506,11 +544,14 @@ int main(int argc, char* argv[]) {
     CHECK(restoredPocket->id() == pocketId);
     CHECK(restoredFillet->id() == filletId);
     CHECK(restoredChamfer->id() == chamferId);
+    CHECK(restoredPattern->id() == patternId);
     CHECK(restoredRevolve->id() == revolveId);
     CHECK(solidar::test::near(restoredExtrude->lengthMm(), 60.0));
     CHECK(solidar::test::near(restoredPocket->depthMm(), 20.0));
     CHECK(solidar::test::near(restoredFillet->radiusMm(), 2.0));
     CHECK(solidar::test::near(restoredChamfer->distanceMm(), 0.75));
+    CHECK(restoredPattern->count() == 2);
+    CHECK(solidar::test::near(restoredPattern->spacingMm(), 120.0));
     CHECK(solidar::test::near(restoredRevolve->angleDeg(), 180.0));
     CHECK(solidar::test::near(
         solidar::test::volumeOf(*restoredPart->resultShape()),
@@ -541,8 +582,64 @@ int main(int argc, char* argv[]) {
     CHECK(restoredPart->features()[1]->id() == pocketId);
     CHECK(restoredPart->features()[2]->id() == filletId);
     CHECK(restoredPart->features()[3]->id() == chamferId);
+    CHECK(restoredPart->features()[4]->id() == patternId);
     CHECK(restoredRevolveBody->features()[0]->id() == revolveId);
     checkAllValid(restored);
+
+    // Edit a downstream feature after load, then exercise the same immutable
+    // Document snapshots used by UI Undo/Redo before the second save/load.
+    const double rootEditedVolume =
+        solidar::test::volumeOf(*restoredPart->resultShape());
+    const solidar::Document undoSnapshot = restored;
+    auto* editableChamfer = dynamic_cast<solidar::ChamferFeature*>(
+        restoredPart->features()[3].get());
+    CHECK(editableChamfer);
+    editableChamfer->setDistanceMm(0.6);
+    CHECK(restored.recompute());
+    const double downstreamEditedVolume =
+        solidar::test::volumeOf(*restoredPart->resultShape());
+    CHECK(std::abs(downstreamEditedVolume - rootEditedVolume) > 1e-4);
+    const solidar::Document redoSnapshot = restored;
+
+    restored = undoSnapshot;
+    auto* undonePart = restored.findBody(partBodyId);
+    CHECK(undonePart && undonePart->features().size() == 5);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*undonePart->resultShape()), rootEditedVolume,
+        1e-4));
+    CHECK(undonePart->features()[4]->id() == patternId);
+
+    restored = redoSnapshot;
+    auto* redonePart = restored.findBody(partBodyId);
+    CHECK(redonePart && redonePart->features().size() == 5);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*redonePart->resultShape()),
+        downstreamEditedVolume, 1e-4));
+    CHECK(redonePart->features()[4]->id() == patternId);
+
+    const QString secondPath = directory.filePath("round-trip-edited.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(secondPath, restored,
+                                                      &error));
+    solidar::Document secondRestored;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        secondPath, &secondRestored, &error));
+    CHECK(secondRestored.recompute());
+    const auto* secondPart = secondRestored.findBody(partBodyId);
+    CHECK(secondPart && secondPart->features().size() == 5);
+    CHECK(secondPart->features()[0]->id() == extrudeId);
+    CHECK(secondPart->features()[1]->id() == pocketId);
+    CHECK(secondPart->features()[2]->id() == filletId);
+    CHECK(secondPart->features()[3]->id() == chamferId);
+    CHECK(secondPart->features()[4]->id() == patternId);
+    const auto* secondChamfer =
+        dynamic_cast<const solidar::ChamferFeature*>(
+            secondPart->features()[3].get());
+    CHECK(secondChamfer);
+    CHECK(solidar::test::near(secondChamfer->distanceMm(), 0.6));
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*secondPart->resultShape()),
+        downstreamEditedVolume, 1e-4));
+    checkAllValid(secondRestored);
   } catch (const std::exception& error) {
     std::cerr << "part design regression failure: " << error.what() << '\n';
     return EXIT_FAILURE;

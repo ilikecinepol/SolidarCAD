@@ -4,6 +4,7 @@
 #include <GProp_GProps.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <QCoreApplication>
+#include <QDir>
 #include <QTemporaryDir>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -120,7 +121,9 @@ int main(int argc, char** argv) {
   assert(session.previewShape());
   assert(session.editingFeatureId() == draftId);
 
-  QTemporaryDir temporary; assert(temporary.isValid());
+  QTemporaryDir temporary(QDir::current().filePath(
+      QStringLiteral("draft-feature-tests-XXXXXX")));
+  assert(temporary.isValid());
   const QString path = temporary.filePath("draft.solidar"); QString error;
   assert(solidar::project::ProjectFile::saveDocument(path, document, &error));
   solidar::Document loaded;

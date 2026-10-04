@@ -18,7 +18,8 @@
 
 int main(int argc, char** argv) {
   QCoreApplication application(argc, argv);
-  QTemporaryDir directory;
+  QTemporaryDir directory(QDir::current().filePath(
+      QStringLiteral("app-settings-tests-XXXXXX")));
   CHECK(directory.isValid());
 
   // Default: no stored value resolves to System.
