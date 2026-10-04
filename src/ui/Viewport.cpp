@@ -4462,6 +4462,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
   // Resolve one real sketch before splitting regions. Screen overlap does not
   // imply coplanarity, and the parametric feature references one DocumentSketch.
   std::vector<QPolygonF> contours;
+  std::vector<sketch::Sketch> exactContourProfiles;
   sketch::Sketch exactArcProfile;
   QPolygonF exactArcPolygon;
   std::vector<std::vector<sketch::Point>> exactLineFaces;
@@ -4488,6 +4489,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
     const auto& displayed = displaySketches_[displayedIndex];
     if (!displayed.visible) continue;
     std::vector<QPolygonF> sketchContours;
+    std::vector<sketch::Sketch> sketchContourProfiles;
     const auto projectContourPoint = [&](sketch::Point point) {
       return project(pointOnPlacement(point, displayed.placement,
                                       offsetX_, offsetY_),
@@ -4502,6 +4504,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
       if (polygon.size() < 3 || std::abs(signedArea(polygon)) <= 1e-6)
         continue;
       sketchContours.push_back(polygon);
+      sketchContourProfiles.push_back(profile.geometry);
       if (!hitArcProfile &&
           polygon.containsPoint(position, Qt::OddEvenFill)) {
         hitArcProfile = std::move(profile.geometry);
@@ -4527,9 +4530,13 @@ void Viewport::updateExtrusionHover(QPointF position) {
           polygon << projectContourPoint(point);
         if (polygon.size() >= 3 &&
             std::abs(signedArea(polygon)) > 1e-6) {
+          sketch::Sketch candidate;
+          for (std::size_t index = 0; index < face.size(); ++index)
+            candidate.addLine(face[index], face[(index + 1) % face.size()]);
           validGraphFaces.push_back(face);
           graphFacePolygons.push_back(polygon);
           sketchContours.push_back(std::move(polygon));
+          sketchContourProfiles.push_back(std::move(candidate));
         }
       }
     } else {
@@ -4547,8 +4554,10 @@ void Viewport::updateExtrusionHover(QPointF position) {
             candidate.addLine(line.start, line.end);
           }
         if (polygon.size() >= 3 && candidate.isClosed() &&
-            std::abs(signedArea(polygon)) > 1e-6)
+            std::abs(signedArea(polygon)) > 1e-6) {
           sketchContours.push_back(polygon);
+          sketchContourProfiles.push_back(std::move(candidate));
+        }
       }
     }
     for (const auto& circle : displayed.geometry.circles()) {
@@ -4562,6 +4571,9 @@ void Viewport::updateExtrusionHover(QPointF position) {
         polygon << projectContourPoint(point);
       }
       sketchContours.push_back(polygon);
+      sketch::Sketch candidate;
+      candidate.addCircle(circle.center, circle.radiusMm);
+      sketchContourProfiles.push_back(std::move(candidate));
     }
     if (std::none_of(sketchContours.begin(), sketchContours.end(),
         [&](const QPolygonF& contour) {
@@ -4583,6 +4595,7 @@ void Viewport::updateExtrusionHover(QPointF position) {
     // Newest sketch wins only for equal-depth hits.
     bestDepth = depth;
     contours = std::move(sketchContours);
+    exactContourProfiles = std::move(sketchContourProfiles);
     if (hitArcProfile) {
       exactArcProfile = std::move(*hitArcProfile);
       exactArcPolygon = std::move(hitArcPolygon);
@@ -4674,6 +4687,90 @@ void Viewport::updateExtrusionHover(QPointF position) {
 
       extrusionHoverPolygon_ = exactLineFacePolygons[selectedFace];
       extrusionHoverPath_ = selectedRegion;
+      hoveredExtrusionSketch_ = std::move(selectedGeometry);
+      hoveredExtrusionSupport_ = regionSupport;
+      hoveredExtrusionSurface_ = QString::fromUtf8("Замкнутая область");
+      hoveredExtrusionSketchIndex_ = regionSketchIndex;
+      return;
+    }
+  }
+
+  // Screen polygons are only a hit-test representation. When the source
+  // contours are disjoint or strictly nested, retain their exact Sketch
+  // primitives for Extrude/Revolve instead of inverting QPainterPath's
+  // tessellated polygons back into dozens of short lines. In particular, an
+  // annulus must stay two analytic circles so its prism has two cylindrical
+  // walls rather than a ring of narrow planar faces and visible hatching.
+  if (!contours.empty() && contours.size() == exactContourProfiles.size()) {
+    std::vector<QPainterPath> contourPaths;
+    contourPaths.reserve(contours.size());
+    for (const auto& contour : contours) {
+      QPainterPath path;
+      path.addPolygon(contour);
+      path.closeSubpath();
+      contourPaths.push_back(std::move(path));
+    }
+
+    bool exactSelectionIsUnambiguous = true;
+    for (std::size_t first = 0; first < contourPaths.size(); ++first) {
+      for (std::size_t second = first + 1; second < contourPaths.size();
+           ++second) {
+        if (contourPaths[first].intersects(contourPaths[second]) &&
+            !contourPaths[first].contains(contourPaths[second]) &&
+            !contourPaths[second].contains(contourPaths[first])) {
+          exactSelectionIsUnambiguous = false;
+          break;
+        }
+      }
+      if (!exactSelectionIsUnambiguous) break;
+    }
+
+    std::optional<std::size_t> outerContour;
+    double outerArea = std::numeric_limits<double>::max();
+    if (exactSelectionIsUnambiguous) {
+      for (std::size_t index = 0; index < contours.size(); ++index) {
+        if (!contourPaths[index].contains(position)) continue;
+        const double area = std::abs(signedArea(contours[index]));
+        if (area < outerArea) {
+          outerArea = area;
+          outerContour = index;
+        }
+      }
+    }
+
+    if (outerContour) {
+      QPainterPath selectedRegion;
+      selectedRegion.setFillRule(Qt::OddEvenFill);
+      selectedRegion.addPolygon(contours[*outerContour]);
+      selectedRegion.closeSubpath();
+      sketch::Sketch selectedGeometry;
+      const auto appendGeometry = [&selectedGeometry](
+                                      const sketch::Sketch& geometry) {
+        for (const auto& line : geometry.lines())
+          if (!line.dashed)
+            selectedGeometry.addLine(line.start, line.end);
+        for (const auto& circle : geometry.circles())
+          if (!circle.dashed)
+            selectedGeometry.addCircle(circle.center, circle.radiusMm);
+        for (const auto& arc : geometry.arcs())
+          if (!arc.dashed)
+            selectedGeometry.addArc(arc.center, arc.radiusMm,
+                                    arc.startAngleRad, arc.sweepAngleRad);
+      };
+      appendGeometry(exactContourProfiles[*outerContour]);
+
+      for (std::size_t index = 0; index < contours.size(); ++index) {
+        if (index == *outerContour ||
+            contourPaths[index].contains(position) ||
+            !contourPaths[*outerContour].contains(contourPaths[index]))
+          continue;
+        selectedRegion.addPolygon(contours[index]);
+        selectedRegion.closeSubpath();
+        appendGeometry(exactContourProfiles[index]);
+      }
+
+      extrusionHoverPolygon_ = contours[*outerContour];
+      extrusionHoverPath_ = std::move(selectedRegion);
       hoveredExtrusionSketch_ = std::move(selectedGeometry);
       hoveredExtrusionSupport_ = regionSupport;
       hoveredExtrusionSurface_ = QString::fromUtf8("Замкнутая область");

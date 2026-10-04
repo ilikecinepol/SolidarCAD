@@ -82,8 +82,9 @@ int main(int argc, char** argv) {
         CHECK(view.extrusionCandidateSupport() == support);
         CHECK(!view.extrusionCandidateOnBodyCap());
         const auto& candidate = view.extrusionCandidateSketch();
-        if (circle && !multiple) {
+        if (circle) {
           CHECK(candidate.circles().size() == 1);
+          CHECK(candidate.lines().empty());
           CHECK(std::abs(candidate.circles().front().radiusMm - 6) < 1e-6);
           CHECK(std::abs(candidate.circles().front().center.xMm) < 1e-6);
           CHECK(std::abs(candidate.circles().front().center.yMm) < 1e-6);
@@ -133,6 +134,40 @@ int main(int argc, char** argv) {
         CHECK(picks == 2);
       }
     }
+  }
+
+  // Nested circular contours use screen polygons for hit testing only. The
+  // selected annulus must retain both analytic circles; turning either rim
+  // into sampled lines creates dozens of planar side faces and the visible
+  // longitudinal hatching reported for circular Extrude previews/results.
+  {
+    solidar::Viewport view;
+    view.resize(800, 600);
+    solidar::sketch::Sketch annulus;
+    annulus.addCircle({0.0, 0.0}, 30.0);
+    annulus.addCircle({10.0, 0.0}, 8.0);
+    const auto placement = solidar::SketchPlacement::xy();
+    view.addSketch(annulus, QStringLiteral("XY"), placement);
+    const solidar::ViewportCameraState camera{
+        view.cameraYawDegrees(), view.cameraPitchDegrees(), 1.0F, {},
+        view.size()};
+    const QPointF ringPoint =
+        camera.worldToScreen(placement.toWorld(-12.0, 0.0));
+
+    int picks = 0;
+    QObject::connect(&view, &solidar::Viewport::extrusionSurfacePicked,
+                     &view, [&](const QString&) { ++picks; });
+    view.beginExtrusionSurfaceSelection();
+    mouse(view, QEvent::MouseButtonPress, ringPoint,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(picks == 1);
+    const auto& candidate = view.extrusionCandidateSketch();
+    CHECK(candidate.lines().empty());
+    CHECK(candidate.arcs().empty());
+    CHECK(candidate.circles().size() == 2);
+    CHECK(std::abs(candidate.circles()[0].radiusMm - 30.0) < 1e-6);
+    CHECK(std::abs(candidate.circles()[1].radiusMm - 8.0) < 1e-6);
   }
 
   constexpr solidar::BodyId bodyId = 41;
