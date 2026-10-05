@@ -973,7 +973,7 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("arcDimensionKeyboardEdit", false);
   circleGuideLines_.clear();
   rectanglePoints_.clear();
-  mirrorContourLineIds_.clear();
+  mirrorSourceGeometry_.clear();
   selectionBoxActive_ = false;
   setProperty("autoDimensionTarget", QVariant());
   setProperty("autoDimensionFirstLine", QVariant());
@@ -1028,7 +1028,7 @@ void SketchCanvas::setTool(Tool tool) {
         QString::fromUtf8("Проекция: выберите ребро существующей геометрии"));
   else if (tool == Tool::Mirror)
     emit selectionChanged(QString::fromUtf8(
-        "Зеркало: двойной клик по замкнутому контуру"));
+        "Зеркало: один клик — объект, двойной — замкнутый контур"));
   else if (tool == Tool::Trim)
     emit selectionChanged(QString::fromUtf8(
         "Ножницы: щёлкните по подсвеченному участку"));
@@ -4303,7 +4303,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     setProperty("tangentFirstKind", QVariant());
 
     rectanglePoints_.clear();
-    mirrorContourLineIds_.clear();
+    mirrorSourceGeometry_.clear();
     circlePoints_.clear();
     arcPoints_.clear();
     setProperty("arcChordAngleRad", QVariant());
@@ -4329,9 +4329,16 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   }
 
   if (tool_ == Tool::Mirror) {
-    if (mirrorContourLineIds_.empty()) {
-      emit selectionChanged(QString::fromUtf8(
-          "Зеркало: сначала выберите контур двойным кликом"));
+    if (mirrorSourceGeometry_.empty()) {
+      const auto source = mirrorGeometryAt(event->position());
+      if (!source) {
+        emit selectionChanged(QString::fromUtf8(
+            "Зеркало: выберите прямую, дугу или окружность"));
+      } else {
+        setMirrorSourceSelection({*source});
+        emit selectionChanged(QString::fromUtf8(
+            "Зеркало: объект выбран, теперь выберите прямую-ось"));
+      }
     } else {
       const auto axis = lineAt(event->position());
       if (!axis || !mirrorContourAboutLine(*axis))
@@ -4837,8 +4844,25 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
   }
 
   const auto dimensionHit = dimensionAt(event->position());
-  if (tool_ == Tool::Mirror ||
-      (tool_ == Tool::Select && !dimensionHit.has_value())) {
+  if (tool_ == Tool::Mirror) {
+    const auto seed = mirrorGeometryAt(event->position());
+    const auto contour = seed ? closedMirrorContour(*seed)
+                              : std::vector<MirrorGeometryRef>{};
+    if (!contour.empty()) {
+      setMirrorSourceSelection(contour);
+      emit selectionChanged(QString::fromUtf8(
+          "Зеркало: контур выбран, теперь выберите прямую-ось"));
+      event->accept();
+      update();
+      return;
+    }
+    emit selectionChanged(QString::fromUtf8(
+        "Зеркало: выбранная цепочка не образует однозначный замкнутый контур"));
+    event->accept();
+    return;
+  }
+
+  if (tool_ == Tool::Select && !dimensionHit.has_value()) {
     const auto seed = lineAt(event->position());
     const auto contour = seed ? closedLineContour(*seed)
                               : std::vector<sketch::GeometryId>{};
@@ -4852,22 +4876,10 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
         emit lineStyleSelectionChanged(true,
                                        sketch_.lines()[*index].dashed);
       }
-      if (tool_ == Tool::Mirror) {
-        mirrorContourLineIds_ = contour;
-        emit selectionChanged(QString::fromUtf8(
-            "Зеркало: контур выбран, теперь выберите ось симметрии"));
-      } else {
-        emit selectionChanged(QString::fromUtf8(
-            "Выбран замкнутый контур: %1 линий").arg(contour.size()));
-      }
+      emit selectionChanged(QString::fromUtf8(
+          "Выбран замкнутый контур: %1 линий").arg(contour.size()));
       event->accept();
       update();
-      return;
-    }
-    if (tool_ == Tool::Mirror) {
-      emit selectionChanged(QString::fromUtf8(
-          "Зеркало: выбранная цепочка не образует однозначный замкнутый контур"));
-      event->accept();
       return;
     }
   }
@@ -10034,10 +10046,165 @@ std::vector<sketch::GeometryId> SketchCanvas::closedLineContour(
   return result;
 }
 
+std::optional<SketchCanvas::MirrorGeometryRef>
+SketchCanvas::mirrorGeometryAt(QPointF position,
+                               double tolerancePx) const {
+  double bestDistance = tolerancePx;
+  std::optional<MirrorGeometryRef> result;
+
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    const double distance = pointSegmentDistance(
+        position, mapPoint(line.start), mapPoint(line.end));
+    if (distance >= bestDistance) continue;
+    bestDistance = distance;
+    result = MirrorGeometryRef{MirrorGeometryKind::Line,
+                               sketch_.lineId(index)};
+  }
+
+  for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+    const auto& circle = sketch_.circles()[index];
+    const double distance = std::abs(
+        QLineF(position, mapPoint(circle.center)).length() -
+        circle.radiusMm * pixelsPerMm_);
+    if (distance >= bestDistance) continue;
+    bestDistance = distance;
+    result = MirrorGeometryRef{MirrorGeometryKind::Circle,
+                               sketch_.circleId(index)};
+  }
+
+  for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
+    const double distance =
+        arcDistanceToScreenPoint(sketch_.arcs()[index], position);
+    if (distance >= bestDistance) continue;
+    bestDistance = distance;
+    result = MirrorGeometryRef{MirrorGeometryKind::Arc,
+                               sketch_.arcId(index)};
+  }
+
+  return result;
+}
+
+std::vector<SketchCanvas::MirrorGeometryRef>
+SketchCanvas::closedMirrorContour(MirrorGeometryRef seed) const {
+  if (seed.kind == MirrorGeometryKind::Circle)
+    return sketch_.circleIndex(seed.geometryId)
+               ? std::vector<MirrorGeometryRef>{seed}
+               : std::vector<MirrorGeometryRef>{};
+
+  struct OpenGeometry {
+    MirrorGeometryRef reference;
+    sketch::Point start;
+    sketch::Point end;
+  };
+  std::vector<OpenGeometry> geometry;
+  geometry.reserve(sketch_.lines().size() + sketch_.arcs().size());
+  for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    const auto& line = sketch_.lines()[index];
+    geometry.push_back({{MirrorGeometryKind::Line, sketch_.lineId(index)},
+                        line.start, line.end});
+  }
+  for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
+    const auto& arc = sketch_.arcs()[index];
+    geometry.push_back({{MirrorGeometryKind::Arc, sketch_.arcId(index)},
+                        sketch::arcStartPoint(arc),
+                        sketch::arcEndPoint(arc)});
+  }
+
+  const auto sameReference = [](MirrorGeometryRef first,
+                                MirrorGeometryRef second) {
+    return first.kind == second.kind &&
+           first.geometryId == second.geometryId;
+  };
+  const auto seedItem = std::find_if(
+      geometry.begin(), geometry.end(),
+      [seed, &sameReference](const OpenGeometry& item) {
+        return sameReference(item.reference, seed);
+      });
+  if (seedItem == geometry.end()) return {};
+
+  constexpr double tolerance = 1e-6;
+  const auto samePoint = [](sketch::Point first, sketch::Point second) {
+    return std::hypot(first.xMm - second.xMm,
+                      first.yMm - second.yMm) <= tolerance;
+  };
+  const auto walk = [&](bool reverseSeed) {
+    std::vector<MirrorGeometryRef> result{seed};
+    std::vector<MirrorGeometryRef> used{seed};
+    const sketch::Point origin = reverseSeed ? seedItem->end : seedItem->start;
+    sketch::Point cursor = reverseSeed ? seedItem->start : seedItem->end;
+
+    for (std::size_t guard = 0; guard <= geometry.size(); ++guard) {
+      if (samePoint(cursor, origin))
+        return result.size() >= 2 ? result
+                                  : std::vector<MirrorGeometryRef>{};
+
+      const OpenGeometry* next = nullptr;
+      bool nextReversed = false;
+      for (const auto& candidate : geometry) {
+        if (std::any_of(
+                used.begin(), used.end(),
+                [&candidate, &sameReference](MirrorGeometryRef item) {
+                  return sameReference(item, candidate.reference);
+                }))
+          continue;
+        const bool startsHere = samePoint(candidate.start, cursor);
+        const bool endsHere = samePoint(candidate.end, cursor);
+        if (!startsHere && !endsHere) continue;
+        if (next) return std::vector<MirrorGeometryRef>{};
+        next = &candidate;
+        nextReversed = endsHere;
+      }
+      if (!next) return std::vector<MirrorGeometryRef>{};
+      result.push_back(next->reference);
+      used.push_back(next->reference);
+      cursor = nextReversed ? next->start : next->end;
+    }
+    return std::vector<MirrorGeometryRef>{};
+  };
+
+  auto result = walk(false);
+  if (result.empty()) result = walk(true);
+  return result;
+}
+
+void SketchCanvas::setMirrorSourceSelection(
+    const std::vector<MirrorGeometryRef>& source) {
+  mirrorSourceGeometry_ = source;
+  clearGeometrySelection();
+
+  for (const auto item : source) {
+    switch (item.kind) {
+      case MirrorGeometryKind::Line:
+        selectedLineIds_.push_back(item.geometryId);
+        selectionKind_ = SelectionKind::Line;
+        selectionLineId_ = item.geometryId;
+        if (const auto index = sketch_.lineIndex(item.geometryId))
+          selectionElementId_ = sketch_.lines()[*index].elementId;
+        break;
+      case MirrorGeometryKind::Circle:
+        selectedCircleIds_.push_back(item.geometryId);
+        selectionKind_ = SelectionKind::Circle;
+        selectionCircleId_ = item.geometryId;
+        break;
+      case MirrorGeometryKind::Arc:
+        selectedArcIds_.push_back(item.geometryId);
+        selectionKind_ = SelectionKind::Arc;
+        selectionArcId_ = item.geometryId;
+        break;
+    }
+  }
+  update();
+}
+
 bool SketchCanvas::mirrorContourAboutLine(sketch::GeometryId axisId) {
-  if (mirrorContourLineIds_.empty() ||
-      std::find(mirrorContourLineIds_.begin(), mirrorContourLineIds_.end(),
-                axisId) != mirrorContourLineIds_.end())
+  if (mirrorSourceGeometry_.empty() ||
+      std::any_of(
+          mirrorSourceGeometry_.begin(), mirrorSourceGeometry_.end(),
+          [axisId](MirrorGeometryRef item) {
+            return item.kind == MirrorGeometryKind::Line &&
+                   item.geometryId == axisId;
+          }))
     return false;
   const auto axisIndex = sketch_.lineIndex(axisId);
   if (!axisIndex) return false;
@@ -10059,27 +10226,91 @@ bool SketchCanvas::mirrorContourAboutLine(sketch::GeometryId axisId) {
 
   struct SourceLine {
     sketch::Line line;
-    bool dashed{};
   };
-  std::vector<SourceLine> source;
-  source.reserve(mirrorContourLineIds_.size());
-  for (const auto id : mirrorContourLineIds_) {
-    const auto index = sketch_.lineIndex(id);
-    if (!index) return false;
-    source.push_back({sketch_.lines()[*index], sketch_.lines()[*index].dashed});
+  struct SourceCircle {
+    sketch::Circle circle;
+  };
+  struct SourceArc {
+    sketch::Arc arc;
+  };
+  struct SourceGeometry {
+    MirrorGeometryKind kind{MirrorGeometryKind::Line};
+    SourceLine line{};
+    SourceCircle circle{};
+    SourceArc arc{};
+  };
+  std::vector<SourceGeometry> source;
+  source.reserve(mirrorSourceGeometry_.size());
+  for (const auto item : mirrorSourceGeometry_) {
+    SourceGeometry snapshot;
+    snapshot.kind = item.kind;
+    switch (item.kind) {
+      case MirrorGeometryKind::Line: {
+        const auto index = sketch_.lineIndex(item.geometryId);
+        if (!index) return false;
+        snapshot.line.line = sketch_.lines()[*index];
+        break;
+      }
+      case MirrorGeometryKind::Circle: {
+        const auto index = sketch_.circleIndex(item.geometryId);
+        if (!index) return false;
+        snapshot.circle.circle = sketch_.circles()[*index];
+        break;
+      }
+      case MirrorGeometryKind::Arc: {
+        const auto index = sketch_.arcIndex(item.geometryId);
+        if (!index) return false;
+        snapshot.arc.arc = sketch_.arcs()[*index];
+        break;
+      }
+    }
+    source.push_back(snapshot);
   }
 
   pushUndoState();
-  const std::size_t oldLineCount = sketch_.lines().size();
-  for (const auto& item : source)
-    sketch_.addLine(mirrored(item.line.start), mirrored(item.line.end));
-
-  std::vector<sketch::GeometryId> created;
-  for (std::size_t index = oldLineCount; index < sketch_.lines().size(); ++index) {
-    const auto id = sketch_.lineId(index);
-    created.push_back(id);
-    if (source[index - oldLineCount].dashed)
-      sketch_.setLineDashedById(id, true);
+  std::vector<MirrorGeometryRef> created;
+  created.reserve(source.size());
+  for (const auto& item : source) {
+    switch (item.kind) {
+      case MirrorGeometryKind::Line: {
+        const std::size_t index = sketch_.lines().size();
+        sketch_.addLine(mirrored(item.line.line.start),
+                        mirrored(item.line.line.end));
+        if (sketch_.lines().size() != index + 1) return false;
+        const auto id = sketch_.lineId(index);
+        if (item.line.line.dashed)
+          sketch_.setLineDashedById(id, true);
+        created.push_back({MirrorGeometryKind::Line, id});
+        break;
+      }
+      case MirrorGeometryKind::Circle: {
+        const std::size_t index = sketch_.circles().size();
+        sketch_.addCircle(mirrored(item.circle.circle.center),
+                          item.circle.circle.radiusMm);
+        if (sketch_.circles().size() != index + 1) return false;
+        const auto id = sketch_.circleId(index);
+        if (item.circle.circle.dashed)
+          sketch_.setCircleDashedById(id, true);
+        created.push_back({MirrorGeometryKind::Circle, id});
+        break;
+      }
+      case MirrorGeometryKind::Arc: {
+        const auto center = mirrored(item.arc.arc.center);
+        // Reflection reverses orientation. Starting at the reflected original
+        // end and keeping the positive sweep preserves the exact curve.
+        const auto reflectedEnd = mirrored(sketch::arcEndPoint(item.arc.arc));
+        const double startAngle =
+            std::atan2(reflectedEnd.yMm - center.yMm,
+                       reflectedEnd.xMm - center.xMm);
+        const std::size_t index = sketch_.arcs().size();
+        sketch_.addArc(center, item.arc.arc.radiusMm, startAngle,
+                       item.arc.arc.sweepAngleRad, item.arc.arc.dashed);
+        if (sketch_.arcs().size() != index + 1) return false;
+        created.push_back(
+            {MirrorGeometryKind::Arc, sketch_.arcId(index)});
+        break;
+      }
+    }
   }
 
   constexpr double tolerance = 1e-7;
@@ -10087,41 +10318,55 @@ bool SketchCanvas::mirrorContourAboutLine(sketch::GeometryId axisId) {
     return std::hypot(first.xMm - second.xMm,
                       first.yMm - second.yMm) <= tolerance;
   };
-  for (std::size_t first = 0; first < created.size(); ++first) {
-    const auto firstIndex = sketch_.lineIndex(created[first]);
-    if (!firstIndex) continue;
-    for (std::size_t second = first + 1; second < created.size(); ++second) {
-      const auto secondIndex = sketch_.lineIndex(created[second]);
-      if (!secondIndex) continue;
-      const auto& a = sketch_.lines()[*firstIndex];
-      const auto& b = sketch_.lines()[*secondIndex];
-      for (const bool aStart : {true, false}) {
-        for (const bool bStart : {true, false}) {
-          const auto aPoint = aStart ? a.start : a.end;
-          const auto bPoint = bStart ? b.start : b.end;
-          if (!samePoint(aPoint, bPoint)) continue;
-          sketch::Constraint coincident;
-          coincident.type = sketch::ConstraintType::Coincident;
-          coincident.firstPoint = {created[first], aStart};
-          coincident.secondPoint = {created[second], bStart};
-          (void)sketch_.addConstraint(coincident);
-        }
-      }
+  struct CreatedEndpoint {
+    sketch::PointReference reference;
+    sketch::Point point;
+  };
+  std::vector<CreatedEndpoint> endpoints;
+  for (const auto item : created) {
+    if (item.kind == MirrorGeometryKind::Line) {
+      const auto index = sketch_.lineIndex(item.geometryId);
+      if (!index) continue;
+      endpoints.push_back({{item.geometryId, true},
+                           sketch_.lines()[*index].start});
+      endpoints.push_back({{item.geometryId, false},
+                           sketch_.lines()[*index].end});
+    } else if (item.kind == MirrorGeometryKind::Arc) {
+      const auto index = sketch_.arcIndex(item.geometryId);
+      if (!index) continue;
+      sketch::PointReference start;
+      start.arcId = item.geometryId;
+      start.start = true;
+      sketch::PointReference end = start;
+      end.start = false;
+      endpoints.push_back({start, sketch::arcStartPoint(sketch_.arcs()[*index])});
+      endpoints.push_back({end, sketch::arcEndPoint(sketch_.arcs()[*index])});
+    }
+  }
+  for (std::size_t first = 0; first < endpoints.size(); ++first) {
+    for (std::size_t second = first + 1; second < endpoints.size(); ++second) {
+      if (!samePoint(endpoints[first].point, endpoints[second].point)) continue;
+      const bool sameGeometry =
+          (endpoints[first].reference.lineId != sketch::kInvalidGeometryId &&
+           endpoints[first].reference.lineId ==
+               endpoints[second].reference.lineId) ||
+          (endpoints[first].reference.arcId != sketch::kInvalidGeometryId &&
+           endpoints[first].reference.arcId ==
+               endpoints[second].reference.arcId);
+      if (sameGeometry) continue;
+      sketch::Constraint coincident;
+      coincident.type = sketch::ConstraintType::Coincident;
+      coincident.firstPoint = endpoints[first].reference;
+      coincident.secondPoint = endpoints[second].reference;
+      (void)sketch_.addConstraint(coincident);
     }
   }
 
-  clearGeometrySelection();
-  selectedLineIds_ = created;
-  if (!created.empty()) {
-    selectionKind_ = SelectionKind::Line;
-    selectionLineId_ = created.back();
-    const auto index = sketch_.lineIndex(selectionLineId_);
-    if (index) selectionElementId_ = sketch_.lines()[*index].elementId;
-  }
-  mirrorContourLineIds_.clear();
+  setMirrorSourceSelection(created);
+  mirrorSourceGeometry_.clear();
   notifyGeometryChanged();
   emit selectionChanged(QString::fromUtf8(
-      "Зеркало создано · двойной клик для выбора следующего контура"));
+      "Зеркало создано · один клик — объект, двойной — контур"));
   return true;
 }
 

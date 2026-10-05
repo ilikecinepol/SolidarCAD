@@ -586,6 +586,86 @@ int main(int argc, char** argv) {
     CHECK(mirrorCanvas.sketch().lines().size() == 5);
   }
 
+  // One click mirrors just one primitive. Lines, circles and arcs share the
+  // same selection stage; the following click must select a distinct line as
+  // the symmetry axis.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, 0.0}, {5.0, 0.0});
+    geometry.addLine({10.0, -5.0}, {10.0, 5.0});
+    solidar::SketchCanvas lineMirrorCanvas;
+    lineMirrorCanvas.resize(900, 650);
+    lineMirrorCanvas.loadSketch(geometry);
+    lineMirrorCanvas.setTool(solidar::SketchCanvas::Tool::Mirror);
+    lineMirrorCanvas.show();
+    QApplication::processEvents();
+    click(lineMirrorCanvas, screenPoint(lineMirrorCanvas, {2.5, 0.0}));
+    CHECK(lineMirrorCanvas.sketch().lines().size() == 2);
+    click(lineMirrorCanvas, screenPoint(lineMirrorCanvas, {10.0, 2.0}));
+    CHECK(lineMirrorCanvas.sketch().lines().size() == 3);
+    const auto& reflectedLine = lineMirrorCanvas.sketch().lines().back();
+    CHECK(std::abs(reflectedLine.start.xMm - 20.0) < 1e-6);
+    CHECK(std::abs(reflectedLine.end.xMm - 15.0) < 1e-6);
+    CHECK(std::abs(reflectedLine.start.yMm) < 1e-6);
+    CHECK(std::abs(reflectedLine.end.yMm) < 1e-6);
+    lineMirrorCanvas.undo();
+    CHECK(lineMirrorCanvas.sketch().lines().size() == 2);
+    lineMirrorCanvas.redo();
+    CHECK(lineMirrorCanvas.sketch().lines().size() == 3);
+  }
+
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addCircle({2.0, 3.0}, 4.0);
+    const auto circleId = geometry.circleId(0);
+    geometry.setCircleDashedById(circleId, true);
+    geometry.addLine({10.0, -5.0}, {10.0, 8.0});
+    solidar::SketchCanvas circleMirrorCanvas;
+    circleMirrorCanvas.resize(900, 650);
+    circleMirrorCanvas.loadSketch(geometry);
+    circleMirrorCanvas.setTool(solidar::SketchCanvas::Tool::Mirror);
+    circleMirrorCanvas.show();
+    QApplication::processEvents();
+    click(circleMirrorCanvas, screenPoint(circleMirrorCanvas, {6.0, 3.0}));
+    click(circleMirrorCanvas, screenPoint(circleMirrorCanvas, {10.0, 3.0}));
+    CHECK(circleMirrorCanvas.sketch().circles().size() == 2);
+    const auto& reflectedCircle = circleMirrorCanvas.sketch().circles().back();
+    CHECK(std::abs(reflectedCircle.center.xMm - 18.0) < 1e-6);
+    CHECK(std::abs(reflectedCircle.center.yMm - 3.0) < 1e-6);
+    CHECK(std::abs(reflectedCircle.radiusMm - 4.0) < 1e-6);
+    CHECK(reflectedCircle.dashed);
+  }
+
+  // A line and an arc can form one closed contour. Double-clicking either
+  // member selects both, and the mirrored copy keeps analytic arc geometry.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    geometry.addArc({5.0, 0.0}, 5.0, 0.0,
+                    3.14159265358979323846);
+    geometry.addLine({20.0, -5.0}, {20.0, 8.0});
+    solidar::SketchCanvas curvedMirrorCanvas;
+    curvedMirrorCanvas.resize(900, 650);
+    curvedMirrorCanvas.loadSketch(geometry);
+    curvedMirrorCanvas.setTool(solidar::SketchCanvas::Tool::Mirror);
+    curvedMirrorCanvas.show();
+    QApplication::processEvents();
+    doubleClick(curvedMirrorCanvas,
+                screenPoint(curvedMirrorCanvas, {5.0, 5.0}));
+    click(curvedMirrorCanvas, screenPoint(curvedMirrorCanvas, {20.0, 3.0}));
+    CHECK(curvedMirrorCanvas.sketch().lines().size() == 3);
+    CHECK(curvedMirrorCanvas.sketch().arcs().size() == 2);
+    const auto& reflectedArc = curvedMirrorCanvas.sketch().arcs().back();
+    CHECK(std::abs(reflectedArc.center.xMm - 35.0) < 1e-6);
+    CHECK(std::abs(reflectedArc.center.yMm) < 1e-6);
+    CHECK(std::abs(reflectedArc.radiusMm - 5.0) < 1e-6);
+    CHECK(std::abs(reflectedArc.sweepAngleRad -
+                   3.14159265358979323846) < 1e-6);
+    curvedMirrorCanvas.undo();
+    CHECK(curvedMirrorCanvas.sketch().lines().size() == 2);
+    CHECK(curvedMirrorCanvas.sketch().arcs().size() == 1);
+  }
+
   // Trim removes only the interval under the cursor, bounded by the nearest
   // line intersections, and Undo restores the source line and its relations.
   {

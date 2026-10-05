@@ -246,6 +246,17 @@ signals:
       QPointF position, double tolerancePx = 9.0) const;
   [[nodiscard]] std::vector<sketch::GeometryId> closedLineContour(
       sketch::GeometryId seed) const;
+  enum class MirrorGeometryKind { Line, Circle, Arc };
+  struct MirrorGeometryRef {
+    MirrorGeometryKind kind{MirrorGeometryKind::Line};
+    sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
+  };
+  [[nodiscard]] std::optional<MirrorGeometryRef> mirrorGeometryAt(
+      QPointF position, double tolerancePx = 9.0) const;
+  [[nodiscard]] std::vector<MirrorGeometryRef> closedMirrorContour(
+      MirrorGeometryRef seed) const;
+  void setMirrorSourceSelection(
+      const std::vector<MirrorGeometryRef>& source);
   bool mirrorContourAboutLine(sketch::GeometryId axisId);
   enum class TrimGeometryKind { Line, Circle, Arc };
   struct TrimPreview {
@@ -310,7 +321,7 @@ signals:
   std::vector<sketch::Line> circleGuideLines_;
   RectangleMode rectangleMode_{RectangleMode::TwoPoints};
   std::vector<sketch::Point> rectanglePoints_;
-  std::vector<sketch::GeometryId> mirrorContourLineIds_;
+  std::vector<MirrorGeometryRef> mirrorSourceGeometry_;
   BoxParameters referenceBox_{};
   QString referenceSupport_;
   bool referenceBodyVisible_{false};
