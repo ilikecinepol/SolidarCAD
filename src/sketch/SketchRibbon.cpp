@@ -126,8 +126,16 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   clear->setAccessibleName(clear->toolTip());
   clear->setFocusPolicy(Qt::NoFocus);
   clear->setCheckable(false);
+  auto* mirror = toolButton(ToolIconKind::SketchMirror,
+                            QString::fromUtf8("Зеркало"), this);
+  auto* trim = toolButton(ToolIconKind::Trim,
+                          QString::fromUtf8("Ножницы"), this);
+  toolGroup->addButton(mirror);
+  toolGroup->addButton(trim);
   auto* editingLayout = new QHBoxLayout;
   editingLayout->setSpacing(3);
+  editingLayout->addWidget(mirror);
+  editingLayout->addWidget(trim);
   editingLayout->addWidget(remove);
   editingLayout->addWidget(clear);
   root->addWidget(groupWidget(QString::fromUtf8("РЕДАКТИРОВАНИЕ"),
@@ -207,6 +215,10 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           [canvas] { canvas->setTool(SketchCanvas::Tool::Arc); });
   connect(projection, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::Projection); });
+  connect(mirror, &QPushButton::clicked, canvas,
+          [canvas] { canvas->setTool(SketchCanvas::Tool::Mirror); });
+  connect(trim, &QPushButton::clicked, canvas,
+          [canvas] { canvas->setTool(SketchCanvas::Tool::Trim); });
   connect(dimension, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::AutoDimension); });
   connect(orthogonalTool, &QPushButton::clicked, canvas,

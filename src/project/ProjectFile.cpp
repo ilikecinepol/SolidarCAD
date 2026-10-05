@@ -369,9 +369,11 @@ static QJsonObject serializedProjectRoot(const QString& path,
             saved.geometry.lineIndex(dimension.firstPoint.lineId);
         const auto secondIndex =
             saved.geometry.lineIndex(dimension.secondPoint.lineId);
-        if (!firstIndex || !secondIndex) continue;
-        firstLine = static_cast<qint64>(*firstIndex);
-        secondLine = static_cast<qint64>(*secondIndex);
+        if ((!dimension.firstPoint.origin && !firstIndex) ||
+            (!dimension.secondPoint.origin && !secondIndex))
+          continue;
+        if (firstIndex) firstLine = static_cast<qint64>(*firstIndex);
+        if (secondIndex) secondLine = static_cast<qint64>(*secondIndex);
       }
 
       dimensions.append(QJsonObject{
@@ -380,8 +382,10 @@ static QJsonObject serializedProjectRoot(const QString& path,
           {"secondGeometryIndex", secondGeometryIndex},
           {"firstLine", firstLine},
           {"firstStart", dimension.firstPoint.start},
+          {"firstOrigin", dimension.firstPoint.origin},
           {"secondLine", secondLine},
           {"secondStart", dimension.secondPoint.start},
+          {"secondOrigin", dimension.secondPoint.origin},
           {"value", dimension.valueMm},
           {"offset", dimension.offsetMm},
           {"angle", dimension.angleRad}});
@@ -468,12 +472,14 @@ static QJsonObject serializedProjectRoot(const QString& path,
           {"firstPointArc", firstPointArc},
           {"firstPointElementCenter",
            static_cast<qint64>(constraint.firstPoint.elementCenterId)},
+          {"firstPointOrigin", constraint.firstPoint.origin},
           {"secondPointLine", secondPointLine},
           {"secondPointStart", constraint.secondPoint.start},
           {"secondPointCircle", secondPointCircle},
           {"secondPointArc", secondPointArc},
           {"secondPointElementCenter",
            static_cast<qint64>(constraint.secondPoint.elementCenterId)},
+          {"secondPointOrigin", constraint.secondPoint.origin},
           {"value", constraint.value}});
     }
 
@@ -1056,19 +1062,30 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
       } else if (kind == sketch::DimensionKind::PointDistance ||
                  kind == sketch::DimensionKind::PointDistanceX ||
                  kind == sketch::DimensionKind::PointDistanceY) {
-        const auto firstIndex =
-            static_cast<std::size_t>(object.value("firstLine").toInteger());
-        const auto secondIndex =
-            static_cast<std::size_t>(object.value("secondLine").toInteger());
-        const auto firstId = saved.geometry.lineId(firstIndex);
-        const auto secondId = saved.geometry.lineId(secondIndex);
-        if (firstId == sketch::kInvalidGeometryId ||
-            secondId == sketch::kInvalidGeometryId)
-          continue;
-        dimension.firstPoint = {
-            firstId, object.value("firstStart").toBool(true)};
-        dimension.secondPoint = {
-            secondId, object.value("secondStart").toBool(true)};
+        const bool firstOrigin = object.value("firstOrigin").toBool(false);
+        const bool secondOrigin = object.value("secondOrigin").toBool(false);
+        const qint64 firstLineValue = object.value("firstLine").toInteger(-1);
+        const qint64 secondLineValue = object.value("secondLine").toInteger(-1);
+        if (!firstOrigin && firstLineValue < 0) continue;
+        if (!secondOrigin && secondLineValue < 0) continue;
+        if (firstOrigin) {
+          dimension.firstPoint.origin = true;
+        } else {
+          const auto firstId = saved.geometry.lineId(
+              static_cast<std::size_t>(firstLineValue));
+          if (firstId == sketch::kInvalidGeometryId) continue;
+          dimension.firstPoint = {
+              firstId, object.value("firstStart").toBool(true)};
+        }
+        if (secondOrigin) {
+          dimension.secondPoint.origin = true;
+        } else {
+          const auto secondId = saved.geometry.lineId(
+              static_cast<std::size_t>(secondLineValue));
+          if (secondId == sketch::kInvalidGeometryId) continue;
+          dimension.secondPoint = {
+              secondId, object.value("secondStart").toBool(true)};
+        }
       }
 
       saved.geometry.storeDimension(dimension);
@@ -1163,6 +1180,8 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
             static_cast<std::size_t>(
                 firstPointElementCenter);
       }
+      constraint.firstPoint.origin =
+          object.value("firstPointOrigin").toBool(false);
 
       const qint64 secondPointElementCenter =
           object.value("secondPointElementCenter").toInteger(0);
@@ -1171,6 +1190,8 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
             static_cast<std::size_t>(
                 secondPointElementCenter);
       }
+      constraint.secondPoint.origin =
+          object.value("secondPointOrigin").toBool(false);
 
       saved.geometry.addConstraint(constraint);
     }

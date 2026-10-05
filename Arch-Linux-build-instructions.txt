@@ -1,0 +1,117 @@
+Сборка SolidarCAD на Arch Linux
+================================
+
+Рекомендуемый вариант: системный Qt из Arch Linux и закреплённый
+Open CASCADE Technology 8.0.1 через vcpkg.
+
+Инструкция рассчитана на Arch Linux x86_64.
+
+
+1. Установить инструменты и Qt
+------------------------------
+
+sudo pacman -Syu
+
+sudo pacman -S --needed \
+  base-devel cmake ninja git python \
+  curl zip unzip tar pkgconf \
+  qt6-base mesa mesa-utils
+
+В актуальном Arch клиентские плагины X11 и Wayland входят в qt6-base,
+поэтому отдельный qt6-wayland приложению не требуется.
+
+
+2. Скачать проект
+-----------------
+
+git clone https://github.com/ilikecinepol/SolidarCAD.git
+cd SolidarCAD
+
+Если репозиторий уже скачан, просто перейдите в его каталог.
+
+
+3. Установить закреплённый vcpkg
+--------------------------------
+
+git clone https://github.com/microsoft/vcpkg.git vcpkg
+git -C vcpkg checkout 00c5775211f45cd08b37fce0484b4cb940e422ab
+./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+
+4. Настроить сборку
+-------------------
+
+Выполнять из корневого каталога SolidarCAD:
+
+export VCPKG_ROOT="$PWD/vcpkg"
+export VCPKG_DEFAULT_TRIPLET=ci-x64-linux
+
+cmake -S . -B build/arch -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSOLIDAR_BUILD_TESTS=ON \
+  -DSOLIDAR_ALLOW_OCCT_BUILD_TREE_FALLBACK=OFF \
+  -DSOLIDAR_REQUIRED_QT_VERSION= \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_MANIFEST_MODE=ON \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/triplets" \
+  -DVCPKG_TARGET_TRIPLET="$VCPKG_DEFAULT_TRIPLET"
+
+Первая конфигурация соберёт OCCT и может занять довольно много времени.
+
+
+5. Собрать и проверить
+----------------------
+
+cmake --build build/arch --parallel "$(nproc)"
+
+QT_QPA_PLATFORM=offscreen \
+  ctest --test-dir build/arch --output-on-failure
+
+
+6. Запустить
+------------
+
+./build/arch/src/solidar
+
+Открыть проект напрямую:
+
+./build/arch/src/solidar /путь/к/проекту.solidar
+
+Если под Wayland будут артефакты или не появится 3D-сцена, проверить
+запуск через XWayland:
+
+QT_QPA_PLATFORM=xcb ./build/arch/src/solidar
+
+Принудительный запуск через Wayland:
+
+QT_QPA_PLATFORM=wayland ./build/arch/src/solidar
+
+Проверка OpenGL:
+
+glxinfo -B
+
+
+7. Локальная установка
+----------------------
+
+cmake --install build/arch --prefix "$PWD/build/arch/stage"
+./build/arch/stage/bin/solidar
+
+Это локальная установка, использующая системные библиотеки Qt. Готового
+автономного пакета для Arch Linux проект пока не создаёт.
+
+
+Полезные ссылки
+---------------
+
+SolidarCAD:
+https://github.com/ilikecinepol/SolidarCAD
+
+Qt 6 в Arch Linux:
+https://archlinux.org/packages/extra/x86_64/qt6-base/
+
+OpenCASCADE в Arch Linux:
+https://archlinux.org/packages/extra/x86_64/opencascade/
+
+Manifest mode vcpkg:
+https://learn.microsoft.com/vcpkg/consume/manifest-mode

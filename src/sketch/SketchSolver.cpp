@@ -152,6 +152,21 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // Applied after carrier geometry has settled.
         break;
 
+      case ConstraintType::PointOnXAxis:
+      case ConstraintType::PointOnYAxis:
+        if (!sketch.referencedPoint(constraint.secondPoint)) {
+          ++result.invalidReferences;
+          break;
+        }
+        if ((constraint.type == ConstraintType::PointOnXAxis &&
+             sketch.setPointOnXAxis(constraint.secondPoint)) ||
+            (constraint.type == ConstraintType::PointOnYAxis &&
+             sketch.setPointOnYAxis(constraint.secondPoint)))
+          ++result.applied;
+        else
+          ++result.invalidReferences;
+        break;
+
       case ConstraintType::Tangent:
         // Applied in the final tangency stabilization pass.
         break;
@@ -1872,6 +1887,17 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
     if (!anyDrivingDimension)
       break;
+  }
+
+  // Datum-axis constraints are absolute references. Re-apply them after all
+  // relative dimensions so a compatible solve always finishes exactly on the
+  // selected sketch axis (or on both axes for the origin).
+  for (const auto& constraint : sketch.constraints()) {
+    if (!sketch.referencedPoint(constraint.secondPoint)) continue;
+    if (constraint.type == ConstraintType::PointOnXAxis)
+      (void)sketch.setPointOnXAxis(constraint.secondPoint);
+    else if (constraint.type == ConstraintType::PointOnYAxis)
+      (void)sketch.setPointOnYAxis(constraint.secondPoint);
   }
   return result;
 }

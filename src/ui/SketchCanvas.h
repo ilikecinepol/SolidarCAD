@@ -53,7 +53,9 @@ class SketchCanvas final : public QWidget {
     PerpendicularConstraint,
     ParallelConstraint,
     EqualConstraint,
-    TangentConstraint
+    TangentConstraint,
+    Mirror,
+    Trim
   };
   enum class CircleMode {
     CenterRadius,
@@ -163,6 +165,7 @@ signals:
   void mousePressEvent(QMouseEvent* event) override;
   void mouseDoubleClickEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
+  void leaveEvent(QEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
@@ -177,7 +180,10 @@ signals:
     CircleCenter,
     ElementCenter,
     LineBody,
-    CircleBody
+    CircleBody,
+    XAxis,
+    YAxis,
+    Origin
   };
 
   struct ConstructionSnap {
@@ -213,6 +219,7 @@ signals:
                 bool preserveExistingIfHit = false);
   void selectInRect(const QRectF& rect, bool additive);
   void clearGeometrySelection();
+  [[nodiscard]] bool lineSelected(sketch::GeometryId id) const;
   [[nodiscard]] bool lineElementSelected(std::size_t elementId) const;
   [[nodiscard]] bool circleSelected(sketch::GeometryId id) const;
   [[nodiscard]] bool arcSelected(sketch::GeometryId id) const;
@@ -235,6 +242,24 @@ signals:
   void handleParallelConstraintClick(QPointF position);
   void handleEqualConstraintClick(QPointF position);
   void handleTangentConstraintClick(QPointF position);
+  [[nodiscard]] std::optional<sketch::GeometryId> lineAt(
+      QPointF position, double tolerancePx = 9.0) const;
+  [[nodiscard]] std::vector<sketch::GeometryId> closedLineContour(
+      sketch::GeometryId seed) const;
+  bool mirrorContourAboutLine(sketch::GeometryId axisId);
+  enum class TrimGeometryKind { Line, Circle, Arc };
+  struct TrimPreview {
+    TrimGeometryKind kind{TrimGeometryKind::Line};
+    sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
+    // Normalized parameter interval on the source primitive. For circles the
+    // end may exceed 1.0 when the highlighted interval wraps through 0.
+    double firstParameter{};
+    double secondParameter{1.0};
+    bool fullGeometry{false};
+  };
+  [[nodiscard]] std::optional<TrimPreview> trimPreviewAt(
+      QPointF position) const;
+  bool trimAt(QPointF position);
   void commitAutoDimension();
   [[nodiscard]] bool dimensionSegment(std::size_t index, QPointF& first,
                                       QPointF& second) const;
@@ -255,6 +280,7 @@ signals:
   sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionArcId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
+  std::vector<sketch::GeometryId> selectedLineIds_;
   std::vector<std::size_t> selectedElementIds_;
   std::vector<sketch::GeometryId> selectedCircleIds_;
   std::vector<sketch::GeometryId> selectedArcIds_;
@@ -266,13 +292,14 @@ signals:
   std::optional<sketch::PointReference> coincidentFirstPoint_;
   sketch::Point hoverPoint_{};
   std::optional<ConstructionSnap> constructionHover_;
+  std::optional<TrimPreview> trimHover_;
   sketch::Point dragPoint_{};
   bool dragging_{false};
   QDoubleSpinBox* primaryDimension_{nullptr};
   QDoubleSpinBox* secondaryDimension_{nullptr};
   double pixelsPerMm_{5.0};
   double snapStepMm_{5.0};
-  bool snapEnabled_{true};
+  bool snapEnabled_{false};
   bool gridVisible_{true};
   std::optional<std::size_t> hoveredProjectionEdge_;
   int viewQuarterTurns_{0};
@@ -283,6 +310,7 @@ signals:
   std::vector<sketch::Line> circleGuideLines_;
   RectangleMode rectangleMode_{RectangleMode::TwoPoints};
   std::vector<sketch::Point> rectanglePoints_;
+  std::vector<sketch::GeometryId> mirrorContourLineIds_;
   BoxParameters referenceBox_{};
   QString referenceSupport_;
   bool referenceBodyVisible_{false};

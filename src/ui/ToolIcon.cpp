@@ -203,6 +203,14 @@ void drawTool(QPainter& p, ToolIconKind kind) {
       p.drawLine(24, 9, 24, 39);
       p.drawLine(15, 39, 33, 39);
       break;
+    case ToolIconKind::Trim:
+      p.drawEllipse(QRectF(7, 29, 10, 10));
+      p.drawEllipse(QRectF(31, 29, 10, 10));
+      p.drawLine(15, 31, 35, 10);
+      p.drawLine(33, 31, 13, 10);
+      p.drawLine(12, 10, 21, 19);
+      p.drawLine(36, 10, 27, 19);
+      break;
     case ToolIconKind::Delete:
       p.drawRect(QRectF(14, 15, 20, 25));
       p.drawLine(11, 15, 37, 15);

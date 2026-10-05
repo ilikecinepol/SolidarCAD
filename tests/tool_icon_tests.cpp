@@ -60,12 +60,20 @@ int main(int argc, char** argv) {
   solidar::SketchRibbon ribbon(&canvas);
   const auto buttons = ribbon.findChildren<QPushButton*>(
       QStringLiteral("toolButton"));
-  CHECK(buttons.size() == 15);
+  CHECK(buttons.size() == 17);
+  bool hasMirror = false;
+  bool hasTrim = false;
   for (const auto* button : buttons) {
     CHECK(!button->icon().isNull());
     CHECK(hasVisiblePixel(button->icon()));
     CHECK(!button->toolTip().isEmpty());
     CHECK(!button->accessibleName().isEmpty());
+    hasMirror = hasMirror ||
+                button->accessibleName() == QString::fromUtf8("Зеркало");
+    hasTrim = hasTrim ||
+              button->accessibleName() == QString::fromUtf8("Ножницы");
   }
+  CHECK(hasMirror);
+  CHECK(hasTrim);
   return 0;
 }

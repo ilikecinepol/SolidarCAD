@@ -213,6 +213,43 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
     source.push_back({line.start, line.end});
   }
 
+  // A click made with grid snapping disabled can land a fraction of a
+  // millimetre away from a visible carrier even though it is visually on the
+  // line. CAD inference normally prevents that for new geometry; retain a
+  // small profile-only healing tolerance for older sketches so T-junctions
+  // still form selectable bounded regions. This does not mutate the document.
+  constexpr double profileInferenceToleranceMm = 0.25;
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    for (const bool firstEndpoint : {true, false}) {
+      auto& endpoint = firstEndpoint ? source[index].a : source[index].b;
+      sketch::Point best = endpoint;
+      double bestDistance = profileInferenceToleranceMm;
+      for (std::size_t carrierIndex = 0; carrierIndex < source.size();
+           ++carrierIndex) {
+        if (carrierIndex == index) continue;
+        const auto& carrier = source[carrierIndex];
+        const double dx = carrier.b.xMm - carrier.a.xMm;
+        const double dy = carrier.b.yMm - carrier.a.yMm;
+        const double lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 1e-12) continue;
+        const double parameter =
+            ((endpoint.xMm - carrier.a.xMm) * dx +
+             (endpoint.yMm - carrier.a.yMm) * dy) /
+            lengthSquared;
+        if (parameter < -1e-8 || parameter > 1.0 + 1e-8) continue;
+        const sketch::Point projection{
+            carrier.a.xMm + dx * std::clamp(parameter, 0.0, 1.0),
+            carrier.a.yMm + dy * std::clamp(parameter, 0.0, 1.0)};
+        const double distance = std::hypot(endpoint.xMm - projection.xMm,
+                                           endpoint.yMm - projection.yMm);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        best = projection;
+      }
+      endpoint = best;
+    }
+  }
+
   constexpr double parameterTolerance = 1e-8;
   for (std::size_t i = 0; i < source.size(); ++i) {
     const sketch::Point p = source[i].a;

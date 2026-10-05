@@ -182,6 +182,7 @@ std::optional<Point> pointOf(const Sketch& sketch,
                              const Layout& layout,
                              const std::vector<double>& variables,
                              PointReference reference) {
+  if (reference.origin) return Point{0.0, 0.0};
   if (reference.elementCenterId != 0) {
     Point center{};
     std::size_t count = 0;
@@ -506,6 +507,18 @@ std::vector<Equation> evaluate(const Sketch& sketch,
             (line->start.xMm + line->end.xMm) * 0.5,
             (line->start.yMm + line->end.yMm) * 0.5};
         add(pointDistance(midpoint, *point),
+            kLengthTolerance, constraint);
+        break;
+      }
+
+      case ConstraintType::PointOnXAxis:
+      case ConstraintType::PointOnYAxis: {
+        const auto point =
+            pointOf(sketch, layout, variables, constraint.secondPoint);
+        if (!point) { invalidEquation(constraint); break; }
+        add(constraint.type == ConstraintType::PointOnXAxis
+                ? point->yMm
+                : point->xMm,
             kLengthTolerance, constraint);
         break;
       }

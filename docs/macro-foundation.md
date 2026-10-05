@@ -71,9 +71,11 @@ observer around those mutation boundaries), translate successful operations
 to macro-local object IDs and relative expressions, and ignore GUI events.
 After that, add action variants for constraints and feature creation/editing,
 JSON serialization with format migration, validation of complete definitions,
-and a library/application UI. Face and edge bindings retain the project's
-current index-based topological-reference limitation; persistent topology
-naming is a separate concern.
+and a library/application UI. Face and edge bindings use the normal persistent
+topology contract: semantic tags and geometric signatures are preferred, while
+legacy indexes are accepted only for older references without persistent data.
+The split/merge and ambiguity limitations documented in
+`persistent-topology.md` also apply to macro inputs.
 
 ## Intended flow
 

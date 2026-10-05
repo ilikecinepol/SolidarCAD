@@ -10,26 +10,24 @@ ctest --preset ci -L ui-smoke
 ctest --preset ci -L compliance
 ```
 
-## Coverage audit
+## Current coverage audit
 
-| Scenario | Existing coverage before this gate | Complete before? | Gap addressed |
+| Scenario | Automated coverage | MVP status | Remaining boundary |
 |---|---|---:|---|
-| Document, IDs, Dirty/Valid/Error | `document_tests` | Partial | The critical path still depended on C `assert`; the new E2E checks stable IDs and states independently of `NDEBUG`. |
-| Sketch geometry | `document_tests`, `sketch_regression_tests`, `project_file_tests` | Mostly | Lines, rectangles, circles and native arcs are covered, including arc constraints, project round-trip and Line + Arc extrusion. Polygon, Slot and Text remain outside the MVP. |
-| Sketch constraints | `sketch_regression_tests` | Mostly | Added an explicit Point-on-Circle followed by geometry creation, movement, solve and constraint removal. |
-| Extrude | `extrude_feature_tests`, three Extrude regression tests | Yes | Added it to the unified user workflow and parameter cascade. |
-| Sketch-on-Face and topology reference | `extrude_feature_tests`, `parametric_feature_chain_tests` | Partial | Added attachment persistence and rebuild checks; references still use the documented legacy subshape index. |
-| Pocket | `pocket_feature_tests`, `parametric_feature_chain_tests` | Yes | Added parameter editing inside the unified workflow. |
-| Fillet | `fillet_feature_tests`, `parametric_feature_chain_tests` | Mostly | Added unified workflow, OCCT Error-to-recovery and round-trip checks. |
-| Chamfer | `chamfer_feature_tests`, `part_design_regression_tests` | Yes | Covers one/multiple edges, live preview, parameter edits, topology resolution, Error-to-recovery and v2 round-trip. |
-| Shell | `shell_feature_tests` | Yes | Covers persistent removed faces, inside/outside thickness, live linear manipulator, invalid-thickness recovery, stable FeatureId and save/load rebuild. |
-| Draft | `draft_feature_tests` | Yes | Covers persistent drafted faces, neutral plane and pull direction, angle/reversal, live angular manipulator, Error-to-recovery and save/load rebuild. |
-| Revolve | `revolve_feature_tests` | Mostly | Added a second Body to the unified workflow, parameter editing and round-trip checks. |
-| Cascading recompute | `document_tests`, `parametric_feature_chain_tests` | Partial | Added real B-Rep change, state and ID invariants across the complete Part Design body. |
-| Project save/load and v1 compatibility | `project_file_tests` | Partial | Existing v1 loading remains; the E2E persists and rebuilds Extrude/Pocket/Fillet/Chamfer/Revolve history. |
-| Rebuild diagnostics | `document_tests`, feature tests | Partial | Added NDEBUG-independent message/fallback/no-false-positive checks and fixed the valid-document result. |
-| SBOM/compliance | `compliance_artifacts_tests` | Yes | Classified with the `compliance` label. |
-| UI command smoke | `editor_smoke_tests`, `model_ribbon_tests` | Yes | Classified with the `ui-smoke` label; no mouse simulation was added. |
+| Document, IDs, Dirty/Valid/Error | `document_tests`, `parametric_history_tests` | Covered | Branching history, reorder and suppression are post-MVP. |
+| Sketch geometry | `document_tests`, `sketch_regression_tests`, `project_file_tests` | Covered | Polygon, Slot, Text and sketch mirroring are post-MVP. |
+| Sketch constraints | `sketch_regression_tests`, `sketch_constraint_integrity_tests` | Covered | Solver hardening remains a post-MVP priority. |
+| Extrude and Pocket | Extrude regressions, `pocket_feature_tests`, `parametric_feature_chain_tests` | Covered | Manual GPU interaction remains part of the release gate. |
+| Sketch-on-Face and topology references | `persistent_topology_tests`, `step_exchange_tests`, feature regressions | Covered with limits | Resolution uses semantic tags and geometric signatures, with legacy-index fallback only for old references. Split/merge and ambiguous symmetric topology remain documented limits. |
+| Fillet and Chamfer | `fillet_feature_tests`, `chamfer_feature_tests`, `part_design_regression_tests` | Covered | Complex topology changes can require reselection. |
+| Shell and Draft | `shell_feature_tests`, `shell_complex_topology_tests`, `draft_feature_tests` | Covered | Shell v1 intentionally rejects removed faces from several solids. |
+| Revolve | `revolve_feature_tests`, `part_design_regression_tests` | Covered | Manual preview/manipulator verification remains. |
+| Mirror, Move and patterns | Dedicated feature tests and `pattern_persistence_tests` | Covered | Arbitrary datum references, occurrence suppression and fusion are post-MVP. |
+| Cascading recompute | `document_tests`, `parametric_feature_chain_tests`, `parametric_history_tests` | Covered | Independent-body and recovery invariants remain mandatory regressions. |
+| Project save/load and v1 compatibility | `project_file_tests`, feature persistence regressions | Covered | Cached B-Rep is intentionally never serialized. |
+| Rebuild diagnostics | `document_tests`, feature tests | Covered | Diagnostics must remain exception-safe at OCCT boundaries. |
+| SBOM/compliance | `compliance_artifacts_tests`, `release_artifact_script_tests` | Covered | Vulnerability scanning and update diagnostics are post-MVP. |
+| UI command smoke | UI-smoke tests | Covered headlessly | Real GPU, DPI and driver-specific behavior remain manual gates. |
 
 `part_design_regression_tests` is the critical CAD-core gate. It deliberately
 uses volumes, non-null shapes, feature states, parameters and stable model IDs

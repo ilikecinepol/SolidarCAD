@@ -321,6 +321,49 @@ int main(int argc, char** argv) {
   // Revolve keeps profile picking active while it waits for an axis. This is
   // the interaction seam that lets Ctrl add a second region and then lets the
   // very next click choose an arbitrary straight sketch line as the axis.
+  // Near-carrier endpoints from legacy grid-off input are healed only for
+  // region extraction, so the upper cells remain selectable without mutating
+  // the stored sketch.
+  {
+    solidar::Viewport upperCellsView;
+    upperCellsView.resize(800, 600);
+    solidar::sketch::Sketch upperCells;
+    upperCells.addRectangle({0.0, 0.0}, {62.0, 42.0});
+    upperCells.addLine({20.0, 41.9}, {20.0, 30.0});
+    upperCells.addLine({20.0, 30.0}, {30.0, 30.0});
+    upperCells.addLine({30.0, 30.0}, {30.0, 42.0});
+    upperCells.addLine({38.0, 42.0}, {38.0, 30.0});
+    upperCells.addLine({38.0, 30.0}, {48.0, 30.0});
+    upperCells.addLine({48.0, 30.0}, {48.0, 41.9});
+    const auto placement = solidar::SketchPlacement::xy();
+    upperCellsView.addSketch(upperCells, QStringLiteral("XY"), placement);
+    const solidar::ViewportCameraState camera{
+        upperCellsView.cameraYawDegrees(),
+        upperCellsView.cameraPitchDegrees(), 1.0F, {}, upperCellsView.size()};
+    const QPointF leftUpper =
+        camera.worldToScreen(placement.toWorld(25.0, 36.0));
+    int picks = 0;
+    QObject::connect(&upperCellsView,
+                     &solidar::Viewport::directProfilePicked,
+                     &upperCellsView, [&](std::size_t) { ++picks; });
+    mouse(upperCellsView, QEvent::MouseButtonPress, leftUpper,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(picks == 1);
+    const auto& selected = upperCellsView.extrusionCandidateSketch();
+    CHECK(selected.isClosed());
+    double minimumX = 1e9;
+    double maximumX = -1e9;
+    for (const auto& line : selected.lines()) {
+      minimumX = std::min(minimumX,
+                          std::min(line.start.xMm, line.end.xMm));
+      maximumX = std::max(maximumX,
+                          std::max(line.start.xMm, line.end.xMm));
+    }
+    CHECK(minimumX > 19.9);
+    CHECK(maximumX < 30.1);
+    CHECK(std::abs(upperCells.lines()[4].start.yMm - 41.9) < 1e-9);
+  }
+
   {
     solidar::Viewport revolveView;
     revolveView.resize(800, 600);

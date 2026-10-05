@@ -1044,6 +1044,29 @@ void Sketch::translateSelection(
   (void)BasicSketchSolver::solveStable(*this);
   updateBounds();
 }
+
+void Sketch::translateLinesByIds(const std::vector<GeometryId>& lineIds,
+                                 double dxMm, double dyMm) {
+  if (lineIds.empty() || (dxMm == 0.0 && dyMm == 0.0)) return;
+  for (const auto id : lineIds)
+    if (isGeometryLocked(id)) return;
+
+  bool changed = false;
+  for (std::size_t index = 0; index < lines_.size(); ++index) {
+    if (std::find(lineIds.begin(), lineIds.end(), lineIds_[index]) ==
+        lineIds.end())
+      continue;
+    lines_[index].start.xMm += dxMm;
+    lines_[index].start.yMm += dyMm;
+    lines_[index].end.xMm += dxMm;
+    lines_[index].end.yMm += dyMm;
+    changed = true;
+  }
+  if (!changed) return;
+  (void)BasicSketchSolver::solveStable(*this);
+  updateBounds();
+}
+
 void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
   // Locked/reference geometry cannot change its construction style.
   if (isElementLocked(elementId))
@@ -1051,6 +1074,12 @@ void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
   for (auto& line : lines_) {
     if (line.elementId == elementId) line.dashed = dashed;
   }
+}
+
+void Sketch::setLineDashedById(GeometryId id, bool dashed) {
+  const auto index = lineIndex(id);
+  if (!index || isGeometryLocked(id)) return;
+  lines_[*index].dashed = dashed;
 }
 
 void Sketch::setCircleDashed(std::size_t index, bool dashed) {
@@ -1957,6 +1986,7 @@ bool Sketch::isElementLocked(std::size_t elementId) const noexcept {
 
 bool Sketch::isPointReferenceLocked(
     PointReference reference) const noexcept {
+  if (reference.origin) return true;
   if (reference.elementCenterId != 0)
     return isElementLocked(reference.elementCenterId);
   if (reference.circleId != kInvalidGeometryId)
@@ -2014,6 +2044,7 @@ void Sketch::restoreLockedGeometryFrom(const Sketch& baseline) {
 
 std::optional<Point> Sketch::referencedPoint(
     PointReference reference) const noexcept {
+  if (reference.origin) return Point{0.0, 0.0};
   if (reference.elementCenterId != 0)
     return elementCenterPoint(reference.elementCenterId);
 
@@ -2291,6 +2322,18 @@ bool Sketch::setPointToMidpoint(GeometryId lineIdValue,
 
   updateBounds();
   return true;
+}
+
+bool Sketch::setPointOnXAxis(PointReference pointReference) {
+  const auto point = referencedPoint(pointReference);
+  if (!point) return false;
+  return translatePoint(pointReference, 0.0, -point->yMm);
+}
+
+bool Sketch::setPointOnYAxis(PointReference pointReference) {
+  const auto point = referencedPoint(pointReference);
+  if (!point) return false;
+  return translatePoint(pointReference, -point->xMm, 0.0);
 }
 
 bool Sketch::setPointOnCircle(GeometryId circleIdValue,
@@ -2612,6 +2655,8 @@ bool Sketch::setArcTangentToLine(GeometryId lineIdValue,
 bool Sketch::translatePoint(PointReference reference, double dxMm,
                             double dyMm) {
   if (!referencedPoint(reference)) return false;
+  if (reference.origin)
+    return std::abs(dxMm) <= 1e-12 && std::abs(dyMm) <= 1e-12;
   if (dxMm == 0.0 && dyMm == 0.0) return true;
 
   // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY
@@ -2621,6 +2666,8 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
   const auto sameReference =
       [](PointReference first,
          PointReference second) {
+        if (first.origin || second.origin)
+          return first.origin && second.origin;
         if (first.elementCenterId != 0 ||
             second.elementCenterId != 0) {
           return first.elementCenterId != 0 &&
@@ -3737,6 +3784,23 @@ bool Sketch::setPointDistanceX(
         return false;
 
       if (!targets.empty()) {
+        // A single datum/external gap positions the rectangle; it must not
+        // consume the still-free width degree of freedom.  Only two distinct
+        // constrained columns are allowed to resize it (for example left and
+        // right clearances to a reference line).
+        if (targets.size() == 1) {
+          const double moveX =
+              targets.front().targetX - targets.front().oldX;
+
+          for (const auto index : members) {
+            lines_[index].start.xMm += moveX;
+            lines_[index].end.xMm += moveX;
+          }
+
+          updateBounds();
+          return true;
+        }
+
         struct EndpointSnapshot {
           double startX{};
           double endX{};
@@ -4194,6 +4258,21 @@ bool Sketch::setPointDistanceY(
         return false;
 
       if (!targets.empty()) {
+        // One external Y gap defines position, not height.  Keep the whole
+        // rectangle rigid until distinct constraints address both rows.
+        if (targets.size() == 1) {
+          const double moveY =
+              targets.front().targetY - targets.front().oldY;
+
+          for (const auto index : members) {
+            lines_[index].start.yMm += moveY;
+            lines_[index].end.yMm += moveY;
+          }
+
+          updateBounds();
+          return true;
+        }
+
         struct EndpointSnapshot {
           double startY{};
           double endY{};
@@ -4431,6 +4510,37 @@ ConstraintId Sketch::addConstraint(
 
   return addedId;
 }
+
+bool Sketch::setConstraintValue(ConstraintId id, double value) {
+  if (id == kInvalidConstraintId || !std::isfinite(value) || value <= 0.0)
+    return false;
+  const auto found = std::find_if(
+      constraints_.begin(), constraints_.end(),
+      [id](const Constraint& constraint) { return constraint.id == id; });
+  if (found == constraints_.end()) return false;
+
+  const Sketch snapshot = *this;
+  const auto before = analyzeConstraintSystem(*this, false);
+  found->value = value;
+  (void)BasicSketchSolver::solveStable(*this);
+  const auto after = analyzeConstraintSystem(*this, false);
+
+  bool previouslyValidConstraintBroke = false;
+  for (const auto& old : snapshot.constraints_) {
+    if (!hasConstraintViolation(before, old.id) &&
+        hasConstraintViolation(after, old.id)) {
+      previouslyValidConstraintBroke = true;
+      break;
+    }
+  }
+  if (hasConstraintViolation(after, id) || previouslyValidConstraintBroke) {
+    *this = snapshot;
+    return false;
+  }
+  updateBounds();
+  return true;
+}
+
 bool Sketch::removeConstraint(ConstraintId id) {
   const auto oldSize = constraints_.size();
   std::erase_if(constraints_, [id](const Constraint& constraint) {

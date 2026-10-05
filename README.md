@@ -114,26 +114,39 @@ and the binary-package SPDX inventories used to verify the deployed Qt modules.
 
 ## Roadmap
 
-The MVP is intentionally limited to single-part parametric modelling on
-Windows x64: sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Shell, Draft,
-project save/load and STEP/STL exchange. Polygon, Slot, Text, sketch mirroring,
-assemblies and the drawing workbench are post-MVP and are not exposed as
-available commands.
+The project is currently at the Windows x64 0.1.0 MVP release-candidate gate.
+The implemented MVP is intentionally limited to single-part parametric
+modelling: Sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Shell, Draft,
+Mirror, Move, Linear Pattern, Circular Pattern, project save/load and STEP/STL
+exchange. Polygon, Slot, Text, sketch mirroring, assemblies and the complete
+drawing workbench remain post-MVP work and are not exposed as available
+commands.
 
-Post-MVP priorities are solver hardening, dependency diagnostics, complete
-ESKD drawing workflows, assemblies, signed installers and broader Linux QA.
+Post-MVP development starts with field stabilization and a complete Sketcher
+2.0, followed by Parametric Core 2.0 with a single authoritative sketch state
+and persistent topology v2. Production ESKD drawing workflows come after that
+foundation, followed by assemblies and macro automation. Signed installers,
+dependency diagnostics and broader Linux QA continue as parallel tracks.
+The ordered phases, exit criteria and current status are maintained in
+[docs/roadmap.md](docs/roadmap.md).
 
 See [docs/eskd-profile.md](docs/eskd-profile.md) for the implemented standards
 profile and its current conformance boundary.
 See [docs/modules.md](docs/modules.md) for feature ownership and module boundaries.
 See [docs/testing.md](docs/testing.md) for CTest labels and the mandatory CAD
 regression coverage.
+See [docs/build-ubuntu.md](docs/build-ubuntu.md) for the reproducible Ubuntu
+24.04 source-build and local-install procedure.
+See [docs/linux-build-deps-package.md](docs/linux-build-deps-package.md) for
+the reusable Ubuntu build-dependency SDK artifact.
 See [docs/release-checklist.md](docs/release-checklist.md) for the release gate
 and clean-machine acceptance procedure.
+See [docs/reports/2026-10-04-mvp-release-readiness.md](docs/reports/2026-10-04-mvp-release-readiness.md)
+for the latest automated release-readiness evidence and remaining blockers.
 See [docs/persistent-topology.md](docs/persistent-topology.md) for the v1 face
 and edge reference model, fallback rules and known limitations.
 See [docs/reports/2026-08-28-parametric-3d-status.md](docs/reports/2026-08-28-parametric-3d-status.md)
-for the current parametric 3D stabilization status and verification gate.
+for the historical August 2026 parametric 3D stabilization snapshot.
 
 ## License and third-party components
 

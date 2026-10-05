@@ -59,6 +59,11 @@ struct PointReference {
   // exactly as it does for line endpoints. Kept as the final aggregate field
   // so existing PointReference initializers remain source-compatible.
   GeometryId arcId{kInvalidGeometryId};
+
+  // Immutable sketch datum. When set, this reference denotes the origin
+  // (0, 0) rather than model geometry. Axis dimensions use the origin with a
+  // DistanceX/DistanceY constraint, so they participate in the normal solver.
+  bool origin{false};
 };
 
 enum class DimensionKind {
@@ -101,7 +106,9 @@ enum class ConstraintType {
   LineDistance,
   Lock,
   PointOnArc,
-  Midpoint};
+  Midpoint,
+  PointOnXAxis,
+  PointOnYAxis};
 
 struct Constraint {
   ConstraintId id{kInvalidConstraintId};
@@ -146,7 +153,10 @@ class Sketch final {
                           const std::vector<GeometryId>& circleIds,
                           const std::vector<GeometryId>& arcIds,
                           double dxMm, double dyMm);
+  void translateLinesByIds(const std::vector<GeometryId>& lineIds,
+                           double dxMm, double dyMm);
   void setElementDashed(std::size_t elementId, bool dashed);
+  void setLineDashedById(GeometryId id, bool dashed);
   void setCircleDashed(std::size_t index, bool dashed);
   void translateCircle(std::size_t index, double dxMm, double dyMm);
   void setCircleDashedById(GeometryId id, bool dashed);
@@ -168,6 +178,8 @@ class Sketch final {
   bool setPointOnCircle(GeometryId circleId, PointReference pointReference);
   bool setPointOnArc(GeometryId arcId, PointReference pointReference);
   bool setPointToMidpoint(GeometryId lineId, PointReference pointReference);
+  bool setPointOnXAxis(PointReference pointReference);
+  bool setPointOnYAxis(PointReference pointReference);
 
   bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
   bool setArcTangentToLine(GeometryId lineId, GeometryId arcId);
@@ -200,6 +212,7 @@ class Sketch final {
   bool setDimensionValue(std::size_t index, double valueMm);
 
   ConstraintId addConstraint(Constraint constraint);
+  bool setConstraintValue(ConstraintId id, double value);
   bool removeConstraint(ConstraintId id);
   void clearConstraints();
   [[nodiscard]] const std::vector<Constraint>& constraints() const noexcept;

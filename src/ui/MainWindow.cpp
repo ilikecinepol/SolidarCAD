@@ -1906,7 +1906,9 @@ void MainWindow::buildUi() {
   gridCheck->setChecked(true);
   auto* snapCheck =
       new QCheckBox(QString::fromUtf8("Привязка к сетке"), settingsPanel);
-  snapCheck->setChecked(true);
+  // Exact grid snapping is intentionally opt-in. CAD inference to endpoints,
+  // midpoints and carrier geometry remains active independently.
+  snapCheck->setChecked(false);
   auto* lineTypeLabel =
       new QLabel(QString::fromUtf8("Тип линии"), settingsPanel);
   sketchLineTypeCombo_ = new QComboBox(settingsPanel);

@@ -2,6 +2,11 @@
 
 This checklist is the publication gate for the Windows x64 0.1.0 MVP Preview.
 Record the tested commit and machine configuration in the release notes.
+Check an item only for the exact release-candidate commit. A successful local
+run from another revision is useful evidence but does not complete the tagged
+release gate. The current project stage is tracked in `docs/roadmap.md`.
+The latest pre-release evidence is recorded in
+`docs/reports/2026-10-04-mvp-release-readiness.md`.
 
 ## Repository
 
@@ -51,3 +56,6 @@ Record the tested commit and machine configuration in the release notes.
 - [ ] Include the known limitations from `CHANGELOG.md`.
 - [ ] Keep Linux described as a CI-validated source build until its manual GPU
       and clean-machine binary gates are completed.
+
+Do not set the release date, create `v0.1.0`, or publish artifacts while either
+manual gate above remains incomplete.

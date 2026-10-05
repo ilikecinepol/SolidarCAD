@@ -30,6 +30,7 @@ enum class ToolIconKind {
   Slot,
   Text,
   SketchMirror,
+  Trim,
   Delete,
   Clear,
   AutoDimension,
