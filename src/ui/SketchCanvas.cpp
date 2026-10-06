@@ -1678,10 +1678,17 @@ void SketchCanvas::fitReferenceGeometry() {
   double maxV = std::numeric_limits<double>::lowest();
   const auto includePoint = [&](Point3d point) {
     const auto local = referencePlacement_.toLocal(point);
-    minU = std::min(minU, local.x);
-    minV = std::min(minV, local.y);
-    maxU = std::max(maxU, local.x);
-    maxV = std::max(maxV, local.y);
+    const Vector3d normal = referencePlacement_.normal();
+    const Vector3d delta{point.x - referencePlacement_.origin.x,
+                         point.y - referencePlacement_.origin.y,
+                         point.z - referencePlacement_.origin.z};
+    const double localZ = delta.x * normal.x + delta.y * normal.y +
+                          delta.z * normal.z;
+    const auto projected = projectLocalPoint(local.x, local.y, localZ);
+    minU = std::min(minU, projected.xMm);
+    minV = std::min(minV, projected.yMm);
+    maxU = std::max(maxU, projected.xMm);
+    maxV = std::max(maxV, projected.yMm);
   };
   const auto includeMesh = [&](const BodyRenderMesh& mesh) {
     for (const auto& edge : mesh.edges())
@@ -1739,6 +1746,11 @@ void SketchCanvas::clearSketchEditContext() {
   sceneSketches_.clear();
   realReferenceBodyVisible_ = false;
   hoveredProjectionEdge_.reset();
+  viewQuarterTurns_ = 0;
+  viewYawDeg_ = 0.0;
+  viewPitchDeg_ = 0.0;
+  setProperty("sketchPanning", false);
+  setProperty("sketchOrbiting", false);
   update();
 }
 
@@ -1779,7 +1791,10 @@ void SketchCanvas::resetSketch() {
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
   viewQuarterTurns_ = 0;
+  viewYawDeg_ = 0.0;
+  viewPitchDeg_ = 0.0;
   setProperty("sketchPanning", false);
+  setProperty("sketchOrbiting", false);
   hideDimensionEditor();
   emit undoAvailable(false);
   emit redoAvailable(false);
@@ -1799,7 +1814,10 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
   viewQuarterTurns_ = 0;
+  viewYawDeg_ = 0.0;
+  viewPitchDeg_ = 0.0;
   setProperty("sketchPanning", false);
+  setProperty("sketchOrbiting", false);
   setTool(Tool::Select);
   notifyGeometryChanged();
   emit undoAvailable(false);
@@ -2009,14 +2027,45 @@ void SketchCanvas::rotateViewCounterClockwise() {
   update();
 }
 
+void SketchCanvas::orbitView(double yawDeltaDeg, double pitchDeltaDeg) {
+  setViewOrientation(viewYawDeg_ + yawDeltaDeg,
+                     viewPitchDeg_ + pitchDeltaDeg);
+}
+
+void SketchCanvas::setViewOrientation(double yawDeg, double pitchDeg) {
+  if (!std::isfinite(yawDeg) || !std::isfinite(pitchDeg)) return;
+  viewYawDeg_ = std::remainder(yawDeg, 360.0);
+  viewPitchDeg_ = std::clamp(pitchDeg, -89.9, 89.9);
+  hideDimensionEditor();
+  constructionHover_.reset();
+  trimHover_.reset();
+  hoveredProjectionEdge_.reset();
+  update();
+}
+
 void SketchCanvas::resetViewRotation() {
   viewQuarterTurns_ = 0;
+  viewYawDeg_ = 0.0;
+  viewPitchDeg_ = 0.0;
+  setProperty("sketchOrbiting", false);
   hideDimensionEditor();
+  fitReferenceGeometry();
   update();
 }
 
 int SketchCanvas::viewQuarterTurns() const noexcept {
   return viewQuarterTurns_;
+}
+
+double SketchCanvas::viewYawDegrees() const noexcept { return viewYawDeg_; }
+
+double SketchCanvas::viewPitchDegrees() const noexcept {
+  return viewPitchDeg_;
+}
+
+bool SketchCanvas::viewAlignedToSketchPlane() const noexcept {
+  return std::abs(viewYawDeg_) <= 1e-9 &&
+         std::abs(viewPitchDeg_) <= 1e-9;
 }
 
 QRectF SketchCanvas::viewCubeBodyRect() const {
@@ -2357,12 +2406,60 @@ bool SketchCanvas::appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
   return true;
 }
 
+SketchCanvas::ProjectedLocalPoint SketchCanvas::projectLocalPoint(
+    double xMm, double yMm, double zMm) const noexcept {
+  const double yaw = viewYawDeg_ * std::numbers::pi / 180.0;
+  const double pitch = viewPitchDeg_ * std::numbers::pi / 180.0;
+  const double cosYaw = std::cos(yaw);
+  const double sinYaw = std::sin(yaw);
+  const double cosPitch = std::cos(pitch);
+  const double sinPitch = std::sin(pitch);
+
+  // Orbit in the sketch's local 3D frame. The zero orientation is the exact
+  // orthographic sketch plane used for editing; yaw/pitch are view-only and
+  // never alter SketchPlacement or stored geometry.
+  const double yawX = cosYaw * xMm + sinYaw * zMm;
+  const double yawZ = -sinYaw * xMm + cosYaw * zMm;
+  const double pitchY = cosPitch * yMm - sinPitch * yawZ;
+  const double depth = sinPitch * yMm + cosPitch * yawZ;
+  const auto rolled = rotateForView({yawX, pitchY});
+  return {rolled.xMm, rolled.yMm, depth};
+}
+
+QPointF SketchCanvas::mapWorldPoint(Point3d point) const {
+  const auto local = referencePlacement_.toLocal(point);
+  const Vector3d normal = referencePlacement_.normal();
+  const Vector3d delta{point.x - referencePlacement_.origin.x,
+                       point.y - referencePlacement_.origin.y,
+                       point.z - referencePlacement_.origin.z};
+  const double localZ = delta.x * normal.x + delta.y * normal.y +
+                        delta.z * normal.z;
+  const auto projected = projectLocalPoint(local.x, local.y, localZ);
+  const double centerX = kRulerLeft + (width() - kRulerLeft) * 0.5 +
+                         property("sketchPanX").toDouble();
+  const double centerY = kRulerTop + (height() - kRulerTop) * 0.5 +
+                         property("sketchPanY").toDouble();
+  return {centerX + projected.xMm * pixelsPerMm_,
+          centerY - projected.yMm * pixelsPerMm_};
+}
+
+double SketchCanvas::worldPointDepth(Point3d point) const noexcept {
+  const auto local = referencePlacement_.toLocal(point);
+  const Vector3d normal = referencePlacement_.normal();
+  const Vector3d delta{point.x - referencePlacement_.origin.x,
+                       point.y - referencePlacement_.origin.y,
+                       point.z - referencePlacement_.origin.z};
+  const double localZ = delta.x * normal.x + delta.y * normal.y +
+                        delta.z * normal.z;
+  return projectLocalPoint(local.x, local.y, localZ).depthMm;
+}
+
 QPointF SketchCanvas::mapPoint(sketch::Point point) const {
   const double centerX = kRulerLeft + (width() - kRulerLeft) * 0.5 +
                          property("sketchPanX").toDouble();
   const double centerY = kRulerTop + (height() - kRulerTop) * 0.5 +
                          property("sketchPanY").toDouble();
-  const auto viewPoint = rotateForView(point);
+  const auto viewPoint = projectLocalPoint(point.xMm, point.yMm, 0.0);
   return {centerX + viewPoint.xMm * pixelsPerMm_,
           centerY - viewPoint.yMm * pixelsPerMm_};
 }
@@ -2372,34 +2469,63 @@ sketch::Point SketchCanvas::unmapPoint(QPointF point) const {
                          property("sketchPanX").toDouble();
   const double centerY = kRulerTop + (height() - kRulerTop) * 0.5 +
                          property("sketchPanY").toDouble();
-  return rotateFromView(
-      {(point.x() - centerX) / pixelsPerMm_,
-       (centerY - point.y()) / pixelsPerMm_});
+  const sketch::Point viewPoint{(point.x() - centerX) / pixelsPerMm_,
+                                (centerY - point.y()) / pixelsPerMm_};
+  const auto origin = projectLocalPoint(0.0, 0.0, 0.0);
+  const auto xAxis = projectLocalPoint(1.0, 0.0, 0.0);
+  const auto yAxis = projectLocalPoint(0.0, 1.0, 0.0);
+  const double xx = xAxis.xMm - origin.xMm;
+  const double xy = xAxis.yMm - origin.yMm;
+  const double yx = yAxis.xMm - origin.xMm;
+  const double yy = yAxis.yMm - origin.yMm;
+  const double determinant = xx * yy - xy * yx;
+  if (std::abs(determinant) <= 1e-9)
+    return rotateFromView(viewPoint);
+  return {(viewPoint.xMm * yy - viewPoint.yMm * yx) / determinant,
+          (xx * viewPoint.yMm - xy * viewPoint.xMm) / determinant};
+}
+
+QPolygonF SketchCanvas::circlePolyline(sketch::Point center, double radiusMm,
+                                       double startAngleRad,
+                                       double sweepAngleRad,
+                                       int segmentCount) const {
+  QPolygonF result;
+  segmentCount = std::max(8, segmentCount);
+  result.reserve(segmentCount + 1);
+  for (int segment = 0; segment <= segmentCount; ++segment) {
+    const double t = static_cast<double>(segment) / segmentCount;
+    const double angle = startAngleRad + sweepAngleRad * t;
+    result << mapPoint({center.xMm + radiusMm * std::cos(angle),
+                        center.yMm + radiusMm * std::sin(angle)});
+  }
+  return result;
+}
+
+double SketchCanvas::circleDistanceToScreenPoint(
+    const sketch::Circle& circle, QPointF point) const {
+  const QPolygonF curve = circlePolyline(circle.center, circle.radiusMm);
+  double best = std::numeric_limits<double>::max();
+  for (qsizetype index = 1; index < curve.size(); ++index)
+    best = std::min(best,
+                    pointSegmentDistance(point, curve[index - 1],
+                                         curve[index]));
+  return best;
 }
 
 double SketchCanvas::arcDistanceToScreenPoint(
     const sketch::Arc& arc, QPointF point) const {
-  constexpr double kTwoPi = 6.28318530717958647692;
-  const sketch::Point sketchPoint = unmapPoint(point);
-  const double dx = sketchPoint.xMm - arc.center.xMm;
-  const double dy = sketchPoint.yMm - arc.center.yMm;
-  const double angle = std::atan2(dy, dx);
-
-  const auto normalizeAngle = [](double value) {
-    constexpr double twoPi = 6.28318530717958647692;
-    value = std::fmod(value, twoPi);
-    if (value < 0.0) value += twoPi;
-    return value;
-  };
-
-  const double offset = normalizeAngle(angle - arc.startAngleRad);
-  if (offset <= std::min(arc.sweepAngleRad, kTwoPi) + 1e-12) {
-    return std::abs(std::hypot(dx, dy) - arc.radiusMm) * pixelsPerMm_;
-  }
-
-  return std::min(
-      QLineF(point, mapPoint(sketch::arcStartPoint(arc))).length(),
-      QLineF(point, mapPoint(sketch::arcEndPoint(arc))).length());
+  const int segments = std::max(
+      12, static_cast<int>(std::ceil(96.0 * arc.sweepAngleRad /
+                                     (2.0 * std::numbers::pi))));
+  const QPolygonF curve = circlePolyline(
+      arc.center, arc.radiusMm, arc.startAngleRad, arc.sweepAngleRad,
+      segments);
+  double best = std::numeric_limits<double>::max();
+  for (qsizetype index = 1; index < curve.size(); ++index)
+    best = std::min(best,
+                    pointSegmentDistance(point, curve[index - 1],
+                                         curve[index]));
+  return best;
 }
 
 sketch::Point SketchCanvas::snappedPoint(QPointF point) const {
@@ -2680,10 +2806,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       if (circle.radiusMm <= 1e-9)
         continue;
 
-      const QPointF centerPx = mapPoint(circle.center);
-      const double radialPx = QLineF(position, centerPx).length();
-      const double distance =
-          std::abs(radialPx - circle.radiusMm * pixelsPerMm_);
+      const double distance = circleDistanceToScreenPoint(circle, position);
 
       if (distance >= bestBodyDistance)
         continue;
@@ -2898,18 +3021,35 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
   const QPointF origin = mapPoint({0, 0});
   if (gridVisible_) {
-    const double minorGrid = snapStepMm_ * pixelsPerMm_;
     painter.setPen(QPen(QColor("#e8edf5"), 1.0));
-    double firstX = kRulerLeft +
-                    std::fmod(origin.x() - kRulerLeft, minorGrid);
-    if (firstX < kRulerLeft) firstX += minorGrid;
-    double firstY = kRulerTop +
-                    std::fmod(origin.y() - kRulerTop, minorGrid);
-    if (firstY < kRulerTop) firstY += minorGrid;
-    for (double x = firstX; x < width(); x += minorGrid)
-      painter.drawLine(QPointF(x, kRulerTop), QPointF(x, height()));
-    for (double y = firstY; y < height(); y += minorGrid)
-      painter.drawLine(QPointF(kRulerLeft, y), QPointF(width(), y));
+    if (viewAlignedToSketchPlane()) {
+      const double minorGrid = snapStepMm_ * pixelsPerMm_;
+      double firstX = kRulerLeft +
+                      std::fmod(origin.x() - kRulerLeft, minorGrid);
+      if (firstX < kRulerLeft) firstX += minorGrid;
+      double firstY = kRulerTop +
+                      std::fmod(origin.y() - kRulerTop, minorGrid);
+      if (firstY < kRulerTop) firstY += minorGrid;
+      for (double x = firstX; x < width(); x += minorGrid)
+        painter.drawLine(QPointF(x, kRulerTop), QPointF(x, height()));
+      for (double y = firstY; y < height(); y += minorGrid)
+        painter.drawLine(QPointF(kRulerLeft, y), QPointF(width(), y));
+    } else {
+      // In the free camera view the grid belongs to the actual sketch plane,
+      // so it must tilt together with the sketch rather than stay screen-flat.
+      const double extent = 2.0 * std::max(width(), height()) /
+                            std::max(0.05, pixelsPerMm_);
+      const double step = niceRulerStep(pixelsPerMm_);
+      const int lineCount = std::min(80, static_cast<int>(
+          std::ceil(extent / std::max(0.01, step))));
+      for (int index = -lineCount; index <= lineCount; ++index) {
+        const double coordinate = index * step;
+        painter.drawLine(mapPoint({coordinate, -extent}),
+                         mapPoint({coordinate, extent}));
+        painter.drawLine(mapPoint({-extent, coordinate}),
+                         mapPoint({extent, coordinate}));
+      }
+    }
   }
 
   painter.fillRect(QRectF(0, 0, width(), kRulerTop), QColor("#f3f6fb"));
@@ -2919,38 +3059,40 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.drawLine(QPointF(kRulerLeft, kRulerTop), QPointF(kRulerLeft, height()));
   painter.setPen(QColor("#637797"));
   const double rulerStepMm = niceRulerStep(pixelsPerMm_);
-  // Rulers describe the CURRENT VIEW axes. At 90 degrees screen X
-  // represents sketch Y, so labels must use view coordinates directly.
-  const double visibleLeftMm =
-      (kRulerLeft - origin.x()) / pixelsPerMm_;
-  const double visibleRightMm =
-      (static_cast<double>(width()) - origin.x()) / pixelsPerMm_;
-  const double firstHorizontalMm =
-      std::ceil(visibleLeftMm / rulerStepMm) * rulerStepMm;
-  for (double mm = firstHorizontalMm; mm <= visibleRightMm;
-       mm += rulerStepMm) {
-    const double x = origin.x() + mm * pixelsPerMm_;
-    painter.drawLine(QPointF(x, 20), QPointF(x, kRulerTop));
-    painter.drawText(QRectF(x - 24, 2, 48, 17), Qt::AlignCenter,
-                     QString::number(mm, 'f', 0));
-  }
+  if (viewAlignedToSketchPlane()) {
+    // Rulers describe the CURRENT VIEW axes. At 90 degrees screen X
+    // represents sketch Y, so labels must use view coordinates directly.
+    const double visibleLeftMm =
+        (kRulerLeft - origin.x()) / pixelsPerMm_;
+    const double visibleRightMm =
+        (static_cast<double>(width()) - origin.x()) / pixelsPerMm_;
+    const double firstHorizontalMm =
+        std::ceil(visibleLeftMm / rulerStepMm) * rulerStepMm;
+    for (double mm = firstHorizontalMm; mm <= visibleRightMm;
+         mm += rulerStepMm) {
+      const double x = origin.x() + mm * pixelsPerMm_;
+      painter.drawLine(QPointF(x, 20), QPointF(x, kRulerTop));
+      painter.drawText(QRectF(x - 24, 2, 48, 17), Qt::AlignCenter,
+                       QString::number(mm, 'f', 0));
+    }
 
-  const double visibleTopMm =
-      (origin.y() - kRulerTop) / pixelsPerMm_;
-  const double visibleBottomMm =
-      (origin.y() - static_cast<double>(height())) / pixelsPerMm_;
-  const double firstVerticalMm =
-      std::ceil(visibleBottomMm / rulerStepMm) * rulerStepMm;
-  for (double mm = firstVerticalMm; mm <= visibleTopMm;
-       mm += rulerStepMm) {
-    const double y = origin.y() - mm * pixelsPerMm_;
-    painter.drawLine(QPointF(34, y), QPointF(kRulerLeft, y));
-    painter.save();
-    painter.translate(3, y + 22);
-    painter.rotate(-90);
-    painter.drawText(QRectF(0, 0, 44, 17), Qt::AlignCenter,
-                     QString::number(mm, 'f', 0));
-    painter.restore();
+    const double visibleTopMm =
+        (origin.y() - kRulerTop) / pixelsPerMm_;
+    const double visibleBottomMm =
+        (origin.y() - static_cast<double>(height())) / pixelsPerMm_;
+    const double firstVerticalMm =
+        std::ceil(visibleBottomMm / rulerStepMm) * rulerStepMm;
+    for (double mm = firstVerticalMm; mm <= visibleTopMm;
+         mm += rulerStepMm) {
+      const double y = origin.y() - mm * pixelsPerMm_;
+      painter.drawLine(QPointF(34, y), QPointF(kRulerLeft, y));
+      painter.save();
+      painter.translate(3, y + 22);
+      painter.rotate(-90);
+      painter.drawText(QRectF(0, 0, 44, 17), Qt::AlignCenter,
+                       QString::number(mm, 'f', 0));
+      painter.restore();
+    }
   }
 
   painter.save();
@@ -2967,9 +3109,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.drawLine(mapPoint({0.0, -axisExtentMm}),
                    mapPoint({0.0, axisExtentMm}));
 
-  const auto projectScenePoint = [&](Point3d point) {
-    const auto local = referencePlacement_.toLocal(point);
-    return mapPoint({local.x, local.y});
+  const auto projectScenePoint = [this](Point3d point) {
+    return mapWorldPoint(point);
   };
   std::size_t sceneEdgeOffset = referenceBodyMesh_.edges().size();
   QColor sceneFill = palette().color(QPalette::Mid);
@@ -3050,15 +3191,27 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       double depth{};
       double facing{};
     };
-    const Vector3d normal = referencePlacement_.normal();
-    const auto depthOf = [&](Point3d point) {
-      return (point.x - referencePlacement_.origin.x) * normal.x +
-             (point.y - referencePlacement_.origin.y) * normal.y +
-             (point.z - referencePlacement_.origin.z) * normal.z;
+    const Vector3d planeNormal = referencePlacement_.normal();
+    const double yaw = viewYawDeg_ * std::numbers::pi / 180.0;
+    const double pitch = viewPitchDeg_ * std::numbers::pi / 180.0;
+    const double depthX = -std::cos(pitch) * std::sin(yaw);
+    const double depthY = std::sin(pitch);
+    const double depthZ = std::cos(pitch) * std::cos(yaw);
+    const Vector3d viewNormal{
+        referencePlacement_.xDirection.x * depthX +
+            referencePlacement_.yDirection.x * depthY +
+            planeNormal.x * depthZ,
+        referencePlacement_.xDirection.y * depthX +
+            referencePlacement_.yDirection.y * depthY +
+            planeNormal.y * depthZ,
+        referencePlacement_.xDirection.z * depthX +
+            referencePlacement_.yDirection.z * depthY +
+            planeNormal.z * depthZ};
+    const auto depthOf = [this](Point3d point) {
+      return worldPointDepth(point);
     };
-    const auto projected = [&](Point3d point) {
-      const auto local = referencePlacement_.toLocal(point);
-      return mapPoint({local.x, local.y});
+    const auto projected = [this](Point3d point) {
+      return mapWorldPoint(point);
     };
     std::vector<ProjectedTriangle> triangles;
     triangles.reserve(referenceBodyMesh_.triangles().size());
@@ -3067,9 +3220,9 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           {{projected(triangle.a), projected(triangle.b), projected(triangle.c)},
            (depthOf(triangle.a) + depthOf(triangle.b) + depthOf(triangle.c)) /
                3.0,
-           std::abs(triangle.normal.x * normal.x +
-                    triangle.normal.y * normal.y +
-                    triangle.normal.z * normal.z)});
+           std::abs(triangle.normal.x * viewNormal.x +
+                    triangle.normal.y * viewNormal.y +
+                    triangle.normal.z * viewNormal.z)});
     }
     std::sort(triangles.begin(), triangles.end(),
               [](const auto& first, const auto& second) {
@@ -3143,9 +3296,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     for (const auto& circle : referenceProfile_.circles()) {
       painter.setPen(QPen(QColor("#596570"), 1.6,
                           circle.dashed ? Qt::DashLine : Qt::SolidLine));
-      const QPointF center = mapPoint(circle.center);
-      const double radius = circle.radiusMm * pixelsPerMm_;
-      painter.drawEllipse(center, radius, radius);
+      painter.drawPolyline(circlePolyline(circle.center, circle.radiusMm));
     }
   }
 
@@ -3215,38 +3366,19 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
                                       : Qt::SolidLine));
     painter.setBrush(Qt::NoBrush);
     const QPointF center = mapPoint(circle.center);
-    const double radius = circle.radiusMm * pixelsPerMm_;
-    painter.drawEllipse(center, radius, radius);
+    painter.drawPolyline(circlePolyline(circle.center, circle.radiusMm));
     painter.setBrush(Qt::white);
     painter.drawEllipse(center, 3.5, 3.5);
   }
 
-  const auto drawSketchArc =
-      [this, &painter](const sketch::Arc& arc) {
-        constexpr int kSegments = 72;
-        const int segmentCount = std::max(
-            8,
-            static_cast<int>(std::ceil(
-                static_cast<double>(kSegments) *
-                arc.sweepAngleRad /
-                6.28318530717958647692)));
-
-        QPolygonF polyline;
-        polyline.reserve(segmentCount + 1);
-
-        for (int segment = 0; segment <= segmentCount; ++segment) {
-          const double t =
-              static_cast<double>(segment) /
-              static_cast<double>(segmentCount);
-          const double angle =
-              arc.startAngleRad + arc.sweepAngleRad * t;
-          polyline << mapPoint(
-              {arc.center.xMm + arc.radiusMm * std::cos(angle),
-               arc.center.yMm + arc.radiusMm * std::sin(angle)});
-        }
-
-        painter.drawPolyline(polyline);
-      };
+  const auto drawSketchArc = [this, &painter](const sketch::Arc& arc) {
+    const int segmentCount = std::max(
+        8, static_cast<int>(std::ceil(
+               72.0 * arc.sweepAngleRad / (2.0 * std::numbers::pi))));
+    painter.drawPolyline(circlePolyline(
+        arc.center, arc.radiusMm, arc.startAngleRad, arc.sweepAngleRad,
+        segmentCount));
+  };
 
   for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
     const auto& arc = sketch_.arcs()[index];
@@ -3305,9 +3437,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       if (index) {
         const auto& circle = sketch_.circles()[*index];
         if (preview.fullGeometry) {
-          const QPointF center = mapPoint(circle.center);
-          const double radius = circle.radiusMm * pixelsPerMm_;
-          painter.drawEllipse(center, radius, radius);
+          painter.drawPolyline(circlePolyline(circle.center, circle.radiusMm));
         } else {
           sketch::Arc interval;
           interval.center = circle.center;
@@ -3987,8 +4117,10 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         painter.restore();
       }
     } else if (tool_ == Tool::Circle) {
-      const double radius = QLineF(first, current).length();
-      painter.drawEllipse(first, radius, radius);
+      const double radiusMm =
+          std::hypot(hoverPoint_.xMm - anchor_->xMm,
+                     hoverPoint_.yMm - anchor_->yMm);
+      painter.drawPolyline(circlePolyline(*anchor_, radiusMm));
     }
   }
 
@@ -4004,17 +4136,15 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
       const auto first = circlePoints_.front();
       const sketch::Point center{(first.xMm + hoverPoint_.xMm) * 0.5,
                                  (first.yMm + hoverPoint_.yMm) * 0.5};
-      const double radius = std::hypot(hoverPoint_.xMm - first.xMm,
-                                       hoverPoint_.yMm - first.yMm) * 0.5 * pixelsPerMm_;
-      painter.drawEllipse(mapPoint(center), radius, radius);
+      const double radiusMm = std::hypot(hoverPoint_.xMm - first.xMm,
+                                         hoverPoint_.yMm - first.yMm) * 0.5;
+      painter.drawPolyline(circlePolyline(center, radiusMm));
     } else if (circleMode_ == CircleMode::ThreePoints &&
                circlePoints_.size() == 2) {
       const auto preview = circleThroughThreePoints(
           circlePoints_[0], circlePoints_[1], hoverPoint_);
-      if (preview) {
-        const double radius = preview->second * pixelsPerMm_;
-        painter.drawEllipse(mapPoint(preview->first), radius, radius);
-      }
+      if (preview)
+        painter.drawPolyline(circlePolyline(preview->first, preview->second));
     }
     // TWO-TANGENT SEMITRANSPARENT PREVIEW
     if (circleMode_ ==
@@ -4049,14 +4179,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         painter.setBrush(
             QColor(10, 114, 255, 48));
 
-        const double radiusPx =
-            preview->radiusMm *
-            pixelsPerMm_;
-
-        painter.drawEllipse(
-            mapPoint(preview->center),
-            radiusPx,
-            radiusPx);
+        painter.drawPolyline(
+            circlePolyline(preview->center, preview->radiusMm));
 
         painter.restore();
       }
@@ -4145,9 +4269,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           painter.save();
           painter.setPen(QPen(constraintHighlight, 4.0));
           painter.setBrush(Qt::NoBrush);
-          painter.drawEllipse(mapPoint(circle.center),
-                              circle.radiusMm * pixelsPerMm_,
-                              circle.radiusMm * pixelsPerMm_);
+          painter.drawPolyline(
+              circlePolyline(circle.center, circle.radiusMm));
           painter.restore();
         };
 
@@ -4224,16 +4347,22 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   }
 
   painter.setPen(QColor("#536985"));
+  const QString viewDescription =
+      viewAlignedToSketchPlane()
+          ? QString::fromUtf8("плоскость %1°").arg(viewQuarterTurns_ * 90)
+          : QString::fromUtf8("3D: азимут %1°, наклон %2°")
+                .arg(qRound(viewYawDeg_))
+                .arg(qRound(viewPitchDeg_));
   painter.drawText(
       QRectF(kRulerLeft + 12, height() - 30, width() - 70, 22),
       Qt::AlignLeft | Qt::AlignVCenter,
       QString::fromUtf8(
-          "Шаг сетки: %1 мм   •   Привязка: %2   •   Масштаб: %3%   •   Вид: %4°")
+          "Шаг сетки: %1 мм   •   Привязка: %2   •   Масштаб: %3%   •   Вид: %4")
           .arg(snapStepMm_)
           .arg(snapEnabled_ ? QString::fromUtf8("ВКЛ")
                             : QString::fromUtf8("ВЫКЛ"))
           .arg(qRound(pixelsPerMm_ / 5.0 * 100.0))
-          .arg(viewQuarterTurns_ * 90));
+          .arg(viewDescription));
   painter.restore();
 
   // SKETCH VIEW CUBE
@@ -4269,9 +4398,13 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.drawRect(frontFace);
 
   painter.setPen(QColor("#263952"));
-  painter.drawText(frontFace, Qt::AlignCenter,
-                   QString::fromUtf8("XY\n%1°")
-                       .arg(viewQuarterTurns_ * 90));
+  painter.drawText(
+      frontFace, Qt::AlignCenter,
+      viewAlignedToSketchPlane()
+          ? QString::fromUtf8("ЭСКИЗ\n%1°").arg(viewQuarterTurns_ * 90)
+          : QString::fromUtf8("3D\n%1°/%2°")
+                .arg(qRound(viewYawDeg_))
+                .arg(qRound(viewPitchDeg_)));
 
   painter.setBrush(QColor(245, 248, 252, 235));
   painter.setPen(QPen(QColor("#536985"), 1.0));
@@ -4287,51 +4420,63 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   setFocus();
   if (event->button() == Qt::MiddleButton) {
-    setProperty("sketchPanning", true);
-    setProperty("sketchPanLastX", event->position().x());
-    setProperty("sketchPanLastY", event->position().y());
-    setCursor(Qt::ClosedHandCursor);
+    const bool orbit = event->modifiers().testFlag(Qt::ShiftModifier);
+    setProperty(orbit ? "sketchOrbiting" : "sketchPanning", true);
+    setProperty("sketchViewDragButton",
+                static_cast<int>(Qt::MiddleButton));
+    setProperty("sketchViewDragLastX", event->position().x());
+    setProperty("sketchViewDragLastY", event->position().y());
+    setCursor(orbit ? Qt::SizeAllCursor : Qt::ClosedHandCursor);
     event->accept();
     return;
   }
   if (event->button() == Qt::RightButton) {
-    selectionBoxActive_ = false;
-    anchor_.reset();
-    setProperty("dragPointLineId", QVariant());
-    setProperty("dragPointArcId", QVariant());
-    setProperty("dragPointCircleId", QVariant());
-    setProperty("dragPointElementCenterId", QVariant());
-    setProperty("dragPointStart", QVariant());
-
-    // Cancel unfinished constraint-tool selections as well.
-    coincidentFirstPoint_.reset();
-    setProperty("pointOnLineCarrier", QVariant());
-    setProperty("pointOnCircleCarrier", QVariant());
-    setProperty("perpendicularFirstLine", QVariant());
-    setProperty("parallelFirstLine", QVariant());
-    setProperty("equalFirstGeometry", QVariant());
-    setProperty("equalFirstKind", QVariant());
-    setProperty("equalFirstElement", QVariant());
-    setProperty("tangentFirstGeometry", QVariant());
-    setProperty("tangentFirstKind", QVariant());
-
-    rectanglePoints_.clear();
-    mirrorSourceGeometry_.clear();
-    circlePoints_.clear();
-    arcPoints_.clear();
-    setProperty("arcChordAngleRad", QVariant());
-    setProperty("arcSagittaSign", QVariant());
-    circleGuideLines_.clear();
-    hideDimensionEditor();
-    setCursor(tool_ == Tool::Select
-                  ? Qt::ArrowCursor
-                  : tool_ == Tool::Projection
-                        ? Qt::PointingHandCursor
-                        : Qt::CrossCursor);
-    update();
+    // Match the 3D viewport: dragging the right mouse button freely orbits the
+    // camera. A press/release without a drag retains the established Sketcher
+    // cancellation behavior (handled in mouseReleaseEvent).
+    setProperty("sketchOrbiting", true);
+    setProperty("sketchOrbitMoved", false);
+    setProperty("sketchViewDragButton",
+                static_cast<int>(Qt::RightButton));
+    setProperty("sketchViewDragLastX", event->position().x());
+    setProperty("sketchViewDragLastY", event->position().y());
+    setCursor(Qt::SizeAllCursor);
+    event->accept();
     return;
   }
   if (event->button() != Qt::LeftButton) return;
+
+  if (viewCubeLeftRect().contains(event->position())) {
+    rotateViewCounterClockwise();
+    event->accept();
+    return;
+  }
+  if (viewCubeRightRect().contains(event->position())) {
+    rotateViewClockwise();
+    event->accept();
+    return;
+  }
+  if (viewCubeBodyRect().contains(event->position())) {
+    setProperty("sketchOrbiting", true);
+    setProperty("sketchViewDragButton",
+                static_cast<int>(Qt::LeftButton));
+    setProperty("sketchViewDragLastX", event->position().x());
+    setProperty("sketchViewDragLastY", event->position().y());
+    hideDimensionEditor();
+    setCursor(Qt::SizeAllCursor);
+    event->accept();
+    return;
+  }
+
+  // Free camera orientation is an inspection mode. Editing resumes after the
+  // user returns to the exact sketch plane, avoiding unstable inverse mapping
+  // when that plane is viewed almost edge-on.
+  if (!viewAlignedToSketchPlane()) {
+    emit selectionChanged(QString::fromUtf8(
+        "Свободный 3D-вид: вернитесь в плоскость эскиза для редактирования"));
+    event->accept();
+    return;
+  }
 
   if (tool_ == Tool::Trim) {
     if (!trimAt(event->position()))
@@ -4373,18 +4518,6 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-
-  if (viewCubeLeftRect().contains(event->position())) {
-    rotateViewCounterClockwise();
-    event->accept();
-    return;
-  }
-  if (viewCubeRightRect().contains(event->position()) ||
-      viewCubeBodyRect().contains(event->position())) {
-    rotateViewClockwise();
-    event->accept();
-    return;
-  }
   if (tool_ == Tool::AutoDimension && primaryDimension_->isVisible() &&
       !property("autoDimensionTarget").toString().isEmpty()) {
     const auto directLineId = static_cast<sketch::GeometryId>(
@@ -4531,7 +4664,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         const double centerDistance =
             QLineF(event->position(), mapPoint(circle.center)).length();
         const double distance =
-            std::abs(centerDistance - circle.radiusMm * pixelsPerMm_);
+            circleDistanceToScreenPoint(circle, event->position());
 
         if (centerDistance < geometryHitTolerance ||
             distance < geometryHitTolerance) {
@@ -5043,6 +5176,25 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
+  if (property("sketchOrbiting").toBool()) {
+    const auto dragButton = static_cast<Qt::MouseButton>(
+        property("sketchViewDragButton").toInt());
+    if (event->buttons().testFlag(dragButton)) {
+      const QPointF current = event->position();
+      const QPointF last(property("sketchViewDragLastX").toDouble(),
+                         property("sketchViewDragLastY").toDouble());
+      const QPointF delta = current - last;
+      setProperty("sketchViewDragLastX", current.x());
+      setProperty("sketchViewDragLastY", current.y());
+      if (dragButton == Qt::RightButton &&
+          (std::abs(delta.x()) >= 0.5 || std::abs(delta.y()) >= 0.5))
+        setProperty("sketchOrbitMoved", true);
+      orbitView(delta.x() * 0.55, delta.y() * 0.55);
+      event->accept();
+      return;
+    }
+  }
+
   if (selectionBoxActive_ &&
       (event->buttons() & Qt::LeftButton)) {
     selectionBoxCurrent_ = event->position();
@@ -5054,13 +5206,13 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
   if (property("sketchPanning").toBool() &&
       (event->buttons() & Qt::MiddleButton)) {
     const QPointF current = event->position();
-    const QPointF last(property("sketchPanLastX").toDouble(),
-                       property("sketchPanLastY").toDouble());
+    const QPointF last(property("sketchViewDragLastX").toDouble(),
+                       property("sketchViewDragLastY").toDouble());
     const QPointF delta = current - last;
     setProperty("sketchPanX", property("sketchPanX").toDouble() + delta.x());
     setProperty("sketchPanY", property("sketchPanY").toDouble() + delta.y());
-    setProperty("sketchPanLastX", current.x());
-    setProperty("sketchPanLastY", current.y());
+    setProperty("sketchViewDragLastX", current.x());
+    setProperty("sketchViewDragLastY", current.y());
     update();
     event->accept();
     return;
@@ -5070,6 +5222,15 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
        viewCubeLeftRect().contains(event->position()) ||
        viewCubeRightRect().contains(event->position()))) {
     setCursor(Qt::PointingHandCursor);
+    event->accept();
+    return;
+  }
+
+  if (event->buttons() == Qt::NoButton && !viewAlignedToSketchPlane()) {
+    constructionHover_.reset();
+    trimHover_.reset();
+    hoveredProjectionEdge_.reset();
+    setCursor(Qt::OpenHandCursor);
     event->accept();
     return;
   }
@@ -5727,6 +5888,55 @@ void SketchCanvas::leaveEvent(QEvent* event) {
 }
 
 void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
+  if (property("sketchOrbiting").toBool() &&
+      event->button() == static_cast<Qt::MouseButton>(
+                             property("sketchViewDragButton").toInt())) {
+    const bool cancelInteraction =
+        event->button() == Qt::RightButton &&
+        !property("sketchOrbitMoved").toBool();
+    setProperty("sketchOrbiting", false);
+    setProperty("sketchOrbitMoved", false);
+
+    if (cancelInteraction) {
+      selectionBoxActive_ = false;
+      anchor_.reset();
+      setProperty("dragPointLineId", QVariant());
+      setProperty("dragPointArcId", QVariant());
+      setProperty("dragPointCircleId", QVariant());
+      setProperty("dragPointElementCenterId", QVariant());
+      setProperty("dragPointStart", QVariant());
+
+      // Cancel unfinished constraint-tool selections as well.
+      coincidentFirstPoint_.reset();
+      setProperty("pointOnLineCarrier", QVariant());
+      setProperty("pointOnCircleCarrier", QVariant());
+      setProperty("perpendicularFirstLine", QVariant());
+      setProperty("parallelFirstLine", QVariant());
+      setProperty("equalFirstGeometry", QVariant());
+      setProperty("equalFirstKind", QVariant());
+      setProperty("equalFirstElement", QVariant());
+      setProperty("tangentFirstGeometry", QVariant());
+      setProperty("tangentFirstKind", QVariant());
+
+      rectanglePoints_.clear();
+      mirrorSourceGeometry_.clear();
+      circlePoints_.clear();
+      arcPoints_.clear();
+      setProperty("arcChordAngleRad", QVariant());
+      setProperty("arcSagittaSign", QVariant());
+      circleGuideLines_.clear();
+      hideDimensionEditor();
+    }
+
+    setCursor(viewAlignedToSketchPlane() ?
+                  (tool_ == Tool::Select ? Qt::ArrowCursor
+                                         : Qt::CrossCursor)
+                                           : Qt::OpenHandCursor);
+    update();
+    event->accept();
+    return;
+  }
+
   if (event->button() == Qt::LeftButton && selectionBoxActive_) {
     selectionBoxCurrent_ = event->position();
     const QRectF selectionRect(selectionBoxStart_, selectionBoxCurrent_);
@@ -5751,7 +5961,10 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
   if (event->button() == Qt::MiddleButton &&
       property("sketchPanning").toBool()) {
     setProperty("sketchPanning", false);
-    setCursor(tool_ == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+    setCursor(viewAlignedToSketchPlane()
+                  ? (tool_ == Tool::Select ? Qt::ArrowCursor
+                                           : Qt::CrossCursor)
+                  : Qt::OpenHandCursor);
     event->accept();
     return;
   }
@@ -6935,11 +7148,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
           if (centerDistance < pocCircleCenterExclusion)
             continue;
 
-          const double radiusPx =
-              circle.radiusMm * pixelsPerMm_;
-
           const double bodyDistance =
-              std::abs(centerDistance - radiusPx);
+              circleDistanceToScreenPoint(circle, position);
 
           if (bodyDistance < bestDistance) {
             bestDistance = bodyDistance;
@@ -7548,11 +7758,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
       if (centerDistance < circleCenterExclusion)
         continue;
 
-      const double radiusPx =
-          circle.radiusMm * pixelsPerMm_;
-
       const double bodyDistance =
-          std::abs(centerDistance - radiusPx);
+          circleDistanceToScreenPoint(circle, position);
 
       if (bodyDistance < bestBodyDistance) {
         bestBodyDistance = bodyDistance;
@@ -7742,10 +7949,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
       if (centerDistance < circleCenterExclusion)
         continue;
 
-      const double radiusPx =
-          circle.radiusMm * pixelsPerMm_;
       const double bodyDistance =
-          std::abs(centerDistance - radiusPx);
+          circleDistanceToScreenPoint(circle, position);
 
       if (bodyDistance < bestBodyDistance) {
         bestBodyDistance = bodyDistance;
@@ -7980,12 +8185,7 @@ void SketchCanvas::handleTangentConstraintClick(QPointF position) {
        ++index) {
     const auto& circle = sketch_.circles()[index];
 
-    const double distance =
-        std::abs(
-            QLineF(
-                position,
-                mapPoint(circle.center)).length() -
-            circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
 
     if (distance >= bestDistance)
       continue;
@@ -8184,9 +8384,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
 
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
-    const double distance = std::abs(
-        QLineF(position, mapPoint(circle.center)).length() -
-        circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
 
     if (distance >= bestDistance) continue;
 
@@ -9101,11 +9299,7 @@ void SketchCanvas::handleLockConstraintClick(
   for (std::size_t index = 0;
        index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
-    const double distance =
-        std::abs(
-            QLineF(position,
-                   mapPoint(circle.center)).length() -
-            circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
 
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -9438,9 +9632,7 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
   std::optional<std::size_t> circleIndex;
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
-    const double distance = std::abs(
-        QLineF(position, mapPoint(circle.center)).length() -
-        circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
     if (distance < bestDistance) {
       bestDistance = distance;
       lineIndex.reset();
@@ -9985,9 +10177,7 @@ SketchCanvas::mirrorGeometryAt(QPointF position,
 
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
-    const double distance = std::abs(
-        QLineF(position, mapPoint(circle.center)).length() -
-        circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
     if (distance >= bestDistance) continue;
     bestDistance = distance;
     result = MirrorGeometryRef{MirrorGeometryKind::Circle,
@@ -10313,9 +10503,7 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
     const auto id = sketch_.circleId(index);
     if (sketch_.isGeometryLocked(id)) continue;
     const auto& circle = sketch_.circles()[index];
-    const double distance = std::abs(
-        QLineF(position, mapPoint(circle.center)).length() -
-        circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
     if (distance >= bestDistance) continue;
     bestDistance = distance;
     result = {TrimGeometryKind::Circle, id, 0.0, 1.0, false};
@@ -10627,9 +10815,7 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
 
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
-    const double distance = std::abs(
-        QLineF(position, mapPoint(circle.center)).length() -
-        circle.radiusMm * pixelsPerMm_);
+    const double distance = circleDistanceToScreenPoint(circle, position);
 
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -10832,12 +11018,10 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
   for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
     const auto& circle = sketch_.circles()[index];
     const auto id = sketch_.circleId(index);
-    const QPointF center = mapPoint(circle.center);
-    const double radius = circle.radiusMm * pixelsPerMm_;
-    const QRectF bounds(center.x() - radius, center.y() - radius,
-                        radius * 2.0, radius * 2.0);
+    const QRectF bounds =
+        circlePolyline(circle.center, circle.radiusMm).boundingRect();
 
-    if (bounds.intersects(rect) || rect.contains(center)) {
+    if (bounds.intersects(rect) || rect.contains(mapPoint(circle.center))) {
       if (!circleSelected(id))
         selectedCircleIds_.push_back(id);
     }
@@ -10846,12 +11030,11 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
   for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
     const auto& arc = sketch_.arcs()[index];
     const auto id = sketch_.arcId(index);
-    const QPointF center = mapPoint(arc.center);
-    const double radius = arc.radiusMm * pixelsPerMm_;
-    const QRectF bounds(center.x() - radius, center.y() - radius,
-                        radius * 2.0, radius * 2.0);
+    const QRectF bounds = circlePolyline(
+        arc.center, arc.radiusMm, arc.startAngleRad, arc.sweepAngleRad)
+                             .boundingRect();
 
-    if (bounds.intersects(rect) || rect.contains(center)) {
+    if (bounds.intersects(rect) || rect.contains(mapPoint(arc.center))) {
       if (!arcSelected(id))
         selectedArcIds_.push_back(id);
     }

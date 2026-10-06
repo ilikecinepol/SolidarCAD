@@ -377,6 +377,69 @@ int main(int argc, char** argv) {
     CHECK(maximumX < 1e-6);
   }
 
+  // A rectangle drawn against the top, bottom and right edges of a supported
+  // face repeats those three locked projection segments. The duplicates must
+  // collapse into one planar graph edge so the remaining inner side still
+  // splits out the narrow right-hand region.
+  {
+    solidar::Viewport coincidentBoundaryView;
+    coincidentBoundaryView.resize(800, 600);
+
+    solidar::sketch::Sketch profile;
+    profile.addRectangle({-50.0, -60.0}, {50.0, 60.0});
+    const std::size_t boundaryElement = profile.lines().front().elementId;
+    profile.setElementDashed(boundaryElement, true);
+    for (std::size_t index = 0; index < 4; ++index) {
+      solidar::sketch::Constraint lock;
+      lock.type = solidar::sketch::ConstraintType::Lock;
+      lock.firstGeometry = profile.lineId(index);
+      CHECK(profile.addConstraint(lock) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+    profile.addRectangle({20.0, -60.0}, {50.0, 60.0});
+
+    const auto body = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(-50.0, -60.0, -10.0),
+                            100.0, 120.0, 10.0)
+            .Shape());
+    coincidentBoundaryView.setBodyShape(body, 1, 1);
+    coincidentBoundaryView.setSolidVisible(true);
+
+    const auto placement = solidar::SketchPlacement::xy();
+    coincidentBoundaryView.addSketch(profile, QStringLiteral("Верхняя"),
+                                     placement);
+    const solidar::ViewportCameraState camera{
+        coincidentBoundaryView.cameraYawDegrees(),
+        coincidentBoundaryView.cameraPitchDegrees(), 1.0F, {},
+        coincidentBoundaryView.size()};
+    const QPointF insideRightRegion =
+        camera.worldToScreen(placement.toWorld(35.0, 0.0));
+
+    int picks = 0;
+    QObject::connect(&coincidentBoundaryView,
+                     &solidar::Viewport::directProfilePicked,
+                     &coincidentBoundaryView, [&](std::size_t) { ++picks; });
+    mouse(coincidentBoundaryView, QEvent::MouseButtonPress, insideRightRegion,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(picks == 1);
+    const auto& selected =
+        coincidentBoundaryView.extrusionCandidateSketch();
+    CHECK(selected.isClosed());
+    CHECK(selected.lines().size() == 4);
+    double minimumX = 1e9;
+    double maximumX = -1e9;
+    for (const auto& line : selected.lines()) {
+      CHECK(!line.dashed);
+      minimumX = std::min(minimumX,
+                          std::min(line.start.xMm, line.end.xMm));
+      maximumX = std::max(maximumX,
+                          std::max(line.start.xMm, line.end.xMm));
+    }
+    CHECK(minimumX > 19.9);
+    CHECK(maximumX < 50.1);
+  }
+
   // Revolve keeps profile picking active while it waits for an axis. This is
   // the interaction seam that lets Ctrl add a second region and then lets the
   // very next click choose an arbitrary straight sketch line as the axis.

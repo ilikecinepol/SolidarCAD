@@ -18,6 +18,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -200,6 +201,74 @@ void autoProjectionRegressionTests() {
   CHECK(projectedElements(manual) == automaticElements);
   CHECK(manual.sketch().lines().size() == initialManualLineCount);
   CHECK(!manual.canUndo());
+}
+
+void sketchFreeCameraTests() {
+  const TopoDS_Shape box = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape();
+  const auto secondBody = std::make_shared<TopoDS_Shape>(
+      BRepPrimAPI_MakeBox(gp_Pnt(55.0, 0.0, 0.0), 10.0, 12.0, 15.0)
+          .Shape());
+  solidar::SketchCanvas canvas;
+  canvas.resize(900, 650);
+  canvas.setSketchEditContext(faceContext(box, 20.0, false));
+  canvas.setSceneReferences(solidar::SketchPlacement::xy(), {secondBody}, {});
+  canvas.show();
+  QApplication::processEvents();
+
+  CHECK(canvas.viewAlignedToSketchPlane());
+  CHECK(canvas.sceneBodyCount() == 2);
+
+  const QPointF start(420.0, 310.0);
+  const QPointF finish(480.0, 350.0);
+  QMouseEvent press(QEvent::MouseButtonPress, start, Qt::MiddleButton,
+                    Qt::MiddleButton, Qt::ShiftModifier);
+  QApplication::sendEvent(&canvas, &press);
+  QMouseEvent move(QEvent::MouseMove, finish, Qt::NoButton,
+                   Qt::MiddleButton, Qt::ShiftModifier);
+  QApplication::sendEvent(&canvas, &move);
+  QMouseEvent release(QEvent::MouseButtonRelease, finish, Qt::MiddleButton,
+                      Qt::NoButton, Qt::ShiftModifier);
+  QApplication::sendEvent(&canvas, &release);
+
+  CHECK(!canvas.viewAlignedToSketchPlane());
+  CHECK(std::abs(canvas.viewYawDegrees()) > 1.0);
+  CHECK(std::abs(canvas.viewPitchDegrees()) > 1.0);
+  CHECK(!canvas.grab().isNull());
+
+  canvas.rotateViewClockwise();
+  CHECK(canvas.viewQuarterTurns() == 1);
+  canvas.resetViewRotation();
+  CHECK(canvas.viewAlignedToSketchPlane());
+  CHECK(canvas.viewQuarterTurns() == 0);
+  CHECK(std::abs(canvas.viewYawDegrees()) <= 1e-9);
+  CHECK(std::abs(canvas.viewPitchDegrees()) <= 1e-9);
+
+  // Match the ordinary 3D viewport gesture: right-button dragging orbits the
+  // Sketcher camera without requiring a keyboard modifier.
+  QMouseEvent rightPress(QEvent::MouseButtonPress, start, Qt::RightButton,
+                         Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &rightPress);
+  QMouseEvent rightMove(QEvent::MouseMove, finish, Qt::NoButton,
+                        Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &rightMove);
+  QMouseEvent rightRelease(QEvent::MouseButtonRelease, finish,
+                           Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &rightRelease);
+
+  CHECK(!canvas.viewAlignedToSketchPlane());
+  CHECK(std::abs(canvas.viewYawDegrees()) > 1.0);
+  CHECK(std::abs(canvas.viewPitchDegrees()) > 1.0);
+  canvas.resetViewRotation();
+
+  // A short right click remains a cancellation gesture and must not move the
+  // camera by itself.
+  QMouseEvent clickPress(QEvent::MouseButtonPress, start, Qt::RightButton,
+                         Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &clickPress);
+  QMouseEvent clickRelease(QEvent::MouseButtonRelease, start,
+                           Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &clickRelease);
+  CHECK(canvas.viewAlignedToSketchPlane());
 }
 
 void circularEdgeProjectionTests() {
@@ -799,6 +868,7 @@ int main(int argc, char** argv) {
   solidar::AppSettings settings(tempDir.filePath("settings.ini"));
 
   autoProjectionRegressionTests();
+  sketchFreeCameraTests();
   circularEdgeProjectionTests();
   arcBodySelectionAndDragTests();
   draggedPointSnappingTests();
@@ -810,6 +880,41 @@ int main(int argc, char** argv) {
                    &application, [&](const QString& path) {
     editor = new solidar::MainWindow(settings);
     editor->setProjectPath(path);
+    auto* orientSketchPlane = editor->findChild<QPushButton*>(
+        QStringLiteral("sketchOrientToPlaneButton"));
+    CHECK(orientSketchPlane != nullptr);
+    CHECK(orientSketchPlane->text() ==
+          QString::fromUtf8("Вернуть исходную ориентацию"));
+    auto* sketchCanvas = editor->findChild<solidar::SketchCanvas*>();
+    CHECK(sketchCanvas != nullptr);
+    auto* sketchSettingsDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("sketchSettingsDock"));
+    auto* modelTreeDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("modelTreeDock"));
+    CHECK(sketchSettingsDock != nullptr);
+    CHECK(modelTreeDock != nullptr);
+    QStackedWidget* workspace = nullptr;
+    for (auto* candidate : editor->findChildren<QStackedWidget*>()) {
+      if (candidate->indexOf(sketchCanvas) >= 0) {
+        workspace = candidate;
+        break;
+      }
+    }
+    CHECK(workspace != nullptr);
+    QWidget* modelWorkspace = workspace->currentWidget();
+    CHECK(modelWorkspace != sketchCanvas);
+    CHECK(sketchSettingsDock->isHidden());
+    CHECK(!modelTreeDock->isHidden());
+    workspace->setCurrentWidget(sketchCanvas);
+    CHECK(!sketchSettingsDock->isHidden());
+    CHECK(modelTreeDock->isHidden());
+    workspace->setCurrentWidget(modelWorkspace);
+    CHECK(sketchSettingsDock->isHidden());
+    CHECK(!modelTreeDock->isHidden());
+    sketchCanvas->setViewOrientation(37.0, -24.0);
+    CHECK(!sketchCanvas->viewAlignedToSketchPlane());
+    orientSketchPlane->click();
+    CHECK(sketchCanvas->viewAlignedToSketchPlane());
     auto* mirrorDock = editor->findChild<QDockWidget*>(
         QStringLiteral("mirrorParametersDock"));
     CHECK(mirrorDock != nullptr);

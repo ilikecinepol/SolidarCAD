@@ -267,13 +267,47 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
     for (std::size_t j = i + 1; j < source.size(); ++j) {
       const sketch::Point q = source[j].a;
       const sketch::Point s = sketchSubtract(source[j].b, source[j].a);
+      const sketch::Point qp = sketchSubtract(q, p);
       const double denominator = sketchCross(r, s);
 
-      // Collinear overlap is not a useful new region boundary here. Ordinary
-      // CAD T-junctions and crossings are handled by the non-parallel branch.
-      if (std::abs(denominator) <= 1e-12) continue;
+      if (std::abs(denominator) <= 1e-12) {
+        // A user edge may deliberately repeat part of the locked projected
+        // support boundary (for example three sides of a rectangle touching
+        // the face perimeter). Split both collinear carriers at every overlap
+        // endpoint; the identical pieces are collapsed below. Without this,
+        // duplicate half-edges hide the bounded cell from face traversal.
+        const double rLengthSquared =
+            r.xMm * r.xMm + r.yMm * r.yMm;
+        const double sLengthSquared =
+            s.xMm * s.xMm + s.yMm * s.yMm;
+        if (rLengthSquared <= 1e-12 || sLengthSquared <= 1e-12)
+          continue;
+        const double distanceFromFirst =
+            std::abs(sketchCross(qp, r)) / std::sqrt(rLengthSquared);
+        if (distanceFromFirst > 1e-7) continue;
 
-      const sketch::Point qp = sketchSubtract(q, p);
+        const auto addCutForPoint = [](SourceSegment& segment,
+                                       sketch::Point point) {
+          const double dx = segment.b.xMm - segment.a.xMm;
+          const double dy = segment.b.yMm - segment.a.yMm;
+          const double lengthSquared = dx * dx + dy * dy;
+          if (lengthSquared <= 1e-12) return;
+          const double parameter =
+              ((point.xMm - segment.a.xMm) * dx +
+               (point.yMm - segment.a.yMm) * dy) /
+              lengthSquared;
+          if (parameter < -parameterTolerance ||
+              parameter > 1.0 + parameterTolerance)
+            return;
+          segment.cuts.push_back(std::clamp(parameter, 0.0, 1.0));
+        };
+        addCutForPoint(source[i], source[j].a);
+        addCutForPoint(source[i], source[j].b);
+        addCutForPoint(source[j], source[i].a);
+        addCutForPoint(source[j], source[i].b);
+        continue;
+      }
+
       const double t = sketchCross(qp, s) / denominator;
       const double u = sketchCross(qp, r) / denominator;
       if (t < -parameterTolerance || t > 1.0 + parameterTolerance ||
@@ -335,6 +369,24 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
     const int b = vertexIndex(segment.b);
     if (a == b) continue;
     if (outgoing.size() < vertices.size()) outgoing.resize(vertices.size());
+
+    int duplicate = -1;
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(edges.size());
+         edgeIndex += 2) {
+      const auto& edge = edges[edgeIndex];
+      if ((edge.from == a && edge.to == b) ||
+          (edge.from == b && edge.to == a)) {
+        duplicate = edgeIndex;
+        break;
+      }
+    }
+    if (duplicate >= 0) {
+      const bool userGeometry =
+          edges[duplicate].userGeometry || segment.userGeometry;
+      edges[duplicate].userGeometry = userGeometry;
+      edges[edges[duplicate].twin].userGeometry = userGeometry;
+      continue;
+    }
 
     const int forward = static_cast<int>(edges.size());
     const int reverse = forward + 1;

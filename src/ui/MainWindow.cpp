@@ -1947,6 +1947,7 @@ void MainWindow::buildUi() {
 
   sketchSettingsDock_ =
       new QDockWidget(QString::fromUtf8("Свойства эскиза"), this);
+  sketchSettingsDock_->setObjectName(QStringLiteral("sketchSettingsDock"));
   sketchSettingsDock_->setAllowedAreas(Qt::RightDockWidgetArea);
   sketchSettingsDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
   auto* settingsPanel = new QWidget(sketchSettingsDock_);
@@ -1966,11 +1967,18 @@ void MainWindow::buildUi() {
   sketchLineTypeCombo_->addItem(QString::fromUtf8("Сплошная линия"));
   sketchLineTypeCombo_->addItem(QString::fromUtf8("Пунктирная линия"));
   sketchLineTypeCombo_->setEnabled(false);
+  auto* orientSketchPlane = new QPushButton(
+      QString::fromUtf8("Вернуть исходную ориентацию"), settingsPanel);
+  orientSketchPlane->setObjectName(QStringLiteral("sketchOrientToPlaneButton"));
+  orientSketchPlane->setToolTip(QString::fromUtf8(
+      "Сбросить свободный поворот и вернуть камеру перпендикулярно "
+      "исходной плоскости эскиза"));
   settingsLayout->addWidget(gridCheck);
   settingsLayout->addWidget(snapCheck);
   settingsLayout->addSpacing(8);
   settingsLayout->addWidget(lineTypeLabel);
   settingsLayout->addWidget(sketchLineTypeCombo_);
+  settingsLayout->addWidget(orientSketchPlane);
 
   auto* constraintsSection = new QFrame(settingsPanel);
   constraintsSection->setObjectName(QStringLiteral("constraintsSection"));
@@ -2098,6 +2106,8 @@ void MainWindow::buildUi() {
           &SketchCanvas::setGridVisible);
   connect(snapCheck, &QCheckBox::toggled, sketchCanvas_,
           &SketchCanvas::setSnapEnabled);
+  connect(orientSketchPlane, &QPushButton::clicked, sketchCanvas_,
+          &SketchCanvas::resetViewRotation);
   connect(sketchLineTypeCombo_, &QComboBox::currentIndexChanged, sketchCanvas_,
           [this](int index) { sketchCanvas_->setSelectedDashed(index == 1); });
   connect(circleDiameterSpin, &QDoubleSpinBox::valueChanged, sketchCanvas_,
@@ -2402,13 +2412,22 @@ void MainWindow::buildUi() {
     ribbonStack_->setCurrentWidget(workspaceStack_->widget(index) == viewport_
                                        ? static_cast<QWidget*>(modelRibbon_)
                                        : static_cast<QWidget*>(sketchRibbon_));
-    if (!sketchMode && sketchSettingsDock_) sketchSettingsDock_->hide();
+    if (sketchSettingsDock_) {
+      sketchSettingsDock_->setVisible(sketchMode);
+      if (sketchMode) sketchSettingsDock_->raise();
+    }
+    if (auto* modelTreeDock =
+            findChild<QDockWidget*>(QStringLiteral("modelTreeDock"))) {
+      modelTreeDock->setVisible(!sketchMode);
+      if (!sketchMode) modelTreeDock->raise();
+    }
     updateUndoAvailability();
   });
   workspaceStack_->setCurrentWidget(viewport_);
   ribbonStack_->setCurrentWidget(modelRibbon_);
 
   auto* modelDock = new QDockWidget(QString::fromUtf8("Дерево построений"), this);
+  modelDock->setObjectName(QStringLiteral("modelTreeDock"));
   featureTree_ = new QTreeWidget(modelDock);
   featureTree_->setHeaderHidden(true);
   featureTree_->setAlternatingRowColors(true);

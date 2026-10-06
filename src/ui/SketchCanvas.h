@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QPoint>
+#include <QPolygonF>
 #include <QRectF>
 #include <QStringList>
 #include <QWidget>
@@ -85,8 +86,13 @@ class SketchCanvas final : public QWidget {
   void redo();
   void rotateViewClockwise();
   void rotateViewCounterClockwise();
+  void orbitView(double yawDeltaDeg, double pitchDeltaDeg);
+  void setViewOrientation(double yawDeg, double pitchDeg);
   void resetViewRotation();
   [[nodiscard]] int viewQuarterTurns() const noexcept;
+  [[nodiscard]] double viewYawDegrees() const noexcept;
+  [[nodiscard]] double viewPitchDegrees() const noexcept;
+  [[nodiscard]] bool viewAlignedToSketchPlane() const noexcept;
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
   void setSketchEditContext(const SketchEditContext& context);
   void setSceneReferences(
@@ -196,6 +202,21 @@ signals:
 
   [[nodiscard]] sketch::Point rotateForView(sketch::Point point) const noexcept;
   [[nodiscard]] sketch::Point rotateFromView(sketch::Point point) const noexcept;
+  struct ProjectedLocalPoint {
+    double xMm{};
+    double yMm{};
+    double depthMm{};
+  };
+  [[nodiscard]] ProjectedLocalPoint projectLocalPoint(
+      double xMm, double yMm, double zMm) const noexcept;
+  [[nodiscard]] QPointF mapWorldPoint(Point3d point) const;
+  [[nodiscard]] double worldPointDepth(Point3d point) const noexcept;
+  [[nodiscard]] QPolygonF circlePolyline(
+      sketch::Point center, double radiusMm, double startAngleRad = 0.0,
+      double sweepAngleRad = 2.0 * 3.14159265358979323846,
+      int segmentCount = 72) const;
+  [[nodiscard]] double circleDistanceToScreenPoint(
+      const sketch::Circle& circle, QPointF point) const;
   [[nodiscard]] QRectF viewCubeBodyRect() const;
   [[nodiscard]] QRectF viewCubeLeftRect() const;
   [[nodiscard]] QRectF viewCubeRightRect() const;
@@ -314,6 +335,8 @@ signals:
   bool gridVisible_{true};
   std::optional<std::size_t> hoveredProjectionEdge_;
   int viewQuarterTurns_{0};
+  double viewYawDeg_{0.0};
+  double viewPitchDeg_{0.0};
   CircleMode circleMode_{CircleMode::CenterRadius};
   double circleDiameterMm_{20.0};
   std::vector<sketch::Point> circlePoints_;
