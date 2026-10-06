@@ -3132,8 +3132,13 @@ void MainWindow::refreshBodyViewFromDocument() {
                       std::move(shape)});
   }
   hasExtrusion_ = anyBodyShape;
+  const bool anyVisibleBodyShape = !shapes.empty();
   viewport_->setBodyShapes(std::move(shapes));
-  viewport_->setSolidVisible(anyBodyShape);
+  // Keep document occupancy and viewport visibility separate.  A hidden last
+  // Body still means the document contains Part Design geometry, but the
+  // viewport must not enable its legacy box fallback after setBodyShapes({})
+  // has cleared the B-Rep mesh.
+  viewport_->setSolidVisible(anyVisibleBodyShape);
   drawingSheet_->setDocument(document_);
   for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
     const auto* modelSketch =
@@ -5225,7 +5230,11 @@ void MainWindow::rebuildHistoryPanel() {
     button->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(button, &QToolButton::customContextMenuRequested, this,
             [this, button, step](const QPoint& point) {
-      QMenu menu(button);
+      // The history panel is rebuilt after removal. Keep the stack menu out
+      // of the button's ownership and defer mutation until both QMenu::exec()
+      // and the button's signal delivery have returned; otherwise rebuilding
+      // destroys objects that Qt is still dispatching through.
+      QMenu menu(this);
       QAction* edit = menu.addAction(QString::fromUtf8("Редактировать"));
       QAction* remove = menu.addAction(QString::fromUtf8("Удалить"));
       QAction* chosen = menu.exec(button->mapToGlobal(point));
@@ -5233,7 +5242,8 @@ void MainWindow::rebuildHistoryPanel() {
         if (step.sketchId != kInvalidSketchId) editSketchById(step.sketchId);
         else editHistoryFeature(step.bodyId, step.featureId);
       } else if (chosen == remove) {
-        removeHistoryStep(step);
+        QTimer::singleShot(0, this,
+                           [this, step] { removeHistoryStep(step); });
       }
     });
     historyLayout_->addWidget(button);
@@ -5296,6 +5306,21 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   box.button(QMessageBox::Cancel)->setText(QString::fromUtf8("Отмена"));
   if (box.exec() != QMessageBox::Yes) return;
 
+  // Tool sessions can retain topology references into features that are about
+  // to be removed. Tear them down while the current document is still valid.
+  resetTransientModelingUi();
+  filletToolSession_.cancel();
+  chamferToolSession_.cancel();
+  joinBodiesToolSession_.cancel();
+  shellToolSession_.cancel();
+  draftToolSession_.cancel();
+  faceExtrudeSession_.cancel();
+  revolveToolSession_.cancel();
+  mirrorToolSession_.cancel();
+  moveToolSession_.cancel();
+  linearPatternToolSession_.cancel();
+  circularPatternToolSession_.cancel();
+
   const Document previous = document_;
   const auto previousSketchHistory = sketchHistory_;
   std::string error;
@@ -5329,7 +5354,6 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
     }
     refreshBodyViewFromDocument(); rebuildFeatureTree(); rebuildHistoryPanel();
   });
-  partDesignTools_.cancelActive();
   viewport_->clearToolPreviewShape(); viewport_->clearToolManipulator();
   viewport_->setSelectedBodyEdges({}); viewport_->setSelectedBodyFaces({});
   toolParametersDock_->hide();

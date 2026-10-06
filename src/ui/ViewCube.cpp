@@ -75,6 +75,10 @@ bool ViewCubeHit::operator==(const ViewCubeHit& other) const {
          direction.y == other.direction.y && direction.z == other.direction.z;
 }
 ViewCubeHit ViewCubeGeometry::hitTest(QPointF point) const {
+  if (rotateCounterClockwise.contains(point))
+    return {ViewCubeZone::RotateCounterClockwise};
+  if (rotateClockwise.contains(point))
+    return {ViewCubeZone::RotateClockwise};
   if (home.contains(point)) return {ViewCubeZone::Home};
   if (fit.contains(point)) return {ViewCubeZone::Fit};
   for (auto zone : {ViewCubeZone::Corner, ViewCubeZone::Edge, ViewCubeZone::Face})
@@ -105,15 +109,22 @@ ViewCubeGeometry viewCubeGeometry(QSize size, CameraOrientation camera) {
       result.patches.push_back({polygon,{zone,onFace(face,target[u],target[v])},face});
     }
   }
+  result.rotateCounterClockwise = {center.x()-64,48,24,30};
+  result.rotateClockwise = {center.x()+40,48,24,30};
   result.home = {center.x()-30,116,26,24};
   result.fit = {center.x()+4,116,26,24};
   return result;
 }
 QString viewCubeToolTip(ViewCubeHit hit) {
+  if (hit.zone == ViewCubeZone::RotateCounterClockwise)
+    return QStringLiteral(u"Повернуть вид на 45° против часовой стрелки");
+  if (hit.zone == ViewCubeZone::RotateClockwise)
+    return QStringLiteral(u"Повернуть вид на 45° по часовой стрелке");
   if (hit.zone == ViewCubeZone::Fit) return QStringLiteral(u"Показать всё");
   if (hit.zone == ViewCubeZone::Home) return QStringLiteral(u"Основной изометрический вид");
   if (hit.zone == ViewCubeZone::Corner) return QStringLiteral(u"Изометрический вид");
-  if (hit.zone == ViewCubeZone::Edge) return QStringLiteral(u"Вид по ребру");
+  if (hit.zone == ViewCubeZone::Edge)
+    return QStringLiteral(u"Вид под 45° к основным плоскостям");
   if (hit.zone == ViewCubeZone::Face)
     for (int i=0; i<6; ++i)
       if (ViewCubeHit{ViewCubeZone::Face,normals[i]} == hit) return labels[i];
@@ -138,6 +149,11 @@ void paintViewCube(QPainter& painter, const ViewCubeGeometry& g,
   painter.setFont(font);
   for (const auto& patch : g.patches) {
     QColor base = patch.face==1 ? s.top : patch.face==3 || patch.face==5 ? s.side : s.front;
+    // Edge and corner patches are the navigation cube's physical chamfers.
+    // Keeping them visually distinct makes the 45-degree click targets
+    // discoverable instead of hiding them inside a flat face.
+    if (patch.hit.zone==ViewCubeZone::Edge) base=s.bevel;
+    if (patch.hit.zone==ViewCubeZone::Corner) base=s.bevel.darker(104);
     const bool active = isActive(patch.hit,camera);
     if (active) base=s.active;
     if (patch.hit==hover) base=s.hover;
@@ -146,15 +162,12 @@ void paintViewCube(QPainter& painter, const ViewCubeGeometry& g,
     QLinearGradient gradient(bounds.topLeft(),bounds.bottomRight());
     gradient.setColorAt(0,base.lighter(104)); gradient.setColorAt(1,base);
     painter.setBrush(gradient);
-    painter.setPen(QPen(base,0.6)); painter.drawPolygon(patch.polygon);
+    painter.setPen(QPen(patch.hit.zone==ViewCubeZone::Face ? base : s.outline,
+                        patch.hit.zone==ViewCubeZone::Face ? 0.6 : 0.75));
+    painter.drawPolygon(patch.polygon);
     if (patch.hit.zone==ViewCubeZone::Face) {
       painter.setBrush(Qt::NoBrush);
       painter.setPen(QPen(s.bevel,1)); painter.drawPolygon(patch.polygon);
-      painter.save(); painter.setClipRegion(QRegion(patch.polygon.toPolygon()),Qt::IntersectClip);
-      if (bounds.width()>24 && bounds.height()>12) {
-        painter.setPen(s.text); painter.drawText(bounds,Qt::AlignCenter,labels[patch.face]);
-      }
-      painter.restore();
     }
     if (active || patch.hit==hover || patch.hit==pressed) {
       painter.setBrush(Qt::NoBrush);
@@ -162,8 +175,54 @@ void paintViewCube(QPainter& painter, const ViewCubeGeometry& g,
       painter.drawPolygon(patch.polygon);
     }
   }
+
+  // Labels are painted once per complete visible face, after every face,
+  // chamfer and corner patch. Previously they were clipped to the small centre
+  // patch and could be overpainted by later patches while the cube rotated.
+  for (int face=0; face<6; ++face) {
+    QPainterPath facePath;
+    for (const auto& patch : g.patches) {
+      if (patch.face!=face) continue;
+      QPainterPath part;
+      part.addPolygon(patch.polygon);
+      facePath=facePath.united(part);
+    }
+    if (facePath.isEmpty()) continue;
+    const QRectF bounds=facePath.boundingRect().adjusted(2,2,-2,-2);
+    if (bounds.width()<12 || bounds.height()<8) continue;
+    QFont labelFont=font;
+    const double byWidth=bounds.width()/std::max(1.0,labels[face].size()*0.62);
+    labelFont.setPixelSize(static_cast<int>(std::clamp(
+        std::min(bounds.height()*0.32,byWidth),6.0,9.0)));
+    painter.save();
+    painter.setClipPath(facePath,Qt::IntersectClip);
+    painter.setFont(labelFont);
+    painter.setPen(s.text);
+    painter.drawText(bounds,Qt::AlignCenter|Qt::TextSingleLine,labels[face]);
+    painter.restore();
+  }
   painter.setBrush(Qt::NoBrush); painter.setPen(QPen(s.outline,1,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
   painter.drawPath(silhouette);
+  for (auto zone : {ViewCubeZone::RotateCounterClockwise,
+                    ViewCubeZone::RotateClockwise}) {
+    const ViewCubeHit hit{zone};
+    const QRectF r = zone == ViewCubeZone::RotateCounterClockwise
+                         ? g.rotateCounterClockwise
+                         : g.rotateClockwise;
+    painter.setPen(QPen(hit==hover ? s.accent : s.outline,1));
+    painter.setBrush(hit==pressed ? s.pressed : hit==hover ? s.hover : s.top);
+    painter.drawRoundedRect(r,5,5);
+    QFont arrowFont=painter.font();
+    arrowFont.setPixelSize(19);
+    arrowFont.setWeight(QFont::DemiBold);
+    painter.setFont(arrowFont);
+    painter.setPen(hit==hover || hit==pressed ? s.accent : s.text);
+    painter.drawText(r,Qt::AlignCenter,
+                     zone==ViewCubeZone::RotateCounterClockwise
+                         ? QStringLiteral(u"↶")
+                         : QStringLiteral(u"↷"));
+    painter.setFont(font);
+  }
   for (auto zone : {ViewCubeZone::Home,ViewCubeZone::Fit}) {
     const ViewCubeHit hit{zone}; const QRectF r=zone==ViewCubeZone::Home ? g.home : g.fit;
     painter.setPen(QPen(hit==hover ? s.accent : s.outline,1));

@@ -9,7 +9,9 @@
 #include <iostream>
 
 #include "model/Document.h"
+#include "model/ExtrudeFeature.h"
 #include "model/RevolveToolSession.h"
+#include "model/SketchExtrudeBuilder.h"
 #include "ui/Viewport.h"
 #include "ui/ViewportCamera.h"
 
@@ -438,6 +440,144 @@ int main(int argc, char** argv) {
     }
     CHECK(minimumX > 19.9);
     CHECK(maximumX < 50.1);
+  }
+
+  // A user Arc may close a region through more than one projected support
+  // edge. The Arc endpoint below lands on the right edge, while its other
+  // endpoint lands on a user line rooted at the bottom edge. Picking the
+  // pocket must return that exact curved loop, not the whole support face.
+  {
+    solidar::Viewport projectedArcPocketView;
+    projectedArcPocketView.resize(800, 600);
+
+    solidar::sketch::Sketch profile;
+    profile.addRectangle({-20.0, -20.0}, {20.0, 20.0});
+    const std::size_t boundaryElement = profile.lines().front().elementId;
+    profile.setElementDashed(boundaryElement, true);
+    for (std::size_t index = 0; index < 4; ++index) {
+      solidar::sketch::Constraint lock;
+      lock.type = solidar::sketch::ConstraintType::Lock;
+      lock.firstGeometry = profile.lineId(index);
+      CHECK(profile.addConstraint(lock) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+    profile.addLine({5.0, -20.0}, {5.0, -5.0});
+    profile.addArc({5.0, 10.0}, 15.0,
+                   3.14159265358979323846 * 1.5,
+                   3.14159265358979323846 * 0.5);
+
+    const auto body = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(-20.0, -20.0, -10.0), 40.0, 40.0, 10.0)
+            .Shape());
+    projectedArcPocketView.setBodyShape(body, 1, 1);
+    projectedArcPocketView.setSolidVisible(true);
+
+    const auto placement = solidar::SketchPlacement::xy();
+    projectedArcPocketView.addSketch(profile, QStringLiteral("Верхняя"),
+                                     placement);
+    const solidar::ViewportCameraState camera{
+        projectedArcPocketView.cameraYawDegrees(),
+        projectedArcPocketView.cameraPitchDegrees(), 1.0F, {},
+        projectedArcPocketView.size()};
+    const QPointF insidePocket =
+        camera.worldToScreen(placement.toWorld(10.0, -15.0));
+
+    int picks = 0;
+    QObject::connect(&projectedArcPocketView,
+                     &solidar::Viewport::directProfilePicked,
+                     &projectedArcPocketView,
+                     [&](std::size_t) { ++picks; });
+    mouse(projectedArcPocketView, QEvent::MouseButtonPress, insidePocket,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(picks == 1);
+    const auto& selected =
+        projectedArcPocketView.extrusionCandidateSketch();
+    CHECK(selected.isClosed());
+    CHECK(selected.lines().size() == 3);
+    CHECK(selected.arcs().size() == 1);
+    for (const auto& line : selected.lines()) CHECK(!line.dashed);
+
+    solidar::DocumentSketch selectedProfile;
+    selectedProfile.id = 1;
+    selectedProfile.geometry = selected;
+    selectedProfile.placement = placement;
+    std::string error;
+    CHECK(solidar::isSupportedSingleSketchProfile(selectedProfile, &error));
+    TopoDS_Shape extruded;
+    CHECK(solidar::buildExtrusionFromSketch(
+        selectedProfile, nullptr, 10.0,
+        solidar::ExtrudeOperation::NewBody, false, &extruded, nullptr,
+        &error));
+    CHECK(!extruded.IsNull());
+  }
+
+  // A complete Circle can also contribute only one analytic arc to a face
+  // region. Here the upper-right quadrant closes through a tangent user line
+  // and two locked projected support edges. Picking above the Circle must
+  // select that pocket instead of the entire support face.
+  {
+    solidar::Viewport projectedCirclePocketView;
+    projectedCirclePocketView.resize(800, 600);
+
+    solidar::sketch::Sketch profile;
+    profile.addRectangle({0.0, -20.0}, {40.0, 40.0});
+    const std::size_t boundaryElement = profile.lines().front().elementId;
+    profile.setElementDashed(boundaryElement, true);
+    for (std::size_t index = 0; index < 4; ++index) {
+      solidar::sketch::Constraint lock;
+      lock.type = solidar::sketch::ConstraintType::Lock;
+      lock.firstGeometry = profile.lineId(index);
+      CHECK(profile.addConstraint(lock) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+    profile.addCircle({0.0, 0.0}, 10.0);
+    profile.addLine({10.0, 40.0}, {10.0, 0.0});
+
+    const auto body = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(0.0, -20.0, -10.0), 40.0, 60.0, 10.0)
+            .Shape());
+    projectedCirclePocketView.setBodyShape(body, 1, 1);
+    projectedCirclePocketView.setSolidVisible(true);
+
+    const auto placement = solidar::SketchPlacement::xy();
+    projectedCirclePocketView.addSketch(profile, QStringLiteral("Верхняя"),
+                                        placement);
+    const solidar::ViewportCameraState camera{
+        projectedCirclePocketView.cameraYawDegrees(),
+        projectedCirclePocketView.cameraPitchDegrees(), 1.0F, {},
+        projectedCirclePocketView.size()};
+    const QPointF insidePocket =
+        camera.worldToScreen(placement.toWorld(5.0, 25.0));
+
+    int picks = 0;
+    QObject::connect(&projectedCirclePocketView,
+                     &solidar::Viewport::directProfilePicked,
+                     &projectedCirclePocketView,
+                     [&](std::size_t) { ++picks; });
+    mouse(projectedCirclePocketView, QEvent::MouseButtonPress, insidePocket,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(picks == 1);
+    const auto& selected =
+        projectedCirclePocketView.extrusionCandidateSketch();
+    CHECK(selected.isClosed());
+    CHECK(selected.lines().size() == 3);
+    CHECK(selected.arcs().size() == 1);
+    CHECK(selected.circles().empty());
+
+    solidar::DocumentSketch selectedProfile;
+    selectedProfile.id = 2;
+    selectedProfile.geometry = selected;
+    selectedProfile.placement = placement;
+    std::string error;
+    CHECK(solidar::isSupportedSingleSketchProfile(selectedProfile, &error));
+    TopoDS_Shape extruded;
+    CHECK(solidar::buildExtrusionFromSketch(
+        selectedProfile, nullptr, 10.0,
+        solidar::ExtrudeOperation::NewBody, false, &extruded, nullptr,
+        &error));
+    CHECK(!extruded.IsNull());
   }
 
   // Revolve keeps profile picking active while it waits for an axis. This is

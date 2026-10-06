@@ -20,7 +20,16 @@ float shortestAngleDelta(float from, float to);
 CameraOrientation interpolateOrientation(CameraOrientation from,
                                         CameraOrientation to, float progress);
 
-enum class ViewCubeZone { None, Face, Edge, Corner, Home, Fit };
+enum class ViewCubeZone {
+  None,
+  Face,
+  Edge,
+  Corner,
+  RotateCounterClockwise,
+  RotateClockwise,
+  Home,
+  Fit
+};
 struct ViewCubeHit {
   ViewCubeZone zone{ViewCubeZone::None};
   Point3d direction{};
@@ -34,7 +43,7 @@ struct ViewCubePatch {
 };
 struct ViewCubeGeometry {
   std::vector<ViewCubePatch> patches;
-  QRectF home, fit;
+  QRectF rotateCounterClockwise, rotateClockwise, home, fit;
   ViewCubeHit hitTest(QPointF point) const;
 };
 

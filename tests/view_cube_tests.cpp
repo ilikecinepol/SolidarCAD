@@ -61,12 +61,24 @@ int main(int argc, char** argv) {
   const auto geometry=viewCubeGeometry(size,iso);
   CHECK(geometry.patches.size()==27); // three visible planes, each partitioned 3x3
   CHECK(!geometry.hitTest({0,0}));
-  CHECK(!geometry.hitTest({size.width()-5.0,64}));
+  CHECK(!geometry.hitTest({size.width()-1.0,150}));
+  CHECK(geometry.hitTest(geometry.rotateCounterClockwise.center()).zone==
+        ViewCubeZone::RotateCounterClockwise);
+  CHECK(geometry.hitTest(geometry.rotateClockwise.center()).zone==
+        ViewCubeZone::RotateClockwise);
   CHECK(geometry.hitTest(geometry.home.center()).zone==ViewCubeZone::Home);
   CHECK(geometry.hitTest(geometry.fit.center()).zone==ViewCubeZone::Fit);
   for (const auto& patch : geometry.patches) {
     CHECK(geometry.hitTest(centroid(patch.polygon))==patch.hit);
+    const int nonZero = (std::abs(patch.hit.direction.x)>1e-9) +
+                        (std::abs(patch.hit.direction.y)>1e-9) +
+                        (std::abs(patch.hit.direction.z)>1e-9);
+    if (patch.hit.zone==ViewCubeZone::Edge) CHECK(nonZero==2);
+    if (patch.hit.zone==ViewCubeZone::Corner) CHECK(nonZero==3);
   }
+  CHECK(viewCubeToolTip({ViewCubeZone::Edge,{1,0,1}}).contains("45"));
+  CHECK(viewCubeToolTip({ViewCubeZone::RotateCounterClockwise}).contains("45"));
+  CHECK(viewCubeToolTip({ViewCubeZone::RotateClockwise}).contains("45"));
   // Overlap priority is explicit, independent of insertion/paint order.
   const QPolygonF area{QPointF(10,10),QPointF(50,10),QPointF(50,50),QPointF(10,50)};
   ViewCubeGeometry overlap;
@@ -125,6 +137,45 @@ int main(int argc, char** argv) {
   CHECK(std::abs(shortestAngleDelta(viewport.cameraYawDegrees(),target.yaw))<1e-5);
   CHECK(std::abs(shortestAngleDelta(viewport.cameraPitchDegrees(),target.pitch))<1e-5);
   CHECK(selections==0);
+
+  // The two curved arrows orbit the ordinary 3D camera by exactly 45 degrees
+  // while preserving its current inclination.
+  const float arrowStartYaw=viewport.cameraYawDegrees();
+  const float arrowStartPitch=viewport.cameraPitchDegrees();
+  const auto arrowGeometry=viewCubeGeometry(
+      size,{arrowStartYaw,arrowStartPitch});
+  mouse(viewport,QEvent::MouseButtonPress,
+        arrowGeometry.rotateClockwise.center(),Qt::LeftButton,Qt::LeftButton);
+  mouse(viewport,QEvent::MouseButtonRelease,
+        arrowGeometry.rotateClockwise.center(),Qt::LeftButton,Qt::NoButton);
+  CHECK(animation->state()==QAbstractAnimation::Running);
+  animation->setCurrentTime(200);
+  CHECK(std::abs(shortestAngleDelta(
+            viewport.cameraYawDegrees(),arrowStartYaw+45.0F))<1e-5);
+  CHECK(std::abs(viewport.cameraPitchDegrees()-arrowStartPitch)<1e-5);
+  CHECK(selections==0);
+
+  // A visible chamfer is also an interaction target. Its direction has two
+  // equal components, so activating it produces a 45-degree principal view.
+  const CameraOrientation afterFace{viewport.cameraYawDegrees(),
+                                    viewport.cameraPitchDegrees()};
+  const auto edgeGeometry=viewCubeGeometry(size,afterFace);
+  const auto edgeIt=std::find_if(
+      edgeGeometry.patches.begin(),edgeGeometry.patches.end(),
+      [](const ViewCubePatch& patch) {
+        return patch.hit.zone==ViewCubeZone::Edge;
+      });
+  CHECK(edgeIt!=edgeGeometry.patches.end());
+  const auto edgePoint=centroid(edgeIt->polygon);
+  mouse(viewport,QEvent::MouseButtonPress,edgePoint,Qt::LeftButton,Qt::LeftButton);
+  mouse(viewport,QEvent::MouseButtonRelease,edgePoint,Qt::LeftButton,Qt::NoButton);
+  CHECK(animation->state()==QAbstractAnimation::Running);
+  const auto edgeTarget=orientationForDirection(edgeIt->hit.direction);
+  animation->setCurrentTime(200);
+  CHECK(std::abs(shortestAngleDelta(viewport.cameraYawDegrees(),edgeTarget.yaw))<1e-5);
+  CHECK(std::abs(shortestAngleDelta(viewport.cameraPitchDegrees(),edgeTarget.pitch))<1e-5);
+  CHECK(selections==0);
+
   // Home survives removal of Ribbon ISO and animates back to the legacy ISO.
   mouse(viewport,QEvent::MouseButtonPress,geometry.home.center(),Qt::LeftButton,Qt::LeftButton);
   mouse(viewport,QEvent::MouseButtonRelease,geometry.home.center(),Qt::LeftButton,Qt::NoButton);

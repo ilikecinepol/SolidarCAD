@@ -13,6 +13,7 @@
 #include "sketch/Sketch.h"
 #include "model/Document.h"
 #include "ui/BodyRenderMesh.h"
+#include "ui/ViewCube.h"
 
 class QKeyEvent;
 class QMouseEvent;
@@ -20,6 +21,7 @@ class QPaintEvent;
 class QWheelEvent;
 class QDoubleSpinBox;
 class QEvent;
+class QVariantAnimation;
 
 namespace solidar {
 
@@ -90,6 +92,7 @@ class SketchCanvas final : public QWidget {
   void setViewOrientation(double yawDeg, double pitchDeg);
   void resetViewRotation();
   [[nodiscard]] int viewQuarterTurns() const noexcept;
+  [[nodiscard]] double viewRotationDegrees() const noexcept;
   [[nodiscard]] double viewYawDegrees() const noexcept;
   [[nodiscard]] double viewPitchDegrees() const noexcept;
   [[nodiscard]] bool viewAlignedToSketchPlane() const noexcept;
@@ -217,9 +220,10 @@ signals:
       int segmentCount = 72) const;
   [[nodiscard]] double circleDistanceToScreenPoint(
       const sketch::Circle& circle, QPointF point) const;
-  [[nodiscard]] QRectF viewCubeBodyRect() const;
-  [[nodiscard]] QRectF viewCubeLeftRect() const;
-  [[nodiscard]] QRectF viewCubeRightRect() const;
+  [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
+  void animateViewToDirection(Point3d direction);
+  void animateViewRotationBy(double deltaDeg);
+  void clearViewCubeHover();
   [[nodiscard]] QPointF mapPoint(sketch::Point point) const;
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
   [[nodiscard]] double arcDistanceToScreenPoint(
@@ -334,9 +338,12 @@ signals:
   bool snapEnabled_{false};
   bool gridVisible_{true};
   std::optional<std::size_t> hoveredProjectionEdge_;
-  int viewQuarterTurns_{0};
+  double viewRotationDeg_{0.0};
   double viewYawDeg_{0.0};
   double viewPitchDeg_{0.0};
+  QVariantAnimation* viewCubeAnimation_{nullptr};
+  ViewCubeHit cubeHover_;
+  ViewCubeHit cubePressed_;
   CircleMode circleMode_{CircleMode::CenterRadius};
   double circleDiameterMm_{20.0};
   std::vector<sketch::Point> circlePoints_;

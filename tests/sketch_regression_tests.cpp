@@ -3,6 +3,7 @@
 #include "sketch/SketchSolver.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -493,6 +494,513 @@ void parallelLineDistanceKeepsRectangleRigid() {
            "line-to-rectangle distance must not deform rectangle");
 }
 
+void dimensionAndPerpendicularWorkAgainstProjectedCarriers() {
+  Sketch sketch;
+  sketch.addLine({-40.0, -20.0}, {40.0, -20.0});
+  sketch.addCircle({0.0, 0.0}, 10.0);
+  sketch.addLine({-10.0, 0.0}, {-8.0, -20.0});
+  const GeometryId projectionLine = sketch.lineId(0);
+  const GeometryId projectionCircle = sketch.circleId(0);
+  const GeometryId activeLine = sketch.lineId(1);
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projectionLine)) !=
+             kInvalidConstraintId,
+         "projected line must be lockable");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projectionCircle)) !=
+             kInvalidConstraintId,
+         "projected circle must be lockable");
+
+  Constraint startOnCircle;
+  startOnCircle.type = ConstraintType::PointOnCircle;
+  startOnCircle.firstGeometry = projectionCircle;
+  startOnCircle.secondPoint = {activeLine, true};
+  expect(sketch.addConstraint(startOnCircle) != kInvalidConstraintId,
+         "new-line start must attach to projected circle");
+
+  Constraint endOnProjection;
+  endOnProjection.type = ConstraintType::PointOnLine;
+  endOnProjection.firstGeometry = projectionLine;
+  endOnProjection.secondPoint = {activeLine, false};
+  expect(sketch.addConstraint(endOnProjection) != kInvalidConstraintId,
+         "new-line end must attach to projected line");
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Length, activeLine,
+                                kInvalidGeometryId, 25.0)) !=
+             kInvalidConstraintId,
+         "line length must be applicable between projected carriers");
+  const auto perpendicularId = sketch.addConstraint(
+      geometryConstraint(ConstraintType::Perpendicular,
+                         projectionLine, activeLine));
+  expect(perpendicularId != kInvalidConstraintId,
+         "line must become perpendicular to projected carrier");
+
+  const auto& result = sketch.lines()[*sketch.lineIndex(activeLine)];
+  expect(near(length(result), 25.0, 1e-4),
+         "projected-carrier line must retain requested 25 mm length");
+  expect(near(angleDegrees(sketch.lines()[*sketch.lineIndex(projectionLine)],
+                           result),
+              90.0, 1e-3),
+         "projected-carrier line must remain perpendicular");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "projected-carrier constraint system must be satisfied");
+}
+
+void dimensionAndTangencyWorkAfterPerpendicularProjection() {
+  Sketch sketch;
+  sketch.addLine({-40.0, -35.0}, {40.0, -35.0});
+  sketch.addCircle({0.0, 0.0}, 10.0);
+  sketch.addLine({-8.0, -35.0}, {-8.0, -6.0});
+  const GeometryId projectionLine = sketch.lineId(0);
+  const GeometryId projectionCircle = sketch.circleId(0);
+  const GeometryId activeLine = sketch.lineId(1);
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projectionLine)) !=
+             kInvalidConstraintId,
+         "lower projection must be lockable");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projectionCircle)) !=
+             kInvalidConstraintId,
+         "projected circle must be lockable");
+
+  Constraint startOnProjection;
+  startOnProjection.type = ConstraintType::PointOnLine;
+  startOnProjection.firstGeometry = projectionLine;
+  startOnProjection.secondPoint = {activeLine, true};
+  expect(sketch.addConstraint(startOnProjection) != kInvalidConstraintId,
+         "line start must attach to the lower projection");
+
+  Constraint endOnCircle;
+  endOnCircle.type = ConstraintType::PointOnCircle;
+  endOnCircle.firstGeometry = projectionCircle;
+  endOnCircle.secondPoint = {activeLine, false};
+  expect(sketch.addConstraint(endOnCircle) != kInvalidConstraintId,
+         "line end must attach to the projected circle");
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Perpendicular,
+                                projectionLine, activeLine)) !=
+             kInvalidConstraintId,
+         "perpendicularity must be accepted before the size");
+  Constraint directSize;
+  directSize.type = ConstraintType::Distance;
+  directSize.firstPoint = {activeLine, true};
+  directSize.secondPoint = {activeLine, false};
+  directSize.value = 25.0;
+  expect(sketch.addConstraint(directSize) != kInvalidConstraintId,
+         "25 mm size must slide the perpendicular line to a valid solution");
+
+  const auto& result = sketch.lines()[*sketch.lineIndex(activeLine)];
+  const auto& circle = sketch.circles()[*sketch.circleIndex(projectionCircle)];
+  expect(near(length(result), 25.0, 1e-4),
+         "projected line must retain the requested 25 mm length");
+  expect(near(result.end.xMm, circle.center.xMm, 1e-4) &&
+             near(result.end.yMm,
+                  circle.center.yMm - circle.radiusMm, 1e-4),
+         "sized perpendicular line must slide to the circle intersection");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "dimension/perpendicular projection chain must converge");
+
+  Sketch tangentSketch;
+  tangentSketch.addLine({-40.0, -35.0}, {40.0, -35.0});
+  tangentSketch.addCircle({0.0, 0.0}, 10.0);
+  tangentSketch.addLine({-8.0, -35.0}, {-8.0, -6.0});
+  const GeometryId tangentProjection = tangentSketch.lineId(0);
+  const GeometryId tangentCircle = tangentSketch.circleId(0);
+  const GeometryId tangentLine = tangentSketch.lineId(1);
+  expect(tangentSketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock,
+                                tangentProjection)) != kInvalidConstraintId,
+         "tangent lower projection must be lockable");
+  expect(tangentSketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock,
+                                tangentCircle)) != kInvalidConstraintId,
+         "tangent projected circle must be lockable");
+  startOnProjection.firstGeometry = tangentProjection;
+  startOnProjection.secondPoint = {tangentLine, true};
+  expect(tangentSketch.addConstraint(startOnProjection) !=
+             kInvalidConstraintId,
+         "tangent line start must attach to the lower projection");
+  endOnCircle.firstGeometry = tangentCircle;
+  endOnCircle.secondPoint = {tangentLine, false};
+  expect(tangentSketch.addConstraint(endOnCircle) != kInvalidConstraintId,
+         "tangent line end must attach to the projected circle");
+  expect(tangentSketch.addConstraint(
+             geometryConstraint(ConstraintType::Perpendicular,
+                                tangentProjection, tangentLine)) !=
+             kInvalidConstraintId,
+         "tangent line must remain perpendicular to the projection");
+  expect(tangentSketch.addConstraint(
+             geometryConstraint(ConstraintType::Tangent, tangentLine,
+                                tangentCircle)) != kInvalidConstraintId,
+         "free line must become tangent to a locked projected circle");
+  const auto& tangentResult =
+      tangentSketch.lines()[*tangentSketch.lineIndex(tangentLine)];
+  expect(near(std::abs(tangentResult.start.xMm), 10.0, 1e-4) &&
+             near(tangentResult.end.yMm, 0.0, 1e-4),
+         "line must slide to the finite tangent contact");
+  expect(!analyzeConstraintSystem(tangentSketch).conflicting,
+         "perpendicular/tangent projection chain must converge");
+}
+
+void tangentPerpendicularLengthAreOrderIndependent() {
+  enum class Requested { Tangent, Perpendicular, Length };
+  const std::array<std::array<Requested, 3>, 6> orders{{
+      {Requested::Tangent, Requested::Perpendicular, Requested::Length},
+      {Requested::Tangent, Requested::Length, Requested::Perpendicular},
+      {Requested::Perpendicular, Requested::Tangent, Requested::Length},
+      {Requested::Perpendicular, Requested::Length, Requested::Tangent},
+      {Requested::Length, Requested::Tangent, Requested::Perpendicular},
+      {Requested::Length, Requested::Perpendicular, Requested::Tangent},
+  }};
+
+  for (std::size_t orderIndex = 0; orderIndex < orders.size(); ++orderIndex) {
+    const auto& order = orders[orderIndex];
+    Sketch sketch;
+    sketch.addLine({-40.0, -25.0}, {40.0, -25.0});
+    sketch.addCircle({0.0, 0.0}, 10.0);
+    sketch.addLine({-8.0, -25.0}, {-8.0, -6.0});
+    const GeometryId projection = sketch.lineId(0);
+    const GeometryId circle = sketch.circleId(0);
+    const GeometryId line = sketch.lineId(1);
+
+    expect(sketch.addConstraint(
+               geometryConstraint(ConstraintType::Lock, projection)) !=
+               kInvalidConstraintId,
+           "order-independent lower projection must be lockable");
+    expect(sketch.addConstraint(
+               geometryConstraint(ConstraintType::Lock, circle)) !=
+               kInvalidConstraintId,
+           "order-independent circle must be lockable");
+    Constraint pointOnLine;
+    pointOnLine.type = ConstraintType::PointOnLine;
+    pointOnLine.firstGeometry = projection;
+    pointOnLine.secondPoint = {line, true};
+    expect(sketch.addConstraint(pointOnLine) != kInvalidConstraintId,
+           "order-independent line start must attach to projection");
+    Constraint pointOnCircle;
+    pointOnCircle.type = ConstraintType::PointOnCircle;
+    pointOnCircle.firstGeometry = circle;
+    pointOnCircle.secondPoint = {line, false};
+    expect(sketch.addConstraint(pointOnCircle) != kInvalidConstraintId,
+           "order-independent line end must attach to circle");
+
+    for (std::size_t step = 0; step < order.size(); ++step) {
+      const auto requested = order[step];
+      Constraint constraint;
+      if (requested == Requested::Tangent) {
+        constraint = geometryConstraint(ConstraintType::Tangent,
+                                        line, circle);
+      } else if (requested == Requested::Perpendicular) {
+        constraint = geometryConstraint(ConstraintType::Perpendicular,
+                                        projection, line);
+      } else {
+        constraint.type = ConstraintType::Distance;
+        constraint.firstPoint = {line, true};
+        constraint.secondPoint = {line, false};
+        constraint.value = 25.0;
+      }
+      if (sketch.addConstraint(constraint) == kInvalidConstraintId) {
+        std::cerr << "failed combined-constraint order " << orderIndex
+                  << " at step " << step << '\n';
+        fail("tangent/perpendicular/length must not depend on click order");
+      }
+    }
+
+    const auto& result = sketch.lines()[*sketch.lineIndex(line)];
+    expect(near(length(result), 25.0, 1e-4),
+           "order-independent tangent line must be 25 mm long");
+    expect(near(angleDegrees(sketch.lines()[*sketch.lineIndex(projection)],
+                             result),
+                90.0, 1e-3),
+           "order-independent tangent line must be perpendicular");
+    expect(near(std::abs(result.start.xMm), 10.0, 1e-4) &&
+               near(result.end.yMm, 0.0, 1e-4),
+           "order-independent line must touch the circle tangentially");
+    expect(!analyzeConstraintSystem(sketch).conflicting,
+           "combined tangent/perpendicular/length system must converge");
+  }
+}
+
+void tangentAngleDimensionAndLengthConvergeTogether() {
+  Sketch sketch;
+  sketch.addLine({-40.0, -25.0}, {40.0, -25.0});
+  sketch.addCircle({0.0, 0.0}, 10.0);
+  sketch.addLine({-8.0, -25.0}, {-8.0, -6.0});
+  const GeometryId projection = sketch.lineId(0);
+  const GeometryId circle = sketch.circleId(0);
+  const GeometryId line = sketch.lineId(1);
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projection)) !=
+             kInvalidConstraintId,
+         "angle-dimension lower projection must be lockable");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, circle)) !=
+             kInvalidConstraintId,
+         "angle-dimension circle must be lockable");
+  Constraint pointOnLine;
+  pointOnLine.type = ConstraintType::PointOnLine;
+  pointOnLine.firstGeometry = projection;
+  pointOnLine.secondPoint = {line, true};
+  expect(sketch.addConstraint(pointOnLine) != kInvalidConstraintId,
+         "angle-dimension line start must attach to projection");
+  Constraint pointOnCircle;
+  pointOnCircle.type = ConstraintType::PointOnCircle;
+  pointOnCircle.firstGeometry = circle;
+  pointOnCircle.secondPoint = {line, false};
+  expect(sketch.addConstraint(pointOnCircle) != kInvalidConstraintId,
+         "angle-dimension line end must attach to circle");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Tangent, line, circle)) !=
+             kInvalidConstraintId,
+         "tangency must be accepted before the 90 degree dimension");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Angle, projection, line,
+                                90.0)) != kInvalidConstraintId,
+         "90 degree angle dimension must preserve tangency");
+
+  Constraint size;
+  size.type = ConstraintType::Distance;
+  size.firstPoint = {line, true};
+  size.secondPoint = {line, false};
+  size.value = 25.0;
+  expect(sketch.addConstraint(size) != kInvalidConstraintId,
+         "25 mm dimension must preserve angle and tangency");
+
+  const auto& result = sketch.lines()[*sketch.lineIndex(line)];
+  expect(near(length(result), 25.0, 1e-4),
+         "angle-dimension tangent line must be 25 mm");
+  expect(near(angleDegrees(sketch.lines()[*sketch.lineIndex(projection)],
+                           result),
+              90.0, 1e-3),
+         "angle dimension must remain 90 degrees");
+  expect(near(std::abs(result.start.xMm), 10.0, 1e-4) &&
+             near(result.end.yMm, 0.0, 1e-4),
+         "angle-dimension line must remain tangent");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "tangent/angle/length system must converge");
+}
+
+void tangencyFollowsDraggedLineWhenCircleCenterIsAxisConstrained() {
+  Sketch sketch;
+  sketch.addLine({-50.0, -25.0}, {20.0, -25.0});
+  sketch.addCircle({0.0, 0.0}, 10.0);
+  sketch.addLine({-20.0, -25.0}, {-8.0, -6.0});
+  const GeometryId projection = sketch.lineId(0);
+  const GeometryId circle = sketch.circleId(0);
+  const GeometryId line = sketch.lineId(1);
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projection)) !=
+             kInvalidConstraintId,
+         "drag-tangent projection must be lockable");
+  Constraint centerOnYAxis;
+  centerOnYAxis.type = ConstraintType::PointOnYAxis;
+  centerOnYAxis.secondPoint.circleId = circle;
+  expect(sketch.addConstraint(centerOnYAxis) != kInvalidConstraintId,
+         "circle center must attach to the Y axis");
+  Constraint baseOnProjection;
+  baseOnProjection.type = ConstraintType::PointOnLine;
+  baseOnProjection.firstGeometry = projection;
+  baseOnProjection.secondPoint = {line, true};
+  expect(sketch.addConstraint(baseOnProjection) != kInvalidConstraintId,
+         "tangent base must attach to the lower projection");
+  Constraint endOnCircle;
+  endOnCircle.type = ConstraintType::PointOnCircle;
+  endOnCircle.firstGeometry = circle;
+  endOnCircle.secondPoint = {line, false};
+  expect(sketch.addConstraint(endOnCircle) != kInvalidConstraintId,
+         "tangent endpoint must attach to the circle");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Tangent, line, circle)) !=
+             kInvalidConstraintId,
+         "axis-constrained circle must accept line tangency");
+
+  expect(sketch.translatePoint({line, true}, -10.0, 0.0),
+         "tangent line base must remain draggable");
+  const auto solved = BasicSketchSolver::solveStable(sketch);
+  expect(solved.converged,
+         "tangency must reconverge after dragging the line base");
+  const auto& result = sketch.lines()[*sketch.lineIndex(line)];
+  const auto& resultCircle = sketch.circles()[*sketch.circleIndex(circle)];
+  const double dx = result.end.xMm - result.start.xMm;
+  const double dy = result.end.yMm - result.start.yMm;
+  const double lineLengthSquared = dx * dx + dy * dy;
+  const double t = std::clamp(
+      ((resultCircle.center.xMm - result.start.xMm) * dx +
+       (resultCircle.center.yMm - result.start.yMm) * dy) /
+          lineLengthSquared,
+      0.0, 1.0);
+  const Point contact{result.start.xMm + dx * t,
+                      result.start.yMm + dy * t};
+  expect(near(std::hypot(contact.xMm - resultCircle.center.xMm,
+                         contact.yMm - resultCircle.center.yMm),
+              resultCircle.radiusMm, 1e-4),
+         "dragged line must have exactly one tangent contact");
+  expect(near(result.start.yMm, -25.0, 1e-4),
+         "dragged base must remain on the projected line");
+  expect(near(resultCircle.center.xMm, 0.0, 1e-6),
+         "tangency must not move a circle center constrained to the Y axis");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "dragged tangent system must remain fully satisfied");
+}
+
+void lengthUsesRemainingAxisDegreeOfFreedomAfterTangency() {
+  Sketch sketch;
+  sketch.addLine({-50.0, -25.0}, {20.0, -25.0});
+  sketch.addLine({0.0, -50.0}, {0.0, 50.0});
+  sketch.addCircle({0.0, 8.0}, 10.0);
+  sketch.addLine({-10.0, -25.0}, {-10.0, 8.0});
+  const GeometryId projection = sketch.lineId(0);
+  const GeometryId verticalProjection = sketch.lineId(1);
+  const GeometryId circle = sketch.circleId(0);
+  const GeometryId line = sketch.lineId(2);
+
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock, projection)) !=
+             kInvalidConstraintId,
+         "dimension carrier must be lockable");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Lock,
+                                verticalProjection)) != kInvalidConstraintId,
+         "vertical center projection must be lockable");
+  Constraint centerOnProjection;
+  centerOnProjection.type = ConstraintType::PointOnLine;
+  centerOnProjection.firstGeometry = verticalProjection;
+  centerOnProjection.secondPoint.circleId = circle;
+  expect(sketch.addConstraint(centerOnProjection) != kInvalidConstraintId,
+         "circle center must retain projected-line membership");
+  Constraint centerOnYAxis;
+  centerOnYAxis.type = ConstraintType::PointOnYAxis;
+  centerOnYAxis.secondPoint.circleId = circle;
+  expect(sketch.addConstraint(centerOnYAxis) != kInvalidConstraintId,
+         "dimension circle center must retain one free axis direction");
+  Constraint baseOnProjection;
+  baseOnProjection.type = ConstraintType::PointOnLine;
+  baseOnProjection.firstGeometry = projection;
+  baseOnProjection.secondPoint = {line, true};
+  expect(sketch.addConstraint(baseOnProjection) != kInvalidConstraintId,
+         "dimension line base must attach to projection");
+  Constraint endOnCircle;
+  endOnCircle.type = ConstraintType::PointOnCircle;
+  endOnCircle.firstGeometry = circle;
+  endOnCircle.secondPoint = {line, false};
+  expect(sketch.addConstraint(endOnCircle) != kInvalidConstraintId,
+         "dimension line endpoint must attach to circle");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Tangent, line, circle)) !=
+             kInvalidConstraintId,
+         "tangency must be preserved before adding a size");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Perpendicular,
+                                projection, line)) != kInvalidConstraintId,
+         "perpendicularity must be preserved before adding a size");
+  const auto beforeSize = analyzeConstraintSystem(sketch);
+  expect(!beforeSize.conflicting && !beforeSize.fullyConstrained &&
+             beforeSize.degreesOfFreedom > 0,
+         "tangent and perpendicular must not falsely report a fully "
+         "determined element while axis motion remains");
+  expect(sketch.addConstraint(
+             geometryConstraint(ConstraintType::Length, line,
+                                kInvalidGeometryId, 25.0)) !=
+             kInvalidConstraintId,
+         "25 mm size must use the circle center's remaining axis freedom");
+
+  const auto& result = sketch.lines()[*sketch.lineIndex(line)];
+  const auto& resultCircle = sketch.circles()[*sketch.circleIndex(circle)];
+  expect(near(length(result), 25.0, 1e-4),
+         "sized tangent line must be 25 mm long");
+  expect(near(resultCircle.center.xMm, 0.0, 1e-7),
+         "sizing must preserve the circle center on the Y axis");
+  expect(near(resultCircle.center.yMm, 0.0, 1e-4),
+         "sizing must move the circle only along its remaining axis freedom");
+  expect(near(angleDegrees(sketch.lines()[*sketch.lineIndex(projection)],
+                           result),
+              90.0, 1e-4),
+         "sizing must preserve perpendicularity");
+  expect(!analyzeConstraintSystem(sketch).conflicting,
+         "tangent/perpendicular/length system must remain satisfied");
+
+  // The same chain must be direction-independent. This is the orientation
+  // produced when the user starts the line on the upper projected face edge
+  // and finishes it at the Circle's right-hand tangent point.
+  Sketch reversed;
+  reversed.addLine({-50.0, 40.0}, {50.0, 40.0});
+  reversed.addLine({0.0, -50.0}, {0.0, 50.0});
+  reversed.addCircle({0.0, 0.0}, 10.0);
+  reversed.addLine({10.0, 40.0}, {10.0, 0.0});
+  const GeometryId reversedProjection = reversed.lineId(0);
+  const GeometryId reversedVerticalProjection = reversed.lineId(1);
+  const GeometryId reversedCircle = reversed.circleId(0);
+  const GeometryId reversedLine = reversed.lineId(2);
+
+  expect(reversed.addConstraint(
+             geometryConstraint(ConstraintType::Lock,
+                                reversedProjection)) != kInvalidConstraintId,
+         "upper dimension carrier must be lockable");
+  expect(reversed.addConstraint(
+             geometryConstraint(ConstraintType::Lock,
+                                reversedVerticalProjection)) !=
+             kInvalidConstraintId,
+         "reversed center projection must be lockable");
+  Constraint reversedCenterOnProjection;
+  reversedCenterOnProjection.type = ConstraintType::PointOnLine;
+  reversedCenterOnProjection.firstGeometry = reversedVerticalProjection;
+  reversedCenterOnProjection.secondPoint.circleId = reversedCircle;
+  expect(reversed.addConstraint(reversedCenterOnProjection) !=
+             kInvalidConstraintId,
+         "reversed circle center must remain on the vertical projection");
+  Constraint reversedCenterOnYAxis;
+  reversedCenterOnYAxis.type = ConstraintType::PointOnYAxis;
+  reversedCenterOnYAxis.secondPoint.circleId = reversedCircle;
+  expect(reversed.addConstraint(reversedCenterOnYAxis) !=
+             kInvalidConstraintId,
+         "reversed circle center must retain its datum-axis relation");
+  Constraint reversedBaseOnProjection;
+  reversedBaseOnProjection.type = ConstraintType::PointOnLine;
+  reversedBaseOnProjection.firstGeometry = reversedProjection;
+  reversedBaseOnProjection.secondPoint = {reversedLine, true};
+  expect(reversed.addConstraint(reversedBaseOnProjection) !=
+             kInvalidConstraintId,
+         "reversed line start must attach to the upper projection");
+  Constraint reversedEndOnCircle;
+  reversedEndOnCircle.type = ConstraintType::PointOnCircle;
+  reversedEndOnCircle.firstGeometry = reversedCircle;
+  reversedEndOnCircle.secondPoint = {reversedLine, false};
+  expect(reversed.addConstraint(reversedEndOnCircle) != kInvalidConstraintId,
+         "reversed line end must attach to the circle");
+  expect(reversed.addConstraint(
+             geometryConstraint(ConstraintType::Tangent, reversedLine,
+                                reversedCircle)) != kInvalidConstraintId,
+         "reversed line must become tangent");
+  expect(reversed.addConstraint(
+             geometryConstraint(ConstraintType::Perpendicular,
+                                reversedProjection, reversedLine)) !=
+             kInvalidConstraintId,
+         "reversed tangent line must remain perpendicular");
+  expect(reversed.addConstraint(
+             geometryConstraint(ConstraintType::Length, reversedLine,
+                                kInvalidGeometryId, 25.0)) !=
+             kInvalidConstraintId,
+         "reversed tangent line must accept a 25 mm size");
+
+  const auto& reversedResult =
+      reversed.lines()[*reversed.lineIndex(reversedLine)];
+  const auto& reversedResultCircle =
+      reversed.circles()[*reversed.circleIndex(reversedCircle)];
+  expect(near(length(reversedResult), 25.0, 1e-4),
+         "reversed tangent line must retain its requested size");
+  expect(near(reversedResultCircle.center.xMm, 0.0, 1e-7) &&
+             near(reversedResultCircle.center.yMm, 15.0, 1e-4),
+         "reversed sizing must move the circle along its free datum axis");
+  expect(!analyzeConstraintSystem(reversed).conflicting,
+         "reversed tangent/perpendicular/length system must remain satisfied");
+}
+
 }  // namespace
 
 int main() {
@@ -508,5 +1016,11 @@ int main() {
   pointOnCircleSurvivesFurtherSketchEdits();
   deletionStressHasNoDanglingReferenceCrash();
   parallelLineDistanceKeepsRectangleRigid();
+  dimensionAndPerpendicularWorkAgainstProjectedCarriers();
+  dimensionAndTangencyWorkAfterPerpendicularProjection();
+  tangentAngleDimensionAndLengthConvergeTogether();
+  tangentPerpendicularLengthAreOrderIndependent();
+  tangencyFollowsDraggedLineWhenCircleCenterIsAxisConstrained();
+  lengthUsesRemainingAxisDegreeOfFreedomAfterTangency();
   return EXIT_SUCCESS;
 }

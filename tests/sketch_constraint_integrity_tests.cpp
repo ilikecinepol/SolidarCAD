@@ -176,11 +176,52 @@ void dofUsesConstraintRank() {
       "length removes one more independent DOF");
 }
 
+void incompatibleDatumAxisDoesNotReenterSolver() {
+  Sketch sketch;
+  sketch.addLine(
+      {10.0, 0.0},
+      {30.0, 0.0});
+
+  const PointReference start{
+      sketch.lineId(0), true};
+
+  // Explicit IDs model project loading, where legacy or hand-edited files
+  // remain permissive and conflicting constraints are diagnosed instead of
+  // transactionally rejected.
+  Constraint onYAxis;
+  onYAxis.id = 1;
+  onYAxis.type = ConstraintType::PointOnYAxis;
+  onYAxis.secondPoint = start;
+  require(
+      sketch.addConstraint(onYAxis) == 1,
+      "explicit Y-axis constraint must load");
+
+  Constraint distanceFromYAxis;
+  distanceFromYAxis.id = 2;
+  distanceFromYAxis.type = ConstraintType::DistanceX;
+  distanceFromYAxis.firstPoint.origin = true;
+  distanceFromYAxis.secondPoint = start;
+  distanceFromYAxis.value = 10.0;
+  require(
+      sketch.addConstraint(distanceFromYAxis) == 2,
+      "conflicting explicit axis distance must load without recursion");
+
+  const auto solved =
+      BasicSketchSolver::solveStable(sketch);
+  require(
+      !solved.converged,
+      "incompatible datum constraints must be reported as conflicting");
+  require(
+      solved.violatedConstraints > 0,
+      "incompatible datum constraints must retain a diagnostic");
+}
+
 }  // namespace
 
 int main() {
   transactionalConstraintDoesNotBreakOldOne();
   pointOnLineSurvivesLaterDimension();
   dofUsesConstraintRank();
+  incompatibleDatumAxisDoesNotReenterSolver();
   return EXIT_SUCCESS;
 }

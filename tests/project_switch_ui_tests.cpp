@@ -5,11 +5,14 @@
 #include <QDockWidget>
 #include <QDir>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 
 #include <cstdlib>
 #include <iostream>
@@ -135,6 +138,19 @@ class MainWindowUndoTestAccess {
   static ShapeFeature::ShapePtr displayedBodyShape(const MainWindow& window) {
     return window.viewport_->bodyShape_;
   }
+  static bool viewportSolidVisible(const MainWindow& window) {
+    return window.viewport_->solidVisible_;
+  }
+  static bool setFirstBodyVisible(MainWindow& window, bool visible) {
+    const auto items = window.featureTree_->findItems(
+        QStringLiteral("*"), Qt::MatchWildcard | Qt::MatchRecursive);
+    for (QTreeWidgetItem* item : items) {
+      if (item->data(0, Qt::UserRole).toInt() != 3) continue;
+      item->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+      return true;
+    }
+    return false;
+  }
   static bool viewportHasToolPreview(const MainWindow& window) {
     return (window.viewport_->toolPreviewShape_ &&
             !window.viewport_->toolPreviewShape_->IsNull()) ||
@@ -195,12 +211,30 @@ int main(int argc, char** argv) {
   const QString pathA = directory.filePath(QStringLiteral("a.solidar"));
   const QString pathB = directory.filePath(QStringLiteral("b.solidar"));
   CHECK(solidar::project::ProjectFile::create(pathB, &error));
+  solidar::AppSettings settings(
+      directory.filePath(QStringLiteral("settings.ini")));
+
+  // Hiding the final visible Body clears the B-Rep display. It must also turn
+  // off the legacy solid fallback; otherwise the viewport draws a stale box
+  // with the previous body's dimensions even though no visible Body exists.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::MainWindow visibilityEditor(settings);
+    CHECK(visibilityEditor.loadProject(pathA, &error));
+    CHECK(Access::displayedBodyShape(visibilityEditor));
+    CHECK(Access::viewportSolidVisible(visibilityEditor));
+    CHECK(Access::setFirstBodyVisible(visibilityEditor, false));
+    CHECK(!Access::displayedBodyShape(visibilityEditor));
+    CHECK(!Access::viewportSolidVisible(visibilityEditor));
+    CHECK(Access::setFirstBodyVisible(visibilityEditor, true));
+    CHECK(Access::displayedBodyShape(visibilityEditor));
+    CHECK(Access::viewportSolidVisible(visibilityEditor));
+  }
 
   // Headless document replacement: repeated loadProject drives the full
   // teardown path (PartDesignToolController cancelActive, session cancel,
   // resetScene, history rebuild). No file dialogs, no OpenGL surface, no
   // platform-specific code.
-  solidar::AppSettings settings(directory.filePath(QStringLiteral("settings.ini")));
   solidar::MainWindow editor(settings);
   for (int cycle = 0; cycle < 6; ++cycle) {
     CHECK(editor.loadProject(pathA, &error));
@@ -517,6 +551,52 @@ int main(int argc, char** argv) {
     CHECK(solidar::test::near(
         solidar::test::volumeOf(*Access::bodyShape(directEditor)), cutVolume,
         1e-4));
+
+    // Deleting a step through its real context menu must let the menu and the
+    // originating button finish their event handlers before rebuilding the
+    // timeline. Rebuilding synchronously used to destroy both objects while
+    // QMenu::exec() and customContextMenuRequested were still on the stack.
+    const auto historyButtons =
+        directEditor.findChildren<QToolButton*>(QStringLiteral("historyStep"));
+    QToolButton* featureButton = nullptr;
+    for (QToolButton* button : historyButtons)
+      if (button->property("featureId").toULongLong() !=
+          solidar::kInvalidFeatureId)
+        featureButton = button;
+    CHECK(featureButton != nullptr);
+    QPointer<QToolButton> deletedButton(featureButton);
+    QTimer contextMenuDriver;
+    bool deleteChosen = false;
+    QObject::connect(&contextMenuDriver, &QTimer::timeout, [&] {
+      if (!deleteChosen)
+        for (QWidget* widget : QApplication::allWidgets())
+          if (auto* menu = qobject_cast<QMenu*>(widget))
+            for (QAction* action : menu->actions())
+              if (action->text() == QString::fromUtf8("Удалить")) {
+                deleteChosen = true;
+                menu->setActiveAction(action);
+                QKeyEvent choose(QEvent::KeyPress, Qt::Key_Return,
+                                 Qt::NoModifier);
+                QApplication::sendEvent(menu, &choose);
+                return;
+              }
+      for (QWidget* widget : QApplication::allWidgets()) {
+        if (auto* box = qobject_cast<QMessageBox*>(widget)) {
+          box->done(QMessageBox::Yes);
+          return;
+        }
+      }
+    });
+    contextMenuDriver.start(1);
+    const bool menuInvoked = QMetaObject::invokeMethod(
+        featureButton, "customContextMenuRequested", Qt::DirectConnection,
+        Q_ARG(QPoint, QPoint(4, 4)));
+    QApplication::processEvents();
+    contextMenuDriver.stop();
+    CHECK(menuInvoked);
+    CHECK(deletedButton.isNull());
+    CHECK(Access::bodyFeatureCount(directEditor) == 1);
+    CHECK(Access::historyStepCount(directEditor) == 3);
   }
 
   // Removing a Body must synchronize the legacy sketch count/source index

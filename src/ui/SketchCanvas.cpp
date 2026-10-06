@@ -3,6 +3,7 @@
 #include "model/TopologyReferenceResolver.h"
 #include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/SketchSolver.h"
+#include "ui/ThemeManager.h"
 
 #include <QKeySequence>
 #include <QKeyEvent>
@@ -14,7 +15,9 @@
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QSignalBlocker>
+#include <QToolTip>
 #include <QVariant>
+#include <QVariantAnimation>
 #include <QWheelEvent>
 
 #include <TopAbs_ShapeEnum.hxx>
@@ -56,6 +59,34 @@ SketchClipboardData gSketchClipboard;
 
 constexpr double kRulerTop = 30.0;
 constexpr double kRulerLeft = 44.0;
+
+Point3d cubeViewingDirection(CameraOrientation camera) {
+  const double yaw = camera.yaw * std::numbers::pi / 180.0;
+  const double pitch = camera.pitch * std::numbers::pi / 180.0;
+  return {std::sin(yaw) * std::sin(pitch),
+          std::cos(yaw) * std::sin(pitch), std::cos(pitch)};
+}
+
+Point3d sketchViewingDirection(double yawDeg, double pitchDeg) {
+  const double yaw = yawDeg * std::numbers::pi / 180.0;
+  const double pitch = pitchDeg * std::numbers::pi / 180.0;
+  return {-std::sin(yaw) * std::cos(pitch), std::sin(pitch),
+          std::cos(yaw) * std::cos(pitch)};
+}
+
+CameraOrientation sketchOrientationForDirection(Point3d direction) {
+  const double length = std::sqrt(direction.x * direction.x +
+                                  direction.y * direction.y +
+                                  direction.z * direction.z);
+  if (length <= 1e-12) return {};
+  const double x = direction.x / length;
+  const double y = std::clamp(direction.y / length, -1.0, 1.0);
+  const double z = direction.z / length;
+  return {static_cast<float>(std::atan2(-x, z) * 180.0 /
+                                        std::numbers::pi),
+          static_cast<float>(std::clamp(
+              std::asin(y) * 180.0 / std::numbers::pi, -89.9, 89.9))};
+}
 
 double niceRulerStep(double pixelsPerMm) {
   const double targetMm = 75.0 / std::max(0.01, pixelsPerMm);
@@ -924,6 +955,11 @@ SketchCanvas::SketchCanvas(QWidget* parent) : QWidget(parent) {
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
   setCursor(Qt::CrossCursor);
+  viewCubeAnimation_ = new QVariantAnimation(this);
+  viewCubeAnimation_->setObjectName(
+      QStringLiteral("sketchViewOrientationTransition"));
+  viewCubeAnimation_->setDuration(200);
+  viewCubeAnimation_->setEasingCurve(QEasingCurve::InOutCubic);
   auto makeDimension = [this]() {
     auto* input = new QDoubleSpinBox(this);
     input->setRange(-100000.0, 100000.0);
@@ -1016,6 +1052,10 @@ void SketchCanvas::setTool(Tool tool) {
   setProperty("equalFirstKind", QVariant());
   setProperty("tangentFirstGeometry", QVariant());
   setProperty("tangentFirstKind", QVariant());
+  setProperty("constraintHoverKind", QVariant());
+  setProperty("constraintHoverGeometry", QVariant());
+  setProperty("constraintHoverX", QVariant());
+  setProperty("constraintHoverY", QVariant());
   setProperty("editingDimensionIndex", QVariant());
   hideDimensionEditor();
   setCursor(tool == Tool::Select
@@ -1740,13 +1780,17 @@ void SketchCanvas::fitReferenceGeometry() {
 }
 
 void SketchCanvas::clearSketchEditContext() {
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
+  cubePressed_ = {};
+  cubeHover_ = {};
+  QToolTip::hideText();
   referenceBodyMesh_.clear();
   referenceFaceMesh_.clear();
   sceneBodyMeshes_.clear();
   sceneSketches_.clear();
   realReferenceBodyVisible_ = false;
   hoveredProjectionEdge_.reset();
-  viewQuarterTurns_ = 0;
+  viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
   setProperty("sketchPanning", false);
@@ -1777,6 +1821,10 @@ void SketchCanvas::clearSketch() {
 }
 
 void SketchCanvas::resetSketch() {
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
+  cubePressed_ = {};
+  cubeHover_ = {};
+  QToolTip::hideText();
   sketch_.clear();
   setProperty("dimensionLabelAlongMm", QVariantList{});
   setProperty("dimensionLabelOffsetMm", QVariantList{});
@@ -1790,7 +1838,7 @@ void SketchCanvas::resetSketch() {
   circleGuideLines_.clear();
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
-  viewQuarterTurns_ = 0;
+  viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
   setProperty("sketchPanning", false);
@@ -1802,6 +1850,10 @@ void SketchCanvas::resetSketch() {
 }
 
 void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
+  cubePressed_ = {};
+  cubeHover_ = {};
+  QToolTip::hideText();
   hideDimensionEditor();
   sketch_ = sketch;
   setProperty("dimensionLabelAlongMm", QVariantList{});
@@ -1813,7 +1865,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   dragging_ = false;
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
-  viewQuarterTurns_ = 0;
+  viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
   setProperty("sketchPanning", false);
@@ -1935,30 +1987,20 @@ void SketchCanvas::deleteSelection() {
 }
 sketch::Point SketchCanvas::rotateForView(
     sketch::Point point) const noexcept {
-  switch ((viewQuarterTurns_ % 4 + 4) % 4) {
-    case 1:
-      return {point.yMm, -point.xMm};
-    case 2:
-      return {-point.xMm, -point.yMm};
-    case 3:
-      return {-point.yMm, point.xMm};
-    default:
-      return point;
-  }
+  const double angle = viewRotationDeg_ * std::numbers::pi / 180.0;
+  const double cosine = std::cos(angle);
+  const double sine = std::sin(angle);
+  return {cosine * point.xMm + sine * point.yMm,
+          -sine * point.xMm + cosine * point.yMm};
 }
 
 sketch::Point SketchCanvas::rotateFromView(
     sketch::Point point) const noexcept {
-  switch ((viewQuarterTurns_ % 4 + 4) % 4) {
-    case 1:
-      return {-point.yMm, point.xMm};
-    case 2:
-      return {-point.xMm, -point.yMm};
-    case 3:
-      return {point.yMm, -point.xMm};
-    default:
-      return point;
-  }
+  const double angle = viewRotationDeg_ * std::numbers::pi / 180.0;
+  const double cosine = std::cos(angle);
+  const double sine = std::sin(angle);
+  return {cosine * point.xMm - sine * point.yMm,
+          sine * point.xMm + cosine * point.yMm};
 }
 
 QString SketchCanvas::pointDimensionModeForScreenAxis(
@@ -2016,18 +2058,21 @@ double SketchCanvas::angularDimensionRadiusPx(
 }
 
 void SketchCanvas::rotateViewClockwise() {
-  viewQuarterTurns_ = (viewQuarterTurns_ + 1) % 4;
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
+  viewRotationDeg_ = std::remainder(viewRotationDeg_ + 90.0, 360.0);
   hideDimensionEditor();
   update();
 }
 
 void SketchCanvas::rotateViewCounterClockwise() {
-  viewQuarterTurns_ = (viewQuarterTurns_ + 3) % 4;
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
+  viewRotationDeg_ = std::remainder(viewRotationDeg_ - 90.0, 360.0);
   hideDimensionEditor();
   update();
 }
 
 void SketchCanvas::orbitView(double yawDeltaDeg, double pitchDeltaDeg) {
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
   setViewOrientation(viewYawDeg_ + yawDeltaDeg,
                      viewPitchDeg_ + pitchDeltaDeg);
 }
@@ -2044,17 +2089,25 @@ void SketchCanvas::setViewOrientation(double yawDeg, double pitchDeg) {
 }
 
 void SketchCanvas::resetViewRotation() {
-  viewQuarterTurns_ = 0;
+  if (viewCubeAnimation_) viewCubeAnimation_->stop();
+  viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
   setProperty("sketchOrbiting", false);
+  cubePressed_ = {};
+  clearViewCubeHover();
   hideDimensionEditor();
   fitReferenceGeometry();
   update();
 }
 
 int SketchCanvas::viewQuarterTurns() const noexcept {
-  return viewQuarterTurns_;
+  const int turns = qRound(viewRotationDeg_ / 90.0);
+  return (turns % 4 + 4) % 4;
+}
+
+double SketchCanvas::viewRotationDegrees() const noexcept {
+  return viewRotationDeg_;
 }
 
 double SketchCanvas::viewYawDegrees() const noexcept { return viewYawDeg_; }
@@ -2068,20 +2121,67 @@ bool SketchCanvas::viewAlignedToSketchPlane() const noexcept {
          std::abs(viewPitchDeg_) <= 1e-9;
 }
 
-QRectF SketchCanvas::viewCubeBodyRect() const {
-  return QRectF(std::max(kRulerLeft + 8.0,
-                         static_cast<double>(width()) - 92.0),
-                kRulerTop + 14.0, 54.0, 48.0);
+CameraOrientation SketchCanvas::viewCubeCamera() const noexcept {
+  return orientationForDirection(
+      sketchViewingDirection(viewYawDeg_, viewPitchDeg_));
 }
 
-QRectF SketchCanvas::viewCubeLeftRect() const {
-  const QRectF body = viewCubeBodyRect();
-  return QRectF(body.left() - 2.0, body.bottom() + 7.0, 26.0, 24.0);
+void SketchCanvas::animateViewToDirection(Point3d direction) {
+  if (!viewCubeAnimation_) return;
+  viewCubeAnimation_->stop();
+  disconnect(viewCubeAnimation_, nullptr, this, nullptr);
+  const CameraOrientation start{static_cast<float>(viewYawDeg_),
+                                static_cast<float>(viewPitchDeg_)};
+  const CameraOrientation target = sketchOrientationForDirection(direction);
+  viewRotationDeg_ = 0.0;
+  hideDimensionEditor();
+  constructionHover_.reset();
+  trimHover_.reset();
+  hoveredProjectionEdge_.reset();
+  connect(viewCubeAnimation_, &QVariantAnimation::valueChanged, this,
+          [this, start, target](const QVariant& value) {
+            const auto camera = interpolateOrientation(
+                start, target, value.toFloat());
+            viewYawDeg_ = std::remainder(
+                static_cast<double>(camera.yaw), 360.0);
+            viewPitchDeg_ = std::clamp(
+                static_cast<double>(camera.pitch), -89.9, 89.9);
+            update();
+          });
+  viewCubeAnimation_->setStartValue(0.0F);
+  viewCubeAnimation_->setEndValue(1.0F);
+  viewCubeAnimation_->start();
 }
 
-QRectF SketchCanvas::viewCubeRightRect() const {
-  const QRectF body = viewCubeBodyRect();
-  return QRectF(body.right() - 24.0, body.bottom() + 7.0, 26.0, 24.0);
+void SketchCanvas::animateViewRotationBy(double deltaDeg) {
+  if (!viewCubeAnimation_ || !std::isfinite(deltaDeg)) return;
+  viewCubeAnimation_->stop();
+  disconnect(viewCubeAnimation_, nullptr, this, nullptr);
+  const double start = viewRotationDeg_;
+  hideDimensionEditor();
+  constructionHover_.reset();
+  trimHover_.reset();
+  hoveredProjectionEdge_.reset();
+  connect(viewCubeAnimation_, &QVariantAnimation::valueChanged, this,
+          [this, start, deltaDeg](const QVariant& value) {
+            viewRotationDeg_ = std::remainder(
+                start + deltaDeg * value.toDouble(), 360.0);
+            update();
+          });
+  viewCubeAnimation_->setStartValue(0.0);
+  viewCubeAnimation_->setEndValue(1.0);
+  viewCubeAnimation_->start();
+}
+
+void SketchCanvas::clearViewCubeHover() {
+  if (!cubeHover_) return;
+  cubeHover_ = {};
+  QToolTip::hideText();
+  setCursor(viewAlignedToSketchPlane()
+                ? (tool_ == Tool::Select ? Qt::ArrowCursor
+                                         : Qt::CrossCursor)
+                : Qt::OpenHandCursor);
+  update();
 }
 
 std::optional<std::size_t> SketchCanvas::referenceEdgeAt(
@@ -4274,6 +4374,104 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           painter.restore();
         };
 
+    const auto drawHighlightedArc =
+        [this, &painter, &constraintHighlight](
+            sketch::GeometryId id) {
+          if (id == sketch::kInvalidGeometryId) return;
+          const auto index = sketch_.arcIndex(id);
+          if (!index) return;
+          const auto& arc = sketch_.arcs()[*index];
+          const int segments = std::max(
+              12, static_cast<int>(std::ceil(
+                      96.0 * arc.sweepAngleRad /
+                      (2.0 * std::numbers::pi))));
+          painter.save();
+          painter.setPen(QPen(constraintHighlight, 4.0, Qt::SolidLine,
+                              Qt::RoundCap));
+          painter.setBrush(Qt::NoBrush);
+          painter.drawPolyline(circlePolyline(
+              arc.center, arc.radiusMm, arc.startAngleRad,
+              arc.sweepAngleRad, segments));
+          painter.restore();
+        };
+
+    // The object under the cursor is deliberately distinct from the already
+    // selected first operand. This makes the next click predictable for every
+    // Sketcher constraint tool.
+    if (property("constraintHoverKind").isValid()) {
+      const int hoverKind = property("constraintHoverKind").toInt();
+      const auto hoverId = static_cast<sketch::GeometryId>(
+          property("constraintHoverGeometry").toULongLong());
+      const QColor hoverColor("#00a6ff");
+      if (hoverKind == 1) {
+        const auto index = sketch_.lineIndex(hoverId);
+        if (index) {
+          painter.save();
+          painter.setPen(QPen(hoverColor, 4.0, Qt::SolidLine,
+                              Qt::RoundCap));
+          painter.drawLine(mapPoint(sketch_.lines()[*index].start),
+                           mapPoint(sketch_.lines()[*index].end));
+          painter.restore();
+        }
+      } else if (hoverKind == 2) {
+        const auto index = sketch_.circleIndex(hoverId);
+        if (index) {
+          painter.save();
+          painter.setPen(QPen(hoverColor, 4.0));
+          painter.setBrush(Qt::NoBrush);
+          const auto& circle = sketch_.circles()[*index];
+          painter.drawPolyline(circlePolyline(circle.center,
+                                               circle.radiusMm));
+          painter.restore();
+        }
+      } else if (hoverKind == 3) {
+        const auto index = sketch_.arcIndex(hoverId);
+        if (index) {
+          const auto& arc = sketch_.arcs()[*index];
+          const int segments = std::max(
+              12, static_cast<int>(std::ceil(
+                      96.0 * arc.sweepAngleRad /
+                      (2.0 * std::numbers::pi))));
+          painter.save();
+          painter.setPen(QPen(hoverColor, 4.0, Qt::SolidLine,
+                              Qt::RoundCap));
+          painter.setBrush(Qt::NoBrush);
+          painter.drawPolyline(circlePolyline(
+              arc.center, arc.radiusMm, arc.startAngleRad,
+              arc.sweepAngleRad, segments));
+          painter.restore();
+        }
+      } else if (hoverKind == 4 &&
+                 property("constraintHoverX").isValid() &&
+                 property("constraintHoverY").isValid()) {
+        painter.save();
+        painter.setPen(QPen(hoverColor, 2.6));
+        painter.setBrush(QColor(0, 166, 255, 48));
+        painter.drawEllipse(
+            mapPoint({property("constraintHoverX").toDouble(),
+                      property("constraintHoverY").toDouble()}),
+            7.0, 7.0);
+        painter.restore();
+      } else if (hoverKind == 5 || hoverKind == 6) {
+        const QPointF datumOrigin = mapPoint({0.0, 0.0});
+        QPointF direction =
+            mapPoint(hoverKind == 5 ? sketch::Point{1.0, 0.0}
+                                    : sketch::Point{0.0, 1.0}) -
+            datumOrigin;
+        const double length = std::hypot(direction.x(), direction.y());
+        if (length > 1e-9) {
+          direction /= length;
+          painter.save();
+          painter.setPen(QPen(hoverColor, 3.5, Qt::SolidLine,
+                              Qt::RoundCap));
+          const double extent = std::hypot(width(), height());
+          painter.drawLine(datumOrigin - direction * extent,
+                           datumOrigin + direction * extent);
+          painter.restore();
+        }
+      }
+    }
+
     if (tool_ == Tool::CoincidentConstraint) {
       // point -> point
       if (coincidentFirstPoint_)
@@ -4335,6 +4533,8 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
         drawHighlightedCircle(id);
       else if (kind == 1)
         drawHighlightedLine(id);
+      else if (kind == 3)
+        drawHighlightedArc(id);
     }
   }
   if (selectionBoxActive_) {
@@ -4349,7 +4549,7 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
   painter.setPen(QColor("#536985"));
   const QString viewDescription =
       viewAlignedToSketchPlane()
-          ? QString::fromUtf8("плоскость %1°").arg(viewQuarterTurns_ * 90)
+          ? QString::fromUtf8("плоскость %1°").arg(qRound(viewRotationDeg_))
           : QString::fromUtf8("3D: азимут %1°, наклон %2°")
                 .arg(qRound(viewYawDeg_))
                 .arg(qRound(viewPitchDeg_));
@@ -4365,61 +4565,23 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
           .arg(viewDescription));
   painter.restore();
 
-  // SKETCH VIEW CUBE
-  // View-only orientation control: geometry and constraints remain untouched.
-  painter.save();
-  painter.setRenderHint(QPainter::Antialiasing);
-
-  const QRectF cubeBody = viewCubeBodyRect();
-  const QRectF leftButton = viewCubeLeftRect();
-  const QRectF rightButton = viewCubeRightRect();
-
-  const QPolygonF topFace{
-      QPointF(cubeBody.left() + 8.0, cubeBody.top() + 8.0),
-      QPointF(cubeBody.left() + 27.0, cubeBody.top()),
-      QPointF(cubeBody.right(), cubeBody.top() + 8.0),
-      QPointF(cubeBody.right() - 19.0, cubeBody.top() + 16.0)};
-  const QPolygonF sideFace{
-      QPointF(cubeBody.right() - 19.0, cubeBody.top() + 16.0),
-      QPointF(cubeBody.right(), cubeBody.top() + 8.0),
-      QPointF(cubeBody.right(), cubeBody.bottom() - 8.0),
-      QPointF(cubeBody.right() - 19.0, cubeBody.bottom())};
-  const QRectF frontFace(cubeBody.left() + 8.0,
-                         cubeBody.top() + 16.0,
-                         cubeBody.width() - 27.0,
-                         cubeBody.height() - 16.0);
-
-  painter.setPen(QPen(QColor("#536985"), 1.1));
-  painter.setBrush(QColor(245, 248, 252, 235));
-  painter.drawPolygon(topFace);
-  painter.setBrush(QColor(205, 216, 231, 235));
-  painter.drawPolygon(sideFace);
-  painter.setBrush(QColor(225, 233, 243, 240));
-  painter.drawRect(frontFace);
-
-  painter.setPen(QColor("#263952"));
-  painter.drawText(
-      frontFace, Qt::AlignCenter,
-      viewAlignedToSketchPlane()
-          ? QString::fromUtf8("ЭСКИЗ\n%1°").arg(viewQuarterTurns_ * 90)
-          : QString::fromUtf8("3D\n%1°/%2°")
-                .arg(qRound(viewYawDeg_))
-                .arg(qRound(viewPitchDeg_)));
-
-  painter.setBrush(QColor(245, 248, 252, 235));
-  painter.setPen(QPen(QColor("#536985"), 1.0));
-  painter.drawRoundedRect(leftButton, 5.0, 5.0);
-  painter.drawRoundedRect(rightButton, 5.0, 5.0);
-  painter.setPen(QColor("#2874c9"));
-  painter.drawText(leftButton, Qt::AlignCenter, QString::fromUtf8("↶"));
-  painter.drawText(rightButton, Qt::AlignCenter, QString::fromUtf8("↷"));
-
-  painter.restore();
+  // The Sketcher and the 3D viewport intentionally share one navigation
+  // cube: the same hit zones, labels, theme and 45-degree edge views.
+  const ThemeColors& theme = ThemeManager::instance().colors();
+  const CameraOrientation cubeCamera = viewCubeCamera();
+  paintViewCube(painter, viewCubeGeometry(size(), cubeCamera), cubeCamera,
+                cubeHover_, cubePressed_,
+                ViewCubeStyle{theme.cubeTop, theme.cubeFront, theme.cubeSide,
+                              theme.cubeOutline, theme.cubeText,
+                              theme.cubeBevel, theme.cubeHover,
+                              theme.cubePressed, theme.cubeActive,
+                              theme.cubeAccent, theme.cubeShadow});
 }
 
 void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   setFocus();
   if (event->button() == Qt::MiddleButton) {
+    if (viewCubeAnimation_) viewCubeAnimation_->stop();
     const bool orbit = event->modifiers().testFlag(Qt::ShiftModifier);
     setProperty(orbit ? "sketchOrbiting" : "sketchPanning", true);
     setProperty("sketchViewDragButton",
@@ -4431,6 +4593,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     return;
   }
   if (event->button() == Qt::RightButton) {
+    if (viewCubeAnimation_) viewCubeAnimation_->stop();
     // Match the 3D viewport: dragging the right mouse button freely orbits the
     // camera. A press/release without a drag retains the established Sketcher
     // cancellation behavior (handled in mouseReleaseEvent).
@@ -4446,24 +4609,14 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   }
   if (event->button() != Qt::LeftButton) return;
 
-  if (viewCubeLeftRect().contains(event->position())) {
-    rotateViewCounterClockwise();
-    event->accept();
-    return;
-  }
-  if (viewCubeRightRect().contains(event->position())) {
-    rotateViewClockwise();
-    event->accept();
-    return;
-  }
-  if (viewCubeBodyRect().contains(event->position())) {
-    setProperty("sketchOrbiting", true);
-    setProperty("sketchViewDragButton",
-                static_cast<int>(Qt::LeftButton));
-    setProperty("sketchViewDragLastX", event->position().x());
-    setProperty("sketchViewDragLastY", event->position().y());
+  const ViewCubeHit cubeHit =
+      viewCubeGeometry(size(), viewCubeCamera()).hitTest(event->position());
+  if (cubeHit) {
+    if (viewCubeAnimation_) viewCubeAnimation_->stop();
+    cubePressed_ = cubeHit;
     hideDimensionEditor();
-    setCursor(Qt::SizeAllCursor);
+    setCursor(Qt::PointingHandCursor);
+    update();
     event->accept();
     return;
   }
@@ -5176,6 +5329,11 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
+  if (cubePressed_) {
+    event->accept();
+    return;
+  }
+
   if (property("sketchOrbiting").toBool()) {
     const auto dragButton = static_cast<Qt::MouseButton>(
         property("sketchViewDragButton").toInt());
@@ -5217,13 +5375,20 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  if (event->buttons() == Qt::NoButton &&
-      (viewCubeBodyRect().contains(event->position()) ||
-       viewCubeLeftRect().contains(event->position()) ||
-       viewCubeRightRect().contains(event->position()))) {
-    setCursor(Qt::PointingHandCursor);
-    event->accept();
-    return;
+  if (event->buttons() == Qt::NoButton) {
+    const ViewCubeHit hit =
+        viewCubeGeometry(size(), viewCubeCamera()).hitTest(event->position());
+    if (hit) {
+      if (!(cubeHover_ == hit))
+        QToolTip::showText(event->globalPosition().toPoint(),
+                           viewCubeToolTip(hit), this);
+      cubeHover_ = hit;
+      setCursor(Qt::PointingHandCursor);
+      update();
+      event->accept();
+      return;
+    }
+    clearViewCubeHover();
   }
 
   if (event->buttons() == Qt::NoButton && !viewAlignedToSketchPlane()) {
@@ -5253,6 +5418,172 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     update();
     event->accept();
     return;
+  }
+
+  const bool constraintTool =
+      (tool_ == Tool::AutoDimension &&
+       !property("autoDimensionTarget").isValid()) ||
+      tool_ == Tool::LockConstraint ||
+      tool_ == Tool::OrthogonalConstraint ||
+      tool_ == Tool::CoincidentConstraint ||
+      tool_ == Tool::PerpendicularConstraint ||
+      tool_ == Tool::ParallelConstraint ||
+      tool_ == Tool::EqualConstraint ||
+      tool_ == Tool::TangentConstraint;
+
+  if (event->buttons() == Qt::NoButton && constraintTool) {
+    constexpr double hitTolerance = 9.0;
+    int hoverKind = 0;  // 1 line, 2 circle, 3 arc, 4 point, 5/6 datum axes
+    sketch::GeometryId hoverId = sketch::kInvalidGeometryId;
+    double bestDistance = hitTolerance;
+    sketch::Point hoverGeometryPoint{};
+
+    const bool lineAllowed =
+        tool_ != Tool::TangentConstraint ||
+        !property("tangentFirstKind").isValid() ||
+        property("tangentFirstKind").toInt() != 1;
+    const bool circleAllowed =
+        tool_ == Tool::AutoDimension ||
+        tool_ == Tool::LockConstraint ||
+        tool_ == Tool::CoincidentConstraint ||
+        tool_ == Tool::EqualConstraint ||
+        (tool_ == Tool::TangentConstraint &&
+         (!property("tangentFirstKind").isValid() ||
+          property("tangentFirstKind").toInt() == 1));
+    const bool arcAllowed =
+        tool_ == Tool::LockConstraint ||
+        tool_ == Tool::CoincidentConstraint ||
+        (tool_ == Tool::TangentConstraint &&
+         (!property("tangentFirstKind").isValid() ||
+          property("tangentFirstKind").toInt() == 1));
+
+    // Coincident works on vertices/centres as well as carrier bodies. Points
+    // win whenever their hit area overlaps a line or curve.
+    if (tool_ == Tool::CoincidentConstraint ||
+        tool_ == Tool::AutoDimension) {
+      const auto considerPoint =
+          [this, event, &bestDistance, &hoverKind,
+           &hoverGeometryPoint](sketch::Point point) {
+            const double distance =
+                QLineF(event->position(), mapPoint(point)).length();
+            if (distance >= bestDistance) return;
+            bestDistance = distance;
+            hoverKind = 4;
+            hoverGeometryPoint = point;
+          };
+      considerPoint({0.0, 0.0});
+      for (const auto& line : sketch_.lines()) {
+        considerPoint(line.start);
+        considerPoint(line.end);
+      }
+      for (const auto& circle : sketch_.circles())
+        considerPoint(circle.center);
+      for (const auto& arc : sketch_.arcs()) {
+        considerPoint(sketch::arcStartPoint(arc));
+        considerPoint(sketch::arcEndPoint(arc));
+      }
+      for (const auto elementId : sketch_.centerNodeElementIds()) {
+        if (const auto center = sketch_.elementCenterPoint(elementId))
+          considerPoint(*center);
+      }
+    }
+
+    if (hoverKind != 4 && lineAllowed) {
+      sketch::GeometryId excludedLine = sketch::kInvalidGeometryId;
+      if (tool_ == Tool::ParallelConstraint &&
+          property("parallelFirstLine").isValid())
+        excludedLine = static_cast<sketch::GeometryId>(
+            property("parallelFirstLine").toULongLong());
+      else if (tool_ == Tool::PerpendicularConstraint &&
+               property("perpendicularFirstLine").isValid())
+        excludedLine = static_cast<sketch::GeometryId>(
+            property("perpendicularFirstLine").toULongLong());
+      for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+        const auto& line = sketch_.lines()[index];
+        const double distance = pointSegmentDistance(
+            event->position(), mapPoint(line.start), mapPoint(line.end));
+        if (distance >= bestDistance) continue;
+        const auto id = sketch_.lineId(index);
+        if (id == sketch::kInvalidGeometryId) continue;
+        if (id == excludedLine) continue;
+        bestDistance = distance;
+        hoverKind = 1;
+        hoverId = id;
+      }
+    }
+    if (hoverKind != 4 && circleAllowed) {
+      for (std::size_t index = 0; index < sketch_.circles().size(); ++index) {
+        const double distance = circleDistanceToScreenPoint(
+            sketch_.circles()[index], event->position());
+        if (distance >= bestDistance) continue;
+        const auto id = sketch_.circleId(index);
+        if (id == sketch::kInvalidGeometryId) continue;
+        bestDistance = distance;
+        hoverKind = 2;
+        hoverId = id;
+      }
+    }
+    if (hoverKind != 4 && arcAllowed) {
+      for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
+        const double distance = arcDistanceToScreenPoint(
+            sketch_.arcs()[index], event->position());
+        if (distance >= bestDistance) continue;
+        const auto id = sketch_.arcId(index);
+        if (id == sketch::kInvalidGeometryId) continue;
+        bestDistance = distance;
+        hoverKind = 3;
+        hoverId = id;
+      }
+    }
+
+    if (hoverKind == 0 && tool_ == Tool::AutoDimension) {
+      const QPointF origin = mapPoint({0.0, 0.0});
+      const auto distanceToAxis =
+          [event, origin](QPointF direction) {
+            const double length = std::hypot(direction.x(), direction.y());
+            if (length <= 1e-9)
+              return std::numeric_limits<double>::infinity();
+            direction /= length;
+            const QPointF delta = event->position() - origin;
+            return std::abs(delta.x() * direction.y() -
+                            delta.y() * direction.x());
+          };
+      const double xDistance = distanceToAxis(
+          mapPoint({1.0, 0.0}) - origin);
+      const double yDistance = distanceToAxis(
+          mapPoint({0.0, 1.0}) - origin);
+      if (xDistance <= 7.0 || yDistance <= 7.0)
+        hoverKind = xDistance <= yDistance ? 5 : 6;
+    }
+
+    if (hoverKind == 0) {
+      setProperty("constraintHoverKind", QVariant());
+      setProperty("constraintHoverGeometry", QVariant());
+      setProperty("constraintHoverX", QVariant());
+      setProperty("constraintHoverY", QVariant());
+    } else {
+      setProperty("constraintHoverKind", hoverKind);
+      setProperty("constraintHoverGeometry",
+                  static_cast<qulonglong>(hoverId));
+      if (hoverKind == 4) {
+        setProperty("constraintHoverX", hoverGeometryPoint.xMm);
+        setProperty("constraintHoverY", hoverGeometryPoint.yMm);
+      } else {
+        setProperty("constraintHoverX", QVariant());
+        setProperty("constraintHoverY", QVariant());
+      }
+    }
+    setCursor(hoverKind != 0 ? Qt::PointingHandCursor : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+
+  if (!constraintTool && property("constraintHoverKind").isValid()) {
+    setProperty("constraintHoverKind", QVariant());
+    setProperty("constraintHoverGeometry", QVariant());
+    setProperty("constraintHoverX", QVariant());
+    setProperty("constraintHoverY", QVariant());
   }
 
   const bool creationTool =
@@ -5751,11 +6082,18 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
 
         const bool datumModeFixed =
             property("autoDimensionDatumModeFixed").toBool();
-        const QString mode = datumModeFixed
-                                 ? property("autoDimensionPointMode").toString()
-                                 : resolvePointDimensionMode(
-                                       horizontalLine, verticalLine,
-                                       deltaX, deltaY, viewQuarterTurns_);
+        const double quarterTurns = viewRotationDeg_ / 90.0;
+        const int nearestQuarterTurn = qRound(quarterTurns);
+        const bool screenAxesMatchSketchAxes =
+            std::abs(quarterTurns - nearestQuarterTurn) <= 1e-9;
+        const QString mode =
+            datumModeFixed
+                ? property("autoDimensionPointMode").toString()
+                : screenAxesMatchSketchAxes
+                      ? resolvePointDimensionMode(
+                            horizontalLine, verticalLine, deltaX, deltaY,
+                            nearestQuarterTurn)
+                      : QStringLiteral("aligned");
 
         setProperty("autoDimensionPointMode", mode);
 
@@ -5880,6 +6218,14 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void SketchCanvas::leaveEvent(QEvent* event) {
+  clearViewCubeHover();
+  if (property("constraintHoverKind").isValid()) {
+    setProperty("constraintHoverKind", QVariant());
+    setProperty("constraintHoverGeometry", QVariant());
+    setProperty("constraintHoverX", QVariant());
+    setProperty("constraintHoverY", QVariant());
+    update();
+  }
   if (trimHover_) {
     trimHover_.reset();
     update();
@@ -5888,6 +6234,37 @@ void SketchCanvas::leaveEvent(QEvent* event) {
 }
 
 void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
+  if (event->button() == Qt::LeftButton && cubePressed_) {
+    const ViewCubeHit released =
+        viewCubeGeometry(size(), viewCubeCamera()).hitTest(event->position());
+    const ViewCubeHit pressed = cubePressed_;
+    cubePressed_ = {};
+
+    if (released == pressed) {
+      if (released.zone == ViewCubeZone::Fit) {
+        fitReferenceGeometry();
+      } else if (released.zone == ViewCubeZone::Home) {
+        animateViewToDirection(
+            cubeViewingDirection(orientationFor(StandardView::Isometric)));
+      } else if (released.zone == ViewCubeZone::RotateCounterClockwise) {
+        animateViewRotationBy(-45.0);
+      } else if (released.zone == ViewCubeZone::RotateClockwise) {
+        animateViewRotationBy(45.0);
+      } else {
+        animateViewToDirection(released.direction);
+      }
+    }
+
+    clearViewCubeHover();
+    setCursor(viewAlignedToSketchPlane()
+                  ? (tool_ == Tool::Select ? Qt::ArrowCursor
+                                           : Qt::CrossCursor)
+                  : Qt::OpenHandCursor);
+    event->accept();
+    update();
+    return;
+  }
+
   if (property("sketchOrbiting").toBool() &&
       event->button() == static_cast<Qt::MouseButton>(
                              property("sketchViewDragButton").toInt())) {
@@ -8336,6 +8713,11 @@ void SketchCanvas::handleTangentConstraintClick(QPointF position) {
   resetState();
 
   if (added == sketch::kInvalidConstraintId) {
+    if (!undoStack_.empty()) {
+      sketch_ = undoStack_.back();
+      undoStack_.pop_back();
+      emit undoAvailable(canUndo());
+    }
     emit selectionChanged(QString::fromUtf8(
         "Касательная не добавлена: конфликт зависимостей"));
     update();
@@ -8463,6 +8845,12 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     setProperty("equalFirstKind", QVariant());
     setProperty("equalFirstElement", QVariant());
   };
+  const auto rollbackConstraintAdd = [this]() {
+    if (undoStack_.empty()) return;
+    sketch_ = undoStack_.back();
+    undoStack_.pop_back();
+    emit undoAvailable(canUndo());
+  };
 
   const auto firstId = static_cast<sketch::GeometryId>(
       firstGeometryProperty.toULongLong());
@@ -8531,7 +8919,15 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     constraint.type = sketch::ConstraintType::Equal;
     constraint.firstGeometry = firstId;
     constraint.secondGeometry = hitId;
-    sketch_.addConstraint(constraint);
+    if (sketch_.addConstraint(constraint) ==
+        sketch::kInvalidConstraintId) {
+      rollbackConstraintAdd();
+      resetEqualState();
+      emit selectionChanged(QString::fromUtf8(
+          "Эквивалентность не добавлена: конфликт зависимостей"));
+      update();
+      return;
+    }
 
     (void)sketch::BasicSketchSolver::solveStable(sketch_);
     resetEqualState();
@@ -8590,7 +8986,15 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
         sketch::ConstraintType::Equal;
     constraint.firstGeometry = firstId;
     constraint.secondGeometry = hitId;
-    sketch_.addConstraint(constraint);
+    if (sketch_.addConstraint(constraint) ==
+        sketch::kInvalidConstraintId) {
+      rollbackConstraintAdd();
+      resetEqualState();
+      emit selectionChanged(QString::fromUtf8(
+          "Эквивалентность не добавлена: конфликт зависимостей"));
+      update();
+      return;
+    }
 
     (void)sketch::BasicSketchSolver::solveStable(sketch_);
 
@@ -8661,7 +9065,15 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     constraint.type = sketch::ConstraintType::Equal;
     constraint.firstGeometry = firstId;
     constraint.secondGeometry = hitId;
-    sketch_.addConstraint(constraint);
+    if (sketch_.addConstraint(constraint) ==
+        sketch::kInvalidConstraintId) {
+      rollbackConstraintAdd();
+      resetEqualState();
+      emit selectionChanged(QString::fromUtf8(
+          "Эквивалентность не добавлена: конфликт зависимостей"));
+      update();
+      return;
+    }
 
     (void)sketch::BasicSketchSolver::solveStable(sketch_);
     resetEqualState();
@@ -8850,20 +9262,32 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
 
   pushUndoState();
 
+  bool addedAll = true;
   if (!firstPairExists) {
     sketch::Constraint firstEqual;
     firstEqual.type = sketch::ConstraintType::Equal;
     firstEqual.firstGeometry = firstId;
     firstEqual.secondGeometry = matchedSecondId;
-    sketch_.addConstraint(firstEqual);
+    addedAll = sketch_.addConstraint(firstEqual) !=
+               sketch::kInvalidConstraintId;
   }
 
-  if (!secondPairExists) {
+  if (addedAll && !secondPairExists) {
     sketch::Constraint secondEqual;
     secondEqual.type = sketch::ConstraintType::Equal;
     secondEqual.firstGeometry = firstAdjacentId;
     secondEqual.secondGeometry = secondAdjacentId;
-    sketch_.addConstraint(secondEqual);
+    addedAll = sketch_.addConstraint(secondEqual) !=
+               sketch::kInvalidConstraintId;
+  }
+
+  if (!addedAll) {
+    rollbackConstraintAdd();
+    resetEqualState();
+    emit selectionChanged(QString::fromUtf8(
+        "Эквивалентность не добавлена: конфликт зависимостей"));
+    update();
+    return;
   }
 
   (void)sketch::BasicSketchSolver::solveStable(sketch_);
@@ -8889,8 +9313,14 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
   double bestDistance = hitTolerance;
   std::optional<std::size_t> bestIndex;
+  const QVariant firstProperty = property("parallelFirstLine");
+  const auto firstSelectedId = firstProperty.isValid()
+                                   ? static_cast<sketch::GeometryId>(
+                                         firstProperty.toULongLong())
+                                   : sketch::kInvalidGeometryId;
 
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    if (sketch_.lineId(index) == firstSelectedId) continue;
     const auto& line = sketch_.lines()[index];
     const double distance = pointSegmentDistance(
         position, mapPoint(line.start), mapPoint(line.end));
@@ -8905,8 +9335,6 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
 
   const auto clickedId = sketch_.lineId(*bestIndex);
   if (clickedId == sketch::kInvalidGeometryId) return;
-
-  const QVariant firstProperty = property("parallelFirstLine");
 
   if (!firstProperty.isValid()) {
     setProperty("parallelFirstLine",
@@ -9019,7 +9447,20 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   constraint.type = sketch::ConstraintType::Parallel;
   constraint.firstGeometry = firstId;
   constraint.secondGeometry = clickedId;
-  sketch_.addConstraint(constraint);
+  const auto added = sketch_.addConstraint(constraint);
+
+  if (added == sketch::kInvalidConstraintId) {
+    if (!undoStack_.empty()) {
+      sketch_ = undoStack_.back();
+      undoStack_.pop_back();
+      emit undoAvailable(canUndo());
+    }
+    setProperty("parallelFirstLine", QVariant());
+    emit selectionChanged(QString::fromUtf8(
+        "Параллельность не добавлена: конфликт зависимостей"));
+    update();
+    return;
+  }
 
   (void)sketch::BasicSketchSolver::solveStable(sketch_);
 
@@ -9049,8 +9490,14 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
   double bestDistance = hitTolerance;
   std::optional<std::size_t> bestIndex;
+  const QVariant firstProperty = property("perpendicularFirstLine");
+  const auto firstSelectedId = firstProperty.isValid()
+                                   ? static_cast<sketch::GeometryId>(
+                                         firstProperty.toULongLong())
+                                   : sketch::kInvalidGeometryId;
 
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
+    if (sketch_.lineId(index) == firstSelectedId) continue;
     const auto& line = sketch_.lines()[index];
     const double distance = pointSegmentDistance(
         position, mapPoint(line.start), mapPoint(line.end));
@@ -9065,8 +9512,6 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
 
   const auto clickedId = sketch_.lineId(*bestIndex);
   if (clickedId == sketch::kInvalidGeometryId) return;
-
-  const QVariant firstProperty = property("perpendicularFirstLine");
 
   if (!firstProperty.isValid()) {
     setProperty("perpendicularFirstLine",
@@ -9177,7 +9622,20 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   constraint.type = sketch::ConstraintType::Perpendicular;
   constraint.firstGeometry = firstId;
   constraint.secondGeometry = clickedId;
-  sketch_.addConstraint(constraint);
+  const auto added = sketch_.addConstraint(constraint);
+
+  if (added == sketch::kInvalidConstraintId) {
+    if (!undoStack_.empty()) {
+      sketch_ = undoStack_.back();
+      undoStack_.pop_back();
+      emit undoAvailable(canUndo());
+    }
+    setProperty("perpendicularFirstLine", QVariant());
+    emit selectionChanged(QString::fromUtf8(
+        "Перпендикулярность не добавлена: конфликт зависимостей"));
+    update();
+    return;
+  }
 
   // addConstraint() already runs the sketch solver. Do not run the full
   // sequential solver a second time here: with interconnected constraints
@@ -9260,7 +9718,19 @@ void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
   sketch::Constraint constraint;
   constraint.type = type;
   constraint.firstGeometry = id;
-  sketch_.addConstraint(constraint);
+  const auto added = sketch_.addConstraint(constraint);
+
+  if (added == sketch::kInvalidConstraintId) {
+    if (!undoStack_.empty()) {
+      sketch_ = undoStack_.back();
+      undoStack_.pop_back();
+      emit undoAvailable(canUndo());
+    }
+    emit selectionChanged(QString::fromUtf8(
+        "Ограничение не добавлено: конфликт зависимостей"));
+    update();
+    return;
+  }
 
   selectionKind_ = SelectionKind::Line;
   selectionElementId_ = line.elementId;
@@ -9279,6 +9749,7 @@ void SketchCanvas::handleLockConstraintClick(
   double bestDistance = hitTolerance;
   std::optional<std::size_t> lineIndex;
   std::optional<std::size_t> circleIndex;
+  std::optional<std::size_t> arcIndex;
 
   for (std::size_t index = 0;
        index < sketch_.lines().size(); ++index) {
@@ -9293,6 +9764,7 @@ void SketchCanvas::handleLockConstraintClick(
       bestDistance = distance;
       lineIndex = index;
       circleIndex.reset();
+      arcIndex.reset();
     }
   }
 
@@ -9305,10 +9777,22 @@ void SketchCanvas::handleLockConstraintClick(
       bestDistance = distance;
       circleIndex = index;
       lineIndex.reset();
+      arcIndex.reset();
     }
   }
 
-  if (!lineIndex && !circleIndex) {
+  for (std::size_t index = 0; index < sketch_.arcs().size(); ++index) {
+    const double distance =
+        arcDistanceToScreenPoint(sketch_.arcs()[index], position);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      arcIndex = index;
+      lineIndex.reset();
+      circleIndex.reset();
+    }
+  }
+
+  if (!lineIndex && !circleIndex && !arcIndex) {
     emit selectionChanged(
         QString::fromUtf8(
             "Замок: выберите объект"));
@@ -9320,8 +9804,10 @@ void SketchCanvas::handleLockConstraintClick(
 
   if (lineIndex)
     target = sketch_.lineId(*lineIndex);
-  else
+  else if (circleIndex)
     target = sketch_.circleId(*circleIndex);
+  else
+    target = sketch_.arcId(*arcIndex);
 
   if (target == sketch::kInvalidGeometryId)
     return;
@@ -9987,15 +10473,82 @@ void SketchCanvas::commitAutoDimension() {
     redoStack_ = redoSnapshot;
     emit undoAvailable(canUndo());
     emit redoAvailable(canRedo());
-    const QString message = editingExisting
-                                ? QString::fromUtf8(
-                                      "Размер не изменён: более ранние "
-                                      "зависимости имеют приоритет")
-                                : QString::fromUtf8(
-                                      "Размер не добавлен: конфликт с "
-                                      "более ранней зависимостью");
+    QString message = editingExisting
+                          ? QString::fromUtf8(
+                                "Размер не изменён: более ранние "
+                                "зависимости имеют приоритет")
+                          : QString::fromUtf8(
+                                "Размер не добавлен: конфликт с "
+                                "более ранней зависимостью");
+
+    // A common tangent-size conflict is otherwise visually indistinguishable
+    // from an unresponsive editor: the support edge fixes one line endpoint,
+    // while both datum coordinates fix the Circle centre and therefore the
+    // tangent contact's height. Explain that the line is already determined;
+    // chronological constraint priority deliberately keeps those relations.
+    const auto directLineId = static_cast<sketch::GeometryId>(
+        property("autoDimensionDirectLineId").toULongLong());
+    if (!editingExisting && directLineId != sketch::kInvalidGeometryId) {
+      sketch::GeometryId tangentCircle = sketch::kInvalidGeometryId;
+      for (const auto& constraint : operationSnapshot.constraints()) {
+        if (constraint.type != sketch::ConstraintType::Tangent) continue;
+        if (constraint.firstGeometry == directLineId &&
+            operationSnapshot.circleIndex(constraint.secondGeometry))
+          tangentCircle = constraint.secondGeometry;
+        else if (constraint.secondGeometry == directLineId &&
+                 operationSnapshot.circleIndex(constraint.firstGeometry))
+          tangentCircle = constraint.firstGeometry;
+      }
+
+      bool centerXFixed = false;
+      bool centerYFixed = false;
+      const auto referencesCircleCenter =
+          [tangentCircle](sketch::PointReference reference) {
+            return tangentCircle != sketch::kInvalidGeometryId &&
+                   !reference.origin && reference.elementCenterId == 0 &&
+                   reference.circleId == tangentCircle;
+          };
+      for (const auto& constraint : operationSnapshot.constraints()) {
+        if (constraint.type == sketch::ConstraintType::Lock &&
+            constraint.firstGeometry == tangentCircle) {
+          centerXFixed = true;
+          centerYFixed = true;
+          continue;
+        }
+        if (!referencesCircleCenter(constraint.firstPoint) &&
+            !referencesCircleCenter(constraint.secondPoint))
+          continue;
+        if (constraint.type == sketch::ConstraintType::PointOnYAxis)
+          centerXFixed = true;
+        else if (constraint.type == sketch::ConstraintType::PointOnXAxis)
+          centerYFixed = true;
+        else if (constraint.type == sketch::ConstraintType::PointOnLine &&
+                 constraint.firstGeometry != sketch::kInvalidGeometryId &&
+                 operationSnapshot.isGeometryLocked(
+                     constraint.firstGeometry)) {
+          const auto carrierIndex =
+              operationSnapshot.lineIndex(constraint.firstGeometry);
+          if (!carrierIndex) continue;
+          const auto& carrier = operationSnapshot.lines()[*carrierIndex];
+          const double dx = std::abs(carrier.end.xMm - carrier.start.xMm);
+          const double dy = std::abs(carrier.end.yMm - carrier.start.yMm);
+          if (dx <= 1e-7 && dy > 1e-7) centerXFixed = true;
+          if (dy <= 1e-7 && dx > 1e-7) centerYFixed = true;
+        }
+      }
+      if (centerXFixed && centerYFixed)
+        message = QString::fromUtf8(
+            "Размер не добавлен: центр касательной окружности уже "
+            "зафиксирован по X и Y, линия полностью определена");
+    }
     emit selectionChanged(message);
     emit constraintStatusChanged(message);
+    primaryDimension_->setToolTip(message);
+    QToolTip::showText(
+        primaryDimension_->mapToGlobal(
+            QPoint(primaryDimension_->width() / 2,
+                   primaryDimension_->height())),
+        message, primaryDimension_, {}, 4500);
     primaryDimension_->show();
     primaryDimension_->setFocus();
     primaryDimension_->selectAll();

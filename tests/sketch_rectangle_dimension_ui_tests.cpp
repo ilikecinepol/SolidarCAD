@@ -710,10 +710,18 @@ int main(int argc, char** argv) {
     const double diagonal = 20.0 / std::sqrt(2.0);
     const QPointF quadrant =
         screenPoint(circleTrimCanvas, {diagonal, diagonal});
-    QMouseEvent hover(QEvent::MouseMove, quadrant, Qt::NoButton,
-                      Qt::NoButton, Qt::NoModifier);
-    QApplication::sendEvent(&circleTrimCanvas, &hover);
-    QApplication::processEvents();
+    // Offscreen Qt may deliver the first synthetic move while the window is
+    // still becoming active. Repeat the same idempotent hover once so this
+    // assertion tests the scissors state instead of window activation timing.
+    for (int attempt = 0;
+         attempt < 2 &&
+         circleTrimCanvas.cursor().shape() != Qt::PointingHandCursor;
+         ++attempt) {
+      QMouseEvent hover(QEvent::MouseMove, quadrant, Qt::NoButton,
+                        Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(&circleTrimCanvas, &hover);
+      QApplication::processEvents();
+    }
     CHECK(circleTrimCanvas.cursor().shape() == Qt::PointingHandCursor);
     CHECK(hasScissorsHighlight(circleTrimCanvas, quadrant));
     click(circleTrimCanvas, quadrant);
@@ -980,9 +988,9 @@ int main(int argc, char** argv) {
     CHECK(std::abs(preserved->value - 30.0) < 1e-9);
   }
 
-  // A later size that conflicts with an earlier lock/coincidence chain is
-  // rejected as one transaction. Neither old geometry nor old constraints may
-  // be sacrificed to make the newer dimension fit.
+  // A locked/coincident endpoint is an anchor, not a reason to reject every
+  // later size. The free opposite endpoint must move while the earlier
+  // lock/coincidence chain and its stable IDs remain intact.
   {
     solidar::sketch::Sketch geometry;
     geometry.addLine({0.0, 0.0}, {20.0, 0.0});
@@ -1024,7 +1032,7 @@ int main(int argc, char** argv) {
     conflictCanvas.show();
     QApplication::processEvents();
 
-    CHECK(!editDimension(conflictCanvas, 20.0, 30.0));
+    CHECK(editDimension(conflictCanvas, 20.0, 30.0));
     CHECK(conflictCanvas.sketch().constraints().size() ==
           originalConstraints.size());
     for (std::size_t index = 0; index < originalConstraints.size(); ++index) {
@@ -1034,18 +1042,249 @@ int main(int argc, char** argv) {
             originalConstraints[index].type);
     }
     CHECK(conflictCanvas.sketch().lines().size() == originalLines.size());
-    for (std::size_t index = 0; index < originalLines.size(); ++index) {
-      CHECK(std::abs(conflictCanvas.sketch().lines()[index].start.xMm -
-                     originalLines[index].start.xMm) < 1e-9);
-      CHECK(std::abs(conflictCanvas.sketch().lines()[index].start.yMm -
-                     originalLines[index].start.yMm) < 1e-9);
-      CHECK(std::abs(conflictCanvas.sketch().lines()[index].end.xMm -
-                     originalLines[index].end.xMm) < 1e-9);
-      CHECK(std::abs(conflictCanvas.sketch().lines()[index].end.yMm -
-                     originalLines[index].end.yMm) < 1e-9);
-    }
+    const auto& anchor = conflictCanvas.sketch().lines()[0];
+    const auto& sized = conflictCanvas.sketch().lines()[1];
+    CHECK(std::abs(anchor.start.xMm - originalLines[0].start.xMm) < 1e-9);
+    CHECK(std::abs(anchor.start.yMm - originalLines[0].start.yMm) < 1e-9);
+    CHECK(std::abs(anchor.end.xMm - originalLines[0].end.xMm) < 1e-9);
+    CHECK(std::abs(anchor.end.yMm - originalLines[0].end.yMm) < 1e-9);
+    CHECK(std::abs(sized.end.xMm - anchor.end.xMm) < 1e-9);
+    CHECK(std::abs(sized.end.yMm - anchor.end.yMm) < 1e-9);
+    CHECK(std::abs(std::hypot(sized.end.xMm - sized.start.xMm,
+                              sized.end.yMm - sized.start.yMm) -
+                   30.0) < 1e-6);
+    CHECK(conflictCanvas.sketch().dimensions().size() == 1);
+    CHECK(std::abs(conflictCanvas.sketch().dimensions().front().valueMm -
+                   30.0) < 1e-9);
     CHECK(!solidar::sketch::analyzeConstraintSystem(conflictCanvas.sketch())
                .conflicting);
+  }
+
+  // A direct line size added after Tangent + Perpendicular must consume the
+  // circle centre's remaining freedom along its datum axis. The size editor
+  // must close normally instead of reporting a false overconstraint.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-50.0, -25.0}, {20.0, -25.0});
+    geometry.addLine({0.0, -50.0}, {0.0, 50.0});
+    geometry.addCircle({0.0, 8.0}, 10.0);
+    geometry.addLine({-10.0, -25.0}, {-10.0, 8.0});
+    const auto projection = geometry.lineId(0);
+    const auto verticalProjection = geometry.lineId(1);
+    const auto circle = geometry.circleId(0);
+    const auto line = geometry.lineId(2);
+
+    solidar::sketch::Constraint constraint;
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = projection;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = verticalProjection;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+    constraint.firstGeometry = verticalProjection;
+    constraint.secondPoint.circleId = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnYAxis;
+    constraint.secondPoint.circleId = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+    constraint.firstGeometry = projection;
+    constraint.secondPoint = {line, true};
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnCircle;
+    constraint.firstGeometry = circle;
+    constraint.secondPoint = {line, false};
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Tangent;
+    constraint.firstGeometry = line;
+    constraint.secondGeometry = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Perpendicular;
+    constraint.firstGeometry = projection;
+    constraint.secondGeometry = line;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas dimensionCanvas;
+    dimensionCanvas.resize(900, 650);
+    dimensionCanvas.loadSketch(geometry);
+    dimensionCanvas.show();
+    QApplication::processEvents();
+    dimensionCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    const auto before = dimensionCanvas.sketch().lines()[2];
+    click(dimensionCanvas,
+          screenPoint(dimensionCanvas,
+                      {(before.start.xMm + before.end.xMm) * 0.5,
+                       (before.start.yMm + before.end.yMm) * 0.5}));
+    QApplication::processEvents();
+    auto* editor =
+        dimensionCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(editor && editor->isVisible());
+    editor->setValue(25.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(editor, &enter);
+    QApplication::processEvents();
+
+    CHECK(!editor->isVisible());
+    CHECK(dimensionCanvas.sketch().dimensions().size() == 1);
+    const auto& sized = dimensionCanvas.sketch().lines()[2];
+    CHECK(std::abs(std::hypot(sized.end.xMm - sized.start.xMm,
+                              sized.end.yMm - sized.start.yMm) -
+                   25.0) < 1e-6);
+    CHECK(std::abs(dimensionCanvas.sketch().circles()[0].center.xMm) < 1e-7);
+    CHECK(std::abs(dimensionCanvas.sketch().circles()[0].center.yMm) < 1e-6);
+    CHECK(!solidar::sketch::analyzeConstraintSystem(
+               dimensionCanvas.sketch()).conflicting);
+  }
+
+  // The direct-size UI must use the same solution when the line was drawn
+  // from the upper projected carrier down to the Circle tangent point. This
+  // is the orientation produced by the face sketch in the reported case.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-50.0, 40.0}, {50.0, 40.0});
+    geometry.addLine({0.0, -50.0}, {0.0, 50.0});
+    geometry.addCircle({0.0, 0.0}, 10.0);
+    geometry.addLine({10.0, 40.0}, {10.0, 0.0});
+    const auto projection = geometry.lineId(0);
+    const auto verticalProjection = geometry.lineId(1);
+    const auto circle = geometry.circleId(0);
+    const auto line = geometry.lineId(2);
+
+    solidar::sketch::Constraint constraint;
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = projection;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = verticalProjection;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+    constraint.firstGeometry = verticalProjection;
+    constraint.secondPoint.circleId = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnYAxis;
+    constraint.secondPoint.circleId = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+    constraint.firstGeometry = projection;
+    constraint.secondPoint = {line, true};
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnCircle;
+    constraint.firstGeometry = circle;
+    constraint.secondPoint = {line, false};
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Tangent;
+    constraint.firstGeometry = line;
+    constraint.secondGeometry = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Perpendicular;
+    constraint.firstGeometry = projection;
+    constraint.secondGeometry = line;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas dimensionCanvas;
+    dimensionCanvas.resize(900, 650);
+    dimensionCanvas.loadSketch(geometry);
+    dimensionCanvas.show();
+    QApplication::processEvents();
+    dimensionCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    const auto before = dimensionCanvas.sketch().lines()[2];
+    click(dimensionCanvas,
+          screenPoint(dimensionCanvas,
+                      {(before.start.xMm + before.end.xMm) * 0.5,
+                       (before.start.yMm + before.end.yMm) * 0.5}));
+    QApplication::processEvents();
+    auto* editor =
+        dimensionCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(editor && editor->isVisible());
+    editor->setValue(25.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(editor, &enter);
+    QApplication::processEvents();
+
+    CHECK(!editor->isVisible());
+    CHECK(dimensionCanvas.sketch().dimensions().size() == 1);
+    const auto& sized = dimensionCanvas.sketch().lines()[2];
+    CHECK(std::abs(std::hypot(sized.end.xMm - sized.start.xMm,
+                              sized.end.yMm - sized.start.yMm) -
+                   25.0) < 1e-6);
+    CHECK(std::abs(dimensionCanvas.sketch().circles()[0].center.xMm) < 1e-7);
+    CHECK(std::abs(dimensionCanvas.sketch().circles()[0].center.yMm - 15.0) <
+          1e-6);
+    CHECK(!solidar::sketch::analyzeConstraintSystem(
+               dimensionCanvas.sketch()).conflicting);
+
+    // If the Circle centre is additionally fixed on X, no degree of freedom
+    // remains for changing this vertical tangent length. Keep every older
+    // relation and report the fully determined state explicitly.
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnXAxis;
+    constraint.secondPoint.circleId = circle;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas blockedCanvas;
+    blockedCanvas.resize(900, 650);
+    blockedCanvas.loadSketch(geometry);
+    blockedCanvas.show();
+    QApplication::processEvents();
+    QString blockedStatus;
+    QObject::connect(&blockedCanvas,
+                     &solidar::SketchCanvas::constraintStatusChanged,
+                     &blockedCanvas,
+                     [&](const QString& status) { blockedStatus = status; });
+    blockedCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    const auto blockedBefore = blockedCanvas.sketch().lines()[2];
+    click(blockedCanvas,
+          screenPoint(blockedCanvas,
+                      {(blockedBefore.start.xMm + blockedBefore.end.xMm) * 0.5,
+                       (blockedBefore.start.yMm + blockedBefore.end.yMm) *
+                           0.5}));
+    QApplication::processEvents();
+    auto* blockedEditor =
+        blockedCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(blockedEditor && blockedEditor->isVisible());
+    blockedEditor->setValue(25.0);
+    QApplication::sendEvent(blockedEditor, &enter);
+    QApplication::processEvents();
+
+    CHECK(blockedEditor->isVisible());
+    CHECK(blockedCanvas.sketch().dimensions().empty());
+    CHECK(blockedStatus.contains(QString::fromUtf8("по X и Y")));
+    const auto& unchanged = blockedCanvas.sketch().lines()[2];
+    CHECK(std::abs(std::hypot(unchanged.end.xMm - unchanged.start.xMm,
+                              unchanged.end.yMm - unchanged.start.yMm) -
+                   40.0) < 1e-6);
   }
   return EXIT_SUCCESS;
 }

@@ -1905,6 +1905,25 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 
 SolveResult BasicSketchSolver::solveStable(
     Sketch& sketch, int maxPasses) {
+  // Some low-level geometry mutators re-apply the active constraints after
+  // moving a point. Those mutators are also used by solve() itself (notably
+  // for datum-axis constraints), so an incompatible axis/dimension pair can
+  // otherwise enter solveStable() recursively until the process exhausts its
+  // stack. The outer solve already owns stabilization; nested requests only
+  // need to let it continue with the geometry that was just updated.
+  static thread_local bool solveInProgress = false;
+  if (solveInProgress)
+    return {};
+
+  struct SolveScope final {
+    explicit SolveScope(bool& active) : active_(active) {
+      active_ = true;
+    }
+    ~SolveScope() { active_ = false; }
+
+    bool& active_;
+  } solveScope(solveInProgress);
+
   SolveResult last;
   double previousResidual =
       std::numeric_limits<double>::infinity();

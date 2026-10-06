@@ -1649,6 +1649,7 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
   // endpoint of the moving line is allowed to rotate.
   bool pivotAtStart = true;
   bool hasSharedPivot = false;
+  bool pivotOnFirstBody = false;
   Point pivot = oldStart;
   Point firstRayEnd = first.end;
 
@@ -1751,6 +1752,7 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
               : oldEnd;
 
       hasSharedPivot = true;
+      pivotOnFirstBody = true;
 
       // The reference line may continue on both sides of an interior pivot.
       // Use the endpoint that points most strongly toward the current moving
@@ -1824,6 +1826,43 @@ bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
         pivot.yMm +
             (first.end.yMm -
              first.start.yMm)};
+  }
+
+  // When the angular vertex lies on the BODY of the reference line, that
+  // endpoint is allowed to slide along its PointOnLine carrier. For a
+  // perpendicular relation, project the opposite endpoint onto the carrier
+  // instead of rotating the opposite endpoint around a frozen foot. This is
+  // essential for the common projected-geometry chain:
+  // circle -> sized line -> projected straight edge.
+  if (pivotOnFirstBody && std::abs(angleDegrees - 90.0) <= 1e-9) {
+    const Point freePoint = pivotAtStart ? oldEnd : oldStart;
+    const double carrierDx = first.end.xMm - first.start.xMm;
+    const double carrierDy = first.end.yMm - first.start.yMm;
+    const double carrierLengthSquared =
+        carrierDx * carrierDx + carrierDy * carrierDy;
+    if (carrierLengthSquared <= 1e-12) return false;
+    const double parameter =
+        ((freePoint.xMm - first.start.xMm) * carrierDx +
+         (freePoint.yMm - first.start.yMm) * carrierDy) /
+        carrierLengthSquared;
+    const Point newPivot{
+        first.start.xMm + parameter * carrierDx,
+        first.start.yMm + parameter * carrierDy};
+
+    if (pivotAtStart)
+      second.start = newPivot;
+    else
+      second.end = newPivot;
+
+    for (std::size_t lineIndexValue = 0;
+         lineIndexValue < lines_.size(); ++lineIndexValue) {
+      if (lineIndexValue == *secondIndex) continue;
+      auto& line = lines_[lineIndexValue];
+      if (same(line.start, pivot)) line.start = newPivot;
+      if (same(line.end, pivot)) line.end = newPivot;
+    }
+    updateBounds();
+    return true;
   }
 
   const Point secondRayEnd =
@@ -2537,16 +2576,13 @@ bool Sketch::setPointOnArc(GeometryId arcIdValue,
 
 bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
                                     GeometryId circleIdValue) {
-  // LOCK CONSTRAINT: this primitive solves tangency by moving the circle.
-  if (isGeometryLocked(circleIdValue))
-    return false;
   const auto lineIndexValue = lineIndex(lineIdValue);
   const auto circleIndexValue = circleIndex(circleIdValue);
 
   if (!lineIndexValue || !circleIndexValue)
     return false;
 
-  const Line& line = lines_[*lineIndexValue];
+  const Line line = lines_[*lineIndexValue];
   Circle& circle = circles_[*circleIndexValue];
 
   if (!std::isfinite(circle.radiusMm) ||
@@ -2570,6 +2606,332 @@ bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
 
   const double side =
       signedDistance < 0.0 ? -1.0 : 1.0;
+
+  const auto referencesCircleCenter =
+      [circleIdValue](PointReference reference) {
+        return !reference.origin && reference.elementCenterId == 0 &&
+               reference.circleId == circleIdValue;
+      };
+  const bool circleCenterAnchored =
+      std::any_of(constraints_.begin(), constraints_.end(),
+                  [&referencesCircleCenter](const Constraint& constraint) {
+                    return referencesCircleCenter(constraint.firstPoint) ||
+                           referencesCircleCenter(constraint.secondPoint);
+                  });
+
+  // A projected circle and a circle whose centre already has a positional
+  // constraint are reference geometry for a later tangency. Moving such a
+  // circle only makes a following datum/point pass move it back, leaving a
+  // visible Tangent entry whose geometry is no longer tangent. Reconstruct
+  // the line instead and preserve the earlier centre constraint.
+  if (isGeometryLocked(circleIdValue) || circleCenterAnchored) {
+    const auto referencesLineEndpoint =
+        [lineIdValue](PointReference reference) {
+          return !reference.origin && reference.elementCenterId == 0 &&
+                 reference.circleId == kInvalidGeometryId &&
+                 reference.arcId == kInvalidGeometryId &&
+                 reference.lineId == lineIdValue;
+        };
+    std::optional<bool> attachedEndpoint;
+    std::optional<bool> straightEndpoint;
+    GeometryId straightCarrierId = kInvalidGeometryId;
+    std::optional<double> drivingLength;
+
+    for (const auto& constraint : constraints_) {
+      if (constraint.type == ConstraintType::PointOnCircle &&
+          constraint.firstGeometry == circleIdValue &&
+          referencesLineEndpoint(constraint.secondPoint)) {
+        attachedEndpoint = constraint.secondPoint.start;
+      } else if (constraint.type == ConstraintType::PointOnLine &&
+                 constraint.firstGeometry != kInvalidGeometryId &&
+                 referencesLineEndpoint(constraint.secondPoint)) {
+        straightEndpoint = constraint.secondPoint.start;
+        straightCarrierId = constraint.firstGeometry;
+      } else if (constraint.type == ConstraintType::Length &&
+                 constraint.firstGeometry == lineIdValue &&
+                 std::isfinite(constraint.value) && constraint.value > 0.0) {
+        drivingLength = constraint.value;
+      } else if (constraint.type == ConstraintType::Distance &&
+                 referencesLineEndpoint(constraint.firstPoint) &&
+                 referencesLineEndpoint(constraint.secondPoint) &&
+                 constraint.firstPoint.start != constraint.secondPoint.start &&
+                 std::isfinite(constraint.value) && constraint.value > 0.0) {
+        drivingLength = constraint.value;
+      }
+    }
+
+    bool requiresPerpendicular = false;
+    if (straightCarrierId != kInvalidGeometryId) {
+      for (const auto& constraint : constraints_) {
+        const bool samePair =
+            (constraint.firstGeometry == straightCarrierId &&
+             constraint.secondGeometry == lineIdValue) ||
+            (constraint.secondGeometry == straightCarrierId &&
+             constraint.firstGeometry == lineIdValue);
+        if (!samePair)
+          continue;
+        if (constraint.type == ConstraintType::Perpendicular ||
+            (constraint.type == ConstraintType::Angle &&
+             std::abs(constraint.value - 90.0) <= 1e-7)) {
+          requiresPerpendicular = true;
+          break;
+        }
+      }
+    }
+
+    // LENGTH + TANGENCY ON PROJECTED REFERENCES
+    //
+    // Let Q be the endpoint on the straight carrier and P the tangent point.
+    // |QP| = L and CP = r imply |CQ| = sqrt(L^2 + r^2). Intersect that
+    // auxiliary circle with the straight projection, then construct the two
+    // tangent points from every valid Q. This solves the coupled constraints
+    // in one step instead of making the sequential passes overwrite each
+    // other. If a 90-degree relation already exists, keep only that branch.
+    if (drivingLength && attachedEndpoint && straightEndpoint &&
+        *attachedEndpoint != *straightEndpoint &&
+        straightCarrierId != kInvalidGeometryId &&
+        isGeometryLocked(straightCarrierId)) {
+      const auto straightIndex = lineIndex(straightCarrierId);
+      if (straightIndex) {
+        const Line straight = lines_[*straightIndex];
+        const double sx = straight.end.xMm - straight.start.xMm;
+        const double sy = straight.end.yMm - straight.start.yMm;
+        const double straightLength = std::hypot(sx, sy);
+        const double tangentLength = *drivingLength;
+        const double auxiliaryRadius =
+            std::hypot(tangentLength, circle.radiusMm);
+
+        if (straightLength > 1e-9 && auxiliaryRadius > circle.radiusMm) {
+          const double ux = sx / straightLength;
+          const double uy = sy / straightLength;
+          const double centerDx = circle.center.xMm - straight.start.xMm;
+          const double centerDy = circle.center.yMm - straight.start.yMm;
+          const double centerAlong = centerDx * ux + centerDy * uy;
+          const double centerNormal = -centerDx * uy + centerDy * ux;
+          double remaining = auxiliaryRadius * auxiliaryRadius -
+                             centerNormal * centerNormal;
+
+          struct TangentLineCandidate {
+            Point start;
+            Point end;
+            double movement{};
+          };
+          std::optional<TangentLineCandidate> best;
+
+          if (remaining >= -1e-8) {
+            remaining = std::max(0.0, remaining);
+            const double alongDelta = std::sqrt(remaining);
+            const double auxiliarySquared =
+                auxiliaryRadius * auxiliaryRadius;
+            const double alongFactor =
+                tangentLength * tangentLength / auxiliarySquared;
+            const double perpendicularFactor =
+                circle.radiusMm * tangentLength / auxiliarySquared;
+
+            for (const double alongSide : {-1.0, 1.0}) {
+              const double along = centerAlong + alongSide * alongDelta;
+              if (along < -1e-7 || along > straightLength + 1e-7)
+                continue;
+              const Point onStraight{
+                  straight.start.xMm + ux * along,
+                  straight.start.yMm + uy * along};
+              const double vx = circle.center.xMm - onStraight.xMm;
+              const double vy = circle.center.yMm - onStraight.yMm;
+
+              for (const double tangentSide : {-1.0, 1.0}) {
+                const Point onCircle{
+                    onStraight.xMm + alongFactor * vx -
+                        tangentSide * perpendicularFactor * vy,
+                    onStraight.yMm + alongFactor * vy +
+                        tangentSide * perpendicularFactor * vx};
+                const double candidateDx = onCircle.xMm - onStraight.xMm;
+                const double candidateDy = onCircle.yMm - onStraight.yMm;
+                if (requiresPerpendicular &&
+                    std::abs(candidateDx * ux + candidateDy * uy) > 1e-5)
+                  continue;
+
+                const Point candidateStart =
+                    *straightEndpoint ? onStraight : onCircle;
+                const Point candidateEnd =
+                    *straightEndpoint ? onCircle : onStraight;
+                const double movement =
+                    std::hypot(candidateStart.xMm - line.start.xMm,
+                               candidateStart.yMm - line.start.yMm) +
+                    std::hypot(candidateEnd.xMm - line.end.xMm,
+                               candidateEnd.yMm - line.end.yMm);
+                if (!best || movement < best->movement) {
+                  best = TangentLineCandidate{
+                      candidateStart, candidateEnd, movement};
+                }
+              }
+            }
+          }
+
+          if (best) {
+            lines_[*lineIndexValue].start = best->start;
+            lines_[*lineIndexValue].end = best->end;
+            updateBounds();
+            return true;
+          }
+        }
+      }
+    }
+
+    // TANGENCY WITH AN ENDPOINT ON A STRAIGHT CARRIER
+    //
+    // Keep the endpoint Q on its earlier PointOnLine carrier and construct
+    // the tangent point P analytically. This is the common edit path when a
+    // user drags the base of an already tangent line. A simple normal shift
+    // would pull Q off the carrier; the next PointOnLine pass would then undo
+    // the tangency while the constraint remained listed in the UI.
+    if (!drivingLength && attachedEndpoint && straightEndpoint &&
+        *attachedEndpoint != *straightEndpoint &&
+        straightCarrierId != kInvalidGeometryId) {
+      const auto straightIndex = lineIndex(straightCarrierId);
+      if (straightIndex) {
+        const Line straight = lines_[*straightIndex];
+        const double sx = straight.end.xMm - straight.start.xMm;
+        const double sy = straight.end.yMm - straight.start.yMm;
+        const double straightLength = std::hypot(sx, sy);
+        if (straightLength > 1e-9) {
+          const double ux = sx / straightLength;
+          const double uy = sy / straightLength;
+          const Point currentBase =
+              *straightEndpoint ? line.start : line.end;
+          const Point currentContact =
+              *attachedEndpoint ? line.start : line.end;
+          const double baseAlong = std::clamp(
+              (currentBase.xMm - straight.start.xMm) * ux +
+                  (currentBase.yMm - straight.start.yMm) * uy,
+              0.0, straightLength);
+          Point onStraight{straight.start.xMm + ux * baseAlong,
+                           straight.start.yMm + uy * baseAlong};
+          std::optional<Point> onCircle;
+
+          if (requiresPerpendicular) {
+            const double centerDx =
+                circle.center.xMm - straight.start.xMm;
+            const double centerDy =
+                circle.center.yMm - straight.start.yMm;
+            const double centerAlong = centerDx * ux + centerDy * uy;
+            double bestMovement = std::numeric_limits<double>::infinity();
+            for (const double branch : {-1.0, 1.0}) {
+              const double along = centerAlong + branch * circle.radiusMm;
+              if (along < -1e-7 || along > straightLength + 1e-7)
+                continue;
+              const Point candidateBase{
+                  straight.start.xMm + ux * along,
+                  straight.start.yMm + uy * along};
+              const Point candidateContact{
+                  circle.center.xMm + branch * circle.radiusMm * ux,
+                  circle.center.yMm + branch * circle.radiusMm * uy};
+              const double movement =
+                  std::hypot(candidateBase.xMm - currentBase.xMm,
+                             candidateBase.yMm - currentBase.yMm) +
+                  std::hypot(candidateContact.xMm - currentContact.xMm,
+                             candidateContact.yMm - currentContact.yMm);
+              if (movement < bestMovement) {
+                bestMovement = movement;
+                onStraight = candidateBase;
+                onCircle = candidateContact;
+              }
+            }
+          } else {
+            const double vx = circle.center.xMm - onStraight.xMm;
+            const double vy = circle.center.yMm - onStraight.yMm;
+            const double distanceSquared = vx * vx + vy * vy;
+            const double radiusSquared = circle.radiusMm * circle.radiusMm;
+            if (distanceSquared > radiusSquared + 1e-9) {
+              const double tangentLength =
+                  std::sqrt(distanceSquared - radiusSquared);
+              const double alongFactor =
+                  (distanceSquared - radiusSquared) / distanceSquared;
+              const double perpendicularFactor =
+                  circle.radiusMm * tangentLength / distanceSquared;
+              const Point candidates[2]{
+                  {onStraight.xMm + alongFactor * vx -
+                       perpendicularFactor * vy,
+                   onStraight.yMm + alongFactor * vy +
+                       perpendicularFactor * vx},
+                  {onStraight.xMm + alongFactor * vx +
+                       perpendicularFactor * vy,
+                   onStraight.yMm + alongFactor * vy -
+                       perpendicularFactor * vx}};
+              onCircle =
+                  std::hypot(candidates[0].xMm - currentContact.xMm,
+                             candidates[0].yMm - currentContact.yMm) <=
+                          std::hypot(candidates[1].xMm - currentContact.xMm,
+                                     candidates[1].yMm - currentContact.yMm)
+                      ? candidates[0]
+                      : candidates[1];
+            }
+          }
+
+          if (onCircle) {
+            Line& solvedLine = lines_[*lineIndexValue];
+            solvedLine.start = *straightEndpoint ? onStraight : *onCircle;
+            solvedLine.end = *straightEndpoint ? *onCircle : onStraight;
+            updateBounds();
+            return true;
+          }
+        }
+      }
+    }
+
+    const double targetSignedDistance = side * circle.radiusMm;
+    const double normalShift =
+        signedDistance - targetSignedDistance;
+
+    if (isGeometryLocked(lineIdValue))
+      return std::abs(normalShift) <= 1e-7;
+
+    const std::size_t elementId = line.elementId;
+    bool moved = false;
+
+    for (std::size_t index = 0; index < lines_.size(); ++index) {
+      if (lines_[index].elementId != elementId)
+        continue;
+      if (isGeometryLocked(lineIds_[index]))
+        return false;
+
+      lines_[index].start.xMm += nx * normalShift;
+      lines_[index].start.yMm += ny * normalShift;
+      lines_[index].end.xMm += nx * normalShift;
+      lines_[index].end.yMm += ny * normalShift;
+      moved = true;
+    }
+
+    if (!moved)
+      return false;
+
+    // If one endpoint is explicitly attached to this projected circle, put
+    // that endpoint on the exact tangent foot immediately. Letting the normal
+    // PointOnCircle pass project it radially makes the line non-tangent again
+    // and the two sequential passes otherwise chase each other indefinitely.
+    if (attachedEndpoint) {
+      Line& movedLine = lines_[*lineIndexValue];
+      const double movedDx = movedLine.end.xMm - movedLine.start.xMm;
+      const double movedDy = movedLine.end.yMm - movedLine.start.yMm;
+      const double movedLengthSquared =
+          movedDx * movedDx + movedDy * movedDy;
+      if (movedLengthSquared <= 1e-12)
+        return false;
+      const double contactParameter =
+          ((circle.center.xMm - movedLine.start.xMm) * movedDx +
+           (circle.center.yMm - movedLine.start.yMm) * movedDy) /
+          movedLengthSquared;
+      const Point contact{
+          movedLine.start.xMm + movedDx * contactParameter,
+          movedLine.start.yMm + movedDy * contactParameter};
+      if (*attachedEndpoint)
+        movedLine.start = contact;
+      else
+        movedLine.end = contact;
+    }
+
+    updateBounds();
+    return true;
+  }
 
   // CRASH-FREE 04: FINITE SEGMENT TANGENCY
   //
@@ -3071,14 +3433,366 @@ bool Sketch::setLineLength(std::size_t index, double lengthMm) {
   const double dy = oldEnd.yMm - start.yMm;
   const double oldLength = std::hypot(dx, dy);
   if (oldLength <= 1e-9) return false;
-  const Point newEnd{start.xMm + dx / oldLength * lengthMm,
-                     start.yMm + dy / oldLength * lengthMm};
+  const GeometryId lineIdValue = lineIds_[index];
+  const auto referencesEndpoint =
+      [lineIdValue](PointReference reference, bool startPoint) {
+        return !reference.origin && reference.elementCenterId == 0 &&
+               reference.circleId == kInvalidGeometryId &&
+               reference.arcId == kInvalidGeometryId &&
+               reference.lineId == lineIdValue &&
+               reference.start == startPoint;
+      };
+
+  // PROJECTED CARRIER + PROJECTED CIRCLE DIMENSION
+  //
+  // With a perpendicular relation already present, changing the length of a
+  // line between a straight projection and a circular projection generally
+  // requires sliding the WHOLE line along the straight carrier. Resizing one
+  // endpoint and projecting it back cannot find that valid branch and makes
+  // the transactional dimension appear to do nothing.
+  struct ProjectedAnchor {
+    GeometryId geometryId{kInvalidGeometryId};
+    bool atStart{};
+  };
+  std::optional<ProjectedAnchor> straightAnchor;
+  std::optional<ProjectedAnchor> circleAnchor;
+
+  for (const auto& constraint : constraints_) {
+    if (constraint.type == ConstraintType::PointOnLine &&
+        constraint.firstGeometry != kInvalidGeometryId &&
+        (referencesEndpoint(constraint.secondPoint, true) ||
+         referencesEndpoint(constraint.secondPoint, false))) {
+      straightAnchor = ProjectedAnchor{
+          constraint.firstGeometry, constraint.secondPoint.start};
+    } else if (constraint.type == ConstraintType::PointOnCircle &&
+               constraint.firstGeometry != kInvalidGeometryId &&
+               (referencesEndpoint(constraint.secondPoint, true) ||
+                referencesEndpoint(constraint.secondPoint, false))) {
+      circleAnchor = ProjectedAnchor{
+          constraint.firstGeometry, constraint.secondPoint.start};
+    }
+  }
+
+  // TANGENT + PERPENDICULAR + LENGTH WITH A DATUM-CONSTRAINED CIRCLE
+  //
+  // A centre on only one datum axis is not fully fixed: it may still slide
+  // along that axis. When the line already has PointOnLine, PointOnCircle,
+  // Tangent and Perpendicular constraints, a new length must consume that
+  // remaining degree of freedom instead of moving one endpoint and letting
+  // the older constraints undo the size on the following solver pass.
+  if (straightAnchor && circleAnchor &&
+      straightAnchor->atStart != circleAnchor->atStart &&
+      isGeometryLocked(straightAnchor->geometryId) &&
+      !isGeometryLocked(circleAnchor->geometryId)) {
+    const auto carrierIndex = lineIndex(straightAnchor->geometryId);
+    const auto movableCircleIndex = circleIndex(circleAnchor->geometryId);
+    const bool perpendicular = std::any_of(
+        constraints_.begin(), constraints_.end(),
+        [lineIdValue, &straightAnchor](const Constraint& constraint) {
+          const bool samePair =
+              (constraint.firstGeometry == straightAnchor->geometryId &&
+               constraint.secondGeometry == lineIdValue) ||
+              (constraint.secondGeometry == straightAnchor->geometryId &&
+               constraint.firstGeometry == lineIdValue);
+          return samePair &&
+                 (constraint.type == ConstraintType::Perpendicular ||
+                  (constraint.type == ConstraintType::Angle &&
+                   std::abs(constraint.value - 90.0) <= 1e-7));
+        });
+    const bool tangent = std::any_of(
+        constraints_.begin(), constraints_.end(),
+        [lineIdValue, &circleAnchor](const Constraint& constraint) {
+          if (constraint.type != ConstraintType::Tangent)
+            return false;
+          return (constraint.firstGeometry == lineIdValue &&
+                  constraint.secondGeometry == circleAnchor->geometryId) ||
+                 (constraint.secondGeometry == lineIdValue &&
+                  constraint.firstGeometry == circleAnchor->geometryId);
+        });
+
+    bool centerOnXAxis = false;
+    bool centerOnYAxis = false;
+    bool otherCenterPosition = false;
+    std::vector<GeometryId> centerCarrierIds;
+    const auto referencesCircleCenter =
+        [&circleAnchor](PointReference reference) {
+          return !reference.origin && reference.elementCenterId == 0 &&
+                 reference.circleId == circleAnchor->geometryId;
+        };
+    for (const auto& constraint : constraints_) {
+      if (!referencesCircleCenter(constraint.firstPoint) &&
+          !referencesCircleCenter(constraint.secondPoint))
+        continue;
+      if (constraint.type == ConstraintType::PointOnXAxis)
+        centerOnXAxis = true;
+      else if (constraint.type == ConstraintType::PointOnYAxis)
+        centerOnYAxis = true;
+      else if (constraint.type == ConstraintType::PointOnLine &&
+               constraint.firstGeometry != kInvalidGeometryId &&
+               referencesCircleCenter(constraint.secondPoint))
+        centerCarrierIds.push_back(constraint.firstGeometry);
+      else
+        otherCenterPosition = true;
+    }
+
+    const bool exactlyOneFreeAxis =
+        centerOnXAxis != centerOnYAxis && !otherCenterPosition;
+    if (carrierIndex && movableCircleIndex && perpendicular && tangent &&
+        exactlyOneFreeAxis) {
+      const Line carrier = lines_[*carrierIndex];
+      const Circle oldCircle = circles_[*movableCircleIndex];
+      const double carrierDx = carrier.end.xMm - carrier.start.xMm;
+      const double carrierDy = carrier.end.yMm - carrier.start.yMm;
+      const double carrierLength = std::hypot(carrierDx, carrierDy);
+      if (carrierLength > 1e-9 && oldCircle.radiusMm > 1e-9) {
+        const double ux = carrierDx / carrierLength;
+        const double uy = carrierDy / carrierLength;
+        const double nx = -uy;
+        const double ny = ux;
+        const Point currentBase =
+            straightAnchor->atStart ? start : oldEnd;
+        const Point currentContact =
+            circleAnchor->atStart ? start : oldEnd;
+        const double currentAlong = std::clamp(
+            (currentBase.xMm - carrier.start.xMm) * ux +
+                (currentBase.yMm - carrier.start.yMm) * uy,
+            0.0, carrierLength);
+
+        struct AxisCandidate {
+          Point base;
+          Point contact;
+          Point center;
+          double movement{};
+        };
+        std::optional<AxisCandidate> best;
+
+        for (const double normalSide : {-1.0, 1.0}) {
+          for (const double tangentSide : {-1.0, 1.0}) {
+            double along = currentAlong;
+            const double axisDirection = centerOnYAxis ? ux : uy;
+            const double axisConstant =
+                (centerOnYAxis ? carrier.start.xMm : carrier.start.yMm) +
+                (centerOnYAxis ? nx : ny) * normalSide * lengthMm +
+                (centerOnYAxis ? ux : uy) * tangentSide *
+                    oldCircle.radiusMm;
+            if (std::abs(axisDirection) > 1e-9)
+              along = -axisConstant / axisDirection;
+            else if (std::abs(axisConstant) > 1e-7)
+              continue;
+
+            if (along < -1e-7 || along > carrierLength + 1e-7)
+              continue;
+            along = std::clamp(along, 0.0, carrierLength);
+
+            const Point base{carrier.start.xMm + ux * along,
+                             carrier.start.yMm + uy * along};
+            const Point contact{
+                base.xMm + nx * normalSide * lengthMm,
+                base.yMm + ny * normalSide * lengthMm};
+            const Point center{
+                contact.xMm + ux * tangentSide * oldCircle.radiusMm,
+                contact.yMm + uy * tangentSide * oldCircle.radiusMm};
+            if ((centerOnYAxis && std::abs(center.xMm) > 1e-6) ||
+                (centerOnXAxis && std::abs(center.yMm) > 1e-6))
+              continue;
+
+            const bool onEveryCenterCarrier = std::all_of(
+                centerCarrierIds.begin(), centerCarrierIds.end(),
+                [this, center](GeometryId carrierId) {
+                  const auto centerCarrierIndex = lineIndex(carrierId);
+                  if (!centerCarrierIndex) return false;
+                  const Line& centerCarrier = lines_[*centerCarrierIndex];
+                  const double dx =
+                      centerCarrier.end.xMm - centerCarrier.start.xMm;
+                  const double dy =
+                      centerCarrier.end.yMm - centerCarrier.start.yMm;
+                  const double lengthSquared = dx * dx + dy * dy;
+                  if (lengthSquared <= 1e-12) return false;
+                  const double parameter =
+                      ((center.xMm - centerCarrier.start.xMm) * dx +
+                       (center.yMm - centerCarrier.start.yMm) * dy) /
+                      lengthSquared;
+                  if (parameter < -1e-7 || parameter > 1.0 + 1e-7)
+                    return false;
+                  const Point projected{
+                      centerCarrier.start.xMm + parameter * dx,
+                      centerCarrier.start.yMm + parameter * dy};
+                  return std::hypot(center.xMm - projected.xMm,
+                                    center.yMm - projected.yMm) <= 1e-6;
+                });
+            if (!onEveryCenterCarrier)
+              continue;
+
+            const double movement =
+                std::hypot(base.xMm - currentBase.xMm,
+                           base.yMm - currentBase.yMm) +
+                std::hypot(contact.xMm - currentContact.xMm,
+                           contact.yMm - currentContact.yMm) +
+                std::hypot(center.xMm - oldCircle.center.xMm,
+                           center.yMm - oldCircle.center.yMm);
+            if (!best || movement < best->movement)
+              best = AxisCandidate{base, contact, center, movement};
+          }
+        }
+
+        if (best) {
+          lines_[index].start =
+              straightAnchor->atStart ? best->base : best->contact;
+          lines_[index].end =
+              straightAnchor->atStart ? best->contact : best->base;
+          circles_[*movableCircleIndex].center = best->center;
+          updateBounds();
+          return true;
+        }
+      }
+    }
+  }
+
+  if (straightAnchor && circleAnchor &&
+      straightAnchor->atStart != circleAnchor->atStart &&
+      isGeometryLocked(straightAnchor->geometryId) &&
+      isGeometryLocked(circleAnchor->geometryId)) {
+    const auto carrierIndex = lineIndex(straightAnchor->geometryId);
+    const auto projectedCircleIndex =
+        circleIndex(circleAnchor->geometryId);
+    const bool perpendicular = std::any_of(
+        constraints_.begin(), constraints_.end(),
+        [lineIdValue, &straightAnchor](const Constraint& constraint) {
+          if (constraint.type != ConstraintType::Perpendicular)
+            return false;
+          return (constraint.firstGeometry == straightAnchor->geometryId &&
+                  constraint.secondGeometry == lineIdValue) ||
+                 (constraint.secondGeometry == straightAnchor->geometryId &&
+                  constraint.firstGeometry == lineIdValue);
+        });
+
+    if (carrierIndex && projectedCircleIndex && perpendicular) {
+      const Line carrier = lines_[*carrierIndex];
+      const Circle projectedCircle = circles_[*projectedCircleIndex];
+      const double carrierDx = carrier.end.xMm - carrier.start.xMm;
+      const double carrierDy = carrier.end.yMm - carrier.start.yMm;
+      const double carrierLength = std::hypot(carrierDx, carrierDy);
+
+      if (carrierLength > 1e-9 && projectedCircle.radiusMm > 1e-9) {
+        const double ux = carrierDx / carrierLength;
+        const double uy = carrierDy / carrierLength;
+        const double nx = -uy;
+        const double ny = ux;
+        const double centerDx =
+            projectedCircle.center.xMm - carrier.start.xMm;
+        const double centerDy =
+            projectedCircle.center.yMm - carrier.start.yMm;
+        const double centerAlong = centerDx * ux + centerDy * uy;
+        const double centerNormal = centerDx * nx + centerDy * ny;
+
+        struct Candidate {
+          Point start;
+          Point end;
+          double movement{};
+        };
+        std::optional<Candidate> best;
+
+        for (const double normalSide : {-1.0, 1.0}) {
+          const double endpointNormal = normalSide * lengthMm;
+          const double normalDelta = endpointNormal - centerNormal;
+          double remaining = projectedCircle.radiusMm *
+                                 projectedCircle.radiusMm -
+                             normalDelta * normalDelta;
+          if (remaining < -1e-8)
+            continue;
+          remaining = std::max(0.0, remaining);
+          const double alongDelta = std::sqrt(remaining);
+
+          for (const double alongSide : {-1.0, 1.0}) {
+            const double along = centerAlong + alongSide * alongDelta;
+            if (along < -1e-7 || along > carrierLength + 1e-7)
+              continue;
+
+            const Point onStraight{
+                carrier.start.xMm + ux * along,
+                carrier.start.yMm + uy * along};
+            const Point onCircle{
+                onStraight.xMm + nx * endpointNormal,
+                onStraight.yMm + ny * endpointNormal};
+            const Point candidateStart =
+                straightAnchor->atStart ? onStraight : onCircle;
+            const Point candidateEnd =
+                straightAnchor->atStart ? onCircle : onStraight;
+            const double movement =
+                std::hypot(candidateStart.xMm - start.xMm,
+                           candidateStart.yMm - start.yMm) +
+                std::hypot(candidateEnd.xMm - oldEnd.xMm,
+                           candidateEnd.yMm - oldEnd.yMm);
+
+            if (!best || movement < best->movement)
+              best = Candidate{candidateStart, candidateEnd, movement};
+          }
+        }
+
+        if (best) {
+          lines_[index].start = best->start;
+          lines_[index].end = best->end;
+          updateBounds();
+          return true;
+        }
+      }
+    }
+  }
+
+  const auto endpointAnchorRank =
+      [this, &referencesEndpoint](bool startPoint) {
+        int rank = 0;
+        for (const auto& constraint : constraints_) {
+          if (!referencesEndpoint(constraint.secondPoint, startPoint) &&
+              !referencesEndpoint(constraint.firstPoint, startPoint))
+            continue;
+
+          if (constraint.type == ConstraintType::PointOnLine)
+            rank = std::max(rank, 30);
+          else if (constraint.type == ConstraintType::PointOnXAxis ||
+                   constraint.type == ConstraintType::PointOnYAxis ||
+                   constraint.type == ConstraintType::Midpoint)
+            rank = std::max(rank, 35);
+          else if (constraint.type == ConstraintType::PointOnCircle ||
+                   constraint.type == ConstraintType::PointOnArc)
+            rank = std::max(rank, 20);
+          else if (constraint.type == ConstraintType::Coincident) {
+            const PointReference other =
+                referencesEndpoint(constraint.firstPoint, startPoint)
+                    ? constraint.secondPoint
+                    : constraint.firstPoint;
+            rank = std::max(rank,
+                            isPointReferenceLocked(other) ? 40 : 10);
+          }
+        }
+        return rank;
+      };
+
+  // A projected straight carrier is a stronger positional anchor than a
+  // point that may slide around a circle/arc. Preserve that carrier endpoint
+  // and resize the opposite end. The previous unconditional start pivot made
+  // Length and PointOnLine fight forever and the transactional add was
+  // correctly rejected as unsatisfied.
+  const bool moveStart =
+      endpointAnchorRank(false) > endpointAnchorRank(true);
+  const Point oldMoving = moveStart ? start : oldEnd;
+  const Point newMoving =
+      moveStart
+          ? Point{oldEnd.xMm - dx / oldLength * lengthMm,
+                  oldEnd.yMm - dy / oldLength * lengthMm}
+          : Point{start.xMm + dx / oldLength * lengthMm,
+                  start.yMm + dy / oldLength * lengthMm};
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
+  if (moveStart)
+    lines_[index].start = newMoving;
+  else
+    lines_[index].end = newMoving;
   for (auto& line : lines_) {
-    if (same(line.start, oldEnd)) line.start = newEnd;
-    if (same(line.end, oldEnd)) line.end = newEnd;
+    if (&line == &lines_[index]) continue;
+    if (same(line.start, oldMoving)) line.start = newMoving;
+    if (same(line.end, oldMoving)) line.end = newMoving;
   }
   updateBounds();
   return true;
@@ -3087,6 +3801,22 @@ bool Sketch::setLineLength(std::size_t index, double lengthMm) {
 bool Sketch::setPointDistance(PointReference firstReference,
                               PointReference secondReference,
                               double distanceMm) {
+  const auto isPlainLineEndpoint = [](PointReference reference) {
+    return !reference.origin && reference.elementCenterId == 0 &&
+           reference.circleId == kInvalidGeometryId &&
+           reference.arcId == kInvalidGeometryId &&
+           reference.lineId != kInvalidGeometryId;
+  };
+  // AutoDimension represents a direct line-length click as the distance
+  // between that line's two endpoints. Route it through the line-length
+  // primitive so endpoint mobility (notably projected carrier vs circle/arc)
+  // is handled consistently with an explicit Length constraint.
+  if (distanceMm > 0.0 && isPlainLineEndpoint(firstReference) &&
+      isPlainLineEndpoint(secondReference) &&
+      firstReference.lineId == secondReference.lineId &&
+      firstReference.start != secondReference.start)
+    return setLineLengthById(firstReference.lineId, distanceMm);
+
   const auto rectangleElementForPoint =
       [this](PointReference reference) -> std::optional<std::size_t> {
     if (reference.elementCenterId != 0 ||

@@ -475,96 +475,431 @@ bool sameSketchPoint(sketch::Point first, sketch::Point second) {
                     first.yMm - second.yMm) <= 1e-5;
 }
 
-std::optional<double> pointParameterOnLine(sketch::Point point,
-                                           const sketch::Line& line) {
-  const double dx = line.end.xMm - line.start.xMm;
-  const double dy = line.end.yMm - line.start.yMm;
-  const double lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared <= 1e-12) return std::nullopt;
-  const double parameter =
-      ((point.xMm - line.start.xMm) * dx +
-       (point.yMm - line.start.yMm) * dy) /
-      lengthSquared;
-  if (parameter < -1e-7 || parameter > 1.0 + 1e-7)
-    return std::nullopt;
-  const sketch::Point projection{line.start.xMm + dx * parameter,
-                                 line.start.yMm + dy * parameter};
-  if (!sameSketchPoint(point, projection)) return std::nullopt;
-  return std::clamp(parameter, 0.0, 1.0);
-}
-
-// An Arc whose endpoints land anywhere on a line creates a bounded elementary
-// region with the covered line segment as its chord. Keep the Arc exact:
-// sampling is used exclusively for screen hit-testing, never for the B-Rep
-// profile. The original line contour remains a separate selectable region.
+// Enumerate bounded planar faces that contain at least one curved edge. Arcs
+// are real graph edges, while Circles are split analytically only at their
+// line contacts. Curves may close through one chord, a chain of user lines,
+// or locked projected support edges. Sampling is used only for face winding
+// and hit-testing; the selected B-Rep profile retains exact analytic Arcs.
 std::vector<AttachedArcProfile> attachedArcProfiles(
     const sketch::Sketch& source) {
-  std::vector<AttachedArcProfile> profiles;
+  struct SourceSegment {
+    sketch::Point a;
+    sketch::Point b;
+    std::vector<double> cuts{0.0, 1.0};
+    bool userGeometry{true};
+  };
+  std::vector<SourceSegment> sourceLines;
+  for (std::size_t index = 0; index < source.lines().size(); ++index) {
+    const auto& line = source.lines()[index];
+    const bool lockedProjection =
+        line.dashed && source.isGeometryLocked(source.lineId(index));
+    if (line.dashed && !lockedProjection) continue;
+    if (std::hypot(line.end.xMm - line.start.xMm,
+                   line.end.yMm - line.start.yMm) <= 1e-9)
+      continue;
+    sourceLines.push_back(
+        {line.start, line.end, {0.0, 1.0}, !line.dashed});
+  }
 
-  const auto finishProfile = [](AttachedArcProfile profile,
-                                const sketch::Arc& arc)
-      -> std::optional<AttachedArcProfile> {
-    if (!profile.geometry.isClosed()) return std::nullopt;
-    constexpr int arcSteps = 64;
-    profile.boundary.reserve(static_cast<std::size_t>(arcSteps + 1) +
-                             profile.geometry.lines().size());
-    for (int step = 0; step <= arcSteps; ++step) {
-      const double parameter = static_cast<double>(step) / arcSteps;
-      const double angle = arc.startAngleRad + arc.sweepAngleRad * parameter;
-      profile.boundary.push_back(
-          {arc.center.xMm + arc.radiusMm * std::cos(angle),
-           arc.center.yMm + arc.radiusMm * std::sin(angle)});
-    }
+  struct CurvePiece {
+    sketch::Point center;
+    double radiusMm{};
+    double startAngleRad{};
+    double sweepAngleRad{};
+  };
+  std::vector<CurvePiece> curvePieces;
+  std::vector<sketch::Point> curveEndpoints;
+  for (std::size_t index = 0; index < source.arcs().size(); ++index) {
+    const auto& arc = source.arcs()[index];
+    if (arc.dashed || !std::isfinite(arc.radiusMm) ||
+        !std::isfinite(arc.sweepAngleRad) || arc.radiusMm <= 1e-9 ||
+        arc.sweepAngleRad <= 1e-9)
+      continue;
+    curvePieces.push_back(
+        {arc.center, arc.radiusMm, arc.startAngleRad, arc.sweepAngleRad});
+    curveEndpoints.push_back(sketch::arcStartPoint(arc));
+    curveEndpoints.push_back(sketch::arcEndPoint(arc));
+  }
+  if (sourceLines.empty()) return {};
 
-    sketch::Point cursor = sketch::arcEndPoint(arc);
-    const auto& lines = profile.geometry.lines();
-    std::vector<bool> used(lines.size(), false);
-    for (std::size_t step = 0; step < lines.size(); ++step) {
-      bool found = false;
-      for (std::size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
-        if (used[lineIndex]) continue;
-        const auto& line = lines[lineIndex];
-        if (sameSketchPoint(line.start, cursor)) {
-          cursor = line.end;
-        } else if (sameSketchPoint(line.end, cursor)) {
-          cursor = line.start;
-        } else {
-          continue;
-        }
-        used[lineIndex] = true;
-        profile.boundary.push_back(cursor);
-        found = true;
-        break;
-      }
-      if (!found) return std::nullopt;
-    }
-    if (!sameSketchPoint(cursor, sketch::arcStartPoint(arc)))
-      return std::nullopt;
-    return profile;
+  constexpr double inferenceToleranceMm = 0.25;
+  constexpr double parameterTolerance = 1e-8;
+  const auto addCutForPoint = [](SourceSegment& segment,
+                                 sketch::Point point,
+                                 double distanceTolerance) {
+    const double dx = segment.b.xMm - segment.a.xMm;
+    const double dy = segment.b.yMm - segment.a.yMm;
+    const double lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 1e-12) return;
+    const double parameter =
+        ((point.xMm - segment.a.xMm) * dx +
+         (point.yMm - segment.a.yMm) * dy) /
+        lengthSquared;
+    if (parameter < -parameterTolerance ||
+        parameter > 1.0 + parameterTolerance)
+      return;
+    const double clamped = std::clamp(parameter, 0.0, 1.0);
+    const sketch::Point projection{segment.a.xMm + dx * clamped,
+                                   segment.a.yMm + dy * clamped};
+    if (std::hypot(point.xMm - projection.xMm,
+                   point.yMm - projection.yMm) > distanceTolerance)
+      return;
+    segment.cuts.push_back(clamped);
   };
 
-  for (const auto& arc : source.arcs()) {
-    if (arc.dashed) continue;
-    const sketch::Point arcStart = sketch::arcStartPoint(arc);
-    const sketch::Point arcEnd = sketch::arcEndPoint(arc);
-
-    for (std::size_t chordIndex = 0; chordIndex < source.lines().size();
-         ++chordIndex) {
-      const auto& chord = source.lines()[chordIndex];
-      if (chord.dashed) continue;
-      const auto startParameter = pointParameterOnLine(arcStart, chord);
-      const auto endParameter = pointParameterOnLine(arcEnd, chord);
-      if (!startParameter || !endParameter ||
-          std::abs(*startParameter - *endParameter) <= 1e-8)
-        continue;
-
-      AttachedArcProfile profile;
-      profile.geometry.addLine(arcEnd, arcStart);
-      profile.geometry.addArc(arc.center, arc.radiusMm, arc.startAngleRad,
-                              arc.sweepAngleRad);
-      if (auto completed = finishProfile(std::move(profile), arc))
-        profiles.push_back(std::move(*completed));
+  // Retain the same small profile-only healing used by the line face graph.
+  // It accommodates old grid-off sketches without mutating the document.
+  for (std::size_t index = 0; index < sourceLines.size(); ++index) {
+    for (const bool firstEndpoint : {true, false}) {
+      auto& endpoint =
+          firstEndpoint ? sourceLines[index].a : sourceLines[index].b;
+      sketch::Point best = endpoint;
+      double bestDistance = inferenceToleranceMm;
+      for (std::size_t carrierIndex = 0;
+           carrierIndex < sourceLines.size(); ++carrierIndex) {
+        if (carrierIndex == index) continue;
+        const auto& carrier = sourceLines[carrierIndex];
+        const double dx = carrier.b.xMm - carrier.a.xMm;
+        const double dy = carrier.b.yMm - carrier.a.yMm;
+        const double lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 1e-12) continue;
+        const double parameter =
+            ((endpoint.xMm - carrier.a.xMm) * dx +
+             (endpoint.yMm - carrier.a.yMm) * dy) /
+            lengthSquared;
+        if (parameter < -parameterTolerance ||
+            parameter > 1.0 + parameterTolerance)
+          continue;
+        const sketch::Point projection{
+            carrier.a.xMm + dx * std::clamp(parameter, 0.0, 1.0),
+            carrier.a.yMm + dy * std::clamp(parameter, 0.0, 1.0)};
+        const double distance = std::hypot(endpoint.xMm - projection.xMm,
+                                           endpoint.yMm - projection.yMm);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        best = projection;
+      }
+      endpoint = best;
     }
+  }
+
+  constexpr double twoPi = std::numbers::pi_v<double> * 2.0;
+  const auto normalizedAngle = [](double angle) {
+    constexpr double period = std::numbers::pi_v<double> * 2.0;
+    double normalized = std::fmod(angle, period);
+    if (normalized < 0.0) normalized += period;
+    return normalized;
+  };
+  for (const auto& circle : source.circles()) {
+    if (circle.dashed || !std::isfinite(circle.radiusMm) ||
+        circle.radiusMm <= 1e-9)
+      continue;
+
+    std::vector<double> contactAngles;
+    for (auto& line : sourceLines) {
+      const double dx = line.b.xMm - line.a.xMm;
+      const double dy = line.b.yMm - line.a.yMm;
+      const double a = dx * dx + dy * dy;
+      if (a <= 1e-12) continue;
+      const double fx = line.a.xMm - circle.center.xMm;
+      const double fy = line.a.yMm - circle.center.yMm;
+      const double b = 2.0 * (fx * dx + fy * dy);
+      const double c = fx * fx + fy * fy -
+                       circle.radiusMm * circle.radiusMm;
+      double discriminant = b * b - 4.0 * a * c;
+      const double discriminantTolerance =
+          1e-8 * a * std::max(1.0, circle.radiusMm * circle.radiusMm);
+      if (discriminant < -discriminantTolerance) continue;
+      discriminant = std::max(0.0, discriminant);
+      const double root = std::sqrt(discriminant);
+      const std::array<double, 2> parameters{
+          (-b - root) / (2.0 * a), (-b + root) / (2.0 * a)};
+      for (const double parameter : parameters) {
+        if (parameter < -parameterTolerance ||
+            parameter > 1.0 + parameterTolerance)
+          continue;
+        const double clamped = std::clamp(parameter, 0.0, 1.0);
+        const sketch::Point intersection{line.a.xMm + dx * clamped,
+                                         line.a.yMm + dy * clamped};
+        const double angle = normalizedAngle(std::atan2(
+            intersection.yMm - circle.center.yMm,
+            intersection.xMm - circle.center.xMm));
+        const sketch::Point exact{
+            circle.center.xMm + circle.radiusMm * std::cos(angle),
+            circle.center.yMm + circle.radiusMm * std::sin(angle)};
+        line.cuts.push_back(clamped);
+        contactAngles.push_back(angle);
+        curveEndpoints.push_back(exact);
+      }
+    }
+
+    std::sort(contactAngles.begin(), contactAngles.end());
+    contactAngles.erase(
+        std::unique(contactAngles.begin(), contactAngles.end(),
+                    [](double first, double second) {
+                      return std::abs(first - second) <= 1e-7;
+                    }),
+        contactAngles.end());
+    if (contactAngles.size() < 2) continue;
+    for (std::size_t contact = 0; contact < contactAngles.size(); ++contact) {
+      const double startAngle = contactAngles[contact];
+      double endAngle = contactAngles[(contact + 1) % contactAngles.size()];
+      if (contact + 1 == contactAngles.size()) endAngle += twoPi;
+      const double sweep = endAngle - startAngle;
+      if (sweep <= 1e-9 || sweep >= twoPi - 1e-9) continue;
+      curvePieces.push_back(
+          {circle.center, circle.radiusMm, startAngle, sweep});
+    }
+  }
+  if (curvePieces.empty()) return {};
+
+  for (auto& line : sourceLines)
+    for (const auto endpoint : curveEndpoints)
+      addCutForPoint(line, endpoint, inferenceToleranceMm);
+
+  for (std::size_t i = 0; i < sourceLines.size(); ++i) {
+    const sketch::Point p = sourceLines[i].a;
+    const sketch::Point r = sketchSubtract(sourceLines[i].b, sourceLines[i].a);
+    for (std::size_t j = i + 1; j < sourceLines.size(); ++j) {
+      const sketch::Point q = sourceLines[j].a;
+      const sketch::Point s =
+          sketchSubtract(sourceLines[j].b, sourceLines[j].a);
+      const sketch::Point qp = sketchSubtract(q, p);
+      const double denominator = sketchCross(r, s);
+      if (std::abs(denominator) <= 1e-12) {
+        const double rLengthSquared = r.xMm * r.xMm + r.yMm * r.yMm;
+        if (rLengthSquared <= 1e-12 ||
+            std::abs(sketchCross(qp, r)) / std::sqrt(rLengthSquared) > 1e-7)
+          continue;
+        addCutForPoint(sourceLines[i], sourceLines[j].a, 1e-7);
+        addCutForPoint(sourceLines[i], sourceLines[j].b, 1e-7);
+        addCutForPoint(sourceLines[j], sourceLines[i].a, 1e-7);
+        addCutForPoint(sourceLines[j], sourceLines[i].b, 1e-7);
+        continue;
+      }
+      const double t = sketchCross(qp, s) / denominator;
+      const double u = sketchCross(qp, r) / denominator;
+      if (t < -parameterTolerance || t > 1.0 + parameterTolerance ||
+          u < -parameterTolerance || u > 1.0 + parameterTolerance)
+        continue;
+      sourceLines[i].cuts.push_back(std::clamp(t, 0.0, 1.0));
+      sourceLines[j].cuts.push_back(std::clamp(u, 0.0, 1.0));
+    }
+  }
+
+  const auto canonicalArcEndpoint = [&curveEndpoints](sketch::Point point) {
+    for (const auto endpoint : curveEndpoints) {
+      if (std::hypot(point.xMm - endpoint.xMm,
+                     point.yMm - endpoint.yMm) <= inferenceToleranceMm)
+        return endpoint;
+    }
+    return point;
+  };
+  struct SplitSegment {
+    sketch::Point a;
+    sketch::Point b;
+    bool userGeometry{true};
+  };
+  std::vector<SplitSegment> segments;
+  for (auto& item : sourceLines) {
+    std::sort(item.cuts.begin(), item.cuts.end());
+    item.cuts.erase(
+        std::unique(item.cuts.begin(), item.cuts.end(),
+                    [](double first, double second) {
+                      return std::abs(first - second) <= 1e-8;
+                    }),
+        item.cuts.end());
+    const double dx = item.b.xMm - item.a.xMm;
+    const double dy = item.b.yMm - item.a.yMm;
+    for (std::size_t cut = 0; cut + 1 < item.cuts.size(); ++cut) {
+      sketch::Point a{item.a.xMm + dx * item.cuts[cut],
+                      item.a.yMm + dy * item.cuts[cut]};
+      sketch::Point b{item.a.xMm + dx * item.cuts[cut + 1],
+                      item.a.yMm + dy * item.cuts[cut + 1]};
+      a = canonicalArcEndpoint(a);
+      b = canonicalArcEndpoint(b);
+      if (std::hypot(b.xMm - a.xMm, b.yMm - a.yMm) > 1e-8)
+        segments.push_back({a, b, item.userGeometry});
+    }
+  }
+
+  struct HalfEdge {
+    int from{-1};
+    int to{-1};
+    int twin{-1};
+    bool used{false};
+    bool userGeometry{true};
+    int curveIndex{-1};
+    bool curveForward{false};
+    double outgoingAngle{};
+  };
+  std::vector<sketch::Point> vertices;
+  const auto vertexIndex = [&vertices](sketch::Point point) {
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+      if (sameSketchPoint(vertices[index], point))
+        return static_cast<int>(index);
+    }
+    vertices.push_back(point);
+    return static_cast<int>(vertices.size() - 1);
+  };
+  std::vector<HalfEdge> edges;
+  std::vector<std::vector<int>> outgoing;
+  const auto ensureOutgoing = [&outgoing, &vertices]() {
+    if (outgoing.size() < vertices.size()) outgoing.resize(vertices.size());
+  };
+  for (const auto& segment : segments) {
+    const int a = vertexIndex(segment.a);
+    const int b = vertexIndex(segment.b);
+    if (a == b) continue;
+    ensureOutgoing();
+    int duplicate = -1;
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(edges.size());
+         edgeIndex += 2) {
+      if (edges[edgeIndex].curveIndex >= 0) continue;
+      if ((edges[edgeIndex].from == a && edges[edgeIndex].to == b) ||
+          (edges[edgeIndex].from == b && edges[edgeIndex].to == a)) {
+        duplicate = edgeIndex;
+        break;
+      }
+    }
+    if (duplicate >= 0) {
+      const bool userGeometry =
+          edges[duplicate].userGeometry || segment.userGeometry;
+      edges[duplicate].userGeometry = userGeometry;
+      edges[edges[duplicate].twin].userGeometry = userGeometry;
+      continue;
+    }
+    const int forward = static_cast<int>(edges.size());
+    const int reverse = forward + 1;
+    const double angle = std::atan2(vertices[b].yMm - vertices[a].yMm,
+                                    vertices[b].xMm - vertices[a].xMm);
+    edges.push_back(
+        {a, b, reverse, false, segment.userGeometry, -1, false, angle});
+    edges.push_back({b, a, forward, false, segment.userGeometry, -1, false,
+                     std::atan2(vertices[a].yMm - vertices[b].yMm,
+                                vertices[a].xMm - vertices[b].xMm)});
+    outgoing[a].push_back(forward);
+    outgoing[b].push_back(reverse);
+  }
+  for (std::size_t curveIndex = 0; curveIndex < curvePieces.size();
+       ++curveIndex) {
+    const auto& curve = curvePieces[curveIndex];
+    const sketch::Point curveStart{
+        curve.center.xMm + curve.radiusMm * std::cos(curve.startAngleRad),
+        curve.center.yMm + curve.radiusMm * std::sin(curve.startAngleRad)};
+    const double curveEndAngle =
+        curve.startAngleRad + curve.sweepAngleRad;
+    const sketch::Point curveEnd{
+        curve.center.xMm + curve.radiusMm * std::cos(curveEndAngle),
+        curve.center.yMm + curve.radiusMm * std::sin(curveEndAngle)};
+    const int a = vertexIndex(curveStart);
+    const int b = vertexIndex(curveEnd);
+    if (a == b) continue;
+    ensureOutgoing();
+    const int forward = static_cast<int>(edges.size());
+    const int reverse = forward + 1;
+    // At a tangent contact the straight edge and the exact tangent of the
+    // curved edge have the same angle. Probe a tiny distance into the curve
+    // so the planar rotation order remains deterministic on either side.
+    const double probeStep = curve.sweepAngleRad / 64.0;
+    const sketch::Point forwardProbe{
+        curve.center.xMm +
+            curve.radiusMm * std::cos(curve.startAngleRad + probeStep),
+        curve.center.yMm +
+            curve.radiusMm * std::sin(curve.startAngleRad + probeStep)};
+    const sketch::Point reverseProbe{
+        curve.center.xMm +
+            curve.radiusMm * std::cos(curveEndAngle - probeStep),
+        curve.center.yMm +
+            curve.radiusMm * std::sin(curveEndAngle - probeStep)};
+    edges.push_back({a, b, reverse, false, true,
+                     static_cast<int>(curveIndex), true,
+                     std::atan2(forwardProbe.yMm - curveStart.yMm,
+                                forwardProbe.xMm - curveStart.xMm)});
+    edges.push_back(
+        {b, a, forward, false, true, static_cast<int>(curveIndex), false,
+         std::atan2(reverseProbe.yMm - curveEnd.yMm,
+                    reverseProbe.xMm - curveEnd.xMm)});
+    outgoing[a].push_back(forward);
+    outgoing[b].push_back(reverse);
+  }
+  outgoing.resize(vertices.size());
+  for (auto& list : outgoing) {
+    std::sort(list.begin(), list.end(), [&edges](int first, int second) {
+      return edges[first].outgoingAngle < edges[second].outgoingAngle;
+    });
+  }
+
+  std::vector<AttachedArcProfile> profiles;
+  constexpr int arcSteps = 64;
+  for (int startEdge = 0; startEdge < static_cast<int>(edges.size());
+       ++startEdge) {
+    if (edges[startEdge].used) continue;
+    std::vector<int> cycleEdges;
+    int current = startEdge;
+    bool closed = false;
+    bool usesArc = false;
+    for (std::size_t guard = 0; guard <= edges.size() + 2; ++guard) {
+      if (edges[current].used && current != startEdge) break;
+      edges[current].used = true;
+      cycleEdges.push_back(current);
+      usesArc = usesArc || edges[current].curveIndex >= 0;
+      const int vertex = edges[current].to;
+      const int reverse = edges[current].twin;
+      const auto& list = outgoing[vertex];
+      const auto found = std::find(list.begin(), list.end(), reverse);
+      if (found == list.end() || list.empty()) break;
+      const std::size_t reversePosition =
+          static_cast<std::size_t>(std::distance(list.begin(), found));
+      current = list[(reversePosition + list.size() - 1) % list.size()];
+      if (current == startEdge) {
+        closed = true;
+        break;
+      }
+    }
+    if (!closed || !usesArc || cycleEdges.size() < 2) continue;
+
+    AttachedArcProfile profile;
+    std::vector<std::size_t> addedArcs;
+    for (const int edgeIndex : cycleEdges) {
+      const auto& edge = edges[edgeIndex];
+      if (edge.curveIndex < 0) {
+        profile.boundary.push_back(vertices[edge.from]);
+        profile.geometry.addLine(vertices[edge.from], vertices[edge.to]);
+        continue;
+      }
+      const auto& curve =
+          curvePieces[static_cast<std::size_t>(edge.curveIndex)];
+      for (int step = 0; step < arcSteps; ++step) {
+        const double forwardParameter =
+            static_cast<double>(step) / arcSteps;
+        const double parameter =
+            edge.curveForward ? forwardParameter : 1.0 - forwardParameter;
+        const double angle =
+            curve.startAngleRad + curve.sweepAngleRad * parameter;
+        profile.boundary.push_back(
+            {curve.center.xMm + curve.radiusMm * std::cos(angle),
+             curve.center.yMm + curve.radiusMm * std::sin(angle)});
+      }
+      const std::size_t exactCurveIndex =
+          static_cast<std::size_t>(edge.curveIndex);
+      if (std::find(addedArcs.begin(), addedArcs.end(), exactCurveIndex) ==
+          addedArcs.end()) {
+        addedArcs.push_back(exactCurveIndex);
+        profile.geometry.addArc(curve.center, curve.radiusMm,
+                                curve.startAngleRad,
+                                curve.sweepAngleRad);
+      }
+    }
+    if (profile.boundary.size() < 3 || !profile.geometry.isClosed()) continue;
+    double area2 = 0.0;
+    for (std::size_t index = 0; index < profile.boundary.size(); ++index) {
+      const auto& a = profile.boundary[index];
+      const auto& b =
+          profile.boundary[(index + 1) % profile.boundary.size()];
+      area2 += a.xMm * b.yMm - b.xMm * a.yMm;
+    }
+    if (area2 > 1e-8) profiles.push_back(std::move(profile));
   }
   return profiles;
 }
@@ -5677,6 +6012,10 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
     cubePressed_ = {};
     if (hit == pressed) {
       if (hit.zone == ViewCubeZone::Fit) fitAll();
+      else if (hit.zone == ViewCubeZone::RotateCounterClockwise)
+        animateOrientation({yaw_-45.0F,pitch_});
+      else if (hit.zone == ViewCubeZone::RotateClockwise)
+        animateOrientation({yaw_+45.0F,pitch_});
       else animateOrientation(hit.zone == ViewCubeZone::Home ?
           orientationFor(StandardView::Isometric) : orientationForDirection(hit.direction));
     }

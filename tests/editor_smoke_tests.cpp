@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPushButton>
@@ -21,6 +22,7 @@
 #include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QVariantAnimation>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -28,6 +30,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iostream>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -42,6 +45,7 @@
 #include "model/TopologyReferenceResolver.h"
 #include "ui/MainWindow.h"
 #include "ui/SketchCanvas.h"
+#include "ui/ViewCube.h"
 
 namespace {
 
@@ -243,6 +247,65 @@ void sketchFreeCameraTests() {
   CHECK(std::abs(canvas.viewYawDegrees()) <= 1e-9);
   CHECK(std::abs(canvas.viewPitchDegrees()) <= 1e-9);
 
+  // The cube arrows roll the sketch plane in 45-degree increments. This must
+  // remain an editable sketch-plane view rather than entering inspection mode.
+  const auto rotationCube = solidar::viewCubeGeometry(
+      canvas.size(), solidar::orientationForDirection({0.0, 0.0, 1.0}));
+  QMouseEvent rotatePress(QEvent::MouseButtonPress,
+                          rotationCube.rotateClockwise.center(),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &rotatePress);
+  QMouseEvent rotateRelease(QEvent::MouseButtonRelease,
+                            rotationCube.rotateClockwise.center(),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &rotateRelease);
+  auto* rotationAnimation = canvas.findChild<QVariantAnimation*>(
+      QStringLiteral("sketchViewOrientationTransition"));
+  CHECK(rotationAnimation != nullptr);
+  CHECK(rotationAnimation->state() == QAbstractAnimation::Running);
+  rotationAnimation->setCurrentTime(200);
+  CHECK(std::abs(canvas.viewRotationDegrees() - 45.0) <= 1e-9);
+  CHECK(canvas.viewAlignedToSketchPlane());
+  canvas.resetViewRotation();
+
+  // The Sketcher consumes the same cube geometry as the 3D viewport. Clicking
+  // one of its bevels animates to that edge's 45-degree view.
+  auto* cubeAnimation = canvas.findChild<QVariantAnimation*>(
+      QStringLiteral("sketchViewOrientationTransition"));
+  CHECK(cubeAnimation != nullptr);
+  CHECK(cubeAnimation->duration() == 200);
+  const auto alignedCube = solidar::viewCubeGeometry(
+      canvas.size(), solidar::orientationForDirection({0.0, 0.0, 1.0}));
+  const auto edgeIt = std::find_if(
+      alignedCube.patches.begin(), alignedCube.patches.end(),
+      [](const solidar::ViewCubePatch& patch) {
+        return patch.hit.zone == solidar::ViewCubeZone::Edge;
+      });
+  CHECK(edgeIt != alignedCube.patches.end());
+  QPointF edgePoint;
+  for (const QPointF point : edgeIt->polygon) edgePoint += point;
+  edgePoint /= edgeIt->polygon.size();
+  QMouseEvent cubePress(QEvent::MouseButtonPress, edgePoint, Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &cubePress);
+  QMouseEvent cubeRelease(QEvent::MouseButtonRelease, edgePoint,
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &cubeRelease);
+  CHECK(cubeAnimation->state() == QAbstractAnimation::Running);
+  cubeAnimation->setCurrentTime(200);
+  const auto direction = edgeIt->hit.direction;
+  const double directionLength = std::sqrt(direction.x * direction.x +
+                                           direction.y * direction.y +
+                                           direction.z * direction.z);
+  const double expectedYaw =
+      std::atan2(-direction.x, direction.z) * 180.0 / std::numbers::pi;
+  const double expectedPitch =
+      std::asin(direction.y / directionLength) * 180.0 / std::numbers::pi;
+  CHECK(std::abs(canvas.viewYawDegrees() - expectedYaw) <= 1e-4);
+  CHECK(std::abs(canvas.viewPitchDegrees() - expectedPitch) <= 1e-4);
+  CHECK(!canvas.viewAlignedToSketchPlane());
+  canvas.resetViewRotation();
+
   // Match the ordinary 3D viewport gesture: right-button dragging orbits the
   // Sketcher camera without requiring a keyboard modifier.
   QMouseEvent rightPress(QEvent::MouseButtonPress, start, Qt::RightButton,
@@ -269,6 +332,378 @@ void sketchFreeCameraTests() {
                            Qt::RightButton, Qt::NoButton, Qt::NoModifier);
   QApplication::sendEvent(&canvas, &clickRelease);
   CHECK(canvas.viewAlignedToSketchPlane());
+}
+
+void sketchConstraintToolTests() {
+  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
+  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
+  const auto screenPoint = [](double xMm, double yMm) {
+    return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
+  };
+  const auto move = [](solidar::SketchCanvas& canvas, QPointF at) {
+    QMouseEvent event(QEvent::MouseMove, at, Qt::NoButton,
+                      Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &event);
+  };
+  const auto click = [](solidar::SketchCanvas& canvas, QPointF at) {
+    QMouseEvent press(QEvent::MouseButtonPress, at, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &release);
+  };
+  const auto hasConstraint = [](const solidar::sketch::Sketch& sketch,
+                                solidar::sketch::ConstraintType type) {
+    return std::any_of(sketch.constraints().begin(),
+                       sketch.constraints().end(),
+                       [type](const auto& constraint) {
+                         return constraint.type == type;
+                       });
+  };
+
+  // Exercise the actual two-click UI path reported by the user. Both tools
+  // must create a persistent relation, not merely show a success message.
+  for (const auto [tool, type] : {
+           std::pair{solidar::SketchCanvas::Tool::ParallelConstraint,
+                     solidar::sketch::ConstraintType::Parallel},
+           std::pair{solidar::SketchCanvas::Tool::PerpendicularConstraint,
+                     solidar::sketch::ConstraintType::Perpendicular}}) {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, -10.0}, {-10.0, -4.0});
+    sketch.addLine({10.0, 5.0}, {25.0, 22.0});
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(tool);
+    canvas.show();
+    QApplication::processEvents();
+
+    const QPointF first = screenPoint(-20.0, -7.0);
+    const QPointF second = screenPoint(17.5, 13.5);
+    move(canvas, first);
+    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    click(canvas, first);
+    move(canvas, second);
+    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    click(canvas, second);
+    CHECK(hasConstraint(canvas.sketch(), type));
+  }
+
+  // Tangency accepts either click order and highlights only a compatible
+  // second operand. This also covers the curved-object hover rendering path.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 0.0}, {30.0, 0.0});
+    sketch.addCircle({0.0, 16.0}, 5.0);
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::TangentConstraint);
+    canvas.show();
+    QApplication::processEvents();
+
+    move(canvas, screenPoint(0.0, 0.0));
+    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    click(canvas, screenPoint(0.0, 0.0));
+    move(canvas, screenPoint(5.0, 16.0));
+    CHECK(canvas.property("constraintHoverKind").toInt() == 2);
+    click(canvas, screenPoint(5.0, 16.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Tangent));
+  }
+
+  // Every remaining constraint tool advertises a valid target before the
+  // click. Coincident prioritises a vertex; Lock also supports finite arcs.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 0.0}, {-10.0, 7.0});
+    sketch.addCircle({10.0, 12.0}, 5.0);
+    sketch.addArc({30.0, 0.0}, 8.0, 0.0, std::numbers::pi);
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.show();
+    QApplication::processEvents();
+
+    for (const auto tool : {
+             solidar::SketchCanvas::Tool::OrthogonalConstraint,
+             solidar::SketchCanvas::Tool::EqualConstraint,
+             solidar::SketchCanvas::Tool::ParallelConstraint,
+             solidar::SketchCanvas::Tool::PerpendicularConstraint}) {
+      canvas.setTool(tool);
+      move(canvas, screenPoint(-20.0, 3.5));
+      CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    }
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    move(canvas, screenPoint(-30.0, 0.0));
+    CHECK(canvas.property("constraintHoverKind").toInt() == 4);
+
+    canvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    move(canvas, screenPoint(-20.0, 3.5));
+    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    move(canvas, screenPoint(0.0, -20.0));
+    CHECK(canvas.property("constraintHoverKind").toInt() == 6);
+
+    canvas.setTool(solidar::SketchCanvas::Tool::LockConstraint);
+    move(canvas, screenPoint(30.0, 8.0));
+    CHECK(canvas.property("constraintHoverKind").toInt() == 3);
+    click(canvas, screenPoint(30.0, 8.0));
+    CHECK(canvas.sketch().isGeometryLocked(canvas.sketch().arcId(0)));
+  }
+
+  // User regression: a new line spans between a projected circle and the
+  // body of a projected lower edge. Its numeric length must commit, and the
+  // same lower edge must remain selectable for Perpendicular at the shared
+  // screen position.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-40.0, -20.0}, {40.0, -20.0});
+    sketch.addCircle({0.0, 0.0}, 10.0);
+    sketch.addLine({-10.0, 0.0}, {-8.0, -20.0});
+    const auto projectionLine = sketch.lineId(0);
+    const auto projectionCircle = sketch.circleId(0);
+    const auto activeLine = sketch.lineId(1);
+
+    solidar::sketch::Constraint lockLine;
+    lockLine.type = solidar::sketch::ConstraintType::Lock;
+    lockLine.firstGeometry = projectionLine;
+    CHECK(sketch.addConstraint(lockLine) !=
+          solidar::sketch::kInvalidConstraintId);
+    solidar::sketch::Constraint lockCircle = lockLine;
+    lockCircle.id = solidar::sketch::kInvalidConstraintId;
+    lockCircle.firstGeometry = projectionCircle;
+    CHECK(sketch.addConstraint(lockCircle) !=
+          solidar::sketch::kInvalidConstraintId);
+    solidar::sketch::Constraint onCircle;
+    onCircle.type = solidar::sketch::ConstraintType::PointOnCircle;
+    onCircle.firstGeometry = projectionCircle;
+    onCircle.secondPoint = {activeLine, true};
+    CHECK(sketch.addConstraint(onCircle) !=
+          solidar::sketch::kInvalidConstraintId);
+    solidar::sketch::Constraint onLine;
+    onLine.type = solidar::sketch::ConstraintType::PointOnLine;
+    onLine.firstGeometry = projectionLine;
+    onLine.secondPoint = {activeLine, false};
+    CHECK(sketch.addConstraint(onLine) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    canvas.show();
+    QApplication::processEvents();
+    const auto before = canvas.sketch().lines()[
+        *canvas.sketch().lineIndex(activeLine)];
+    click(canvas, screenPoint((before.start.xMm + before.end.xMm) * 0.5,
+                              (before.start.yMm + before.end.yMm) * 0.5));
+    auto* input = canvas.findChild<QDoubleSpinBox*>(
+        QStringLiteral("primaryDimension"));
+    CHECK(input != nullptr);
+    CHECK(input->isVisible());
+    CHECK(canvas.property("autoDimensionTarget").toString() ==
+          QStringLiteral("points"));
+    input->setValue(25.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(input, &enter);
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Distance));
+
+    canvas.setTool(
+        solidar::SketchCanvas::Tool::PerpendicularConstraint);
+    const auto sized = canvas.sketch().lines()[
+        *canvas.sketch().lineIndex(activeLine)];
+    click(canvas, screenPoint((sized.start.xMm + sized.end.xMm) * 0.5,
+                              (sized.start.yMm + sized.end.yMm) * 0.5));
+    move(canvas, screenPoint(sized.end.xMm, sized.end.yMm));
+    CHECK(canvas.property("constraintHoverGeometry").toULongLong() ==
+          projectionLine);
+    click(canvas, screenPoint(sized.end.xMm, sized.end.yMm));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Perpendicular));
+  }
+
+  // Exact UI order from the reported projected-geometry case:
+  // Perpendicular first, then a direct-line AutoDimension that requires the
+  // line to slide along the lower projection. Tangency is checked separately
+  // from the pre-dimension state because the chosen 25 mm branch intersects
+  // the circle but is not itself tangent.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-40.0, -35.0}, {40.0, -35.0});
+    sketch.addCircle({0.0, 0.0}, 10.0);
+    sketch.addLine({-8.0, -35.0}, {-8.0, -6.0});
+    const auto projectionLine = sketch.lineId(0);
+    const auto projectionCircle = sketch.circleId(0);
+    const auto activeLine = sketch.lineId(1);
+
+    solidar::sketch::Constraint constraint;
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = projectionLine;
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint.id = solidar::sketch::kInvalidConstraintId;
+    constraint.firstGeometry = projectionCircle;
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+    constraint.firstGeometry = projectionLine;
+    constraint.secondPoint = {activeLine, true};
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnCircle;
+    constraint.firstGeometry = projectionCircle;
+    constraint.secondPoint = {activeLine, false};
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Perpendicular;
+    constraint.firstGeometry = projectionLine;
+    constraint.secondGeometry = activeLine;
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    const auto beforeDimension = sketch;
+    solidar::SketchCanvas dimensionCanvas;
+    dimensionCanvas.resize(900, 650);
+    dimensionCanvas.loadSketch(sketch);
+    dimensionCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    dimensionCanvas.show();
+    QApplication::processEvents();
+    click(dimensionCanvas, screenPoint(-8.0, -20.5));
+    auto* input = dimensionCanvas.findChild<QDoubleSpinBox*>(
+        QStringLiteral("primaryDimension"));
+    CHECK(input != nullptr);
+    CHECK(input->isVisible());
+    input->setValue(25.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(input, &enter);
+    CHECK(!input->isVisible());
+    CHECK(hasConstraint(dimensionCanvas.sketch(),
+                        solidar::sketch::ConstraintType::Distance));
+    const auto& sized = dimensionCanvas.sketch().lines()[
+        *dimensionCanvas.sketch().lineIndex(activeLine)];
+    CHECK(std::abs(std::hypot(sized.end.xMm - sized.start.xMm,
+                              sized.end.yMm - sized.start.yMm) -
+                   25.0) <= 1e-4);
+    CHECK(std::abs(sized.end.xMm) <= 1e-4);
+    CHECK(std::abs(sized.end.yMm + 10.0) <= 1e-4);
+
+    solidar::SketchCanvas tangentCanvas;
+    tangentCanvas.resize(900, 650);
+    tangentCanvas.loadSketch(beforeDimension);
+    tangentCanvas.setTool(solidar::SketchCanvas::Tool::TangentConstraint);
+    tangentCanvas.show();
+    QApplication::processEvents();
+    click(tangentCanvas, screenPoint(-8.0, -20.5));
+    move(tangentCanvas, screenPoint(10.0, 0.0));
+    CHECK(tangentCanvas.property("constraintHoverGeometry").toULongLong() ==
+          projectionCircle);
+    click(tangentCanvas, screenPoint(10.0, 0.0));
+    CHECK(hasConstraint(tangentCanvas.sketch(),
+                        solidar::sketch::ConstraintType::Tangent));
+    const auto& tangent = tangentCanvas.sketch().lines()[
+        *tangentCanvas.sketch().lineIndex(activeLine)];
+    CHECK(std::abs(std::abs(tangent.start.xMm) - 10.0) <= 1e-4);
+    CHECK(std::abs(tangent.end.yMm) <= 1e-4);
+  }
+
+  // The exact combined UI workflow must keep every constraint: make the
+  // line tangent first, then set its visible angle to 90 degrees through
+  // AutoDimension, then apply the direct 25 mm line size.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-40.0, -25.0}, {40.0, -25.0});
+    sketch.addCircle({0.0, 0.0}, 10.0);
+    sketch.addLine({-8.0, -25.0}, {-8.0, -6.0});
+    const auto projectionLine = sketch.lineId(0);
+    const auto projectionCircle = sketch.circleId(0);
+    const auto activeLine = sketch.lineId(1);
+
+    solidar::sketch::Constraint constraint;
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = projectionLine;
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint.id = solidar::sketch::kInvalidConstraintId;
+    constraint.firstGeometry = projectionCircle;
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+    constraint.firstGeometry = projectionLine;
+    constraint.secondPoint = {activeLine, true};
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnCircle;
+    constraint.firstGeometry = projectionCircle;
+    constraint.secondPoint = {activeLine, false};
+    CHECK(sketch.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.show();
+    QApplication::processEvents();
+
+    canvas.setTool(solidar::SketchCanvas::Tool::TangentConstraint);
+    click(canvas, screenPoint(-8.0, -15.5));
+    click(canvas, screenPoint(10.0, 0.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Tangent));
+
+    canvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    const auto tangent = canvas.sketch().lines()[
+        *canvas.sketch().lineIndex(activeLine)];
+    click(canvas,
+          screenPoint((tangent.start.xMm + tangent.end.xMm) * 0.5,
+                      (tangent.start.yMm + tangent.end.yMm) * 0.5));
+    click(canvas, screenPoint(20.0, -25.0));
+    CHECK(canvas.property("autoDimensionTarget").toString() ==
+          QStringLiteral("angle"));
+    auto* input = canvas.findChild<QDoubleSpinBox*>(
+        QStringLiteral("primaryDimension"));
+    CHECK(input != nullptr);
+    CHECK(input->isVisible());
+    input->setValue(90.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(input, &enter);
+    CHECK(!input->isVisible());
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Angle));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Tangent));
+
+    canvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    const auto perpendicular = canvas.sketch().lines()[
+        *canvas.sketch().lineIndex(activeLine)];
+    click(canvas,
+          screenPoint((perpendicular.start.xMm + perpendicular.end.xMm) * 0.5,
+                      (perpendicular.start.yMm + perpendicular.end.yMm) *
+                          0.5));
+    CHECK(input->isVisible());
+    input->setValue(25.0);
+    QApplication::sendEvent(input, &enter);
+    CHECK(!input->isVisible());
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Distance));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Angle));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Tangent));
+    const auto& result = canvas.sketch().lines()[
+        *canvas.sketch().lineIndex(activeLine)];
+    CHECK(std::abs(std::hypot(result.end.xMm - result.start.xMm,
+                              result.end.yMm - result.start.yMm) -
+                   25.0) <= 1e-4);
+    CHECK(std::abs(std::abs(result.start.xMm) - 10.0) <= 1e-4);
+    CHECK(std::abs(result.end.yMm) <= 1e-4);
+  }
 }
 
 void circularEdgeProjectionTests() {
@@ -869,6 +1304,12 @@ int main(int argc, char** argv) {
 
   autoProjectionRegressionTests();
   sketchFreeCameraTests();
+  try {
+    sketchConstraintToolTests();
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
   circularEdgeProjectionTests();
   arcBodySelectionAndDragTests();
   draggedPointSnappingTests();

@@ -261,7 +261,9 @@ int main(int argc, char** argv) {
     CHECK(bodyPicks == 1);
     CHECK(pickedBody == bodyId);
     patternView.beginLinearPatternAxisSelection();
-    const QPointF xAxisPoint = sourceCamera.worldToScreen({100.0, 0.0, 0.0});
+    // Keep the axis sample clear of the navigation cube and its 45-degree
+    // rotation arrows, which intentionally consume overlay clicks first.
+    const QPointF xAxisPoint = sourceCamera.worldToScreen({70.0, 0.0, 0.0});
     mouse(patternView, QEvent::MouseMove, xAxisPoint, Qt::NoButton,
           Qt::NoButton);
     mouse(patternView, QEvent::MouseButtonPress, xAxisPoint, Qt::LeftButton,
