@@ -22,6 +22,7 @@
 #include "app/AppSettings.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletToolSession.h"
+#include "model/MoveFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
 #include "ui/MainWindow.h"
@@ -170,6 +171,9 @@ class MainWindowUndoTestAccess {
   static bool historyAtEnd(const MainWindow& window) {
     return window.isHistoryAtEnd();
   }
+  static void editSketch(MainWindow& window, SketchId sketchId) {
+    window.editSketchById(sketchId);
+  }
 };
 
 }  // namespace solidar
@@ -229,6 +233,40 @@ int main(int argc, char** argv) {
     CHECK(Access::setFirstBodyVisible(visibilityEditor, true));
     CHECK(Access::displayedBodyShape(visibilityEditor));
     CHECK(Access::viewportSolidVisible(visibilityEditor));
+  }
+
+  // Entering Sketcher after a downstream Move must show the current moved
+  // body without painting every consumed source sketch at its old placement.
+  // Those blue upstream contours looked like a duplicate stale solid.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::Document document;
+    auto& baseSketch = document.addSketch("Moved body source");
+    baseSketch.geometry.addRectangle({0.0, 0.0}, {40.0, 20.0});
+    const auto baseSketchId = baseSketch.id;
+    auto& inspectionSketch = document.addSketch("Inspection sketch");
+    inspectionSketch.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    const auto inspectionSketchId = inspectionSketch.id;
+    auto& body = document.addBody("Moved body");
+    auto extrusion = std::make_unique<solidar::ExtrudeFeature>(
+        baseSketchId, 15.0, "Extrude");
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    body.addFeature(std::make_unique<solidar::MoveFeature>(
+        extrusionId, solidar::Vector3d{-80.0, 0.0, 0.0}, "Move"));
+    CHECK(document.recompute());
+
+    const QString movedPath =
+        directory.filePath(QStringLiteral("moved-sketch-scene.solidar"));
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        movedPath, document, &error));
+    solidar::MainWindow movedEditor(settings);
+    CHECK(movedEditor.loadProject(movedPath, &error));
+    Access::editSketch(movedEditor, inspectionSketchId);
+    CHECK(Access::workspace(movedEditor)->currentWidget() ==
+          Access::sketch(movedEditor));
+    CHECK(Access::sketch(movedEditor)->sceneBodyCount() == 1);
+    CHECK(Access::sketch(movedEditor)->sceneSketchCount() == 0);
   }
 
   // Headless document replacement: repeated loadProject drives the full

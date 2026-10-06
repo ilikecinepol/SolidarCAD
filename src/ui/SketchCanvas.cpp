@@ -70,8 +70,39 @@ Point3d cubeViewingDirection(CameraOrientation camera) {
 Point3d sketchViewingDirection(double yawDeg, double pitchDeg) {
   const double yaw = yawDeg * std::numbers::pi / 180.0;
   const double pitch = pitchDeg * std::numbers::pi / 180.0;
-  return {-std::sin(yaw) * std::cos(pitch), std::sin(pitch),
+  // The sketch projection rotates the scene, while ViewCube describes the
+  // camera.  Their vertical motion has opposite signs: when the visible model
+  // tilts upward, the cube must tilt upward as well instead of mirroring it.
+  return {-std::sin(yaw) * std::cos(pitch), -std::sin(pitch),
           std::cos(yaw) * std::cos(pitch)};
+}
+
+Point3d localDirectionToWorld(const SketchPlacement& placement,
+                              Point3d local) {
+  const Vector3d normal = placement.normal();
+  return {
+      placement.xDirection.x * local.x +
+          placement.yDirection.x * local.y + normal.x * local.z,
+      placement.xDirection.y * local.x +
+          placement.yDirection.y * local.y + normal.y * local.z,
+      placement.xDirection.z * local.x +
+          placement.yDirection.z * local.y + normal.z * local.z};
+}
+
+Point3d worldDirectionToLocal(const SketchPlacement& placement,
+                              Point3d world) {
+  const Vector3d normal = placement.normal();
+  const auto component = [world](Vector3d axis) {
+    const double lengthSquared = axis.x * axis.x + axis.y * axis.y +
+                                 axis.z * axis.z;
+    return lengthSquared > 1e-12
+               ? (world.x * axis.x + world.y * axis.y +
+                  world.z * axis.z) /
+                     std::sqrt(lengthSquared)
+               : 0.0;
+  };
+  return {component(placement.xDirection),
+          component(placement.yDirection), component(normal)};
 }
 
 CameraOrientation sketchOrientationForDirection(Point3d direction) {
@@ -85,7 +116,7 @@ CameraOrientation sketchOrientationForDirection(Point3d direction) {
   return {static_cast<float>(std::atan2(-x, z) * 180.0 /
                                         std::numbers::pi),
           static_cast<float>(std::clamp(
-              std::asin(y) * 180.0 / std::numbers::pi, -89.9, 89.9))};
+              -std::asin(y) * 180.0 / std::numbers::pi, -89.9, 89.9))};
 }
 
 double niceRulerStep(double pixelsPerMm) {
@@ -2122,8 +2153,13 @@ bool SketchCanvas::viewAlignedToSketchPlane() const noexcept {
 }
 
 CameraOrientation SketchCanvas::viewCubeCamera() const noexcept {
-  return orientationForDirection(
-      sketchViewingDirection(viewYawDeg_, viewPitchDeg_));
+  // ViewCube labels are global (Front/Top/Right), while the Sketcher orbits
+  // in the active plane's local frame.  Transform the eye direction through
+  // SketchPlacement before feeding the shared 3D cube; otherwise an XZ face
+  // is incorrectly labelled as Top and pitch appears mirrored.
+  return orientationForDirection(localDirectionToWorld(
+      referencePlacement_,
+      sketchViewingDirection(viewYawDeg_, viewPitchDeg_)));
 }
 
 void SketchCanvas::animateViewToDirection(Point3d direction) {
@@ -2132,7 +2168,8 @@ void SketchCanvas::animateViewToDirection(Point3d direction) {
   disconnect(viewCubeAnimation_, nullptr, this, nullptr);
   const CameraOrientation start{static_cast<float>(viewYawDeg_),
                                 static_cast<float>(viewPitchDeg_)};
-  const CameraOrientation target = sketchOrientationForDirection(direction);
+  const CameraOrientation target = sketchOrientationForDirection(
+      worldDirectionToLocal(referencePlacement_, direction));
   viewRotationDeg_ = 0.0;
   hideDimensionEditor();
   constructionHover_.reset();

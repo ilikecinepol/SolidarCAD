@@ -300,7 +300,7 @@ void sketchFreeCameraTests() {
   const double expectedYaw =
       std::atan2(-direction.x, direction.z) * 180.0 / std::numbers::pi;
   const double expectedPitch =
-      std::asin(direction.y / directionLength) * 180.0 / std::numbers::pi;
+      -std::asin(direction.y / directionLength) * 180.0 / std::numbers::pi;
   CHECK(std::abs(canvas.viewYawDegrees() - expectedYaw) <= 1e-4);
   CHECK(std::abs(canvas.viewPitchDegrees() - expectedPitch) <= 1e-4);
   CHECK(!canvas.viewAlignedToSketchPlane());
@@ -332,6 +332,36 @@ void sketchFreeCameraTests() {
                            Qt::RightButton, Qt::NoButton, Qt::NoModifier);
   QApplication::sendEvent(&canvas, &clickRelease);
   CHECK(canvas.viewAlignedToSketchPlane());
+
+  // Cube labels and tilt are expressed in world coordinates.  An XZ sketch
+  // is viewed from the global Front, not from Top.  Vertical orbit is mapped
+  // with the opposite camera sign so the cube follows the visible model
+  // instead of rotating in the opposite direction.
+  const auto viewingDirection = [](solidar::CameraOrientation camera) {
+    const double yaw = camera.yaw * std::numbers::pi / 180.0;
+    const double pitch = camera.pitch * std::numbers::pi / 180.0;
+    return solidar::Point3d{std::sin(yaw) * std::sin(pitch),
+                            std::cos(yaw) * std::sin(pitch),
+                            std::cos(pitch)};
+  };
+  canvas.setSceneReferences(solidar::SketchPlacement::xz(), {}, {});
+  canvas.resetViewRotation();
+  const auto frontDirection = viewingDirection(canvas.viewCubeCamera());
+  CHECK(std::abs(frontDirection.x) <= 1e-6);
+  CHECK(std::abs(frontDirection.y + 1.0) <= 1e-6);
+  CHECK(std::abs(frontDirection.z) <= 1e-6);
+
+  canvas.orbitView(0.0, 20.0);
+  const auto sketchTilt = viewingDirection(canvas.viewCubeCamera());
+  CHECK(std::abs(sketchTilt.x) <= 1e-6);
+  CHECK(sketchTilt.y < -0.9);
+  CHECK(sketchTilt.z < -0.3);
+
+  canvas.orbitView(0.0, -40.0);
+  const auto oppositeTilt = viewingDirection(canvas.viewCubeCamera());
+  CHECK(std::abs(oppositeTilt.x) <= 1e-6);
+  CHECK(oppositeTilt.y < -0.9);
+  CHECK(oppositeTilt.z > 0.3);
 }
 
 void sketchConstraintToolTests() {

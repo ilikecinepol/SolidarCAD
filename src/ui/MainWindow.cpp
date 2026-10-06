@@ -5538,6 +5538,7 @@ void MainWindow::configureSketchSceneReferences(SketchId excludedSketchId) {
   std::vector<ShapeFeature::ShapePtr> bodyShapes;
   bodyShapes.reserve(document_.bodies().size());
   for (const auto& body : document_.bodies()) {
+    if (!body.visible()) continue;
     if (body.id() == supportBodyId) continue;
     if (auto shape = body.resultShape()) bodyShapes.push_back(std::move(shape));
   }
@@ -5546,6 +5547,11 @@ void MainWindow::configureSketchSceneReferences(SketchId excludedSketchId) {
   sketches.reserve(document_.sketches().size());
   for (const auto& documentSketch : document_.sketches()) {
     if (documentSketch.id == excludedSketchId) continue;
+    // Consumed construction sketches remain upstream of Move and other body
+    // features.  Drawing all of them in blue made the pre-transform contours
+    // look like a second, stale solid.  Match the 3D tree: show only sketches
+    // that are still independently visible construction geometry.
+    if (isSketchConsumedByPartDesign(document_, documentSketch.id)) continue;
     sketches.push_back(
         {documentSketch.geometry, documentSketch.placement});
   }

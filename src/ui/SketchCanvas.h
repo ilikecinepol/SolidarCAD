@@ -96,6 +96,9 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] double viewYawDegrees() const noexcept;
   [[nodiscard]] double viewPitchDegrees() const noexcept;
   [[nodiscard]] bool viewAlignedToSketchPlane() const noexcept;
+  // Global camera orientation consumed by the shared ViewCube.  The sketch
+  // camera itself is stored in the active plane's local coordinate frame.
+  [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
   void setSketchEditContext(const SketchEditContext& context);
   void setSceneReferences(
@@ -220,7 +223,6 @@ signals:
       int segmentCount = 72) const;
   [[nodiscard]] double circleDistanceToScreenPoint(
       const sketch::Circle& circle, QPointF point) const;
-  [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
   void animateViewToDirection(Point3d direction);
   void animateViewRotationBy(double deltaDeg);
   void clearViewCubeHover();
