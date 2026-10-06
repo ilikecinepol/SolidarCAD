@@ -108,6 +108,13 @@ int main() {
             {140.0, 99.99}, angularOrigin, angularU, angularV) > 359.0);
   CHECK(*solidar::angularValueFromProjectedBasis(
             {140.0, 100.01}, angularOrigin, angularU, angularV) < 1.0);
+  CHECK(std::abs(*solidar::angularValueFromProjectedBasis(
+                     {100.0, 80.0}, angularOrigin, angularU, angularV,
+                     -89.99, 89.99) +
+                 89.99) < 1e-9);
+  CHECK(std::abs(*solidar::angularValueFromProjectedBasis(
+                     angularU, angularOrigin, angularU, angularV,
+                     -89.99, 89.99)) < 1e-9);
 
   // Degenerate projected basis reports an indeterminate angle (nullopt) rather
   // than a fabricated complete revolution; the caller preserves the current

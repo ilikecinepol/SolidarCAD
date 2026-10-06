@@ -119,6 +119,10 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   move->setObjectName("moveCommand");
   move->setCheckable(true);
   toolGroup_->addButton(move);
+  auto* joinBodies = commandButton(QStringLiteral("joinBodies"), this);
+  joinBodies->setObjectName("joinBodiesCommand");
+  joinBodies->setCheckable(true);
+  toolGroup_->addButton(joinBodies);
   auto* shell = commandButton(QStringLiteral("shell"), this);
   auto* draft = commandButton(QStringLiteral("draft"), this);
   shell->setObjectName("shellCommand");
@@ -145,6 +149,7 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   editing->setSpacing(5);
   editing->addWidget(fillet);
   editing->addWidget(chamfer);
+  editing->addWidget(joinBodies);
   editing->addWidget(move);
   editing->addWidget(shell);
   editing->addWidget(draft);
@@ -152,7 +157,7 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   editing->addWidget(linearPattern);
   editing->addWidget(circularPattern);
   root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
-                        {fillet, chamfer, move, shell, draft, mirror, linearPattern,
+                        {fillet, chamfer, joinBodies, move, shell, draft, mirror, linearPattern,
                          circularPattern}));
   root->addWidget(separator(this));
 
@@ -217,6 +222,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::filletRequested);
   connect(chamfer, &QToolButton::clicked, this,
           &ModelRibbon::chamferRequested);
+  connect(joinBodies, &QToolButton::clicked, this,
+          &ModelRibbon::joinBodiesRequested);
   connect(move, &QToolButton::clicked, this, &ModelRibbon::moveRequested);
   connect(shell, &QToolButton::clicked, this, &ModelRibbon::shellRequested);
   connect(draft, &QToolButton::clicked, this, &ModelRibbon::draftRequested);

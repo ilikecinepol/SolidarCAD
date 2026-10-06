@@ -23,13 +23,18 @@ std::shared_ptr<TopoDS_Shape> buildDraftShape(
     return std::shared_ptr<TopoDS_Shape>{};
   };
   if (baseShape.IsNull()) return fail("Draft base shape is missing");
-  if (!std::isfinite(angleDeg) || angleDeg <= 0.0 || angleDeg >= 89.0)
-    return fail("Draft angle must be finite and in the range (0, 89)");
+  if (!std::isfinite(angleDeg) || angleDeg < 0.0 || angleDeg >= 90.0)
+    return fail("Draft angle must be finite and in the range [0, 90)");
   if (faceIndices.empty()) return fail("Draft requires at least one face");
   try {
     std::string mappingError;
     auto selection = mapFacesToOwningSolids(baseShape, faceIndices, &mappingError);
     if (!selection) return fail("Draft " + mappingError);
+    // Zero is a stable intermediate while the signed angular manipulator
+    // crosses between the two draft directions. Resolve the selection first,
+    // so a stale face reference is not hidden by this no-op result.
+    if (angleDeg < 1e-9)
+      return std::make_shared<TopoDS_Shape>(baseShape);
     const double radians = angleDeg * std::numbers::pi / 180.0 *
                            (reversed ? -1.0 : 1.0);
     for (std::size_t solidIndex = 0; solidIndex < selection->solids.size();

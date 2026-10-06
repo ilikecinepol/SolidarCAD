@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDoubleSpinBox>
 #include <QMenu>
 #include <QToolButton>
 
@@ -40,6 +41,7 @@ int main(int argc, char** argv) {
   assert(creation->findChild<QToolButton*>("revolveCommand"));
   assert(editing->findChild<QToolButton*>("filletCommand"));
   assert(editing->findChild<QToolButton*>("chamferCommand"));
+  assert(editing->findChild<QToolButton*>("joinBodiesCommand"));
   assert(editing->findChild<QToolButton*>("moveCommand"));
   assert(view->findChild<QToolButton*>("rulerCommand"));
   assert(!creation->findChild<QToolButton*>("filletCommand"));
@@ -59,7 +61,7 @@ int main(int argc, char** argv) {
     assert(!command->accessibleName().isEmpty());
     assert(!command->accessibleDescription().isEmpty());
   }
-  assert(documentedCommands == 12);
+  assert(documentedCommands == 13);
   assert(!ribbon.findChild<QToolButton*>("fitCommand"));
   assert(!ribbon.findChild<QToolButton*>("isoCommand"));
   const std::initializer_list<solidar::PartDesignToolKind> historyKinds{
@@ -68,6 +70,7 @@ int main(int argc, char** argv) {
       solidar::PartDesignToolKind::Revolve,
       solidar::PartDesignToolKind::Fillet,
       solidar::PartDesignToolKind::Chamfer,
+      solidar::PartDesignToolKind::JoinBodies,
       solidar::PartDesignToolKind::Move,
       solidar::PartDesignToolKind::Mirror,
       solidar::PartDesignToolKind::LinearPattern,
@@ -92,7 +95,7 @@ int main(int argc, char** argv) {
   assert(!compactButton.toolTip().isEmpty() && compactButton.isChecked());
 
   assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
-  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 8);
+  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 9);
   assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
 
   solidar::ToolParametersPanel panel;
@@ -104,6 +107,17 @@ int main(int argc, char** argv) {
   assert(panel.descriptionText() == shellHelp->shortDescription);
   panel.setStatus(QString::fromUtf8("Тестовая ошибка"), true);
   assert(panel.descriptionText() == shellHelp->shortDescription);
+  const auto* joinHelp = solidar::partDesignToolHelp(
+      solidar::PartDesignToolKind::JoinBodies);
+  panel.configureSelectionOnly(*joinHelp, QString::fromUtf8("Тела"));
+  auto* parameterInput =
+      panel.findChild<QDoubleSpinBox*>("toolParameterInput");
+  assert(parameterInput && parameterInput->isHidden());
+  const auto* chamferHelp = solidar::partDesignToolHelp(
+      solidar::PartDesignToolKind::Chamfer);
+  panel.configure(*chamferHelp, QString::fromUtf8("Рёбра"),
+                  QString::fromUtf8("Размер"), QStringLiteral(" mm"));
+  assert(!parameterInput->isHidden());
 
   solidar::Viewport viewport;
   viewport.setSelectionFilter(solidar::SelectionFilter::Edge);

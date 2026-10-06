@@ -1580,7 +1580,9 @@ void MainWindow::buildUi() {
           });
   connect(toolParametersPanel_, &ToolParametersPanel::accepted, this,
           [this] {
-            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+            if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              acceptJoinBodiesTool();
+            else if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
               acceptChamferTool();
             else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
               acceptShellTool();
@@ -1593,7 +1595,9 @@ void MainWindow::buildUi() {
           });
   connect(toolParametersPanel_, &ToolParametersPanel::cancelled, this,
           [this] {
-            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+            if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              cancelJoinBodiesTool();
+            else if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
               cancelChamferTool();
             else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
               cancelShellTool();
@@ -1608,17 +1612,30 @@ void MainWindow::buildUi() {
           [this] {
             if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 chamferToolSession_.lifecycle() == ToolLifecycle::Inactive &&
+                joinBodiesToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 shellToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 draftToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 faceExtrudeSession_.lifecycle() == ToolLifecycle::Inactive) return;
-            statusBar()->showMessage(
-                QString::fromUtf8("Выберите геометрию непосредственно в viewport"));
+            if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              viewport_->beginJoinBodiesSelection();
+            else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              partDesignTools_.beginReselection(
+                  ToolSelectionStage::SelectingInput);
+              draftToolSession_.setFaces({});
+              draftToolSession_.clearPrincipalAxis();
+              viewport_->clearToolManipulator();
+              viewport_->beginDraftFaceSelection();
+              updateDraftToolPreview();
+            }
+            statusBar()->showMessage(QString::fromUtf8(
+                "Выберите геометрию непосредственно в viewport"));
             viewport_->setFocus();
           });
   connect(toolParametersPanel_, &ToolParametersPanel::clearSelectionRequested,
           this, [this] {
             if (filletToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 chamferToolSession_.lifecycle() == ToolLifecycle::Inactive &&
+                joinBodiesToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 shellToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 draftToolSession_.lifecycle() == ToolLifecycle::Inactive &&
                 faceExtrudeSession_.lifecycle() == ToolLifecycle::Inactive) return;
@@ -1626,6 +1643,12 @@ void MainWindow::buildUi() {
               viewport_->setSelectedBodyFaces({});
               faceExtrudeSession_.setFace(FaceReference{});
               updateFaceExtrudeToolPreview();
+              return;
+            }
+            if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::Inactive) {
+              viewport_->setSelectedBodies({});
+              joinBodiesToolSession_.setBodies({});
+              updateJoinBodiesToolPreview();
               return;
             }
             if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
@@ -1637,6 +1660,8 @@ void MainWindow::buildUi() {
             if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               viewport_->setSelectedBodyFaces({});
               draftToolSession_.setFaces({});
+              draftToolSession_.clearPrincipalAxis();
+              viewport_->beginDraftFaceSelection();
               updateDraftToolPreview();
               return;
             }
@@ -1709,13 +1734,38 @@ void MainWindow::buildUi() {
       // Tab enters the on-canvas thickness field, not the right-hand dock.
       static_cast<void>(viewport_->focusToolParameterField(false));
     } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
-      draftToolSession_.setFaces(viewport_->selectedBodyFaces());
+      auto faces = viewport_->selectedBodyFaces();
+      if (faces.size() > 1) faces.resize(1);
+      draftToolSession_.setFaces(faces);
+      draftToolSession_.clearPrincipalAxis();
       updateDraftToolPreview();
-      // Keep keyboard focus in the viewport after face selection so the next
-      // Tab enters the on-canvas angle field.
-      static_cast<void>(viewport_->focusToolParameterField(false));
+      if (!faces.empty()) {
+        partDesignTools_.beginReselection(
+            ToolSelectionStage::SelectingReference);
+        viewport_->beginDraftAxisSelection();
+        statusBar()->showMessage(
+            QString::fromUtf8(
+                "2/3 Выберите ось X, Y, Z или прилегающее прямое ребро"));
+      }
     }
   });
+  connect(viewport_, &Viewport::bodiesSelected, this,
+          [this](const std::vector<BodyId>& bodyIds) {
+            if (joinBodiesToolSession_.lifecycle() == ToolLifecycle::Inactive)
+              return;
+            std::vector<JoinBodyInput> inputs;
+            inputs.reserve(std::min<std::size_t>(bodyIds.size(), 2));
+            for (const BodyId bodyId : bodyIds) {
+              if (inputs.size() == 2) break;
+              Body* body = document_.findBody(bodyId);
+              if (!body || !body->activeFeature() || !body->resultShape())
+                continue;
+              inputs.push_back({bodyId, body->activeFeature()->id(),
+                                body->resultShape()});
+            }
+            joinBodiesToolSession_.setBodies(std::move(inputs));
+            updateJoinBodiesToolPreview();
+          });
   connect(toolParametersPanel_, &ToolParametersPanel::optionChanged, this,
           [this](bool checked) {
             if (faceExtrudeSession_.lifecycle() != ToolLifecycle::Inactive) {
@@ -1725,9 +1775,6 @@ void MainWindow::buildUi() {
             } else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive) {
               shellToolSession_.setOutside(checked);
               updateShellToolPreview();
-            } else if (draftToolSession_.lifecycle() != ToolLifecycle::Inactive) {
-              draftToolSession_.setReversed(checked);
-              updateDraftToolPreview();
             }
           });
   connect(viewport_, &Viewport::angularToolManipulatorValueChanged, this,
@@ -1773,7 +1820,9 @@ void MainWindow::buildUi() {
   const auto acceptActiveTool = [this] {
     toolParametersPanel_->interpretParameterText();
     if (!toolParametersPanel_->acceptEnabled()) return;
-    if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+    if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::Inactive)
+      acceptJoinBodiesTool();
+    else if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptChamferTool();
     else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
       acceptShellTool();
@@ -1800,7 +1849,9 @@ void MainWindow::buildUi() {
   cancelToolShortcut->setAutoRepeat(false);
   connect(cancelToolShortcut, &QShortcut::activated, this,
           [this] {
-            if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
+            if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::Inactive)
+              cancelJoinBodiesTool();
+            else if (chamferToolSession_.lifecycle() != ToolLifecycle::Inactive)
               cancelChamferTool();
             else if (shellToolSession_.lifecycle() != ToolLifecycle::Inactive)
               cancelShellTool();
@@ -2191,6 +2242,8 @@ void MainWindow::buildUi() {
           &MainWindow::createFillet);
   connect(modelRibbon_, &ModelRibbon::chamferRequested, this,
           &MainWindow::createChamfer);
+  connect(modelRibbon_, &ModelRibbon::joinBodiesRequested, this,
+          &MainWindow::createJoinBodies);
   connect(modelRibbon_, &ModelRibbon::moveRequested, this,
           &MainWindow::createMove);
   connect(modelRibbon_, &ModelRibbon::shellRequested, this,
@@ -2387,6 +2440,23 @@ void MainWindow::buildUi() {
           [this](QTreeWidgetItem* item, int) {
             const int kind = item->data(0, Qt::UserRole).toInt();
             const bool visible = item->checkState(0) == Qt::Checked;
+            const auto bodyId = static_cast<BodyId>(
+                item->data(0, Qt::UserRole + 2).toULongLong());
+            if (kind == 3 && bodyId != kInvalidBodyId) {
+              Body* body = document_.findBody(bodyId);
+              if (!body || body->visible() == visible) return;
+              const bool previousVisibility = body->visible();
+              body->setVisible(visible);
+              refreshBodyViewFromDocument();
+              if (!applyingUndo_)
+                pushUndoAction([this, bodyId, previousVisibility] {
+                  if (Body* restored = document_.findBody(bodyId))
+                    restored->setVisible(previousVisibility);
+                  refreshBodyViewFromDocument();
+                  rebuildFeatureTree();
+                });
+              return;
+            }
             if (!applyingUndo_ && kind != 0) {
               pushUndoAction([this, kind, visible] {
                 for (auto* candidate : featureTree_->findItems(
@@ -2402,7 +2472,6 @@ void MainWindow::buildUi() {
             }
             if (kind == 1) viewport_->setOriginVisible(visible);
             if (kind == 2) viewport_->setSketchVisible(visible);
-            if (kind == 3) viewport_->setSolidVisible(visible && hasExtrusion_);
             if (kind >= 10 && kind <= 12)
               viewport_->setBasePlaneVisible(kind - 10, visible);
             if (kind >= 20)
@@ -2599,6 +2668,37 @@ void MainWindow::buildUi() {
                 QString::fromUtf8("Предпросмотр кругового массива построен"),
                 3000);
           });
+  connect(viewport_, &Viewport::draftAxisPicked, this,
+          [this](int axisIndex) {
+            if (draftToolSession_.lifecycle() == ToolLifecycle::Inactive ||
+                axisIndex < 0 || axisIndex > 2)
+              return;
+            if (!draftToolSession_.setPrincipalAxis(axisIndex)) return;
+            partDesignTools_.finishReselection();
+            viewport_->showDraftAxisSelection(axisIndex);
+            updateDraftToolPreview();
+            static_cast<void>(viewport_->focusToolParameterField(false));
+            statusBar()->showMessage(QString::fromUtf8(
+                "3/3 Потяните дугу или введите угол и нажмите Enter"));
+          });
+  connect(viewport_, &Viewport::draftEdgeAxisPicked, this,
+          [this](const EdgeReference& edge) {
+            if (draftToolSession_.lifecycle() == ToolLifecycle::Inactive)
+              return;
+            if (!draftToolSession_.setRotationEdge(edge)) {
+              updateDraftToolPreview();
+              viewport_->beginDraftAxisSelection();
+              statusBar()->showMessage(QString::fromUtf8(
+                  "Ребро должно быть прямым и принадлежать выбранной поверхности"));
+              return;
+            }
+            partDesignTools_.finishReselection();
+            viewport_->showDraftEdgeAxisSelection(edge);
+            updateDraftToolPreview();
+            static_cast<void>(viewport_->focusToolParameterField(false));
+            statusBar()->showMessage(QString::fromUtf8(
+                "3/3 Потяните дугу или введите угол и нажмите Enter"));
+          });
   partDesignTools_.registerTool(
       PartDesignToolKind::Revolve,
       {&revolveToolSession_, [this] { cancelRevolveTool(); }, {}});
@@ -2621,6 +2721,9 @@ void MainWindow::buildUi() {
   partDesignTools_.registerTool(
       PartDesignToolKind::Chamfer,
       {&chamferToolSession_, [this] { cancelChamferTool(); }, {}});
+  partDesignTools_.registerTool(
+      PartDesignToolKind::JoinBodies,
+      {&joinBodiesToolSession_, [this] { cancelJoinBodiesTool(); }, {}});
   partDesignTools_.registerTool(
       PartDesignToolKind::Shell,
       {&shellToolSession_, [this] { cancelShellTool(); }, {}});
@@ -2999,16 +3102,19 @@ void MainWindow::extrudeSketch() {
 
 void MainWindow::refreshBodyViewFromDocument() {
   std::vector<BodyViewShape> shapes;
+  bool anyBodyShape = false;
   for (const Body& body : document_.bodies()) {
     auto shape = body.resultShape();
     if (!shape) continue;
+    anyBodyShape = true;
+    if (!body.visible()) continue;
     const ShapeFeature* feature = body.activeFeature();
     shapes.push_back({body.id(), feature ? feature->id() : kInvalidFeatureId,
                       std::move(shape)});
   }
-  hasExtrusion_ = !shapes.empty();
+  hasExtrusion_ = anyBodyShape;
   viewport_->setBodyShapes(std::move(shapes));
-  viewport_->setSolidVisible(hasExtrusion_);
+  viewport_->setSolidVisible(anyBodyShape);
   drawingSheet_->setDocument(document_);
   for (std::size_t index = 0; index < sketchHistory_.size(); ++index) {
     const auto* modelSketch =
@@ -3394,19 +3500,23 @@ void MainWindow::editPatternFeature(FeatureId featureId) {
         draftToolSession_.begin(document_, body.id(),
             body.features()[index - 1]->id(), source, draft->draftedFaces(),
             draft->neutralPlane(), draft->pullDirection(), draft->angleDeg(),
-            draft->reversed(), draft->id());
-        viewport_->setFaceMultiSelectionMode(true);
+            draft->reversed(), draft->id(), draft->rotationEdge());
+        viewport_->setFaceMultiSelectionMode(false);
         viewport_->setSelectionFilter(SelectionFilter::Face);
         viewport_->setSelectedBodyFaces(draft->draftedFaces());
         toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Draft),
-            QString::fromUtf8("Грани"), QString::fromUtf8("Угол"),
+            QString::fromUtf8("Поверхность"), QString::fromUtf8("Угол"),
             QString::fromUtf8("°"));
-        toolParametersPanel_->setParameterRange(0.01, 89.0, 2);
-        toolParametersPanel_->setParameterValue(draft->angleDeg());
-        toolParametersPanel_->configureOption(QString::fromUtf8("Обратный уклон"),
-                                               draft->reversed());
+        toolParametersPanel_->setParameterRange(-89.99, 89.99, 2);
+        toolParametersPanel_->setParameterValue(draftToolSession_.angleDeg());
         toolParametersDock_->show(); toolParametersDock_->raise();
+        if (const auto axis = draftToolSession_.principalAxisIndex())
+          viewport_->showDraftAxisSelection(*axis);
+        else if (draftToolSession_.rotationEdge())
+          viewport_->showDraftEdgeAxisSelection(
+              *draftToolSession_.rotationEdge());
         updateDraftToolPreview();
+        static_cast<void>(viewport_->focusToolParameterField(false));
         return;
       }
       if (auto* move = dynamic_cast<MoveFeature*>(feature)) {
@@ -4198,6 +4308,134 @@ void MainWindow::createChamfer() {
         QString::fromUtf8("Нажмите «Выбрать» и укажите рёбра в viewport"));
 }
 
+void MainWindow::createJoinBodies() {
+  if (!ensureHistoryAtEnd()) return;
+  std::size_t availableBodies = 0;
+  for (const Body& body : document_.bodies())
+    if (body.visible() && body.resultShape()) ++availableBodies;
+  if (availableBodies < 2) {
+    QMessageBox::information(
+        this, QString::fromUtf8("Соединить тела"),
+        QString::fromUtf8("Для объединения нужны два видимых твёрдых тела."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  resetTransientModelingUi();
+  partDesignTools_.activate(PartDesignToolKind::JoinBodies);
+  joinBodiesToolSession_.begin();
+  toolParametersPanel_->configureSelectionOnly(
+      *partDesignToolHelp(PartDesignToolKind::JoinBodies),
+      QString::fromUtf8("Тела"));
+  toolParametersPanel_->setSelectionCount(0);
+  toolParametersPanel_->setAcceptEnabled(false);
+  toolParametersPanel_->setStatus(
+      QString::fromUtf8("Выберите первое, затем второе тело"));
+  toolParametersDock_->show();
+  toolParametersDock_->raise();
+  viewport_->beginJoinBodiesSelection();
+  statusBar()->showMessage(
+      QString::fromUtf8("Соединить тела: выберите два тела в 3D-виде"));
+}
+
+void MainWindow::updateJoinBodiesToolPreview() {
+  const auto state = joinBodiesToolSession_.lifecycle();
+  if (state == ToolLifecycle::Inactive) return;
+  toolParametersPanel_->setSelectionCount(joinBodiesToolSession_.bodies().size());
+  const bool valid = state == ToolLifecycle::PreviewValid;
+  toolParametersPanel_->setAcceptEnabled(valid);
+  QString status;
+  bool error = false;
+  if (valid) {
+    status = QString::fromUtf8("Предпросмотр объединения построен");
+  } else if (state == ToolLifecycle::PreviewInvalid) {
+    error = true;
+    status = joinBodiesToolSession_.error().find("touching") != std::string::npos
+                 ? QString::fromUtf8(
+                       "Тела должны соприкасаться или пересекаться")
+                 : QString::fromUtf8("Не удалось объединить выбранные тела");
+  } else {
+    status = joinBodiesToolSession_.bodies().empty()
+                 ? QString::fromUtf8("Выберите первое тело")
+                 : QString::fromUtf8("Выберите второе тело");
+  }
+  toolParametersPanel_->setStatus(status, error);
+  if (joinBodiesToolSession_.previewShape()) {
+    viewport_->setToolPreviewPresentation(
+        ToolPreviewPresentation::ReplaceSource);
+    viewport_->setToolPreviewShape(kInvalidBodyId, kInvalidFeatureId,
+                                   joinBodiesToolSession_.previewShape());
+  } else {
+    viewport_->clearToolPreviewShape();
+  }
+  if (error) statusBar()->showMessage(status, 5000);
+}
+
+void MainWindow::cancelJoinBodiesTool() {
+  if (joinBodiesToolSession_.lifecycle() == ToolLifecycle::Inactive) return;
+  joinBodiesToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::JoinBodies);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  toolParametersDock_->hide();
+  modelRibbon_->clearActiveTool();
+  refreshBodyViewFromDocument();
+  statusBar()->showMessage(
+      QString::fromUtf8("Объединение тел отменено"), 2000);
+}
+
+void MainWindow::acceptJoinBodiesTool() {
+  if (joinBodiesToolSession_.lifecycle() != ToolLifecycle::PreviewValid ||
+      joinBodiesToolSession_.bodies().size() != 2)
+    return;
+  const auto inputs = joinBodiesToolSession_.bodies();
+  Body* first = document_.findBody(inputs[0].bodyId);
+  Body* second = document_.findBody(inputs[1].bodyId);
+  if (!first || !second || first == second || !first->activeFeature() ||
+      !second->activeFeature() ||
+      first->activeFeature()->id() != inputs[0].featureId ||
+      second->activeFeature()->id() != inputs[1].featureId) {
+    toolParametersPanel_->setStatus(
+        QString::fromUtf8("Исходные тела изменились. Выберите их заново."),
+        true);
+    return;
+  }
+
+  const Document previous = document_;
+  Body& resultBody = document_.addBody(
+      "Joined Body " + std::to_string(document_.bodies().size() + 1));
+  resultBody.addFeature(std::make_unique<JoinBodiesFeature>(
+      inputs[0].bodyId, inputs[0].featureId, inputs[1].bodyId,
+      inputs[1].featureId, "Соединение тел"));
+  first = document_.findBody(inputs[0].bodyId);
+  second = document_.findBody(inputs[1].bodyId);
+  first->setVisible(false);
+  second->setVisible(false);
+  if (!document_.recompute()) {
+    const QString error = QString::fromStdString(document_.rebuildError());
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    toolParametersPanel_->setStatus(error, true);
+    return;
+  }
+
+  joinBodiesToolSession_.cancel();
+  partDesignTools_.deactivate(PartDesignToolKind::JoinBodies);
+  viewport_->resetToolInteraction();
+  viewport_->setSelectedBodies({});
+  toolParametersDock_->hide();
+  pushUndoAction([this, previous] {
+    document_ = previous;
+    refreshBodyViewFromDocument();
+    rebuildFeatureTree();
+    rebuildHistoryPanel();
+  });
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  rebuildHistoryPanel();
+  modelRibbon_->clearActiveTool();
+  statusBar()->showMessage(QString::fromUtf8("Тела объединены"), 3000);
+}
+
 void MainWindow::createShell() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
@@ -4323,32 +4561,38 @@ void MainWindow::createDraft() {
   resetTransientModelingUi();
   partDesignTools_.activate(PartDesignToolKind::Draft);
   auto faces = viewport_->selectedBodyFaces();
+  if (faces.size() > 1) faces.resize(1);
   Body* body = faces.empty() ? document_.activeBody()
                              : document_.findBody(faces.front().bodyId);
   if (!body || !body->activeFeature() || !body->resultShape()) return;
   if (!faces.empty() && faces.front().featureId != body->activeFeature()->id())
     faces.clear();
-  const PlaneReference plane{NeutralPlaneType::GlobalXY, std::nullopt};
-  const AxisReference direction{AxisReferenceType::GlobalZ, kInvalidSketchId,
-                                sketch::kInvalidGeometryId};
   draftToolSession_.begin(document_, body->id(), body->activeFeature()->id(),
-                          body->resultShape(), faces, plane, direction, 5.0,
-                          false);
-  viewport_->setFaceMultiSelectionMode(true);
-  viewport_->setSelectionFilter(SelectionFilter::Face);
+                          body->resultShape(), faces, std::nullopt,
+                          std::nullopt, 5.0, false);
+  viewport_->setFaceMultiSelectionMode(false);
   viewport_->setSelectedBodyFaces(faces);
   toolParametersPanel_->configure(*partDesignToolHelp(PartDesignToolKind::Draft),
-                                  QString::fromUtf8("Грани"),
+                                  QString::fromUtf8("Поверхность"),
                                   QString::fromUtf8("Угол"),
                                   QString::fromUtf8("°"));
-  toolParametersPanel_->setParameterRange(0.01, 89.0, 2);
+  toolParametersPanel_->setParameterRange(-89.99, 89.99, 2);
   toolParametersPanel_->setParameterValue(5.0);
-  toolParametersPanel_->configureOption(QString::fromUtf8("Обратный уклон"), false);
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateDraftToolPreview();
-  // Draft HUD owns CAD Tab focus for the same preselection workflow as Shell.
-  static_cast<void>(viewport_->focusToolParameterField(false));
+  if (faces.empty()) {
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingInput);
+    viewport_->beginDraftFaceSelection();
+    statusBar()->showMessage(
+        QString::fromUtf8("1/3 Выберите поверхность в 3D-виде"));
+  } else {
+    partDesignTools_.beginReselection(ToolSelectionStage::SelectingReference);
+    viewport_->beginDraftAxisSelection();
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "2/3 Выберите ось X, Y, Z или прилегающее прямое ребро"));
+  }
 }
 
 void MainWindow::updateDraftToolPreview() {
@@ -4358,10 +4602,14 @@ void MainWindow::updateDraftToolPreview() {
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
-      valid ? QString::fromUtf8("Предпросмотр построен · плоскость XY · направление Z")
+      valid ? QString::fromUtf8("Предпросмотр построен · поверхность и ось выбраны")
             : state == ToolLifecycle::SelectingInput
                   ? partDesignToolStepHint(PartDesignToolKind::Draft,
                                            ToolSelectionStage::SelectingInput)
+                  : state == ToolLifecycle::SelectingReference
+                        ? partDesignToolStepHint(
+                              PartDesignToolKind::Draft,
+                              ToolSelectionStage::SelectingReference)
                   : localizedPartDesignError(PartDesignToolKind::Draft,
                                              draftToolSession_.error()),
       state == ToolLifecycle::PreviewInvalid);
@@ -4389,13 +4637,17 @@ void MainWindow::cancelDraftTool() {
   viewport_->setFaceMultiSelectionMode(false);
   viewport_->setSelectionFilter(SelectionFilter::Any);
   viewport_->setSelectedBodyFaces({});
+  viewport_->setSelectedBodyEdges({});
   toolParametersDock_->hide();
   refreshBodyViewFromDocument();
 }
 
 void MainWindow::acceptDraftTool() {
   if (draftToolSession_.lifecycle() != ToolLifecycle::PreviewValid ||
-      !draftToolSession_.neutralPlane() || !draftToolSession_.pullDirection()) return;
+      (!draftToolSession_.rotationEdge() &&
+       (!draftToolSession_.neutralPlane() ||
+        !draftToolSession_.pullDirection())))
+    return;
   const Document previous = document_;
   Body* body = document_.findBody(draftToolSession_.bodyId());
   if (!body) return;
@@ -4404,19 +4656,29 @@ void MainWindow::acceptDraftTool() {
       auto* draft = dynamic_cast<DraftFeature*>(body->features()[index].get());
       if (!draft || draft->id() != *editingId) continue;
       draft->setDraftedFaces(draftToolSession_.faces());
-      draft->setNeutralPlane(*draftToolSession_.neutralPlane());
-      draft->setPullDirection(*draftToolSession_.pullDirection());
-      draft->setAngleDeg(draftToolSession_.angleDeg());
-      draft->setReversed(draftToolSession_.reversed());
+      if (draftToolSession_.neutralPlane())
+        draft->setNeutralPlane(*draftToolSession_.neutralPlane());
+      if (draftToolSession_.pullDirection())
+        draft->setPullDirection(*draftToolSession_.pullDirection());
+      draft->setRotationEdge(draftToolSession_.rotationEdge());
+      draft->setAngleDeg(std::abs(draftToolSession_.angleDeg()));
+      draft->setReversed(draftToolSession_.angleDeg() < 0.0);
       body->markDirtyFrom(index);
       break;
     }
   } else {
+    const PlaneReference plane = draftToolSession_.neutralPlane().value_or(
+        PlaneReference{NeutralPlaneType::GlobalXY});
+    const AxisReference direction = draftToolSession_.pullDirection().value_or(
+        AxisReference{AxisReferenceType::GlobalZ, kInvalidSketchId,
+                      sketch::kInvalidGeometryId});
     body->addFeature(std::make_unique<DraftFeature>(
         draftToolSession_.sourceFeatureId(), draftToolSession_.faces(),
-        *draftToolSession_.neutralPlane(), *draftToolSession_.pullDirection(),
-        draftToolSession_.angleDeg(), draftToolSession_.reversed(),
-        "Уклон " + std::to_string(body->features().size())));
+        plane, direction,
+        std::abs(draftToolSession_.angleDeg()),
+        draftToolSession_.angleDeg() < 0.0,
+        "Уклон " + std::to_string(body->features().size()),
+        draftToolSession_.rotationEdge()));
   }
   if (!document_.rebuild()) {
     const QString error = QString::fromStdString(document_.rebuildError());
@@ -5547,14 +5809,19 @@ void MainWindow::rebuildFeatureTree() {
   } else {
     for (std::size_t bodyIndex = 0; bodyIndex < document_.bodies().size(); ++bodyIndex) {
       const Body& body = document_.bodies()[bodyIndex];
+      const QString bodyName = body.name().empty()
+                                   ? QString::fromUtf8("Body%1").arg(
+                                         bodyIndex + 1, 3, 10,
+                                         QLatin1Char('0'))
+                                   : QString::fromStdString(body.name());
       auto* bodyItem = new QTreeWidgetItem(
-          models, {QString::fromUtf8("▣  Body%1").arg(bodyIndex + 1, 3, 10,
-                                                       QLatin1Char('0'))});
+          models, {QString::fromUtf8("▣  ") + bodyName});
       bodyItem->setData(0, Qt::UserRole, 3);
       bodyItem->setData(0, Qt::UserRole + 2,
                         QVariant::fromValue<qulonglong>(body.id()));
       bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
-      bodyItem->setCheckState(0, Qt::Checked);
+      bodyItem->setCheckState(0,
+                              body.visible() ? Qt::Checked : Qt::Unchecked);
       for (const auto& feature : body.features()) {
         const QString state =
             feature->isValid() ? QStringLiteral("Valid")

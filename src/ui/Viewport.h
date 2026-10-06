@@ -93,6 +93,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool mirrorBodySelectionActive() const noexcept;
   [[nodiscard]] bool mirrorPlaneSelectionActive() const noexcept;
   void beginMoveBodySelection();
+  void beginJoinBodiesSelection();
   void showMovePreview();
   [[nodiscard]] bool moveBodySelectionActive() const noexcept;
   void beginLinearPatternBodySelection();
@@ -105,6 +106,12 @@ class Viewport final : public QOpenGLWidget {
   void showCircularPatternAxisSelection(int axisIndex);
   [[nodiscard]] bool circularPatternBodySelectionActive() const noexcept;
   [[nodiscard]] bool circularPatternAxisSelectionActive() const noexcept;
+  void beginDraftFaceSelection();
+  void beginDraftAxisSelection();
+  void showDraftAxisSelection(int axisIndex);
+  void showDraftEdgeAxisSelection(const EdgeReference& edge);
+  [[nodiscard]] bool draftFaceSelectionActive() const noexcept;
+  [[nodiscard]] bool draftAxisSelectionActive() const noexcept;
   void beginRulerMeasurement();
   void cancelRulerMeasurement();
   [[nodiscard]] bool rulerMeasurementActive() const noexcept;
@@ -218,6 +225,8 @@ class Viewport final : public QOpenGLWidget {
   void linearPatternAxisPicked(int axisIndex);
   void circularPatternBodyPicked(BodyId bodyId);
   void circularPatternAxisPicked(int axisIndex);
+  void draftAxisPicked(int axisIndex);
+  void draftEdgeAxisPicked(const EdgeReference& edge);
   void extrusionSurfacePicked(const QString& surfaceName);
   // Native FaceReference capture for face extrusion. Emitted alongside the
   // legacy string signal only when a real B-Rep body face was picked (never
@@ -321,12 +330,16 @@ class Viewport final : public QOpenGLWidget {
     MirrorPreview,
     MoveBody,
     MovePreview,
+    JoinBodies,
     LinearPatternBody,
     LinearPatternAxis,
     LinearPatternPreview,
     CircularPatternBody,
     CircularPatternAxis,
     CircularPatternPreview,
+    DraftFace,
+    DraftAxis,
+    DraftPreview,
     Ruler
   };
   BoxParameters box_;
@@ -405,8 +418,11 @@ class Viewport final : public QOpenGLWidget {
   std::size_t revolveAxisSketchIndex_{static_cast<std::size_t>(-1)};
   qulonglong hoveredRevolveAxisToken_{0};
   int selectedPatternAxis_{-1};
+  std::optional<EdgeReference> selectedDraftAxisEdge_;
   QDoubleSpinBox* extrusionLengthEditor_{nullptr};
   ToolParameterHud* toolParameterHud_{nullptr};
+  double toolHudMinimum_{};
+  double toolHudMaximum_{};
   std::string toolHudParameterId_;
   QPointF extrusionManipulatorAnchor_;
   double extrusionPreviewLengthMm_{25.0};

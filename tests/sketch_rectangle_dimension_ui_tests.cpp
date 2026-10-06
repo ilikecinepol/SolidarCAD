@@ -931,5 +931,121 @@ int main(int argc, char** argv) {
                               screenPoint(hudCanvas, {20.0, 30.0}),
                               editorBounds.adjusted(-3, -3, 3, 3)));
   }
+
+  // Editing a dimension must retain the original constraint identity. Its ID
+  // is the chronological priority: deleting and re-adding it would move the
+  // dimension behind constraints created later.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, 0.0}, {20.0, 0.0});
+    const auto lineId = geometry.lineId(0);
+
+    solidar::sketch::Constraint length;
+    length.type = solidar::sketch::ConstraintType::Length;
+    length.firstGeometry = lineId;
+    length.value = 20.0;
+    const auto lengthId = geometry.addConstraint(length);
+    CHECK(lengthId != solidar::sketch::kInvalidConstraintId);
+
+    solidar::sketch::Constraint horizontal;
+    horizontal.type = solidar::sketch::ConstraintType::Horizontal;
+    horizontal.firstGeometry = lineId;
+    const auto horizontalId = geometry.addConstraint(horizontal);
+    CHECK(horizontalId != solidar::sketch::kInvalidConstraintId);
+    CHECK(lengthId < horizontalId);
+
+    solidar::sketch::Dimension displayed;
+    displayed.kind = solidar::sketch::DimensionKind::LineLength;
+    displayed.geometryId = lineId;
+    displayed.valueMm = 20.0;
+    geometry.storeDimension(displayed);
+
+    solidar::SketchCanvas chronologicalCanvas;
+    chronologicalCanvas.resize(900, 650);
+    chronologicalCanvas.loadSketch(geometry);
+    chronologicalCanvas.show();
+    QApplication::processEvents();
+
+    CHECK(editDimension(chronologicalCanvas, 20.0, 30.0));
+    CHECK(chronologicalCanvas.sketch().constraints().size() == 2);
+    CHECK(chronologicalCanvas.sketch().constraints()[0].id == lengthId);
+    CHECK(chronologicalCanvas.sketch().constraints()[1].id == horizontalId);
+    const auto preserved = std::find_if(
+        chronologicalCanvas.sketch().constraints().begin(),
+        chronologicalCanvas.sketch().constraints().end(),
+        [lengthId](const solidar::sketch::Constraint& constraint) {
+          return constraint.id == lengthId;
+        });
+    CHECK(preserved != chronologicalCanvas.sketch().constraints().end());
+    CHECK(std::abs(preserved->value - 30.0) < 1e-9);
+  }
+
+  // A later size that conflicts with an earlier lock/coincidence chain is
+  // rejected as one transaction. Neither old geometry nor old constraints may
+  // be sacrificed to make the newer dimension fit.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, 0.0}, {20.0, 0.0});
+    geometry.addLine({0.0, 0.0}, {20.0, 0.0});
+    const auto anchorId = geometry.lineId(0);
+    const auto sizedId = geometry.lineId(1);
+
+    solidar::sketch::Constraint lock;
+    lock.type = solidar::sketch::ConstraintType::Lock;
+    lock.firstGeometry = anchorId;
+    CHECK(geometry.addConstraint(lock) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::sketch::Constraint coincident;
+    coincident.type = solidar::sketch::ConstraintType::Coincident;
+    coincident.firstPoint = {anchorId, false};
+    coincident.secondPoint = {sizedId, false};
+    CHECK(geometry.addConstraint(coincident) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::sketch::Constraint length;
+    length.type = solidar::sketch::ConstraintType::Length;
+    length.firstGeometry = sizedId;
+    length.value = 20.0;
+    const auto lengthId = geometry.addConstraint(length);
+    CHECK(lengthId != solidar::sketch::kInvalidConstraintId);
+
+    solidar::sketch::Dimension displayed;
+    displayed.kind = solidar::sketch::DimensionKind::LineLength;
+    displayed.geometryId = sizedId;
+    displayed.valueMm = 20.0;
+    geometry.storeDimension(displayed);
+
+    const auto originalLines = geometry.lines();
+    const auto originalConstraints = geometry.constraints();
+    solidar::SketchCanvas conflictCanvas;
+    conflictCanvas.resize(900, 650);
+    conflictCanvas.loadSketch(geometry);
+    conflictCanvas.show();
+    QApplication::processEvents();
+
+    CHECK(!editDimension(conflictCanvas, 20.0, 30.0));
+    CHECK(conflictCanvas.sketch().constraints().size() ==
+          originalConstraints.size());
+    for (std::size_t index = 0; index < originalConstraints.size(); ++index) {
+      CHECK(conflictCanvas.sketch().constraints()[index].id ==
+            originalConstraints[index].id);
+      CHECK(conflictCanvas.sketch().constraints()[index].type ==
+            originalConstraints[index].type);
+    }
+    CHECK(conflictCanvas.sketch().lines().size() == originalLines.size());
+    for (std::size_t index = 0; index < originalLines.size(); ++index) {
+      CHECK(std::abs(conflictCanvas.sketch().lines()[index].start.xMm -
+                     originalLines[index].start.xMm) < 1e-9);
+      CHECK(std::abs(conflictCanvas.sketch().lines()[index].start.yMm -
+                     originalLines[index].start.yMm) < 1e-9);
+      CHECK(std::abs(conflictCanvas.sketch().lines()[index].end.xMm -
+                     originalLines[index].end.xMm) < 1e-9);
+      CHECK(std::abs(conflictCanvas.sketch().lines()[index].end.yMm -
+                     originalLines[index].end.yMm) < 1e-9);
+    }
+    CHECK(!solidar::sketch::analyzeConstraintSystem(conflictCanvas.sketch())
+               .conflicting);
+  }
   return EXIT_SUCCESS;
 }

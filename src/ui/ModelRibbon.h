@@ -22,6 +22,7 @@ class ModelRibbon final : public QWidget {
   void pocketRequested();
   void filletRequested();
   void chamferRequested();
+  void joinBodiesRequested();
   void moveRequested();
   void shellRequested();
   void draftRequested();

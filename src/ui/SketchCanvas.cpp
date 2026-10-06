@@ -1571,12 +1571,25 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
 
   if (value <= 1e-9) return false;
 
+  const sketch::Sketch operationSnapshot = sketch_;
+  const auto undoSnapshot = undoStack_;
+  const auto redoSnapshot = redoStack_;
   pushUndoState();
   if (dimension.kind !=
       sketch::DimensionKind::LineAngle)
     constraint.value = value;
 
-  sketch_.addConstraint(constraint);
+  if (sketch_.addConstraint(constraint) == sketch::kInvalidConstraintId) {
+    sketch_ = operationSnapshot;
+    undoStack_ = undoSnapshot;
+    redoStack_ = redoSnapshot;
+    emit undoAvailable(canUndo());
+    emit redoAvailable(canRedo());
+    emit constraintStatusChanged(QString::fromUtf8(
+        "Размер не включён: более ранние зависимости имеют приоритет"));
+    update();
+    return false;
+  }
   sketch_.setDimensionValue(
       dimensionIndex,
       value);
@@ -9498,6 +9511,71 @@ void SketchCanvas::commitAutoDimension() {
                            : 4.0;
   dimension.angleRad = property("autoDimensionAngleRad").toDouble();
   bool changed = false;
+
+  // CHRONOLOGICAL CONSTRAINT PRIORITY
+  //
+  // A dimension is a constraint first and an annotation second. New driving
+  // dimensions must enter Sketch::addConstraint() before geometry changes so
+  // its transactional validation can protect every older constraint.
+  // Editing keeps the original constraint ID (and therefore its chronological
+  // priority) instead of deleting it and appending a replacement at the end.
+  const auto applyDrivingConstraint =
+      [this, editingExisting](const sketch::Constraint& requested,
+                              auto&& matches) {
+        std::vector<sketch::ConstraintId> existing;
+        for (const auto& constraint : sketch_.constraints()) {
+          if (matches(constraint)) existing.push_back(constraint.id);
+        }
+
+        if (editingExisting) {
+          if (existing.size() == 1)
+            return sketch_.setConstraintValue(existing.front(),
+                                              requested.value);
+          if (existing.size() > 1) return false;
+        } else if (!existing.empty()) {
+          return false;
+        }
+
+        return sketch_.addConstraint(requested) !=
+               sketch::kInvalidConstraintId;
+      };
+
+  const auto samePointReference =
+      [](sketch::PointReference left, sketch::PointReference right) {
+        if (left.origin || right.origin)
+          return left.origin && right.origin;
+        if (left.elementCenterId != 0 || right.elementCenterId != 0) {
+          return left.elementCenterId != 0 &&
+                 right.elementCenterId != 0 &&
+                 left.elementCenterId == right.elementCenterId;
+        }
+        if (left.circleId != sketch::kInvalidGeometryId ||
+            right.circleId != sketch::kInvalidGeometryId) {
+          return left.circleId != sketch::kInvalidGeometryId &&
+                 right.circleId != sketch::kInvalidGeometryId &&
+                 left.circleId == right.circleId;
+        }
+        if (left.arcId != sketch::kInvalidGeometryId ||
+            right.arcId != sketch::kInvalidGeometryId) {
+          return left.arcId != sketch::kInvalidGeometryId &&
+                 right.arcId != sketch::kInvalidGeometryId &&
+                 left.arcId == right.arcId && left.start == right.start;
+        }
+        return left.lineId != sketch::kInvalidGeometryId &&
+               right.lineId != sketch::kInvalidGeometryId &&
+               left.lineId == right.lineId && left.start == right.start;
+      };
+
+  const auto samePointPair =
+      [&samePointReference](const sketch::Constraint& constraint,
+                            sketch::PointReference first,
+                            sketch::PointReference second) {
+        return (samePointReference(constraint.firstPoint, first) &&
+                samePointReference(constraint.secondPoint, second)) ||
+               (samePointReference(constraint.firstPoint, second) &&
+                samePointReference(constraint.secondPoint, first));
+      };
+
   if (target == "angle") {
     const auto firstId = static_cast<sketch::GeometryId>(
         property("autoDimensionAngleFirstLine").toULongLong());
@@ -9547,42 +9625,24 @@ void SketchCanvas::commitAutoDimension() {
             180.0 - value;
     }
 
-    changed =
-        sketch_.setLineAngleByIds(
-            firstId,
-            secondId,
-            solverAngle);
     dimension.kind = sketch::DimensionKind::LineAngle;
     dimension.geometryId = firstId;
     // LineAngle uses secondPoint.lineId as the second stable line reference.
     dimension.secondPoint.lineId = secondId;
 
-    if (changed) {
-      std::vector<sketch::ConstraintId> oldAngleConstraints;
-      for (const auto& constraint : sketch_.constraints()) {
-        if (constraint.type != sketch::ConstraintType::Angle) continue;
-
-        const bool sameOrder =
-            constraint.firstGeometry == firstId &&
-            constraint.secondGeometry == secondId;
-        const bool reverseOrder =
-            constraint.firstGeometry == secondId &&
-            constraint.secondGeometry == firstId;
-
-        if (sameOrder || reverseOrder)
-          oldAngleConstraints.push_back(constraint.id);
-      }
-
-      for (const auto constraintId : oldAngleConstraints)
-        sketch_.removeConstraint(constraintId);
-
-      sketch::Constraint angleConstraint;
-      angleConstraint.type = sketch::ConstraintType::Angle;
-      angleConstraint.firstGeometry = firstId;
-      angleConstraint.secondGeometry = secondId;
-      angleConstraint.value = solverAngle;
-      sketch_.addConstraint(angleConstraint);
-    }
+    sketch::Constraint angleConstraint;
+    angleConstraint.type = sketch::ConstraintType::Angle;
+    angleConstraint.firstGeometry = firstId;
+    angleConstraint.secondGeometry = secondId;
+    angleConstraint.value = solverAngle;
+    changed = applyDrivingConstraint(
+        angleConstraint, [firstId, secondId](const auto& constraint) {
+          if (constraint.type != sketch::ConstraintType::Angle) return false;
+          return (constraint.firstGeometry == firstId &&
+                  constraint.secondGeometry == secondId) ||
+                 (constraint.firstGeometry == secondId &&
+                  constraint.secondGeometry == firstId);
+        });
   } else if (target == "lineDistance") {
     auto firstId = static_cast<sketch::GeometryId>(
         property("autoDimensionDistanceFirstLine").toULongLong());
@@ -9610,114 +9670,67 @@ void SketchCanvas::commitAutoDimension() {
                                (item.firstGeometry == secondId &&
                                 item.secondGeometry == firstId);
                       });
+      bool readyForDistance = parallelExists;
       if (!parallelExists) {
         sketch::Constraint parallel;
         parallel.type = sketch::ConstraintType::Parallel;
         parallel.firstGeometry = firstId;
         parallel.secondGeometry = secondId;
-        sketch_.addConstraint(parallel);
+        readyForDistance =
+            sketch_.addConstraint(parallel) != sketch::kInvalidConstraintId;
       }
-
-      changed =
-          sketch_.setParallelLineDistanceByIds(firstId, secondId, value);
       dimension.kind = sketch::DimensionKind::LineDistance;
       dimension.geometryId = firstId;
       dimension.secondPoint.lineId = secondId;
 
-      if (changed) {
-        std::vector<sketch::ConstraintId> oldDistances;
-        for (const auto& item : sketch_.constraints()) {
-          if (item.type != sketch::ConstraintType::LineDistance) continue;
-          if ((item.firstGeometry == firstId &&
-               item.secondGeometry == secondId) ||
-              (item.firstGeometry == secondId &&
-               item.secondGeometry == firstId))
-            oldDistances.push_back(item.id);
-        }
-        for (const auto id : oldDistances)
-          sketch_.removeConstraint(id);
-
-        sketch::Constraint spacing;
-        spacing.type = sketch::ConstraintType::LineDistance;
-        spacing.firstGeometry = firstId;
-        spacing.secondGeometry = secondId;
-        spacing.value = value;
-        sketch_.addConstraint(spacing);
+      sketch::Constraint spacing;
+      spacing.type = sketch::ConstraintType::LineDistance;
+      spacing.firstGeometry = firstId;
+      spacing.secondGeometry = secondId;
+      spacing.value = value;
+      if (readyForDistance) {
+        changed = applyDrivingConstraint(
+            spacing, [firstId, secondId](const auto& constraint) {
+              if (constraint.type != sketch::ConstraintType::LineDistance)
+                return false;
+              return (constraint.firstGeometry == firstId &&
+                      constraint.secondGeometry == secondId) ||
+                     (constraint.firstGeometry == secondId &&
+                      constraint.secondGeometry == firstId);
+            });
       }
     }
   } else if (target == "line") {
     const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
-    changed = sketch_.setLineLengthById(id, value);
     dimension.kind = sketch::DimensionKind::LineLength;
     dimension.geometryId = id;
 
-    if (changed) {
-      // A displayed line length is a driving CAD constraint, not merely
-      // an annotation. Keep at most one Length constraint per line.
-      std::vector<sketch::ConstraintId> oldLengthConstraints;
-      for (const auto& constraint : sketch_.constraints()) {
-        if (constraint.type == sketch::ConstraintType::Length &&
-            constraint.firstGeometry == id)
-          oldLengthConstraints.push_back(constraint.id);
-      }
-      for (const auto constraintId : oldLengthConstraints)
-        sketch_.removeConstraint(constraintId);
-
-      sketch::Constraint lengthConstraint;
-      lengthConstraint.type = sketch::ConstraintType::Length;
-      lengthConstraint.firstGeometry = id;
-      lengthConstraint.value = value;
-      sketch_.addConstraint(lengthConstraint);
-
-      // CRASH-FREE 14: PROPAGATE DRIVING LENGTH THROUGH EQUAL
-      //
-      // Direct dimension editing already resized this geometry. If it belongs
-      // to an Equal relationship, immediately solve that relationship so its
-      // follower receives the new driving size in the same user action.
-      const bool participatesInEqual =
-          std::any_of(
-              sketch_.constraints().begin(),
-              sketch_.constraints().end(),
-              [id](const sketch::Constraint& item) {
-                return item.type ==
-                           sketch::ConstraintType::Equal &&
-                       (item.firstGeometry == id ||
-                        item.secondGeometry == id);
-              });
-
-      if (participatesInEqual)
-        (void)sketch::BasicSketchSolver::solveStable(sketch_);
-    }
+    sketch::Constraint lengthConstraint;
+    lengthConstraint.type = sketch::ConstraintType::Length;
+    lengthConstraint.firstGeometry = id;
+    lengthConstraint.value = value;
+    changed = applyDrivingConstraint(
+        lengthConstraint, [id](const auto& constraint) {
+          return constraint.type == sketch::ConstraintType::Length &&
+                 constraint.firstGeometry == id;
+        });
   } else if (target == "circle") {
     const auto id = static_cast<sketch::GeometryId>(
         property("autoDimensionIndex").toULongLong());
 
-    changed = sketch_.setCircleDiameterById(id, value);
     dimension.kind = sketch::DimensionKind::CircleDiameter;
     dimension.geometryId = id;
 
-    if (changed) {
-      // A displayed circle diameter is a driving CAD constraint.
-      // Keep at most one Diameter constraint per circle.
-      std::vector<sketch::ConstraintId> oldDiameterConstraints;
-
-      for (const auto& constraint : sketch_.constraints()) {
-        if (constraint.type == sketch::ConstraintType::Diameter &&
-            constraint.firstGeometry == id) {
-          oldDiameterConstraints.push_back(constraint.id);
-        }
-      }
-
-      for (const auto constraintId : oldDiameterConstraints)
-        sketch_.removeConstraint(constraintId);
-
-      sketch::Constraint diameterConstraint;
-      diameterConstraint.type = sketch::ConstraintType::Diameter;
-      diameterConstraint.firstGeometry = id;
-      diameterConstraint.value = value;
-      sketch_.addConstraint(diameterConstraint);
-    }
+    sketch::Constraint diameterConstraint;
+    diameterConstraint.type = sketch::ConstraintType::Diameter;
+    diameterConstraint.firstGeometry = id;
+    diameterConstraint.value = value;
+    changed = applyDrivingConstraint(
+        diameterConstraint, [id](const auto& constraint) {
+          return constraint.type == sketch::ConstraintType::Diameter &&
+                 constraint.firstGeometry == id;
+        });
   } else if (target == "points") {
     sketch::PointReference first{
         static_cast<sketch::GeometryId>(
@@ -9763,126 +9776,34 @@ void SketchCanvas::commitAutoDimension() {
     dimension.firstPoint = first;
     dimension.secondPoint = second;
 
-    // CONSTRAINT-FIRST POINT DIMENSION V5
-    //
-    // A dimension is a constraint first, an annotation second. Do not move
-    // geometry before the new constraint belongs to the full system.
-    const auto samePointReference =
-        [](sketch::PointReference left,
-           sketch::PointReference right) {
-      if (left.origin || right.origin)
-        return left.origin && right.origin;
-      if (left.elementCenterId != 0 ||
-          right.elementCenterId != 0) {
-        return left.elementCenterId != 0 &&
-               right.elementCenterId != 0 &&
-               left.elementCenterId ==
-                   right.elementCenterId;
-      }
-
-      if (left.circleId !=
-              sketch::kInvalidGeometryId ||
-          right.circleId !=
-              sketch::kInvalidGeometryId) {
-        return left.circleId !=
-                   sketch::kInvalidGeometryId &&
-               right.circleId !=
-                   sketch::kInvalidGeometryId &&
-               left.circleId == right.circleId;
-      }
-
-      return left.lineId !=
-                 sketch::kInvalidGeometryId &&
-             right.lineId !=
-                 sketch::kInvalidGeometryId &&
-             left.lineId == right.lineId &&
-             left.start == right.start;
-    };
-
-    const auto samePointPair =
-        [&samePointReference](
-            const sketch::Constraint& constraint,
-            sketch::PointReference lhs,
-            sketch::PointReference rhs) {
-      const bool sameOrder =
-          samePointReference(
-              constraint.firstPoint, lhs) &&
-          samePointReference(
-              constraint.secondPoint, rhs);
-
-      const bool reverseOrder =
-          samePointReference(
-              constraint.firstPoint, rhs) &&
-          samePointReference(
-              constraint.secondPoint, lhs);
-
-      return sameOrder || reverseOrder;
-    };
-
-    std::vector<sketch::ConstraintId> matchingDistanceConstraints;
-    for (const auto& constraint : sketch_.constraints()) {
-      if (constraint.type == constraintType &&
-          samePointPair(constraint, first, second))
-        matchingDistanceConstraints.push_back(constraint.id);
-    }
-
-    if (editingExisting && matchingDistanceConstraints.size() == 1) {
-      // Preserve the identity of the existing driving constraint. Removing it
-      // and adding a replacement made the solver treat a normal edit as a new
-      // competing relation in constrained sketches, so the editor disappeared
-      // while the old value remained unchanged.
-      changed = sketch_.setConstraintValue(
-          matchingDistanceConstraints.front(), value);
-    }
-
-    const bool duplicateExisting =
-        !editingExisting &&
-        std::any_of(
-            sketch_.constraints().begin(),
-            sketch_.constraints().end(),
-            [constraintType, first, second,
-             &samePointPair](
-                const sketch::Constraint& constraint) {
-              return constraint.type ==
-                         constraintType &&
-                     samePointPair(
-                         constraint,
-                         first,
-                         second);
-            });
-
-    if (!editingExisting && !duplicateExisting) {
-      sketch::Constraint distanceConstraint;
-      distanceConstraint.type = constraintType;
-      distanceConstraint.firstPoint = first;
-      distanceConstraint.secondPoint = second;
-      distanceConstraint.value = value;
-
-      const auto addedId =
-          sketch_.addConstraint(
-              distanceConstraint);
-
-      changed =
-          addedId !=
-          sketch::kInvalidConstraintId;
-    } else if (!editingExisting) {
-      changed = false;
-    }
-
-    if (!changed) {
-      emit selectionChanged(
-          QString::fromUtf8(
-              "Размер не добавлен: конфликт ограничений"));
-    }
+    sketch::Constraint distanceConstraint;
+    distanceConstraint.type = constraintType;
+    distanceConstraint.firstPoint = first;
+    distanceConstraint.secondPoint = second;
+    distanceConstraint.value = value;
+    changed = applyDrivingConstraint(
+        distanceConstraint,
+        [constraintType, first, second,
+         &samePointPair](const auto& constraint) {
+          return constraint.type == constraintType &&
+                 samePointPair(constraint, first, second);
+        });
   }
-  if (!changed && editingExisting) {
+  if (!changed) {
     sketch_ = operationSnapshot;
     undoStack_ = undoSnapshot;
     redoStack_ = redoSnapshot;
     emit undoAvailable(canUndo());
     emit redoAvailable(canRedo());
-    emit constraintStatusChanged(QString::fromUtf8(
-        "Размер не изменён: проверьте конфликтующие ограничения"));
+    const QString message = editingExisting
+                                ? QString::fromUtf8(
+                                      "Размер не изменён: более ранние "
+                                      "зависимости имеют приоритет")
+                                : QString::fromUtf8(
+                                      "Размер не добавлен: конфликт с "
+                                      "более ранней зависимостью");
+    emit selectionChanged(message);
+    emit constraintStatusChanged(message);
     primaryDimension_->show();
     primaryDimension_->setFocus();
     primaryDimension_->selectAll();

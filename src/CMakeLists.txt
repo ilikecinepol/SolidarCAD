@@ -45,6 +45,10 @@ add_library(solidar_model
   model/FilletToolSession.h
   model/ImportedShapeFeature.cpp
   model/ImportedShapeFeature.h
+  model/JoinBodiesFeature.cpp
+  model/JoinBodiesFeature.h
+  model/JoinBodiesToolSession.cpp
+  model/JoinBodiesToolSession.h
   model/PatternTypes.h
   model/MirrorFeature.cpp
   model/MirrorFeature.h

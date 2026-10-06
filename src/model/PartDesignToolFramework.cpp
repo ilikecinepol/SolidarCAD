@@ -40,6 +40,8 @@ standardPartDesignToolDefinitions() {
        {{SelectionType::Edge, "Select edges", 1,
          std::numeric_limits<std::size_t>::max(), true}},
        {distance("distance", "Distance")}},
+      {PartDesignToolKind::JoinBodies,
+       {{SelectionType::Body, "Select two bodies", 2, 2, true}}, {}},
       {PartDesignToolKind::Move,
        {one(SelectionType::Body, "Select body")},
        {{"offset_x", "X", ToolParameterType::Distance, 0.0, -100000.0,
@@ -65,14 +67,10 @@ standardPartDesignToolDefinitions() {
           {"outside", "Direction", ToolParameterType::Boolean, false, 0.0,
            1.0, 1.0, {}, false, ToolManipulatorType::None}}},
       {PartDesignToolKind::Draft,
-         {{SelectionType::Face, "Select faces", 1,
-           std::numeric_limits<std::size_t>::max(), true},
-          one(SelectionType::Plane, "Select neutral plane"),
-          one(SelectionType::Axis, "Select pull direction")},
-         {{"angle", "Angle", ToolParameterType::Angle, 5.0, 0.01, 89.0,
-          0.5, "deg", true, ToolManipulatorType::Angular},
-          {"reversed", "Reverse", ToolParameterType::Boolean, false, 0.0,
-           1.0, 1.0, {}, false, ToolManipulatorType::None}}}};
+         {one(SelectionType::Face, "Select surface"),
+          one(SelectionType::Axis, "Select X/Y/Z or adjacent edge")},
+         {{"angle", "Angle", ToolParameterType::Angle, 5.0, -89.99, 89.99,
+          0.5, "deg", true, ToolManipulatorType::Angular}}}};
   return definitions;
 }
 

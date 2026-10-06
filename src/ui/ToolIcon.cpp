@@ -101,6 +101,12 @@ void drawTool(QPainter& p, ToolIconKind kind) {
       p.drawPolyline(QPolygonF{{13, 38}, {13, 27}, {27, 13}, {38, 13}});
       dimensionLine(p, {9, 18}, {18, 9});
       break;
+    case ToolIconKind::JoinBodies:
+      p.drawRect(QRectF(7, 12, 22, 24));
+      p.drawRect(QRectF(19, 12, 22, 24));
+      p.drawLine(12, 24, 36, 24);
+      arrowHead(p, {35, 24}, {1, 0});
+      break;
     case ToolIconKind::Move:
       point(p, {19, 29}, 2.0);
       p.drawLine(19, 29, 39, 29);

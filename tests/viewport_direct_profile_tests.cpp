@@ -1,6 +1,9 @@
 #include <QApplication>
 #include <QMouseEvent>
 
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <gp_Pnt.hxx>
+
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -316,6 +319,62 @@ int main(int argc, char** argv) {
     // Whole outer rectangle would reach x=-20. The top-right partition starts
     // at x=0, proving the picked region is the inner bounded face.
     CHECK(minimumX > -1.0);
+  }
+
+  // A face-supported sketch stores the support face boundary as locked dashed
+  // projection geometry. One ordinary diagonal must use that boundary to form
+  // two selectable regions instead of falling through to the whole B-Rep face.
+  {
+    solidar::Viewport projectedBoundaryView;
+    projectedBoundaryView.resize(800, 600);
+
+    solidar::sketch::Sketch profile;
+    profile.addRectangle({-20.0, -20.0}, {20.0, 20.0});
+    const std::size_t boundaryElement = profile.lines().front().elementId;
+    profile.setElementDashed(boundaryElement, true);
+    for (std::size_t index = 0; index < 4; ++index) {
+      solidar::sketch::Constraint lock;
+      lock.type = solidar::sketch::ConstraintType::Lock;
+      lock.firstGeometry = profile.lineId(index);
+      CHECK(profile.addConstraint(lock) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+    profile.addLine({-20.0, -20.0}, {0.0, 20.0});
+
+    const auto body = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(gp_Pnt(-20.0, -20.0, -10.0), 40.0, 40.0, 10.0)
+            .Shape());
+    projectedBoundaryView.setBodyShape(body, 1, 1);
+    projectedBoundaryView.setSolidVisible(true);
+
+    const auto placement = solidar::SketchPlacement::xy();
+    projectedBoundaryView.addSketch(profile, QStringLiteral("Верхняя"),
+                                    placement);
+    const solidar::ViewportCameraState camera{
+        projectedBoundaryView.cameraYawDegrees(),
+        projectedBoundaryView.cameraPitchDegrees(), 1.0F, {},
+        projectedBoundaryView.size()};
+    const QPointF insideTriangle =
+        camera.worldToScreen(placement.toWorld(-15.0, 10.0));
+
+    int picks = 0;
+    QObject::connect(&projectedBoundaryView,
+                     &solidar::Viewport::directProfilePicked,
+                     &projectedBoundaryView, [&](std::size_t) { ++picks; });
+    mouse(projectedBoundaryView, QEvent::MouseButtonPress, insideTriangle,
+          Qt::LeftButton, Qt::LeftButton);
+
+    CHECK(picks == 1);
+    const auto& selected =
+        projectedBoundaryView.extrusionCandidateSketch();
+    CHECK(selected.lines().size() == 3);
+    CHECK(selected.isClosed());
+    double maximumX = -1e9;
+    for (const auto& line : selected.lines()) {
+      CHECK(!line.dashed);
+      maximumX = std::max(maximumX, std::max(line.start.xMm, line.end.xMm));
+    }
+    CHECK(maximumX < 1e-6);
   }
 
   // Revolve keeps profile picking active while it waits for an axis. This is

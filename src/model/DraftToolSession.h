@@ -16,15 +16,21 @@ class DraftToolSession final : public ToolSession {
              std::optional<PlaneReference> neutralPlane = std::nullopt,
              std::optional<AxisReference> pullDirection = std::nullopt,
              double angleDeg = 5.0, bool reversed = false,
-             std::optional<FeatureId> editingFeatureId = std::nullopt);
+             std::optional<FeatureId> editingFeatureId = std::nullopt,
+             std::optional<EdgeReference> rotationEdge = std::nullopt);
   void setFaces(std::vector<FaceReference> value);
   void setNeutralPlane(PlaneReference value);
   void clearNeutralPlane();
   void setPullDirection(AxisReference value);
   void clearPullDirection();
+  // Principal axes derive their matching neutral plane atomically; a body
+  // edge is stored separately as a persistent topological reference.
+  bool setPrincipalAxis(int axisIndex);
+  bool setRotationEdge(EdgeReference value);
+  void clearPrincipalAxis();
+  [[nodiscard]] std::optional<int> principalAxisIndex() const noexcept;
   void setAngleFromPanel(double value);
   void setAngleFromManipulator(double value);
-  void setReversed(bool value);
 
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
@@ -32,8 +38,8 @@ class DraftToolSession final : public ToolSession {
   [[nodiscard]] const std::vector<FaceReference>& faces() const noexcept;
   [[nodiscard]] const std::optional<PlaneReference>& neutralPlane() const noexcept;
   [[nodiscard]] const std::optional<AxisReference>& pullDirection() const noexcept;
+  [[nodiscard]] const std::optional<EdgeReference>& rotationEdge() const noexcept;
   [[nodiscard]] double angleDeg() const noexcept;
-  [[nodiscard]] bool reversed() const noexcept;
   [[nodiscard]] std::optional<AngularToolManipulator> manipulator() const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -53,8 +59,8 @@ class DraftToolSession final : public ToolSession {
   std::vector<FaceReference> faces_;
   std::optional<PlaneReference> neutralPlane_;
   std::optional<AxisReference> pullDirection_;
+  std::optional<EdgeReference> rotationEdge_;
   double angleDeg_{5.0};
-  bool reversed_{false};
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   ShapeFeature::ShapePtr lastValidPreviewShape_;

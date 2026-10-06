@@ -23,6 +23,7 @@ Body::Body(BodyId id, std::string name)
 }
 
 Body::Body(const Body& other) : Body(other.id_, other.name_) {
+  visible_ = other.visible_;
   features_.reserve(other.features_.size());
   for (const auto& feature : other.features_) {
     auto copy = feature->clone();
@@ -44,6 +45,8 @@ Body& Body::operator=(const Body& other) {
 BodyId Body::id() const noexcept { return id_; }
 const std::string& Body::name() const noexcept { return name_; }
 void Body::setName(std::string name) { name_ = std::move(name); }
+bool Body::visible() const noexcept { return visible_; }
+void Body::setVisible(bool visible) noexcept { visible_ = visible; }
 
 ShapeFeature& Body::addFeature(std::unique_ptr<ShapeFeature> feature) {
   if (!feature) throw std::invalid_argument("Body feature cannot be null");

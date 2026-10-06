@@ -346,6 +346,41 @@ int main(int argc, char** argv) {
           Qt::NoButton);
   }
 
+  // A signed angular manipulator can be dragged through zero into the opposite
+  // draft direction. The target is computed from the same angular basis as the
+  // viewport, covering the complete mouse interaction path.
+  {
+    solidar::Viewport signedView;
+    signedView.resize(800, 600);
+    signedView.viewTop();
+    const solidar::AngularToolManipulator initial{
+        {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 20.0, 30.0, -89.99, 89.99};
+    signedView.setAngularToolManipulator(initial);
+    const QPointF start = angularHandle(signedView, initial);
+    auto targetManipulator = initial;
+    targetManipulator.angleDeg = -45.0;
+    const QPointF target = angularHandle(signedView, targetManipulator);
+    double lastAngle = initial.angleDeg;
+    int signedEmissions = 0;
+    QObject::connect(
+        &signedView, &solidar::Viewport::angularToolManipulatorValueChanged,
+        &signedView, [&](double value) {
+          lastAngle = value;
+          ++signedEmissions;
+        });
+    mouse(signedView, QEvent::MouseButtonPress, start, Qt::LeftButton,
+          Qt::LeftButton);
+    mouse(signedView, QEvent::MouseMove, target, Qt::NoButton,
+          Qt::LeftButton);
+    mouse(signedView, QEvent::MouseButtonRelease, target, Qt::LeftButton,
+          Qt::NoButton);
+    CHECK(signedEmissions >= 1);
+    CHECK(lastAngle < -44.0 && lastAngle > -46.0);
+    CHECK(signedView.angularToolManipulator().has_value());
+    CHECK(signedView.angularToolManipulator()->angleDeg < -44.0);
+    CHECK(signedView.angularToolManipulator()->angleDeg > -46.0);
+  }
+
   // clearToolManipulator mid-drag stops any further value emission.
   solidar::Viewport clearView;
   clearView.resize(800, 600);

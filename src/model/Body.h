@@ -26,6 +26,8 @@ class Body final {
   [[nodiscard]] BodyId id() const noexcept;
   [[nodiscard]] const std::string& name() const noexcept;
   void setName(std::string name);
+  [[nodiscard]] bool visible() const noexcept;
+  void setVisible(bool visible) noexcept;
 
   ShapeFeature& addFeature(std::unique_ptr<ShapeFeature> feature);
   [[nodiscard]] const std::vector<std::unique_ptr<ShapeFeature>>& features()
@@ -44,6 +46,7 @@ class Body final {
 
   BodyId id_{kInvalidBodyId};
   std::string name_;
+  bool visible_{true};
   std::vector<std::unique_ptr<ShapeFeature>> features_;
 };
 

@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "model/TopologyReferenceResolver.h"
@@ -294,6 +295,67 @@ int main(int argc, char** argv) {
     CHECK(pickedBody == bodyId);
     CHECK(moveView.selectedBodies() ==
           std::vector<solidar::BodyId>{bodyId});
+  }
+
+  // Draft is a two-step viewport interaction: one surface first, then a
+  // principal axis or a straight adjacent edge. Entering the axis stage must
+  // retain the selected face.
+  {
+    solidar::Viewport draftView;
+    draftView.resize(800, 600);
+    draftView.setBodyShape(source, bodyId, sourceFeatureId);
+    draftView.setSolidVisible(true);
+    int faceChanges = 0;
+    int axisPicks = 0;
+    int pickedAxis = -1;
+    int edgeAxisPicks = 0;
+    std::optional<solidar::EdgeReference> pickedEdgeAxis;
+    QObject::connect(&draftView, &solidar::Viewport::bodyFaceSelectionChanged,
+                     &draftView, [&] { ++faceChanges; });
+    QObject::connect(&draftView, &solidar::Viewport::draftAxisPicked,
+                     &draftView, [&](int axis) {
+                       ++axisPicks;
+                       pickedAxis = axis;
+                     });
+    QObject::connect(&draftView, &solidar::Viewport::draftEdgeAxisPicked,
+                     &draftView, [&](const solidar::EdgeReference& edge) {
+                       ++edgeAxisPicks;
+                       pickedEdgeAxis = edge;
+                     });
+
+    const QPointF topFace = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    draftView.beginDraftFaceSelection();
+    CHECK(draftView.draftFaceSelectionActive());
+    mouse(draftView, QEvent::MouseMove, topFace, Qt::NoButton, Qt::NoButton);
+    mouse(draftView, QEvent::MouseButtonPress, topFace, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(faceChanges == 1);
+    CHECK(draftView.selectedBodyFaces().size() == 1);
+
+    draftView.beginDraftAxisSelection();
+    CHECK(draftView.draftAxisSelectionActive());
+    CHECK(draftView.selectedBodyFaces().size() == 1);
+    const QPointF zAxisPoint = sourceCamera.worldToScreen({0.0, 0.0, 100.0});
+    mouse(draftView, QEvent::MouseMove, zAxisPoint, Qt::NoButton,
+          Qt::NoButton);
+    mouse(draftView, QEvent::MouseButtonPress, zAxisPoint, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(axisPicks == 1);
+    CHECK(pickedAxis == 2);
+    CHECK(!draftView.draftAxisSelectionActive());
+    CHECK(draftView.selectedBodyFaces().size() == 1);
+
+    draftView.beginDraftAxisSelection();
+    const QPointF adjacentTopEdge =
+        sourceCamera.worldToScreen({20.0, 0.0, 20.0});
+    mouse(draftView, QEvent::MouseMove, adjacentTopEdge, Qt::NoButton,
+          Qt::NoButton);
+    mouse(draftView, QEvent::MouseButtonPress, adjacentTopEdge,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(edgeAxisPicks == 1);
+    CHECK(pickedEdgeAxis && pickedEdgeAxis->signature);
+    CHECK(pickedEdgeAxis->bodyId == bodyId);
+    CHECK(pickedEdgeAxis->featureId == sourceFeatureId);
   }
 
   // Circular Pattern shares the same whole-Body and principal-axis picking

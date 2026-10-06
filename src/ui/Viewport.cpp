@@ -186,6 +186,7 @@ struct SketchFaceHalfEdge {
   int to{-1};
   int twin{-1};
   bool used{false};
+  bool userGeometry{true};
 };
 
 double sketchCross(sketch::Point a, sketch::Point b) {
@@ -202,15 +203,23 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
     sketch::Point a;
     sketch::Point b;
     std::vector<double> cuts{0.0, 1.0};
+    bool userGeometry{true};
   };
 
   std::vector<SourceSegment> source;
-  for (const auto& line : geometry.lines()) {
-    if (line.dashed) continue;
+  for (std::size_t index = 0; index < geometry.lines().size(); ++index) {
+    const auto& line = geometry.lines()[index];
+    // Face-supported sketches contain the support boundary as locked dashed
+    // projection geometry. It is not an independently extrudable profile, but
+    // it must close regions cut by ordinary user lines (for example a diagonal
+    // from one corner to the middle of the opposite side).
+    const bool lockedProjection =
+        line.dashed && geometry.isGeometryLocked(geometry.lineId(index));
+    if (line.dashed && !lockedProjection) continue;
     if (std::hypot(line.end.xMm - line.start.xMm,
                    line.end.yMm - line.start.yMm) <= 1e-9)
       continue;
-    source.push_back({line.start, line.end});
+    source.push_back({line.start, line.end, {0.0, 1.0}, !line.dashed});
   }
 
   // A click made with grid snapping disabled can land a fraction of a
@@ -281,6 +290,7 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
   struct SplitSegment {
     sketch::Point a;
     sketch::Point b;
+    bool userGeometry{true};
   };
   std::vector<SplitSegment> segments;
   for (auto& item : source) {
@@ -303,7 +313,7 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
       const sketch::Point b{item.a.xMm + dx * t1,
                             item.a.yMm + dy * t1};
       if (std::hypot(b.xMm - a.xMm, b.yMm - a.yMm) > 1e-8)
-        segments.push_back({a, b});
+        segments.push_back({a, b, item.userGeometry});
     }
   }
 
@@ -328,8 +338,8 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
 
     const int forward = static_cast<int>(edges.size());
     const int reverse = forward + 1;
-    edges.push_back({a, b, reverse, false});
-    edges.push_back({b, a, forward, false});
+    edges.push_back({a, b, reverse, false, segment.userGeometry});
+    edges.push_back({b, a, forward, false, segment.userGeometry});
     outgoing[a].push_back(forward);
     outgoing[b].push_back(reverse);
   }
@@ -356,9 +366,11 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
     std::vector<sketch::Point> cycle;
     int current = startEdge;
     bool closed = false;
+    bool usesUserGeometry = false;
     for (std::size_t guard = 0; guard <= edges.size() + 2; ++guard) {
       if (edges[current].used && current != startEdge) break;
       edges[current].used = true;
+      usesUserGeometry = usesUserGeometry || edges[current].userGeometry;
       cycle.push_back(vertices[edges[current].from]);
 
       const int vertex = edges[current].to;
@@ -391,7 +403,11 @@ std::vector<std::vector<sketch::Point>> planarSketchLineFaces(
 
     // With the traversal rule above bounded faces are CCW (positive area);
     // the unbounded outside face is clockwise and is discarded.
-    if (area2 > 1e-8) faces.push_back(std::move(cycle));
+    // Projected support edges only provide closure. Without at least one
+    // ordinary sketch edge this is still the original B-Rep face, not a new
+    // selectable sketch region.
+    if (area2 > 1e-8 && usesUserGeometry)
+      faces.push_back(std::move(cycle));
   }
 
   return faces;
@@ -1050,6 +1066,14 @@ bool Viewport::circularPatternAxisSelectionActive() const noexcept {
   return pickMode_ == PickMode::CircularPatternAxis;
 }
 
+bool Viewport::draftFaceSelectionActive() const noexcept {
+  return pickMode_ == PickMode::DraftFace;
+}
+
+bool Viewport::draftAxisSelectionActive() const noexcept {
+  return pickMode_ == PickMode::DraftAxis;
+}
+
 void Viewport::beginRulerMeasurement() {
   resetToolInteraction();
   ruler_.begin();
@@ -1243,6 +1267,23 @@ void Viewport::beginMoveBodySelection() {
   update();
 }
 
+void Viewport::beginJoinBodiesSelection() {
+  pickMode_ = PickMode::JoinBodies;
+  selectionFilter_ = SelectionFilter::Face;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  clearWholeBodySelection();
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
 void Viewport::showMovePreview() {
   pickMode_ = PickMode::MovePreview;
   selectionFilter_ = SelectionFilter::Any;
@@ -1338,6 +1379,67 @@ void Viewport::showCircularPatternAxisSelection(int axisIndex) {
   hoveredToolBodyId_ = kInvalidBodyId;
   hoveredRevolveAxisToken_ = 0;
   selectedPatternAxis_ = axisIndex;
+  unsetCursor();
+  update();
+}
+
+void Viewport::beginDraftFaceSelection() {
+  pickMode_ = PickMode::DraftFace;
+  selectionFilter_ = SelectionFilter::Face;
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedPatternAxis_ = -1;
+  selectedDraftAxisEdge_.reset();
+  hoveredRevolveAxisToken_ = 0;
+  clearWholeBodySelection();
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::beginDraftAxisSelection() {
+  pickMode_ = PickMode::DraftAxis;
+  // Keep the selected face highlighted while choosing the rotation axis.
+  selectionFilter_ = SelectionFilter::Edge;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedPatternAxis_ = -1;
+  selectedDraftAxisEdge_.reset();
+  hoveredRevolveAxisToken_ = 0;
+  setCursor(Qt::CrossCursor);
+  update();
+}
+
+void Viewport::showDraftAxisSelection(int axisIndex) {
+  if (axisIndex < 0 || axisIndex > 2) return;
+  pickMode_ = PickMode::DraftPreview;
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredRevolveAxisToken_ = 0;
+  selectedPatternAxis_ = axisIndex;
+  selectedDraftAxisEdge_.reset();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  unsetCursor();
+  update();
+}
+
+void Viewport::showDraftEdgeAxisSelection(const EdgeReference& edge) {
+  pickMode_ = PickMode::DraftPreview;
+  selectionFilter_ = SelectionFilter::Any;
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredRevolveAxisToken_ = 0;
+  selectedPatternAxis_ = -1;
+  selectedDraftAxisEdge_ = edge;
+  setSelectedBodyEdges({edge});
   unsetCursor();
   update();
 }
@@ -1613,6 +1715,7 @@ std::vector<std::size_t> Viewport::effectiveSelectedFaceIndices() const {
 std::vector<std::size_t> Viewport::effectiveHoveredFaceIndices() const {
   if ((pickMode_ != PickMode::MirrorBody &&
        pickMode_ != PickMode::MoveBody &&
+       pickMode_ != PickMode::JoinBodies &&
        pickMode_ != PickMode::LinearPatternBody &&
        pickMode_ != PickMode::CircularPatternBody) ||
       hoveredToolBodyId_ == kInvalidBodyId) {
@@ -1802,11 +1905,16 @@ void Viewport::setAngularToolManipulator(
   angularToolManipulator_ = manipulator;
   toolManipulator_.reset();
   translationToolManipulator_.reset();
-  if (toolHudParameterId_ != "angle") {
+  if (toolHudParameterId_ != "angle" ||
+      toolHudMinimum_ != manipulator.minimumDeg ||
+      toolHudMaximum_ != manipulator.maximumDeg) {
     toolParameterHud_->setParameters({
         {"angle", "Angle", ToolParameterType::Angle, manipulator.angleDeg,
-         0.01, 360.0, 1.0, "°", true, ToolManipulatorType::Angular}});
+         manipulator.minimumDeg, manipulator.maximumDeg, 1.0, "°", true,
+         ToolManipulatorType::Angular}});
     toolHudParameterId_ = "angle";
+    toolHudMinimum_ = manipulator.minimumDeg;
+    toolHudMaximum_ = manipulator.maximumDeg;
   } else {
     toolParameterHud_->setValue("angle", manipulator.angleDeg);
   }
@@ -1834,6 +1942,8 @@ void Viewport::clearToolManipulator() {
   angularToolManipulator_.reset();
   toolParameterHud_->hide();
   toolHudParameterId_.clear();
+  toolHudMinimum_ = 0.0;
+  toolHudMaximum_ = 0.0;
   linearDragSnapshot_.reset();
   draggingToolManipulator_ = false;
   draggingTranslationToolManipulator_ = false;
@@ -2039,6 +2149,7 @@ void Viewport::leaveEvent(QEvent* event) {
   clearCubeHover();
   if (pickMode_ == PickMode::MirrorBody ||
       pickMode_ == PickMode::MoveBody ||
+      pickMode_ == PickMode::JoinBodies ||
       pickMode_ == PickMode::LinearPatternBody ||
       pickMode_ == PickMode::CircularPatternBody) {
     hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
@@ -2048,8 +2159,13 @@ void Viewport::leaveEvent(QEvent* event) {
     selectedBasePlane_ = -1;
     update();
   } else if (pickMode_ == PickMode::LinearPatternAxis ||
-             pickMode_ == PickMode::CircularPatternAxis) {
+             pickMode_ == PickMode::CircularPatternAxis ||
+             pickMode_ == PickMode::DraftAxis) {
     hoveredRevolveAxisToken_ = 0;
+    hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    update();
+  } else if (pickMode_ == PickMode::DraftFace) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
     update();
   } else if (pickMode_ == PickMode::Ruler) {
     ruler_.clearHover();
@@ -2429,15 +2545,17 @@ void Viewport::paintGL() {
           manipulatorStyle_.minimumAngularSweepDeg * std::numbers::pi / 180.0;
       const double visualSweepRadians =
           std::max(std::abs(endRadians), minimumSweepRadians);
-      const double startRadians = endRadians - visualSweepRadians;
+      const double sweepSign = endRadians < 0.0 ? -1.0 : 1.0;
+      const double startRadians =
+          endRadians - sweepSign * visualSweepRadians;
       const int segmentCount = std::max(
           18, static_cast<int>(std::ceil(
                   visualSweepRadians * 180.0 / std::numbers::pi / 4.0)));
       QPolygonF arc;
       arc.reserve(segmentCount + 1);
       for (int index = 0; index <= segmentCount; ++index) {
-        const double t =
-            startRadians + visualSweepRadians * index / segmentCount;
+        const double t = startRadians +
+                         sweepSign * visualSweepRadians * index / segmentCount;
         arc << projectBodyPoint(
                    offsetPoint(manipulator.origin, visual->u,
                                visual->visualRadiusMm * std::cos(t), visual->v,
@@ -2796,13 +2914,16 @@ void Viewport::paintGL() {
       pickMode_ == PickMode::LinearPatternAxis ||
       pickMode_ == PickMode::LinearPatternPreview ||
       pickMode_ == PickMode::CircularPatternAxis ||
-      pickMode_ == PickMode::CircularPatternPreview) {
+      pickMode_ == PickMode::CircularPatternPreview ||
+      pickMode_ == PickMode::DraftAxis ||
+      pickMode_ == PickMode::DraftPreview) {
     const bool hasSketchCandidate =
         pickMode_ == PickMode::RevolveAxis &&
         revolveAxisSketchIndex_ < displaySketches_.size();
     qulonglong emphasizedAxisToken = hoveredRevolveAxisToken_;
     if (pickMode_ == PickMode::LinearPatternPreview ||
-        pickMode_ == PickMode::CircularPatternPreview) {
+        pickMode_ == PickMode::CircularPatternPreview ||
+        pickMode_ == PickMode::DraftPreview) {
       emphasizedAxisToken = selectedPatternAxis_ == 0
                                 ? kGlobalXAxisToken
                             : selectedPatternAxis_ == 1
@@ -2883,6 +3004,33 @@ void Viewport::paintGL() {
             break;
           }
         }
+      }
+    }
+    if (pickMode_ == PickMode::DraftPreview && selectedDraftAxisEdge_ &&
+        selectedDraftAxisEdge_->signature) {
+      const auto& signature = *selectedDraftAxisEdge_->signature;
+      const double tangentLength = std::sqrt(
+          signature.tangent.x * signature.tangent.x +
+          signature.tangent.y * signature.tangent.y +
+          signature.tangent.z * signature.tangent.z);
+      if (tangentLength > 1e-12) {
+        const double scale = 1000.0 / tangentLength;
+        const Point3d first{
+            signature.midpoint.x - signature.tangent.x * scale,
+            signature.midpoint.y - signature.tangent.y * scale,
+            signature.midpoint.z - signature.tangent.z * scale};
+        const Point3d second{
+            signature.midpoint.x + signature.tangent.x * scale,
+            signature.midpoint.y + signature.tangent.y * scale,
+            signature.midpoint.z + signature.tangent.z * scale};
+        painter.setPen(QPen(QColor("#00a6ff"), 5.0, Qt::SolidLine,
+                            Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(projectBodyPoint(first, center, size(), yaw_, pitch_,
+                                          zoom_)
+                             .screen,
+                         projectBodyPoint(second, center, size(), yaw_, pitch_,
+                                          zoom_)
+                             .screen);
       }
     }
   }
@@ -3126,7 +3274,8 @@ qulonglong Viewport::revolveAxisTokenAt(QPointF scenePosition) const {
 
 qulonglong Viewport::principalAxisTokenAt(QPointF scenePosition) const {
   if (pickMode_ != PickMode::LinearPatternAxis &&
-      pickMode_ != PickMode::CircularPatternAxis)
+      pickMode_ != PickMode::CircularPatternAxis &&
+      pickMode_ != PickMode::DraftAxis)
     return 0;
   const Point3d center = bodyRenderMesh_.center();
   double bestDistance = 12.0;
@@ -3289,6 +3438,21 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
+  if (pickMode_ == PickMode::JoinBodies) {
+    updateToolBodyHover(scenePosition);
+    if (hoveredToolBodyId_ != kInvalidBodyId) {
+      auto selected = selectedBodyIds_;
+      const auto found =
+          std::find(selected.begin(), selected.end(), hoveredToolBodyId_);
+      if (found != selected.end())
+        selected.erase(found);
+      else if (selected.size() < 2)
+        selected.push_back(hoveredToolBodyId_);
+      setSelectedBodies(std::move(selected));
+    }
+    event->accept();
+    return;
+  }
   if (pickMode_ == PickMode::LinearPatternBody) {
     updateToolBodyHover(scenePosition);
     if (hoveredToolBodyId_ != kInvalidBodyId) {
@@ -3375,6 +3539,34 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       selectionFilter_ = SelectionFilter::Any;
       unsetCursor();
       emit circularPatternAxisPicked(axisIndex);
+    }
+    event->accept();
+    update();
+    return;
+  }
+  if (pickMode_ == PickMode::DraftAxis) {
+    const qulonglong axisToken = principalAxisTokenAt(scenePosition);
+    int axisIndex = -1;
+    if (axisToken == kGlobalXAxisToken)
+      axisIndex = 0;
+    else if (axisToken == kGlobalYAxisToken)
+      axisIndex = 1;
+    else if (axisToken == kGlobalZAxisToken)
+      axisIndex = 2;
+    if (axisIndex >= 0) {
+      selectedPatternAxis_ = axisIndex;
+      hoveredRevolveAxisToken_ = 0;
+      pickMode_ = PickMode::DraftPreview;
+      selectionFilter_ = SelectionFilter::Any;
+      unsetCursor();
+      emit draftAxisPicked(axisIndex);
+    } else {
+      updateBodyHover(scenePosition);
+      if (hoveredBodyEdgeIndex_ != static_cast<std::size_t>(-1)) {
+        if (const auto edge =
+                edgeReferenceForGlobalIndex(hoveredBodyEdgeIndex_))
+          emit draftEdgeAxisPicked(*edge);
+      }
     }
     event->accept();
     update();
@@ -3617,13 +3809,15 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     }
   }
 
-  if (pickMode_ != PickMode::None) return;
+  const bool draftFacePick = pickMode_ == PickMode::DraftFace;
+  if (pickMode_ != PickMode::None && !draftFacePick) return;
 
   // Direct sketch-profile interaction: in normal mode a visible closed profile
   // starts the direct Extrude instead of selecting body topology. The hover
   // machinery already depth-filters, so an occluded profile is not picked.
-  updateExtrusionHover(scenePosition);
-  if (hoveredExtrusionSketchIndex_ != static_cast<std::size_t>(-1)) {
+  if (!draftFacePick) updateExtrusionHover(scenePosition);
+  if (!draftFacePick &&
+      hoveredExtrusionSketchIndex_ != static_cast<std::size_t>(-1)) {
     const bool append = event->modifiers().testFlag(Qt::ControlModifier);
     if (!append || selectedExtrusionSketchIndex_ != hoveredExtrusionSketchIndex_) {
       selectedExtrusionPolygons_.clear();
@@ -3681,8 +3875,9 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  const bool toggleFace = faceMultiSelectionMode_ ||
-                          event->modifiers().testFlag(Qt::ControlModifier);
+  const bool toggleFace = !draftFacePick &&
+                          (faceMultiSelectionMode_ ||
+                           event->modifiers().testFlag(Qt::ControlModifier));
   const bool toggleEdge = edgeMultiSelectionMode_ ||
                           event->modifiers().testFlag(Qt::ControlModifier);
   hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
@@ -5143,7 +5338,9 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
       // Skip the update/emit so the currently accepted angle is preserved
       // instead of being overwritten with a fabricated 360°/88.99° jump.
       if (const auto resolved = angularValueFromProjectedBasis(
-              event->position() - cameraPan_, visual->origin, uPoint, vPoint)) {
+              event->position() - cameraPan_, visual->origin, uPoint, vPoint,
+              angularToolManipulator_->minimumDeg,
+              angularToolManipulator_->maximumDeg)) {
         angularToolManipulator_->angleDeg = *resolved;
         toolParameterHud_->setValue("angle", angularToolManipulator_->angleDeg);
         emit angularToolManipulatorValueChanged(
@@ -5221,6 +5418,14 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
+  if (event->buttons() == Qt::NoButton && pickMode_ == PickMode::JoinBodies) {
+    updateToolBodyHover(event->position() - cameraPan_);
+    setCursor(hoveredToolBodyId_ != kInvalidBodyId ? Qt::PointingHandCursor
+                                                   : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
   if (event->buttons() == Qt::NoButton &&
       pickMode_ == PickMode::LinearPatternBody) {
     updateToolBodyHover(event->position() - cameraPan_);
@@ -5290,6 +5495,39 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::DraftAxis) {
+    const qulonglong previous = hoveredRevolveAxisToken_;
+    const auto previousEdge = hoveredBodyEdgeIndex_;
+    hoveredRevolveAxisToken_ =
+        principalAxisTokenAt(event->position() - cameraPan_);
+    if (hoveredRevolveAxisToken_ != 0) {
+      hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+      hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    } else {
+      updateBodyHover(event->position() - cameraPan_);
+      hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    }
+    const bool hasCandidate =
+        hoveredRevolveAxisToken_ != 0 ||
+        hoveredBodyEdgeIndex_ != static_cast<std::size_t>(-1);
+    setCursor(hasCandidate ? Qt::PointingHandCursor : Qt::CrossCursor);
+    if (previous != hoveredRevolveAxisToken_ ||
+        previousEdge != hoveredBodyEdgeIndex_)
+      update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::DraftFace) {
+    updateBodyHover(event->position() - cameraPan_);
+    setCursor(hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1)
+                  ? Qt::PointingHandCursor
+                  : Qt::CrossCursor);
+    update();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
       pickMode_ == PickMode::LinearPatternPreview) {
     hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
     hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
@@ -5300,6 +5538,15 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
   }
   if (event->buttons() == Qt::NoButton &&
       pickMode_ == PickMode::CircularPatternPreview) {
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+    hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+    hoveredToolBodyId_ = kInvalidBodyId;
+    unsetCursor();
+    event->accept();
+    return;
+  }
+  if (event->buttons() == Qt::NoButton &&
+      pickMode_ == PickMode::DraftPreview) {
     hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
     hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
     hoveredToolBodyId_ = kInvalidBodyId;
@@ -5532,6 +5779,7 @@ void Viewport::resetToolInteraction() {
   hoveredToolBodyId_ = kInvalidBodyId;
   selectedBasePlane_ = -1;
   selectedPatternAxis_ = -1;
+  selectedDraftAxisEdge_.reset();
   hoveredRevolveAxisToken_ = 0;
   if (wasConstructionPlane)
     for (bool& visible : basePlanesVisible_) visible = false;
@@ -5547,7 +5795,8 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
       (pickMode_ == PickMode::None ||
        pickMode_ == PickMode::MovePreview ||
        pickMode_ == PickMode::LinearPatternPreview ||
-       pickMode_ == PickMode::CircularPatternPreview)) {
+       pickMode_ == PickMode::CircularPatternPreview ||
+       pickMode_ == PickMode::DraftPreview)) {
     const bool backward = event->key() == Qt::Key_Backtab ||
                           event->modifiers().testFlag(Qt::ShiftModifier);
 

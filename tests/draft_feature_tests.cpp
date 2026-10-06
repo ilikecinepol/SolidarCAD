@@ -1,8 +1,10 @@
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <GeomAbs_CurveType.hxx>
 #include <QCoreApplication>
 #include <QDir>
 #include <QTemporaryDir>
@@ -15,6 +17,8 @@
 #include <cassert>
 #include <cmath>
 #include <memory>
+#include <cstdlib>
+#include <iostream>
 
 #include "model/Document.h"
 #include "model/DraftBuilder.h"
@@ -23,6 +27,14 @@
 #include "model/ExtrudeFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 double volume(const TopoDS_Shape& shape) {
@@ -77,7 +89,9 @@ int main(int argc, char** argv) {
   draftPtr->setReversed(true);
   assert(document.recompute());
   draftPtr->setAngleDeg(0.0);
-  assert(!document.recompute() && draftPtr->isFailed());
+  CHECK(document.recompute());
+  CHECK(!draftPtr->isFailed());
+  CHECK(std::abs(volume(*draftPtr->shape()) - volume(*source.shape())) < 0.01);
   draftPtr->setAngleDeg(5.0);
   assert(document.recompute() && draftPtr->id() == draftId);
 
@@ -85,11 +99,34 @@ int main(int argc, char** argv) {
   session.begin(document, body.id(), source.id(), source.shape(), {face}, plane,
                 direction, 5.0, false, draftId);
   assert(session.previewShape() && session.manipulator());
-  session.clearNeutralPlane();
-  assert(session.selectionRequirement()->type == solidar::SelectionType::Plane);
+  session.clearPrincipalAxis();
+  assert(session.selectionRequirement()->type == solidar::SelectionType::Axis);
   assert(session.faces().size() == 1 && session.angleDeg() == 5.0);
-  session.setNeutralPlane(plane);
+  assert(session.setPrincipalAxis(2));
+  assert(session.principalAxisIndex() == 2);
+  assert(session.neutralPlane()->type == solidar::NeutralPlaneType::GlobalXY);
+  assert(session.pullDirection()->type ==
+         solidar::AxisReferenceType::GlobalZ);
   assert(session.previewShape() && session.editingFeatureId() == draftId);
+  CHECK(session.parameters().size() == 1);
+  CHECK(session.parameters().front().minimum == -89.99);
+  CHECK(session.parameters().front().maximum == 89.99);
+  session.setAngleFromManipulator(-5.0);
+  CHECK(session.angleDeg() == -5.0);
+  CHECK(session.previewShape() && session.manipulator());
+  CHECK(session.manipulator()->angleDeg == -5.0);
+  CHECK(session.manipulator()->minimumDeg == -89.99);
+  CHECK(session.manipulator()->maximumDeg == 89.99);
+  session.setAngleFromManipulator(0.0);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(session.previewShape());
+  session.setAngleFromManipulator(5.0);
+
+  solidar::DraftToolSession legacyReversedSession;
+  legacyReversedSession.begin(document, body.id(), source.id(), source.shape(),
+                              {face}, plane, direction, 5.0, true);
+  CHECK(legacyReversedSession.angleDeg() == -5.0);
+  CHECK(legacyReversedSession.previewShape());
 
   // Parameter-domain failure keeps the last valid visual preview, disables
   // commit through PreviewInvalid and recovers in the same session when the
@@ -121,6 +158,60 @@ int main(int argc, char** argv) {
   assert(session.previewShape());
   assert(session.editingFeatureId() == draftId);
 
+  // A straight edge of the selected face is a first-class rotation axis. Its
+  // persistent EdgeReference must drive both the live preview and the saved
+  // feature, rather than relying on an unstable OCCT edge ordinal.
+  std::optional<solidar::EdgeReference> adjacentEdge;
+  const auto resolvedChosenFace =
+      solidar::resolveFaceReference(*source.shape(), face.topology());
+  CHECK(resolvedChosenFace);
+  std::size_t edgeIndex = 0;
+  for (TopExp_Explorer edges(*source.shape(), TopAbs_EDGE); edges.More();
+       edges.Next(), ++edgeIndex) {
+    BRepAdaptor_Curve curve(TopoDS::Edge(edges.Current()));
+    if (curve.GetType() != GeomAbs_Line) continue;
+    bool belongsToFace = false;
+    for (TopExp_Explorer faceEdges(*resolvedChosenFace.subshape, TopAbs_EDGE);
+         faceEdges.More(); faceEdges.Next()) {
+      if (TopoDS::Edge(faceEdges.Current()).IsSame(
+              TopoDS::Edge(edges.Current()))) {
+        belongsToFace = true;
+        break;
+      }
+    }
+    if (!belongsToFace) continue;
+    auto candidate = solidar::makeEdgeReference(
+        *source.shape(), body.id(), source.id(), edgeIndex);
+    gp_Pln candidatePlane;
+    gp_Dir candidateDirection;
+    std::string candidateError;
+    if (!solidar::resolveDraftEdgeAxis(
+            *source.shape(), face, candidate, &candidatePlane,
+            &candidateDirection, &candidateError))
+      continue;
+    if (solidar::buildDraftShape(*source.shape(), {chosen}, candidatePlane,
+                                 candidateDirection, 5.0, false,
+                                 &candidateError)) {
+      adjacentEdge = std::move(candidate);
+      break;
+    }
+  }
+  CHECK(adjacentEdge && adjacentEdge->signature);
+  CHECK(session.setRotationEdge(*adjacentEdge));
+  CHECK(session.rotationEdge() == adjacentEdge);
+  CHECK(!session.principalAxisIndex());
+  CHECK(session.previewShape() && session.manipulator());
+
+  draftPtr->setReversed(false);
+  draftPtr->setRotationEdge(adjacentEdge);
+  CHECK(document.recompute());
+  CHECK(draftPtr->shape() && !draftPtr->shape()->IsNull());
+  auto* sourceExtrude = dynamic_cast<solidar::ExtrudeFeature*>(&source);
+  CHECK(sourceExtrude);
+  sourceExtrude->setLengthMm(22.0);
+  CHECK(document.recompute());
+  CHECK(draftPtr->shape() && !draftPtr->shape()->IsNull());
+
   QTemporaryDir temporary(QDir::current().filePath(
       QStringLiteral("draft-feature-tests-XXXXXX")));
   assert(temporary.isValid());
@@ -133,6 +224,10 @@ int main(int argc, char** argv) {
       loaded.activeBody()->activeFeature());
   assert(loadedDraft && loadedDraft->id() == draftId);
   assert(loadedDraft->draftedFaces().front().signature);
+  CHECK(loadedDraft->rotationEdge());
+  CHECK(loadedDraft->rotationEdge()->signature);
+  CHECK(loadedDraft->rotationEdge()->bodyId == body.id());
+  CHECK(loadedDraft->rotationEdge()->featureId == source.id());
   assert(loadedDraft->pullDirection().type == solidar::AxisReferenceType::GlobalZ);
   return 0;
 }

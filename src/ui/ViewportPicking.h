@@ -68,12 +68,15 @@ struct LinearDragSnapshot {
 [[nodiscard]] SegmentHit closestSegmentHit(
     QPointF point, const ProjectedPoint& a, const ProjectedPoint& b);
 // Resolves a cursor against the projected basis of a 3D angular manipulator.
-// The range is (0, 360], so positive U represents a complete revolution.
+// The default range is (0, 360], so positive U represents a complete
+// revolution. A range spanning zero resolves the same cursor to a signed
+// angle in [-180, 180] before clamping.
 // Returns nullopt when the projected basis is degenerate (|det| < 1e-9, e.g. an
 // edge-on pose), meaning the angle is indeterminate; callers must preserve the
 // currently accepted angle rather than substituting a fabricated value.
 [[nodiscard]] std::optional<double> angularValueFromProjectedBasis(
-    QPointF cursor, QPointF origin, QPointF uPoint, QPointF vPoint);
+    QPointF cursor, QPointF origin, QPointF uPoint, QPointF vPoint,
+    double minimumDeg = 0.01, double maximumDeg = 360.0);
 
 // Marquee (rectangle) candidate predicates. All operate purely on logical
 // screen coordinates and are deterministic / DPR-independent. "Hits" when the

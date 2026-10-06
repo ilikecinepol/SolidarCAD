@@ -11,6 +11,7 @@
 #include "model/FilletToolSession.h"
 #include "model/CircularPatternToolSession.h"
 #include "model/LinearPatternToolSession.h"
+#include "model/JoinBodiesToolSession.h"
 #include "model/MirrorToolSession.h"
 #include "model/MoveToolSession.h"
 #include "model/RevolveToolSession.h"
@@ -88,6 +89,10 @@ class MainWindow final : public QMainWindow {
   void acceptFilletTool();
   void cancelFilletTool();
   void createChamfer();
+  void createJoinBodies();
+  void updateJoinBodiesToolPreview();
+  void acceptJoinBodiesTool();
+  void cancelJoinBodiesTool();
   void createMirror();
   void updateMirrorToolPreview();
   void acceptMirrorTool();
@@ -181,6 +186,7 @@ class MainWindow final : public QMainWindow {
   ToolParametersPanel* toolParametersPanel_{nullptr};
   FilletToolSession filletToolSession_;
   ChamferToolSession chamferToolSession_;
+  JoinBodiesToolSession joinBodiesToolSession_;
   ShellToolSession shellToolSession_;
   DraftToolSession draftToolSession_;
   ExtrudeToolSession faceExtrudeSession_;

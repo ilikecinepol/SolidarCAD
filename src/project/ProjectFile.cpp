@@ -31,6 +31,7 @@
 #include "model/MoveFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/CircularPatternFeature.h"
+#include "model/JoinBodiesFeature.h"
 #include "model/DraftFeature.h"
 #include "model/ShellFeature.h"
 
@@ -225,6 +226,16 @@ QJsonObject savedFaceReference(const FaceReference& face) {
   return result;
 }
 
+QJsonObject savedEdgeReference(const EdgeReference& edge) {
+  QJsonObject result{{"bodyId", static_cast<qint64>(edge.bodyId)},
+                     {"featureId", static_cast<qint64>(edge.featureId)},
+                     {"edgeIndex", static_cast<qint64>(edge.edgeIndex)}};
+  if (!edge.persistentTag.empty())
+    result["persistentTag"] = QString::fromStdString(edge.persistentTag);
+  if (edge.signature) result["signature"] = edgeSignature(*edge.signature);
+  return result;
+}
+
 QJsonObject savedExtrudeProfileGeometry(const sketch::Sketch& geometry) {
   QJsonArray lines;
   for (const auto& line : geometry.lines()) {
@@ -292,6 +303,17 @@ FaceReference loadedFaceReference(const QJsonValue& value) {
       static_cast<std::size_t>(saved.value("faceIndex").toInteger())};
   result.persistentTag = saved.value("persistentTag").toString().toStdString();
   result.signature = readFaceSignature(saved.value("signature"));
+  return result;
+}
+
+EdgeReference loadedEdgeReference(const QJsonValue& value) {
+  const auto saved = value.toObject();
+  EdgeReference result{
+      static_cast<BodyId>(saved.value("bodyId").toInteger()),
+      static_cast<FeatureId>(saved.value("featureId").toInteger()),
+      static_cast<std::size_t>(saved.value("edgeIndex").toInteger())};
+  result.persistentTag = saved.value("persistentTag").toString().toStdString();
+  result.signature = readEdgeSignature(saved.value("signature"));
   return result;
 }
 
@@ -678,6 +700,14 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         saved["count"] = circular->count();
         saved["angleDeg"] = circular->angleDeg();
         saved["operation"] = static_cast<int>(circular->operation());
+      } else if (const auto* joined =
+                     dynamic_cast<const JoinBodiesFeature*>(feature.get())) {
+        saved["firstBodyId"] = static_cast<qint64>(joined->firstBodyId());
+        saved["firstFeatureId"] =
+            static_cast<qint64>(joined->firstFeatureId());
+        saved["secondBodyId"] = static_cast<qint64>(joined->secondBodyId());
+        saved["secondFeatureId"] =
+            static_cast<qint64>(joined->secondFeatureId());
       } else if (const auto* shell =
                      dynamic_cast<const ShellFeature*>(feature.get())) {
         saved["sourceFeatureId"] = static_cast<qint64>(shell->sourceFeatureId());
@@ -698,6 +728,8 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
         saved["pullDirectionType"] = static_cast<int>(draft->pullDirection().type);
         saved["pullDirectionSketchId"] = static_cast<qint64>(draft->pullDirection().sketchId);
         saved["pullDirectionLineId"] = static_cast<qint64>(draft->pullDirection().lineId);
+        if (draft->rotationEdge())
+          saved["rotationEdge"] = savedEdgeReference(*draft->rotationEdge());
         QJsonArray faces;
         for (const auto& face : draft->draftedFaces())
           faces.append(savedFaceReference(face));
@@ -711,6 +743,7 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
     }
     bodies.append(QJsonObject{{"id", static_cast<qint64>(body.id())},
                               {"name", QString::fromStdString(body.name())},
+                              {"visible", body.visible()},
                               {"features", features}});
   }
   root["model"] = QJsonObject{{"sketches", sketches}, {"bodies", bodies}};
@@ -792,6 +825,7 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
     auto& body = loaded.addBody(
         static_cast<BodyId>(savedBody.value("id").toInteger()),
         savedBody.value("name").toString().toStdString());
+    body.setVisible(savedBody.value("visible").toBool(true));
     for (const auto featureValue : savedBody.value("features").toArray()) {
       const auto saved = featureValue.toObject();
       const auto id = static_cast<FeatureId>(saved.value("id").toInteger());
@@ -902,6 +936,15 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
             static_cast<PatternOperation>(saved.value("operation").toInt(
                 static_cast<int>(PatternOperation::Join))),
             name));
+      } else if (type == QStringLiteral("JoinBodies")) {
+        body.addFeature(std::make_unique<JoinBodiesFeature>(
+            id, static_cast<BodyId>(saved.value("firstBodyId").toInteger()),
+            static_cast<FeatureId>(
+                saved.value("firstFeatureId").toInteger()),
+            static_cast<BodyId>(saved.value("secondBodyId").toInteger()),
+            static_cast<FeatureId>(
+                saved.value("secondFeatureId").toInteger()),
+            name));
       } else if (type == QStringLiteral("Shell")) {
         std::vector<FaceReference> faces;
         for (const auto& value : saved.value("removedFaces").toArray())
@@ -922,11 +965,15 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
             static_cast<AxisReferenceType>(saved.value("pullDirectionType").toInt()),
             static_cast<SketchId>(saved.value("pullDirectionSketchId").toInteger()),
             static_cast<sketch::GeometryId>(saved.value("pullDirectionLineId").toInteger())};
+        std::optional<EdgeReference> rotationEdge;
+        if (saved.contains("rotationEdge"))
+          rotationEdge = loadedEdgeReference(saved.value("rotationEdge"));
         body.addFeature(std::make_unique<DraftFeature>(
             id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
             std::move(faces), std::move(plane), direction,
             saved.value("angleDeg").toDouble(5.0),
-            saved.value("reversed").toBool(), name));
+            saved.value("reversed").toBool(), name,
+            std::move(rotationEdge)));
       } else {
         setError(error, QString::fromUtf8("Неизвестный тип фичи: ") + type);
         return false;

@@ -40,6 +40,7 @@ ToolParametersPanel::ToolParametersPanel(QWidget* parent) : QWidget(parent) {
   selectionLayout->addWidget(clear_);
   parameterCaption_ = new QLabel(this);
   parameter_ = new QDoubleSpinBox(this);
+  parameter_->setObjectName(QStringLiteral("toolParameterInput"));
   form->addRow(selectionCaption_, selectionControls);
   form->addRow(parameterCaption_, parameter_);
   option_ = new QCheckBox(this);
@@ -80,6 +81,8 @@ void ToolParametersPanel::configure(const QString& title,
   selectionCaption_->setText(selectionName + QStringLiteral(":"));
   parameterCaption_->setText(parameterName + QStringLiteral(":"));
   parameter_->setSuffix(suffix);
+  parameterCaption_->show();
+  parameter_->show();
   option_->hide();
 }
 void ToolParametersPanel::configure(const PartDesignToolHelp& help,
@@ -88,6 +91,15 @@ void ToolParametersPanel::configure(const PartDesignToolHelp& help,
                                     const QString& suffix) {
   configure(help.title.toUpper(), selectionName, parameterName, suffix);
   setDescription(help.shortDescription);
+}
+void ToolParametersPanel::configureSelectionOnly(
+    const PartDesignToolHelp& help, const QString& selectionName) {
+  title_->setText(help.title.toUpper());
+  setDescription(help.shortDescription);
+  selectionCaption_->setText(selectionName + QStringLiteral(":"));
+  parameterCaption_->hide();
+  parameter_->hide();
+  option_->hide();
 }
 void ToolParametersPanel::setSelectionCount(std::size_t count) {
   selectionValue_->setText(QString::fromUtf8("%1 выбрано").arg(count));

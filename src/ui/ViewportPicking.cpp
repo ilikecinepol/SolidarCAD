@@ -78,7 +78,9 @@ QPointF robustLinearDragAxis(QPointF projectedUnitAxis, QPointF drawnDirection,
 std::optional<double> angularValueFromProjectedBasis(QPointF cursor,
                                                      QPointF origin,
                                                      QPointF uPoint,
-                                                     QPointF vPoint) {
+                                                     QPointF vPoint,
+                                                     double minimumDeg,
+                                                     double maximumDeg) {
   const QPointF u = uPoint - origin;
   const QPointF v = vPoint - origin;
   const QPointF delta = cursor - origin;
@@ -94,8 +96,9 @@ std::optional<double> angularValueFromProjectedBasis(QPointF cursor,
       (u.x() * delta.y() - u.y() * delta.x()) / determinant;
   double angle = std::atan2(vCoordinate, uCoordinate) * 180.0 /
                  std::numbers::pi;
-  if (angle <= 0.0) angle += 360.0;
-  return std::clamp(angle, 0.01, 360.0);
+  const bool signedRange = minimumDeg < 0.0 && maximumDeg > 0.0;
+  if (!signedRange && angle <= 0.0) angle += 360.0;
+  return std::clamp(angle, minimumDeg, maximumDeg);
 }
 
 namespace {

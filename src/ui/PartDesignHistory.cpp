@@ -9,6 +9,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/FilletFeature.h"
 #include "model/LinearPatternFeature.h"
+#include "model/JoinBodiesFeature.h"
 #include "model/MirrorFeature.h"
 #include "model/MoveFeature.h"
 #include "model/PocketFeature.h"
@@ -68,6 +69,10 @@ HistoryStep featureStep(const Body& body, const ShapeFeature& feature,
     step.type = HistoryStepType::Chamfer; kind = PartDesignToolKind::Chamfer;
     parameters << QString::fromUtf8("Размер: %1 мм").arg(v->distanceMm(), 0, 'f', 2)
                << QString::fromUtf8("Рёбер: %1").arg(v->edges().size());
+  } else if (dynamic_cast<const JoinBodiesFeature*>(&feature)) {
+    step.type = HistoryStepType::JoinBodies;
+    kind = PartDesignToolKind::JoinBodies;
+    parameters << QString::fromUtf8("Исходных тел: 2");
   } else if (const auto* v = dynamic_cast<const MoveFeature*>(&feature)) {
     step.type = HistoryStepType::Move; kind = PartDesignToolKind::Move;
     const auto offset = v->offsetMm();
@@ -95,7 +100,8 @@ HistoryStep featureStep(const Body& body, const ShapeFeature& feature,
                                 : QString::fromUtf8("Направление: внутрь"));
   } else if (const auto* v = dynamic_cast<const DraftFeature*>(&feature)) {
     step.type = HistoryStepType::Draft; kind = PartDesignToolKind::Draft;
-    parameters << QString::fromUtf8("Угол: %1°").arg(v->angleDeg(), 0, 'f', 2)
+    const double signedAngle = v->reversed() ? -v->angleDeg() : v->angleDeg();
+    parameters << QString::fromUtf8("Угол: %1°").arg(signedAngle, 0, 'f', 2)
                << QString::fromUtf8("Граней: %1").arg(v->draftedFaces().size());
   }
   const auto* help = partDesignToolHelp(kind);

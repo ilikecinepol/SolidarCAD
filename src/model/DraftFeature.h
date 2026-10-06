@@ -25,21 +25,25 @@ class DraftFeature final : public ShapeFeature {
   DraftFeature(FeatureId sourceFeatureId, std::vector<FaceReference> draftedFaces,
                PlaneReference neutralPlane, AxisReference pullDirection,
                double angleDeg = 5.0, bool reversed = false,
-               std::string name = {});
+               std::string name = {},
+               std::optional<EdgeReference> rotationEdge = std::nullopt);
   DraftFeature(FeatureId id, FeatureId sourceFeatureId,
                std::vector<FaceReference> draftedFaces,
                PlaneReference neutralPlane, AxisReference pullDirection,
-               double angleDeg, bool reversed, std::string name);
+               double angleDeg, bool reversed, std::string name,
+               std::optional<EdgeReference> rotationEdge = std::nullopt);
 
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
   [[nodiscard]] const std::vector<FaceReference>& draftedFaces() const noexcept;
   [[nodiscard]] const PlaneReference& neutralPlane() const noexcept;
   [[nodiscard]] const AxisReference& pullDirection() const noexcept;
+  [[nodiscard]] const std::optional<EdgeReference>& rotationEdge() const noexcept;
   [[nodiscard]] double angleDeg() const noexcept;
   [[nodiscard]] bool reversed() const noexcept;
   void setDraftedFaces(std::vector<FaceReference> value);
   void setNeutralPlane(PlaneReference value);
   void setPullDirection(AxisReference value);
+  void setRotationEdge(std::optional<EdgeReference> value);
   void setAngleDeg(double value) noexcept;
   void setReversed(bool value) noexcept;
 
@@ -55,6 +59,7 @@ class DraftFeature final : public ShapeFeature {
   AxisReference pullDirection_{AxisReferenceType::GlobalZ,
                                kInvalidSketchId,
                                sketch::kInvalidGeometryId};
+  std::optional<EdgeReference> rotationEdge_;
   double angleDeg_{5.0};
   bool reversed_{false};
 };
@@ -63,5 +68,10 @@ class DraftFeature final : public ShapeFeature {
     const Document& document, const TopoDS_Shape& baseShape,
     const PlaneReference& plane, const AxisReference& direction,
     gp_Pln* resolvedPlane, gp_Dir* resolvedDirection, std::string* error);
+
+[[nodiscard]] bool resolveDraftEdgeAxis(
+    const TopoDS_Shape& baseShape, const FaceReference& draftedFace,
+    const EdgeReference& rotationEdge, gp_Pln* resolvedPlane,
+    gp_Dir* resolvedDirection, std::string* error);
 
 }  // namespace solidar

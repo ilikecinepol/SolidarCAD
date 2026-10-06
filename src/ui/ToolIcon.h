@@ -14,6 +14,7 @@ enum class ToolIconKind {
   Revolve,
   Fillet,
   Chamfer,
+  JoinBodies,
   Move,
   Ruler,
   Shell,

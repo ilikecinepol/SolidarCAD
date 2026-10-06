@@ -20,6 +20,8 @@ class ToolParametersPanel final : public QWidget {
                  const QString& parameterName, const QString& suffix);
   void configure(const PartDesignToolHelp& help, const QString& selectionName,
                  const QString& parameterName, const QString& suffix);
+  void configureSelectionOnly(const PartDesignToolHelp& help,
+                              const QString& selectionName);
   void setSelectionCount(std::size_t count);
   void setParameterRange(double minimum, double maximum, int decimals);
   void setParameterValue(double value);

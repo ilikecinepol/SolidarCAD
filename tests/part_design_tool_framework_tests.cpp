@@ -45,7 +45,7 @@ class FakeSession final : public solidar::ToolSession {
 
 int main() {
   const auto& definitions = solidar::standardPartDesignToolDefinitions();
-  CHECK(definitions.size() == 11);
+  CHECK(definitions.size() == 12);
   for (const auto& definition : definitions) {
     CHECK(definition.kind != solidar::PartDesignToolKind::None);
     CHECK(!definition.selections.empty());
@@ -54,13 +54,19 @@ int main() {
     CHECK(!help->title.isEmpty());
     CHECK(!help->detailedDescription.isEmpty());
   }
-  const auto& move = definitions[5];
+  const auto& join = definitions[5];
+  CHECK(join.selections.size() == 1);
+  CHECK(join.selections.front().minimumCount == 2);
+  CHECK(join.selections.front().maximumCount == 2);
+  CHECK(join.selections.front().multiSelect);
+  CHECK(join.parameters.empty());
+  const auto& move = definitions[6];
   CHECK(solidar::acceptsSelection(move.selections[0],
                                   solidar::SelectionType::Body));
   CHECK(move.parameters.size() == 3);
   CHECK(std::get<double>(move.parameters[0].value) == 0.0);
   CHECK(move.parameters[0].minimum < 0.0);
-  const auto& mirror = definitions[6];
+  const auto& mirror = definitions[7];
   CHECK(solidar::acceptsSelection(mirror.selections[0],
                                   solidar::SelectionType::Body));
   CHECK(!solidar::acceptsSelection(mirror.selections[0],
@@ -69,20 +75,31 @@ int main() {
                                   solidar::SelectionType::Plane));
   CHECK(!solidar::acceptsSelection(mirror.selections[1],
                                    solidar::SelectionType::Body));
-  const auto& linear = definitions[7];
+  const auto& linear = definitions[8];
   CHECK(solidar::acceptsSelection(linear.selections[0],
                                   solidar::SelectionType::Body));
   CHECK(!solidar::acceptsSelection(linear.selections[0],
                                    solidar::SelectionType::Feature));
   CHECK(solidar::acceptsSelection(linear.selections[1],
                                   solidar::SelectionType::Axis));
-  const auto& circular = definitions[8];
+  const auto& circular = definitions[9];
   CHECK(solidar::acceptsSelection(circular.selections[0],
                                   solidar::SelectionType::Body));
   CHECK(!solidar::acceptsSelection(circular.selections[0],
                                    solidar::SelectionType::Feature));
   CHECK(solidar::acceptsSelection(circular.selections[1],
                                   solidar::SelectionType::Axis));
+  const auto& draft = definitions[11];
+  CHECK(draft.kind == solidar::PartDesignToolKind::Draft);
+  CHECK(draft.selections.size() == 2);
+  CHECK(draft.selections[0].type == solidar::SelectionType::Face);
+  CHECK(draft.selections[0].maximumCount == 1);
+  CHECK(!draft.selections[0].multiSelect);
+  CHECK(draft.selections[1].type == solidar::SelectionType::Axis);
+  CHECK(draft.parameters.size() == 1);
+  CHECK(draft.parameters.front().id == "angle");
+  CHECK(draft.parameters.front().minimum == -89.99);
+  CHECK(draft.parameters.front().maximum == 89.99);
   const auto& revolveDefinition = definitions[2];
   CHECK(revolveDefinition.selections.front().multiSelect);
   CHECK(revolveDefinition.selections.front().maximumCount > 1);

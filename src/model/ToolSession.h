@@ -47,6 +47,8 @@ struct AngularToolManipulator {
   Vector3d axis{1.0, 0.0, 0.0};
   double radiusMm{20.0};
   double angleDeg{360.0};
+  double minimumDeg{0.01};
+  double maximumDeg{360.0};
 };
 
 class ToolSession {
