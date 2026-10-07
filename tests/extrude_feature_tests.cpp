@@ -403,6 +403,13 @@ int main() {
   const auto normalized = solidar::normalizeExtrusionInput(-20.0, false);
   assert(near(normalized.distanceMm, 20.0));
   assert(normalized.reversed);
+  // The signed field and the "Reverse direction" checkbox describe the same
+  // direction. A negative value entered while the checkbox is already active
+  // must stay reversed instead of cancelling the direction at Apply time.
+  const auto normalizedChecked =
+      solidar::normalizeExtrusionInput(-45.0, true);
+  CHECK(near(normalizedChecked.distanceMm, 45.0));
+  CHECK(normalizedChecked.reversed);
 
   solidar::Document mixedDocument;
   auto& mixed = mixedDocument.addSketch("Mixed");

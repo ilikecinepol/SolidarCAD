@@ -2,6 +2,7 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <numbers>
@@ -9,6 +10,14 @@
 #include "TestGeometryUtils.h"
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
 
 namespace {
 
@@ -158,5 +167,29 @@ int main() {
     fixture.body->addFeature(std::move(feature));
     assert(!fixture.document.rebuild());
     assert(extrude->state() == solidar::FeatureState::Error);
+  }
+  {
+    // A face placement may legitimately have its local normal opposite to the
+    // visible outward extrusion direction.  In that case reversed=true plus
+    // an explicit Join must add material; the signed UI value must not be
+    // reinterpreted as Cut during commit.
+    BaseFixture fixture;
+    auto& sketch = fixture.document.addSketch("Reverse outward Join");
+    sketch.geometry.addRectangle({15.0, -15.0}, {25.0, -5.0});
+    sketch.placement = {{0.0, 0.0, 50.0},
+                        {1.0, 0.0, 0.0},
+                        {0.0, -1.0, 0.0}};
+    fixture.body->addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        sketch.id, 20.0, "Reverse outward Join",
+        solidar::ExtrudeOperation::Join, true));
+    CHECK(fixture.document.rebuild());
+    CHECK(fixture.body->activeFeature()->isValid());
+    CHECK(solidar::test::solidCount(*fixture.body->resultShape()) == 1);
+    CHECK(solidar::test::near(
+        solidar::test::volumeOf(*fixture.body->resultShape()), 142000.0,
+        1e-2));
+    const auto bounds = solidar::test::boundsOf(*fixture.body->resultShape());
+    CHECK(solidar::test::near(bounds.minZ, 0.0));
+    CHECK(solidar::test::near(bounds.maxZ, 70.0));
   }
 }

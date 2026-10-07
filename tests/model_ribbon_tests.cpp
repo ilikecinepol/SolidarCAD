@@ -3,6 +3,10 @@
 #include <QMenu>
 #include <QToolButton>
 
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -14,9 +18,21 @@
 #include "ui/PartDesignToolHelp.h"
 #include "ui/PartDesignHistory.h"
 
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
+      return EXIT_FAILURE;                                                 \
+    }                                                                      \
+  } while (false)
+
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
   solidar::ModelRibbon ribbon;
+  ribbon.resize(1920, 124);
+  ribbon.show();
+  QApplication::processEvents();
+  CHECK(ribbon.minimumSizeHint().width() <= 1920);
 
   const auto groups = ribbon.findChildren<QWidget*>("modelToolGroup");
   assert(groups.size() == 3);
@@ -48,6 +64,7 @@ int main(int argc, char** argv) {
 
   const auto commands = ribbon.findChildren<QToolButton*>();
   int documentedCommands = 0;
+  std::vector<QRect> commandRects;
   for (const auto* command : commands) {
     assert(command->text() != QStringLiteral("Top"));
     assert(command->text() != QStringLiteral("Front"));
@@ -60,8 +77,19 @@ int main(int argc, char** argv) {
     assert(!command->toolTip().isEmpty());
     assert(!command->accessibleName().isEmpty());
     assert(!command->accessibleDescription().isEmpty());
+    CHECK(command->width() == 104);
+    CHECK(!command->property("commandTitle").toString().contains(
+        QLatin1Char('\n')));
+    commandRects.push_back(
+        QRect(command->mapTo(&ribbon, QPoint{}), command->size()));
   }
   assert(documentedCommands == 13);
+  for (std::size_t first = 0; first < commandRects.size(); ++first)
+    for (std::size_t second = first + 1; second < commandRects.size(); ++second)
+      CHECK(!commandRects[first].intersects(commandRects[second]));
+  CHECK(editing->findChild<QToolButton*>("joinBodiesCommand")
+            ->text()
+            .contains(QLatin1Char('\n')));
   assert(!ribbon.findChild<QToolButton*>("fitCommand"));
   assert(!ribbon.findChild<QToolButton*>("isoCommand"));
   const std::initializer_list<solidar::PartDesignToolKind> historyKinds{

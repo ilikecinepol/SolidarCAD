@@ -43,6 +43,7 @@
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QAction>
+#include <QActionGroup>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -230,6 +231,65 @@ void MainWindow::buildMenus() {
   auto* settingsAction = editMenu->addAction(QString::fromUtf8("Настройки…"));
   settingsAction->setObjectName("settingsAction");
   connect(settingsAction, &QAction::triggered, this, &MainWindow::openSettings);
+
+  // QDockWidget's close button only hides a panel.  Expose the standard
+  // toggle actions so a closed construction tree or history panel always has
+  // an obvious, state-synchronised way back.
+  auto* viewMenu = bar->addMenu(QString::fromUtf8("Вид"));
+  if (modelTreeDock_) {
+    QAction* action = modelTreeDock_->toggleViewAction();
+    action->setText(QString::fromUtf8("Дерево построений"));
+    action->setObjectName(QStringLiteral("toggleModelTreeAction"));
+    viewMenu->addAction(action);
+  }
+  if (historyDock_) {
+    QAction* action = historyDock_->toggleViewAction();
+    action->setText(QString::fromUtf8("История построений"));
+    action->setObjectName(QStringLiteral("toggleHistoryAction"));
+    viewMenu->addAction(action);
+  }
+
+  viewMenu->addSeparator();
+  auto* themeMenu = viewMenu->addMenu(QString::fromUtf8("Тема"));
+  themeMenu->setObjectName(QStringLiteral("themeMenu"));
+  auto* themeGroup = new QActionGroup(themeMenu);
+  themeGroup->setExclusive(true);
+  const auto addThemeAction = [themeMenu, themeGroup](
+                                  const QString& text,
+                                  const QString& objectName) {
+    QAction* action = themeMenu->addAction(text);
+    action->setObjectName(objectName);
+    action->setCheckable(true);
+    themeGroup->addAction(action);
+    return action;
+  };
+  QAction* systemTheme =
+      addThemeAction(QString::fromUtf8("Системная"),
+                     QStringLiteral("themeSystemAction"));
+  QAction* lightTheme =
+      addThemeAction(QString::fromUtf8("Светлая"),
+                     QStringLiteral("themeLightAction"));
+  QAction* darkTheme =
+      addThemeAction(QString::fromUtf8("Тёмная"),
+                     QStringLiteral("themeDarkAction"));
+
+  const auto syncThemeActions = [this, systemTheme, lightTheme, darkTheme] {
+    const QSignalBlocker systemBlocker(systemTheme);
+    const QSignalBlocker lightBlocker(lightTheme);
+    const QSignalBlocker darkBlocker(darkTheme);
+    systemTheme->setChecked(settings_.theme() == AppTheme::System);
+    lightTheme->setChecked(settings_.theme() == AppTheme::Light);
+    darkTheme->setChecked(settings_.theme() == AppTheme::Dark);
+  };
+  syncThemeActions();
+  connect(systemTheme, &QAction::triggered, this,
+          [this] { settings_.setTheme(AppTheme::System); });
+  connect(lightTheme, &QAction::triggered, this,
+          [this] { settings_.setTheme(AppTheme::Light); });
+  connect(darkTheme, &QAction::triggered, this,
+          [this] { settings_.setTheme(AppTheme::Dark); });
+  connect(&settings_, &AppSettings::themeChanged, this,
+          [syncThemeActions](AppTheme) { syncThemeActions(); });
 
   layout->addWidget(bar);
   ribbonStack_->setParent(menuHost);
@@ -2354,6 +2414,11 @@ void MainWindow::buildUi() {
             }
             sketchCanvas_->resetSketch();
             sketchCanvas_->clearSketchEditContext();
+            // Sketcher opens in a stable CAD orientation.  The current 3D
+            // camera may be orbiting or may use a front-view convention whose
+            // screen-up is opposite to world +Z; carrying that roll into the
+            // sketch can place the selected face 180 degrees around Z.
+            sketchCanvas_->setInitialViewUp({});
             sketchCanvas_->setReferenceBody(document_.box(), plane,
                                              hasExtrusion_);
             const QString support = viewport_->solidSupport();
@@ -2426,9 +2491,10 @@ void MainWindow::buildUi() {
   workspaceStack_->setCurrentWidget(viewport_);
   ribbonStack_->setCurrentWidget(modelRibbon_);
 
-  auto* modelDock = new QDockWidget(QString::fromUtf8("Дерево построений"), this);
-  modelDock->setObjectName(QStringLiteral("modelTreeDock"));
-  featureTree_ = new QTreeWidget(modelDock);
+  modelTreeDock_ =
+      new QDockWidget(QString::fromUtf8("Дерево построений"), this);
+  modelTreeDock_->setObjectName(QStringLiteral("modelTreeDock"));
+  featureTree_ = new QTreeWidget(modelTreeDock_);
   featureTree_->setHeaderHidden(true);
   featureTree_->setAlternatingRowColors(true);
   featureTree_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -2752,12 +2818,6 @@ void MainWindow::buildUi() {
   partDesignTools_.registerTool(
       PartDesignToolKind::Extrude,
       {&faceExtrudeSession_, [this] { cancelFaceExtrudeTool(); }, {}});
-  connect(featureTree_, &QTreeWidget::itemDoubleClicked, this,
-          [this](QTreeWidgetItem* item, int) {
-            const auto id = static_cast<FeatureId>(
-                item->data(0, Qt::UserRole + 1).toULongLong());
-            if (id != kInvalidFeatureId) editPatternFeature(id);
-          });
   connect(viewport_, &Viewport::selectionChanged, this,
           [this](const QString& text) {
             if (text == QStringLiteral("__cancel_tools__") ||
@@ -2796,19 +2856,21 @@ void MainWindow::buildUi() {
                                          ? QString::fromUtf8("Выделение снято")
                                          : text);
           });
-  modelDock->setWidget(featureTree_);
-  addDockWidget(Qt::LeftDockWidgetArea, modelDock);
+  modelTreeDock_->setWidget(featureTree_);
+  addDockWidget(Qt::LeftDockWidgetArea, modelTreeDock_);
 
-  auto* historyDock = new QDockWidget(QString::fromUtf8("История построений"), this);
-  historyDock->setAllowedAreas(Qt::BottomDockWidgetArea);
-  historyDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
-  historyDock->setMinimumHeight(96);
-  historyDock->setMaximumHeight(108);
-  auto* historyHost = new QWidget(historyDock);
+  historyDock_ =
+      new QDockWidget(QString::fromUtf8("История построений"), this);
+  historyDock_->setObjectName(QStringLiteral("historyDock"));
+  historyDock_->setAllowedAreas(Qt::BottomDockWidgetArea);
+  historyDock_->setFeatures(QDockWidget::DockWidgetClosable);
+  historyDock_->setMinimumHeight(96);
+  historyDock_->setMaximumHeight(108);
+  auto* historyHost = new QWidget(historyDock_);
   auto* historyHostLayout = new QVBoxLayout(historyHost);
   historyHostLayout->setContentsMargins(8, 2, 8, 3);
   historyHostLayout->setSpacing(1);
-  historyScroll_ = new QScrollArea(historyDock);
+  historyScroll_ = new QScrollArea(historyDock_);
   historyScroll_->setWidgetResizable(true);
   historyScroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   historyScroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -2820,8 +2882,8 @@ void MainWindow::buildUi() {
   connect(historyTimeline_, &HistoryTimelineWidget::positionChanged, this,
           &MainWindow::applyHistoryPosition);
   historyHostLayout->addWidget(historyScroll_, 1);
-  historyDock->setWidget(historyHost);
-  addDockWidget(Qt::BottomDockWidgetArea, historyDock);
+  historyDock_->setWidget(historyHost);
+  addDockWidget(Qt::BottomDockWidgetArea, historyDock_);
   rebuildHistoryPanel();
 
   statusBar()->showMessage(
@@ -5571,6 +5633,7 @@ void MainWindow::editSketchStep(std::size_t index) {
       currentSketchFaceReference_ = modelSketch->support.face;
   }
   sketchCanvas_->clearSketchEditContext();
+  sketchCanvas_->setInitialViewUp({});
   if (currentSketchFaceReference_ && !configureSketchEditContext()) {
     editingSketchIndex_.reset();
     return;
@@ -5871,24 +5934,6 @@ void MainWindow::rebuildFeatureTree() {
       bodyItem->setFlags(bodyItem->flags() | Qt::ItemIsUserCheckable);
       bodyItem->setCheckState(0,
                               body.visible() ? Qt::Checked : Qt::Unchecked);
-      for (const auto& feature : body.features()) {
-        const QString state =
-            feature->isValid() ? QStringLiteral("Valid")
-            : feature->isDirty() ? QStringLiteral("Dirty")
-                                 : QStringLiteral("Error");
-        const QString name = QString::fromStdString(
-            feature->name().empty() ? feature->typeName() : feature->name());
-        auto* featureItem =
-            new QTreeWidgetItem(bodyItem, {name + "  [" + state + "]"});
-        featureItem->setData(
-            0, Qt::UserRole + 1,
-            QVariant::fromValue<qulonglong>(feature->id()));
-        featureItem->setToolTip(
-            0, feature->isFailed()
-                   ? QString::fromStdString(feature->error())
-                   : QString::fromUtf8("Состояние: ") + state);
-        if (feature->isFailed()) featureItem->setForeground(0, QColor("#c62828"));
-      }
     }
   }
   featureTree_->expandAll();

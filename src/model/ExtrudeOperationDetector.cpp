@@ -18,7 +18,12 @@ namespace solidar {
 
 NormalizedExtrusionInput normalizeExtrusionInput(double distanceMm,
                                                   bool reversed) noexcept {
-  if (distanceMm < 0.0) return {-distanceMm, !reversed};
+  // The signed distance and the UI's "Reverse direction" checkbox are two
+  // representations of the same state.  Treat either one as requesting the
+  // reverse direction; otherwise a manually entered negative distance while
+  // the checkbox is active flips back to the positive direction on Apply,
+  // making the committed boolean disagree with its preview.
+  if (distanceMm < 0.0) return {-distanceMm, true};
   return {distanceMm, reversed};
 }
 

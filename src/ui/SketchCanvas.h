@@ -100,6 +100,9 @@ class SketchCanvas final : public QWidget {
   // camera itself is stored in the active plane's local coordinate frame.
   [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
   void setReferenceBody(BoxParameters box, const QString& support, bool visible);
+  // Preserves the current 3D viewport's visual up direction when the sketch
+  // plane is opened. This changes presentation only, never SketchPlacement.
+  void setInitialViewUp(Vector3d worldUp) noexcept;
   void setSketchEditContext(const SketchEditContext& context);
   void setSceneReferences(
       SketchPlacement activePlacement,
@@ -208,6 +211,7 @@ signals:
 
   [[nodiscard]] sketch::Point rotateForView(sketch::Point point) const noexcept;
   [[nodiscard]] sketch::Point rotateFromView(sketch::Point point) const noexcept;
+  [[nodiscard]] bool screenToSketchMappingAvailable() const noexcept;
   struct ProjectedLocalPoint {
     double xMm{};
     double yMm{};
@@ -340,6 +344,8 @@ signals:
   bool snapEnabled_{false};
   bool gridVisible_{true};
   std::optional<std::size_t> hoveredProjectionEdge_;
+  Vector3d preferredViewUp_{};
+  double initialViewRotationDeg_{0.0};
   double viewRotationDeg_{0.0};
   double viewYawDeg_{0.0};
   double viewPitchDeg_{0.0};

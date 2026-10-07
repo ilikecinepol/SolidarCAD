@@ -9,6 +9,7 @@
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
@@ -56,9 +57,11 @@ class TestFailure final : public std::runtime_error {
 
 #define CHECK(condition)                                                     \
   do {                                                                       \
-    if (!(condition))                                                        \
+    if (!(condition)) {                                                      \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n';  \
       throw TestFailure(std::string(__FILE__) + ":" +                        \
                         std::to_string(__LINE__) + ": " #condition);         \
+    }                                                                        \
   } while (false)
 
 solidar::SketchEditContext faceContext(const TopoDS_Shape& shape,
@@ -214,6 +217,7 @@ void sketchFreeCameraTests() {
           .Shape());
   solidar::SketchCanvas canvas;
   canvas.resize(900, 650);
+  canvas.setInitialViewUp({});
   canvas.setSketchEditContext(faceContext(box, 20.0, false));
   canvas.setSceneReferences(solidar::SketchPlacement::xy(), {secondBody}, {});
   canvas.show();
@@ -221,6 +225,54 @@ void sketchFreeCameraTests() {
 
   CHECK(canvas.viewAlignedToSketchPlane());
   CHECK(canvas.sceneBodyCount() == 2);
+
+  // OCCT face axes may point in either direction. Entering Sketcher must use a
+  // stable CAD up direction independent of the previous 3D camera: world +Z
+  // for vertical faces and world +Y for horizontal faces. This prevents a
+  // selected face from opening 180 degrees around Z while leaving the
+  // persisted SketchPlacement unchanged.
+  canvas.setInitialViewUp({});
+  for (std::size_t faceIndex = 0; faceIndex < 6; ++faceIndex) {
+    const auto resolved = solidar::resolveFacePlacement(box, faceIndex);
+    CHECK(resolved.resolved);
+    CHECK(resolved.planar);
+    canvas.setSceneReferences(resolved.placement, {}, {});
+
+    const auto normal = resolved.placement.normal();
+    const solidar::Vector3d worldUp =
+        std::abs(normal.z) > 0.9 ? solidar::Vector3d{0.0, 1.0, 0.0}
+                                 : solidar::Vector3d{0.0, 0.0, 1.0};
+    const auto dot = [worldUp](solidar::Vector3d axis) {
+      return worldUp.x * axis.x + worldUp.y * axis.y +
+             worldUp.z * axis.z;
+    };
+    const double localX = dot(resolved.placement.xDirection);
+    const double localY = dot(resolved.placement.yDirection);
+    const double angle =
+        canvas.viewRotationDegrees() * std::numbers::pi / 180.0;
+    const double screenX =
+        std::cos(angle) * localX + std::sin(angle) * localY;
+    const double screenY =
+        -std::sin(angle) * localX + std::cos(angle) * localY;
+    // Initial roll is canonical (no arbitrary diagonal opening), and among
+    // the four quarter turns it keeps the stable world-up vector in the upper
+    // half of the screen and as close to vertical as possible.
+    CHECK(std::abs(std::remainder(canvas.viewRotationDegrees(), 90.0)) <=
+          1e-6);
+    CHECK(screenY >= -1e-6);
+    CHECK(std::abs(screenX) <= screenY + 1e-6);
+
+    const double initialRotation = canvas.viewRotationDegrees();
+    canvas.rotateViewClockwise();
+    canvas.resetViewRotation();
+    CHECK(std::abs(std::remainder(canvas.viewRotationDegrees() -
+                                      initialRotation,
+                                  360.0)) <= 1e-6);
+  }
+
+  canvas.setInitialViewUp({});
+  canvas.setSketchEditContext(faceContext(box, 20.0, false));
+  canvas.setSceneReferences(solidar::SketchPlacement::xy(), {secondBody}, {});
 
   const QPointF start(420.0, 310.0);
   const QPointF finish(480.0, 350.0);
@@ -238,6 +290,28 @@ void sketchFreeCameraTests() {
   CHECK(std::abs(canvas.viewYawDegrees()) > 1.0);
   CHECK(std::abs(canvas.viewPitchDegrees()) > 1.0);
   CHECK(!canvas.grab().isNull());
+
+  // Regression: camera orbit used to turn Sketcher into an inspection-only
+  // mode and every left click was discarded until the view was reset. A
+  // tilted, still-visible sketch plane must accept ordinary construction.
+  const std::size_t lineCountBeforeTiltedDraw = canvas.sketch().lines().size();
+  canvas.setTool(solidar::SketchCanvas::Tool::Line);
+  const auto click = [&canvas](QPointF position) {
+    QMouseEvent press(QEvent::MouseButtonPress, position, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, position, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&canvas, &release);
+  };
+  click(QPointF(390.0, 285.0));
+  click(QPointF(485.0, 350.0));
+  CHECK(canvas.sketch().lines().size() == lineCountBeforeTiltedDraw + 1);
+  const auto& tiltedLine = canvas.sketch().lines().back();
+  CHECK(std::isfinite(tiltedLine.start.xMm));
+  CHECK(std::isfinite(tiltedLine.start.yMm));
+  CHECK(std::isfinite(tiltedLine.end.xMm));
+  CHECK(std::isfinite(tiltedLine.end.yMm));
 
   canvas.rotateViewClockwise();
   CHECK(canvas.viewQuarterTurns() == 1);
@@ -1241,6 +1315,34 @@ void draggedPointSnappingTests() {
                       }));
   }
 
+  // Every creation tool uses persistent curved-body snapping, not only Line.
+  // A rectangle corner placed on a three-point Arc must remain PointOnArc
+  // after later edits instead of being only visually coincident.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addArc({0.0, 0.0}, 20.0, 0.0, kPi);
+    const auto arcId = sketch.arcId(0);
+
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::Rectangle);
+    canvas.show();
+    QApplication::processEvents();
+
+    click(canvas, screenPoint(0.0, 20.0));
+    click(canvas, screenPoint(15.0, 5.0));
+
+    CHECK(std::any_of(
+        canvas.sketch().constraints().begin(),
+        canvas.sketch().constraints().end(),
+        [arcId](const auto& constraint) {
+          return constraint.type ==
+                     solidar::sketch::ConstraintType::PointOnArc &&
+                 constraint.firstGeometry == arcId;
+        }));
+  }
+
   // A circle centre is an editable support point too, not just the
   // circumference of the circle.
   {
@@ -1362,8 +1464,40 @@ int main(int argc, char** argv) {
         QStringLiteral("sketchSettingsDock"));
     auto* modelTreeDock = editor->findChild<QDockWidget*>(
         QStringLiteral("modelTreeDock"));
+    auto* historyDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("historyDock"));
+    auto* toggleModelTree = editor->findChild<QAction*>(
+        QStringLiteral("toggleModelTreeAction"));
+    auto* toggleHistory = editor->findChild<QAction*>(
+        QStringLiteral("toggleHistoryAction"));
+    auto* systemTheme = editor->findChild<QAction*>(
+        QStringLiteral("themeSystemAction"));
+    auto* lightTheme = editor->findChild<QAction*>(
+        QStringLiteral("themeLightAction"));
+    auto* darkTheme = editor->findChild<QAction*>(
+        QStringLiteral("themeDarkAction"));
     CHECK(sketchSettingsDock != nullptr);
     CHECK(modelTreeDock != nullptr);
+    CHECK(historyDock != nullptr);
+    CHECK(toggleModelTree != nullptr);
+    CHECK(toggleHistory != nullptr);
+    CHECK(systemTheme != nullptr);
+    CHECK(lightTheme != nullptr);
+    CHECK(darkTheme != nullptr);
+    modelTreeDock->hide();
+    CHECK(modelTreeDock->isHidden());
+    toggleModelTree->trigger();
+    CHECK(!modelTreeDock->isHidden());
+    historyDock->hide();
+    CHECK(historyDock->isHidden());
+    toggleHistory->trigger();
+    CHECK(!historyDock->isHidden());
+    CHECK(systemTheme->isChecked());
+    darkTheme->trigger();
+    CHECK(settings.theme() == solidar::AppTheme::Dark);
+    CHECK(darkTheme->isChecked());
+    settings.setTheme(solidar::AppTheme::Light);
+    CHECK(lightTheme->isChecked());
     QStackedWidget* workspace = nullptr;
     for (auto* candidate : editor->findChildren<QStackedWidget*>()) {
       if (candidate->indexOf(sketchCanvas) >= 0) {

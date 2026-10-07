@@ -238,6 +238,7 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
       background: transparent;
       color: $textPrimary; border: 1px solid transparent; border-radius: 8px;
       font-size: 13px; padding: 5px 10px; }
+    QToolButton[uiRole="modelCommand"] { font-size: 12px; padding: 5px; }
     QToolButton[uiRole="modelCommand"]:hover, QPushButton#toolButton:hover {
       background: $accentSoft; }
     QToolButton[uiRole="modelCommand"]:checked, QPushButton#toolButton:checked {

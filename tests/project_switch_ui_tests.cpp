@@ -152,6 +152,17 @@ class MainWindowUndoTestAccess {
     }
     return false;
   }
+  static bool bodyRowsHaveNoFeatureChildren(const MainWindow& window) {
+    bool foundBody = false;
+    const auto items = window.featureTree_->findItems(
+        QStringLiteral("*"), Qt::MatchWildcard | Qt::MatchRecursive);
+    for (QTreeWidgetItem* item : items) {
+      if (item->data(0, Qt::UserRole).toInt() != 3) continue;
+      foundBody = true;
+      if (item->childCount() != 0) return false;
+    }
+    return foundBody;
+  }
   static bool viewportHasToolPreview(const MainWindow& window) {
     return (window.viewport_->toolPreviewShape_ &&
             !window.viewport_->toolPreviewShape_->IsNull()) ||
@@ -225,6 +236,10 @@ int main(int argc, char** argv) {
     using Access = solidar::MainWindowUndoTestAccess;
     solidar::MainWindow visibilityEditor(settings);
     CHECK(visibilityEditor.loadProject(pathA, &error));
+    // Part Design operations belong to the history timeline. The model tree
+    // only exposes Body rows and their visibility, without duplicating inert
+    // Extrude/Move/Fillet/etc. children.
+    CHECK(Access::bodyRowsHaveNoFeatureChildren(visibilityEditor));
     CHECK(Access::displayedBodyShape(visibilityEditor));
     CHECK(Access::viewportSolidVisible(visibilityEditor));
     CHECK(Access::setFirstBodyVisible(visibilityEditor, false));

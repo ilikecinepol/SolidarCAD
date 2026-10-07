@@ -195,9 +195,11 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] ViewportMeshQuality meshQuality() const noexcept;
   [[nodiscard]] float cameraYawDegrees() const noexcept;
   [[nodiscard]] float cameraPitchDegrees() const noexcept;
+  [[nodiscard]] Vector3d cameraScreenUpDirection() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
   [[nodiscard]] std::size_t selectedProfileRegionCount() const noexcept;
   [[nodiscard]] QRectF extrusionPreviewBaseBounds() const noexcept;
+  [[nodiscard]] QRectF extrusionHoverBounds() const noexcept;
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
   [[nodiscard]] bool extrusionCandidateOnBodyCap() const noexcept;

@@ -166,6 +166,8 @@ class MainWindow final : public QMainWindow {
   ModelRibbon* modelRibbon_{nullptr};
   QStackedWidget* ribbonStack_{nullptr};
   QStackedWidget* workspaceStack_{nullptr};
+  QDockWidget* modelTreeDock_{nullptr};
+  QDockWidget* historyDock_{nullptr};
   QTreeWidget* featureTree_{nullptr};
   bool hasExtrusion_{false};
   std::size_t sketchCount_{0};

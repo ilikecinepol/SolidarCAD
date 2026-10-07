@@ -105,6 +105,55 @@ Point3d worldDirectionToLocal(const SketchPlacement& placement,
           component(placement.yDirection), component(normal)};
 }
 
+double initialViewRotation(const SketchPlacement& placement,
+                           Vector3d preferredUp) {
+  const Vector3d normal = placement.normal();
+  const auto vectorLength = [](Vector3d value) {
+    return std::sqrt(value.x * value.x + value.y * value.y +
+                     value.z * value.z);
+  };
+  // MainWindow supplies the current 3D camera's screen-up vector so entering
+  // Sketcher preserves what the user saw as the top of the part.  Standalone
+  // canvases use a stable world-axis fallback.  The resulting roll is snapped
+  // to a quarter turn: Sketcher must open with horizontal/vertical axes, while
+  // still choosing the canonical orientation closest to the 3D view.
+  if (vectorLength(preferredUp) <= 1e-12)
+    preferredUp = std::abs(normal.z) > 0.9
+                      ? Vector3d{0.0, 1.0, 0.0}
+                      : Vector3d{0.0, 0.0, 1.0};
+  const auto component = [preferredUp, &vectorLength](Vector3d axis) {
+    const double length = vectorLength(axis);
+    return length > 1e-12
+               ? (preferredUp.x * axis.x + preferredUp.y * axis.y +
+                  preferredUp.z * axis.z) /
+                     length
+               : 0.0;
+  };
+  const double localX = component(placement.xDirection);
+  const double localY = component(placement.yDirection);
+  if (std::hypot(localX, localY) <= 1e-9) {
+    const Vector3d fallbackUp = std::abs(normal.z) > 0.9
+                                    ? Vector3d{0.0, 1.0, 0.0}
+                                    : Vector3d{0.0, 0.0, 1.0};
+    const auto fallbackComponent = [fallbackUp, &vectorLength](Vector3d axis) {
+      const double length = vectorLength(axis);
+      return length > 1e-12
+                 ? (fallbackUp.x * axis.x + fallbackUp.y * axis.y +
+                    fallbackUp.z * axis.z) /
+                       length
+                 : 0.0;
+    };
+    const double angle =
+        std::atan2(-fallbackComponent(placement.xDirection),
+                   fallbackComponent(placement.yDirection)) *
+        180.0 / std::numbers::pi;
+    return std::remainder(std::round(angle / 90.0) * 90.0, 360.0);
+  }
+  const double angle =
+      std::atan2(-localX, localY) * 180.0 / std::numbers::pi;
+  return std::remainder(std::round(angle / 90.0) * 90.0, 360.0);
+}
+
 CameraOrientation sketchOrientationForDirection(Point3d direction) {
   const double length = std::sqrt(direction.x * direction.x +
                                   direction.y * direction.y +
@@ -1693,9 +1742,16 @@ void SketchCanvas::setReferenceBody(BoxParameters box, const QString& support,
   update();
 }
 
+void SketchCanvas::setInitialViewUp(Vector3d worldUp) noexcept {
+  preferredViewUp_ = worldUp;
+}
+
 void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
   clearSketchEditContext();
   referencePlacement_ = context.placement;
+  initialViewRotationDeg_ =
+      initialViewRotation(referencePlacement_, preferredViewUp_);
+  viewRotationDeg_ = initialViewRotationDeg_;
   if (!context.supportShape || context.supportShape->IsNull() ||
       !context.supportFace)
     return;
@@ -1727,6 +1783,11 @@ void SketchCanvas::setSceneReferences(
     const std::vector<ShapeFeature::ShapePtr>& bodyShapes,
     std::vector<SketchSceneReference> sketches) {
   referencePlacement_ = activePlacement;
+  initialViewRotationDeg_ =
+      initialViewRotation(referencePlacement_, preferredViewUp_);
+  viewRotationDeg_ = initialViewRotationDeg_;
+  viewYawDeg_ = 0.0;
+  viewPitchDeg_ = 0.0;
   sceneBodyMeshes_.clear();
   sceneBodyMeshes_.reserve(bodyShapes.size());
   for (const auto& shape : bodyShapes) {
@@ -1821,6 +1882,7 @@ void SketchCanvas::clearSketchEditContext() {
   sceneSketches_.clear();
   realReferenceBodyVisible_ = false;
   hoveredProjectionEdge_.reset();
+  initialViewRotationDeg_ = 0.0;
   viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
@@ -1869,6 +1931,8 @@ void SketchCanvas::resetSketch() {
   circleGuideLines_.clear();
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
+  preferredViewUp_ = {};
+  initialViewRotationDeg_ = 0.0;
   viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
@@ -1896,7 +1960,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   dragging_ = false;
   setProperty("sketchPanX", 0.0);
   setProperty("sketchPanY", 0.0);
-  viewRotationDeg_ = 0.0;
+  viewRotationDeg_ = initialViewRotationDeg_;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
   setProperty("sketchPanning", false);
@@ -2034,6 +2098,21 @@ sketch::Point SketchCanvas::rotateFromView(
           sine * point.xMm + cosine * point.yMm};
 }
 
+bool SketchCanvas::screenToSketchMappingAvailable() const noexcept {
+  const auto origin = projectLocalPoint(0.0, 0.0, 0.0);
+  const auto xAxis = projectLocalPoint(1.0, 0.0, 0.0);
+  const auto yAxis = projectLocalPoint(0.0, 1.0, 0.0);
+  const double xx = xAxis.xMm - origin.xMm;
+  const double xy = xAxis.yMm - origin.yMm;
+  const double yx = yAxis.xMm - origin.xMm;
+  const double yy = yAxis.yMm - origin.yMm;
+  // In an orthographic view a plane seen exactly edge-on collapses to a line,
+  // so a screen point has no unique Sketch coordinate. Every other camera
+  // orientation remains editable through the same affine inverse used by
+  // unmapPoint().
+  return std::abs(xx * yy - xy * yx) > 1e-6;
+}
+
 QString SketchCanvas::pointDimensionModeForScreenAxis(
     bool horizontalDimensionLine, int viewQuarterTurns) {
   const int normalized = (viewQuarterTurns % 4 + 4) % 4;
@@ -2121,7 +2200,7 @@ void SketchCanvas::setViewOrientation(double yawDeg, double pitchDeg) {
 
 void SketchCanvas::resetViewRotation() {
   if (viewCubeAnimation_) viewCubeAnimation_->stop();
-  viewRotationDeg_ = 0.0;
+  viewRotationDeg_ = initialViewRotationDeg_;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
   setProperty("sketchOrbiting", false);
@@ -2170,7 +2249,7 @@ void SketchCanvas::animateViewToDirection(Point3d direction) {
                                 static_cast<float>(viewPitchDeg_)};
   const CameraOrientation target = sketchOrientationForDirection(
       worldDirectionToLocal(referencePlacement_, direction));
-  viewRotationDeg_ = 0.0;
+  viewRotationDeg_ = initialViewRotationDeg_;
   hideDimensionEditor();
   constructionHover_.reset();
   trimHover_.reset();
@@ -2214,7 +2293,7 @@ void SketchCanvas::clearViewCubeHover() {
   if (!cubeHover_) return;
   cubeHover_ = {};
   QToolTip::hideText();
-  setCursor(viewAlignedToSketchPlane()
+  setCursor(screenToSketchMappingAvailable()
                 ? (tool_ == Tool::Select ? Qt::ArrowCursor
                                          : Qt::CrossCursor)
                 : Qt::OpenHandCursor);
@@ -4658,12 +4737,11 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  // Free camera orientation is an inspection mode. Editing resumes after the
-  // user returns to the exact sketch plane, avoiding unstable inverse mapping
-  // when that plane is viewed almost edge-on.
-  if (!viewAlignedToSketchPlane()) {
+  // Any non-degenerate orthographic view can be inverted back to the active
+  // sketch plane. Only a plane seen exactly edge-on is ambiguous.
+  if (!screenToSketchMappingAvailable()) {
     emit selectionChanged(QString::fromUtf8(
-        "Свободный 3D-вид: вернитесь в плоскость эскиза для редактирования"));
+        "Плоскость эскиза видна строго сбоку: слегка поверните камеру"));
     event->accept();
     return;
   }
@@ -5428,7 +5506,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     clearViewCubeHover();
   }
 
-  if (event->buttons() == Qt::NoButton && !viewAlignedToSketchPlane()) {
+  if (event->buttons() == Qt::NoButton &&
+      !screenToSketchMappingAvailable()) {
     constructionHover_.reset();
     trimHover_.reset();
     hoveredProjectionEdge_.reset();
@@ -6293,7 +6372,7 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
     }
 
     clearViewCubeHover();
-    setCursor(viewAlignedToSketchPlane()
+    setCursor(screenToSketchMappingAvailable()
                   ? (tool_ == Tool::Select ? Qt::ArrowCursor
                                            : Qt::CrossCursor)
                   : Qt::OpenHandCursor);
@@ -6342,7 +6421,7 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
       hideDimensionEditor();
     }
 
-    setCursor(viewAlignedToSketchPlane() ?
+    setCursor(screenToSketchMappingAvailable() ?
                   (tool_ == Tool::Select ? Qt::ArrowCursor
                                          : Qt::CrossCursor)
                                            : Qt::OpenHandCursor);
@@ -6375,7 +6454,7 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
   if (event->button() == Qt::MiddleButton &&
       property("sketchPanning").toBool()) {
     setProperty("sketchPanning", false);
-    setCursor(viewAlignedToSketchPlane()
+    setCursor(screenToSketchMappingAvailable()
                   ? (tool_ == Tool::Select ? Qt::ArrowCursor
                                            : Qt::CrossCursor)
                   : Qt::OpenHandCursor);
@@ -12025,6 +12104,8 @@ void autoCoincidentNewGeometry(
         sketch::kInvalidGeometryId;
     sketch::GeometryId bestCircle =
         sketch::kInvalidGeometryId;
+    sketch::GeometryId bestArc =
+        sketch::kInvalidGeometryId;
     double bestDistance =
         std::numeric_limits<double>::max();
 
@@ -12073,6 +12154,7 @@ void autoCoincidentNewGeometry(
         bestDistance = distance;
         bestLine = carrierId;
         bestCircle = sketch::kInvalidGeometryId;
+        bestArc = sketch::kInvalidGeometryId;
       }
     }
 
@@ -12097,6 +12179,38 @@ void autoCoincidentNewGeometry(
         bestDistance = distance;
         bestLine = sketch::kInvalidGeometryId;
         bestCircle = circleId;
+        bestArc = sketch::kInvalidGeometryId;
+      }
+    }
+
+    const std::size_t oldArcLimit =
+        std::min(oldArcCount, sketch.arcs().size());
+    for (std::size_t i = 0; i < oldArcLimit; ++i) {
+      const auto arcId = sketch.arcId(i);
+      if (arcId == sketch::kInvalidGeometryId) continue;
+      const auto& arc = sketch.arcs()[i];
+      if (arc.radiusMm <= 1e-9) continue;
+      const double dx = point->xMm - arc.center.xMm;
+      const double dy = point->yMm - arc.center.yMm;
+      const double angle = std::atan2(dy, dx);
+      constexpr double kTwoPi = 6.28318530717958647692;
+      const auto normalize = [](double value) {
+        constexpr double twoPi = 6.28318530717958647692;
+        value = std::fmod(value, twoPi);
+        return value < 0.0 ? value + twoPi : value;
+      };
+      const double parameter =
+          normalize(angle - normalize(arc.startAngleRad));
+      if (parameter > arc.sweepAngleRad + 1e-9 ||
+          arc.sweepAngleRad >= kTwoPi)
+        continue;
+      const double distance =
+          std::abs(std::hypot(dx, dy) - arc.radiusMm);
+      if (distance <= kExactBodyToleranceMm && distance < bestDistance) {
+        bestDistance = distance;
+        bestLine = sketch::kInvalidGeometryId;
+        bestCircle = sketch::kInvalidGeometryId;
+        bestArc = arcId;
       }
     }
 
@@ -12143,6 +12257,26 @@ void autoCoincidentNewGeometry(
         sketch::Constraint c;
         c.type = sketch::ConstraintType::PointOnCircle;
         c.firstGeometry = bestCircle;
+        c.secondPoint = candidate.reference;
+        (void)sketch.addConstraint(c);
+      }
+
+      continue;
+    }
+
+    if (bestArc != sketch::kInvalidGeometryId) {
+      const bool duplicate = std::any_of(
+          sketch.constraints().begin(), sketch.constraints().end(),
+          [bestArc, &candidate, &sameReference](
+              const sketch::Constraint& c) {
+            return c.type == sketch::ConstraintType::PointOnArc &&
+                   c.firstGeometry == bestArc &&
+                   sameReference(c.secondPoint, candidate.reference);
+          });
+      if (!duplicate) {
+        sketch::Constraint c;
+        c.type = sketch::ConstraintType::PointOnArc;
+        c.firstGeometry = bestArc;
         c.secondPoint = candidate.reference;
         (void)sketch.addConstraint(c);
       }

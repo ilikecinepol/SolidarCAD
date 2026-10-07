@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QMouseEvent>
+#include <QWheelEvent>
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <gp_Pnt.hxx>
@@ -39,6 +40,12 @@ int main(int argc, char** argv) {
                            Qt::MouseButtons buttons,
                            Qt::KeyboardModifiers modifiers) {
     QMouseEvent event(type, position, position, button, buttons, modifiers);
+    QApplication::sendEvent(&view, &event);
+  };
+  const auto wheel = [](solidar::Viewport& view, QPointF position,
+                        int angleDelta) {
+    QWheelEvent event(position, position, {}, QPoint(0, angleDelta),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(&view, &event);
   };
 
@@ -108,6 +115,32 @@ int main(int argc, char** argv) {
   mouse(view, QEvent::MouseButtonPress, {10, 10}, Qt::LeftButton,
         Qt::LeftButton);
   CHECK(picks == 1);
+
+  // Wheel zoom must reproject the hovered extrusion region even when the
+  // cursor does not move. Otherwise the blue candidate remains at the old
+  // scale until a later MouseMove.
+  {
+    solidar::Viewport hoverView;
+    hoverView.resize(800, 600);
+    solidar::sketch::Sketch hoverProfile;
+    hoverProfile.addRectangle({-20.0, -10.0}, {20.0, 10.0});
+    const auto hoverPlacement = solidar::SketchPlacement::xy();
+    hoverView.addSketch(hoverProfile, QStringLiteral("XY"), hoverPlacement);
+    const solidar::ViewportCameraState hoverCamera{
+        hoverView.cameraYawDegrees(), hoverView.cameraPitchDegrees(), 1.0F, {},
+        hoverView.size()};
+    const QPointF inside =
+        hoverCamera.worldToScreen(hoverPlacement.toWorld(0.0, 0.0));
+    hoverView.beginExtrusionSurfaceSelection();
+    mouse(hoverView, QEvent::MouseMove, inside, Qt::NoButton, Qt::NoButton);
+    const QRectF before = hoverView.extrusionHoverBounds();
+    CHECK(!before.isEmpty());
+    wheel(hoverView, inside, 120);
+    const QRectF after = hoverView.extrusionHoverBounds();
+    CHECK(!after.isEmpty());
+    CHECK(after.width() > before.width());
+    CHECK(after.height() > before.height());
+  }
 
   // An Arc spanning a complete rectangle side and the rectangle itself are
   // two adjacent selectable regions. Picking one must not highlight both.

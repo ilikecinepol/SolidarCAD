@@ -8,17 +8,32 @@
 #include <QLabel>
 #include <QMenu>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 namespace solidar {
 namespace {
 
+QString compactCommandTitle(QString title) {
+  // QToolButton does not word-wrap ToolButtonTextUnderIcon labels.  At the
+  // 125–150% scaling commonly used on Windows, long Russian captions used to
+  // paint hard against their neighbours and the checked frame appeared to
+  // cover the next command.  An explicit line break keeps every caption
+  // inside the same predictable command tile.
+  if (title.size() > 11) {
+    const qsizetype separator = title.indexOf(QLatin1Char(' '));
+    if (separator > 0) title[separator] = QLatin1Char('\n');
+  }
+  return title;
+}
+
 QToolButton* commandButton(const QString& commandId, QWidget* parent) {
   auto* button = new QToolButton(parent);
   const auto* help = modelCommandHelp(commandId);
   Q_ASSERT(help);
-  button->setText(help->title);
+  button->setText(compactCommandTitle(help->title));
+  button->setProperty("commandTitle", help->title);
   button->setToolTip(help->detailedDescription);
   button->setAccessibleName(help->title);
   button->setAccessibleDescription(help->detailedDescription);
@@ -28,7 +43,9 @@ QToolButton* commandButton(const QString& commandId, QWidget* parent) {
   button->setIconSize(QSize(42, 42));
   button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
   button->setObjectName("modelCommand");
-  button->setMinimumSize(118, 70);
+  button->setFixedWidth(104);
+  button->setMinimumHeight(78);
+  button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
   button->setCursor(Qt::PointingHandCursor);
   button->setFocusPolicy(Qt::NoFocus);
   return button;
@@ -51,12 +68,16 @@ QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
   auto* menu = new QMenu(caption);
   menu->setObjectName("modelGroupMenu");
   for (auto* button : menuButtons) {
+    const QString commandTitle =
+        button->property("commandTitle").toString().isEmpty()
+            ? button->text()
+            : button->property("commandTitle").toString();
     if (button->menu()) {
-      button->menu()->setTitle(button->text());
+      button->menu()->setTitle(commandTitle);
       menu->addMenu(button->menu());
       continue;
     }
-    auto* action = menu->addAction(button->icon(), button->text());
+    auto* action = menu->addAction(button->icon(), commandTitle);
     action->setObjectName(button->objectName() + QStringLiteral("Action"));
     action->setEnabled(button->isEnabled());
     if (button->isEnabled())

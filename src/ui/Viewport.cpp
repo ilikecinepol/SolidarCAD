@@ -2563,6 +2563,12 @@ void Viewport::leaveEvent(QEvent* event) {
 }
 float Viewport::cameraYawDegrees() const noexcept { return yaw_; }
 float Viewport::cameraPitchDegrees() const noexcept { return pitch_; }
+Vector3d Viewport::cameraScreenUpDirection() const noexcept {
+  const double yaw = yaw_ * std::numbers::pi / 180.0;
+  const double pitch = pitch_ * std::numbers::pi / 180.0;
+  return {-std::sin(yaw) * std::cos(pitch),
+          -std::cos(yaw) * std::cos(pitch), std::sin(pitch)};
+}
 
 const sketch::Sketch& Viewport::extrusionCandidateSketch() const noexcept {
   return selectedExtrusionSketch_;
@@ -2579,6 +2585,11 @@ QRectF Viewport::extrusionPreviewBaseBounds() const noexcept {
   if (bounds.isEmpty() && !selectedExtrusionPolygon_.isEmpty())
     bounds = selectedExtrusionPolygon_.boundingRect();
   return bounds;
+}
+
+QRectF Viewport::extrusionHoverBounds() const noexcept {
+  return extrusionHoverPath_.isEmpty() ? extrusionHoverPolygon_.boundingRect()
+                                        : extrusionHoverPath_.boundingRect();
 }
 
 QString Viewport::extrusionCandidateSupport() const {
@@ -6097,6 +6108,30 @@ void Viewport::wheelEvent(QWheelEvent* event) {
     return;
   }
   zoom_ = steppedViewportZoom(zoom_, wheelDelta);
+  lastMousePosition_ = event->position().toPoint();
+
+  // Hover and selected extrusion contours are cached in screen coordinates.
+  // Reproject them immediately at the wheel cursor; waiting for MouseMove
+  // leaves the blue candidate at its pre-zoom size while the model changes.
+  refreshSelectedExtrusionPolygon();
+  const QPointF scenePosition = event->position() - cameraPan_;
+  if (pickMode_ == PickMode::ExtrusionSurface) {
+    updateExtrusionHover(scenePosition);
+  } else if (pickMode_ == PickMode::SketchPlane) {
+    updateSketchPlaneHover(scenePosition);
+  } else if (pickMode_ == PickMode::RevolveAxis) {
+    hoveredRevolveAxisToken_ = revolveAxisTokenAt(scenePosition);
+    if (hoveredRevolveAxisToken_ != 0) {
+      extrusionHoverPolygon_.clear();
+      extrusionHoverPath_ = {};
+    } else {
+      updateExtrusionHover(scenePosition);
+      if (hoveredExtrusionSketchIndex_ == static_cast<std::size_t>(-1)) {
+        extrusionHoverPolygon_.clear();
+        extrusionHoverPath_ = {};
+      }
+    }
+  }
   event->accept();
   update();
 }
