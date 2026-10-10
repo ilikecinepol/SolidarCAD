@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "ui/ThemeManager.h"
+
 namespace solidar {
 
 int HistoryTimelineGeometry::nearestIndex(int x) const noexcept {
@@ -45,14 +47,15 @@ void HistoryTimelineWidget::paintEvent(QPaintEvent* event) {
   if (!geometry_.stepCount) return;
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
+  const ThemeColors& theme = ThemeManager::instance().colors();
   const int y = 43;
-  painter.setPen(QPen(QColor("#9db3cf"), 2));
+  painter.setPen(QPen(theme.timelineTrack, 2));
   painter.drawLine(geometry_.trackStart(), y, geometry_.trackEnd(), y);
   for (int i = 0; i < geometry_.stepCount; ++i)
     painter.drawEllipse(QPoint(geometry_.center(i), y), 2, 2);
   if (position_ > 0) {
     const int x = geometry_.center(position_ - 1);
-    painter.setPen(Qt::NoPen); painter.setBrush(QColor("#1671e8"));
+    painter.setPen(Qt::NoPen); painter.setBrush(theme.accent);
     painter.drawPolygon(QPolygon({QPoint(x, y - 8), QPoint(x - 5, y + 1),
                                   QPoint(x + 5, y + 1)}));
   }

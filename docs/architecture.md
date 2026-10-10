@@ -146,14 +146,38 @@ OCCT B-Rep
   -> CPU picking plus Qt selection/tool/HUD overlays
 ```
 
-`BodyRenderMesh` owns per-face vertices and OCCT-computed per-node normals.
+`BodyRenderMesh` owns canonical indexed vertices/triangles and sampled
+topological edges; it does not retain a second expanded triangle array.
 Vertices are deliberately not welded between topological faces, preserving
-sharp CAD boundaries. Its revision changes only when the shape or display
-quality is rebuilt. Camera orbit, zoom, pan, resize, hover, and selection only
-update matrices or shader uniforms; they never invoke OCCT meshing.
+sharp CAD boundaries. Its structural `BodyMeshKey` contains body ID, feature
+ID, model-owned shape revision, shape identity and quality. Camera orbit, zoom,
+pan, resize, hover, and selection only update projection/index data, matrices or
+shader uniforms; they never invoke OCCT meshing. A monotonic fallback revision
+protects the legacy same-pointer `Viewport::setBodyShape` route from in-place
+shape mutation.
 
-`ViewportRenderer` owns OpenGL resources and shaders. Source and temporary tool
-preview have independent caches, while picking continues to resolve references
-against the source B-Rep. `Viewport` retains camera interaction, CPU picking,
-reference geometry, manipulators, and QWidget HUD placement. `MainWindow` only
-forwards display-mode and quality choices and contains no OpenGL details.
+`ViewportRenderer` owns OpenGL resources and shaders. Every currently displayed
+body remains independently cached; temporary tool/cut previews have separate
+entries. Resource pruning is an explicit scene transaction, so clearing a scene
+also releases buffers when no render pass follows. Destruction is accepted only
+under the owning OpenGL context or its share group.
+
+`ProjectedPickingScene` is camera- and mesh-revisioned and provides the shared
+BVH-backed hover/click/marquee/snap/ruler path. Interactive queries may return an
+unpublished uncertainty when their work budget is exhausted. Interaction
+boundaries use exact indexed visibility, including output-sensitive face
+refinement and interval-based edge occlusion.
+
+`PreviewUpdateCoordinator` owns GUI-thread preview cadence. It coalesces each
+stream to the newest request on a periodic tick, captures immutable source
+identity, and rejects stale generations/sequences before publication. Project
+replacement, import, Undo/Redo and tool teardown invalidate pending work before
+destroying or replacing its inputs. Release, Enter and Apply flush the latest
+request and perform Fillet/Chamfer/Shell boundary refinement exactly once.
+
+`Viewport` retains camera interaction, picking-scene construction, reference
+geometry, manipulators, and QWidget HUD placement. `MainWindow` coordinates
+preview sessions and only forwards display-mode/quality choices; it contains no
+OpenGL implementation details. OCCT rebuild and preview calls remain
+synchronous on the GUI thread until a separate thread-safety/lifetime design is
+proven.

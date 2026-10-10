@@ -7,6 +7,7 @@
 #include <gp_Pln.hxx>
 
 #include "model/RevolveFeature.h"
+#include "model/OperationFailure.h"
 #include "model/ShapeFeature.h"
 #include "model/SketchPlacement.h"
 
@@ -14,10 +15,25 @@ namespace solidar {
 
 enum class NeutralPlaneType { GlobalXY, GlobalXZ, GlobalYZ, BodyFace };
 
+[[nodiscard]] constexpr bool isKnownNeutralPlaneType(
+    NeutralPlaneType type) noexcept {
+  return type == NeutralPlaneType::GlobalXY ||
+         type == NeutralPlaneType::GlobalXZ ||
+         type == NeutralPlaneType::GlobalYZ ||
+         type == NeutralPlaneType::BodyFace;
+}
+
 struct PlaneReference {
   NeutralPlaneType type{NeutralPlaneType::GlobalXY};
   std::optional<FaceReference> face;
   friend bool operator==(const PlaneReference&, const PlaneReference&) = default;
+};
+
+struct DraftReferenceResolution {
+  OperationFailure failure;
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return !failure;
+  }
 };
 
 class DraftFeature final : public ShapeFeature {
@@ -47,10 +63,14 @@ class DraftFeature final : public ShapeFeature {
   void setAngleDeg(double value) noexcept;
   void setReversed(bool value) noexcept;
 
-  [[nodiscard]] std::string typeName() const override;
-  [[nodiscard]] bool dependsOnSketch(SketchId id) const noexcept override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::Draft;
+  }
+  [[nodiscard]] FeatureDependencies dependencies() const override;
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   FeatureId sourceFeatureId_{kInvalidFeatureId};
@@ -64,14 +84,23 @@ class DraftFeature final : public ShapeFeature {
   bool reversed_{false};
 };
 
-[[nodiscard]] bool resolveDraftReferences(
+[[nodiscard]] DraftReferenceResolution resolveDraftReferences(
     const Document& document, const TopoDS_Shape& baseShape,
     const PlaneReference& plane, const AxisReference& direction,
-    gp_Pln* resolvedPlane, gp_Dir* resolvedDirection, std::string* error);
+    gp_Pln* resolvedPlane, gp_Dir* resolvedDirection);
+[[nodiscard]] DraftReferenceResolution resolveDraftReferences(
+    const Document& document, const TopoDS_Shape& baseShape,
+    const TopologyIndex& topology, const PlaneReference& plane,
+    const AxisReference& direction, gp_Pln* resolvedPlane,
+    gp_Dir* resolvedDirection);
 
-[[nodiscard]] bool resolveDraftEdgeAxis(
+[[nodiscard]] DraftReferenceResolution resolveDraftEdgeAxis(
     const TopoDS_Shape& baseShape, const FaceReference& draftedFace,
     const EdgeReference& rotationEdge, gp_Pln* resolvedPlane,
-    gp_Dir* resolvedDirection, std::string* error);
+    gp_Dir* resolvedDirection);
+[[nodiscard]] DraftReferenceResolution resolveDraftEdgeAxis(
+    const TopoDS_Shape& baseShape, const TopologyIndex& topology,
+    const FaceReference& draftedFace, const EdgeReference& rotationEdge,
+    gp_Pln* resolvedPlane, gp_Dir* resolvedDirection);
 
 }  // namespace solidar

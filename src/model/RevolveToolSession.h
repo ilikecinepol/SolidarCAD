@@ -13,15 +13,16 @@ class RevolveToolSession final : public ToolSession {
              ShapeFeature::ShapePtr baseShape = {},
              std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setProfile(
+      const Document& document,
       SketchId profileSketchId,
       std::optional<sketch::Sketch> profileOverride = std::nullopt);
-  void clearProfile();
-  void setAxis(AxisReference axis);
-  void clearAxis();
-  void setAngleFromPanel(double angleDeg);
-  void setAngleFromManipulator(double angleDeg);
-  void setOperation(ExtrudeOperation operation);
-  void setReversed(bool reversed);
+  void clearProfile(const Document& document);
+  void setAxis(const Document& document, AxisReference axis);
+  void clearAxis(const Document& document);
+  void setAngleFromPanel(const Document& document, double angleDeg);
+  void setAngleFromManipulator(const Document& document, double angleDeg);
+  void setOperation(const Document& document, ExtrudeOperation operation);
+  void setReversed(const Document& document, bool reversed);
 
   [[nodiscard]] SketchId profileSketchId() const noexcept;
   [[nodiscard]] const std::optional<sketch::Sketch>&
@@ -33,7 +34,8 @@ class RevolveToolSession final : public ToolSession {
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
   [[nodiscard]] std::optional<FeatureId> editingFeatureId() const noexcept override;
-  [[nodiscard]] std::optional<AngularToolManipulator> manipulator() const;
+  [[nodiscard]] std::optional<AngularToolManipulator> manipulator(
+      const Document& document) const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
   [[nodiscard]] std::optional<SelectionRequirement> selectionRequirement() const override;
@@ -41,10 +43,10 @@ class RevolveToolSession final : public ToolSession {
   [[nodiscard]] std::shared_ptr<const TopoDS_Shape> previewShape() const override;
   [[nodiscard]] const std::string& error() const noexcept override;
   bool updatePreview() override;
+  bool updatePreview(const Document& document);
   void cancel() noexcept override;
 
  private:
-  const Document* document_{};
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;

@@ -21,7 +21,8 @@ class ExtrudeToolSession final : public ToolSession {
   void begin(BodyId bodyId, FeatureId sourceFeatureId,
              ShapeFeature::ShapePtr baseShape, FaceReference face,
              double lengthMm, ExtrudeOperation operation, bool reversed,
-             std::optional<FeatureId> editingFeatureId = std::nullopt);
+             std::optional<FeatureId> editingFeatureId = std::nullopt,
+             std::shared_ptr<const TopologyIndex> topologyIndex = {});
   void beginSketch(DocumentSketch profile, SketchId profileId,
                    ShapeFeature::ShapePtr baseShape, double lengthMm,
                    ExtrudeOperation operation, bool reversed,
@@ -58,6 +59,7 @@ class ExtrudeToolSession final : public ToolSession {
   [[nodiscard]] std::shared_ptr<const TopoDS_Shape>
   subtractivePreviewShape() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept override;
+  [[nodiscard]] OperationFailureCode errorCode() const noexcept override;
   bool updatePreview() override;
   void cancel() noexcept override;
 
@@ -70,6 +72,8 @@ class ExtrudeToolSession final : public ToolSession {
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
   ShapeFeature::ShapePtr baseShape_;
+  std::shared_ptr<const TopologyIndex> topologyIndex_;
+  std::string topologyIndexError_;
   FaceReference face_;
   DocumentSketch profile_;
   std::optional<sketch::Sketch> profileOverride_;
@@ -87,6 +91,7 @@ class ExtrudeToolSession final : public ToolSession {
   std::optional<FaceExtrudeGeometry> geometry_;
   std::optional<SketchExtrudeGeometry> sketchGeometry_;
   std::string error_;
+  OperationFailureCode errorCode_{OperationFailureCode::None};
 };
 
 }  // namespace solidar

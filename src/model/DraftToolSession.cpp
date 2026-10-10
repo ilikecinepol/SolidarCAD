@@ -12,7 +12,7 @@
 
 namespace solidar {
 
-void DraftToolSession::begin(Document& document, BodyId bodyId,
+void DraftToolSession::begin(const Document& document, BodyId bodyId,
                              FeatureId sourceFeatureId,
                              ShapeFeature::ShapePtr baseShape,
                              std::vector<FaceReference> faces,
@@ -20,22 +20,32 @@ void DraftToolSession::begin(Document& document, BodyId bodyId,
                              std::optional<AxisReference> direction,
                              double angle, bool reversed,
                              std::optional<FeatureId> editingFeatureId,
-                             std::optional<EdgeReference> rotationEdge) {
-  document_ = &document; bodyId_ = bodyId; sourceFeatureId_ = sourceFeatureId;
+                             std::optional<EdgeReference> rotationEdge,
+                             std::shared_ptr<const TopologyIndex> topologyIndex) {
+  bodyId_ = bodyId; sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape); faces_ = std::move(faces);
+  topologyIndexError_.clear();
+  topologyIndex_ = std::move(topologyIndex);
+  if (topologyIndex_ &&
+      (!baseShape_ || baseShape_->IsNull() || !topologyIndex_->shape() ||
+       topologyIndex_->shape().get() != baseShape_.get()))
+    topologyIndex_.reset();
+  if (!topologyIndex_ && baseShape_ && !baseShape_->IsNull())
+    topologyIndex_ = TopologyIndex::build(baseShape_, kInvalidShapeRevision,
+                                          &topologyIndexError_);
   neutralPlane_ = std::move(plane); pullDirection_ = std::move(direction);
   rotationEdge_ = std::move(rotationEdge);
   angleDeg_ = reversed ? -std::abs(angle) : angle;
   editingFeatureId_ = editingFeatureId;
   previewShape_.reset(); lastValidPreviewShape_.reset();
-  lifecycle_ = ToolLifecycle::Editing; updatePreview();
+  lifecycle_ = ToolLifecycle::Editing; updatePreview(document);
 }
-void DraftToolSession::setFaces(std::vector<FaceReference> value) { faces_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(); }
-void DraftToolSession::setNeutralPlane(PlaneReference value) { neutralPlane_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(); }
-void DraftToolSession::clearNeutralPlane() { neutralPlane_.reset(); lastValidPreviewShape_.reset(); updatePreview(); }
-void DraftToolSession::setPullDirection(AxisReference value) { pullDirection_ = value; lastValidPreviewShape_.reset(); updatePreview(); }
-void DraftToolSession::clearPullDirection() { pullDirection_.reset(); lastValidPreviewShape_.reset(); updatePreview(); }
-bool DraftToolSession::setPrincipalAxis(int axisIndex) {
+void DraftToolSession::setFaces(const Document& document, std::vector<FaceReference> value) { faces_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(document); }
+void DraftToolSession::setNeutralPlane(const Document& document, PlaneReference value) { neutralPlane_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(document); }
+void DraftToolSession::clearNeutralPlane(const Document& document) { neutralPlane_.reset(); lastValidPreviewShape_.reset(); updatePreview(document); }
+void DraftToolSession::setPullDirection(const Document& document, AxisReference value) { pullDirection_ = value; lastValidPreviewShape_.reset(); updatePreview(document); }
+void DraftToolSession::clearPullDirection(const Document& document) { pullDirection_.reset(); lastValidPreviewShape_.reset(); updatePreview(document); }
+bool DraftToolSession::setPrincipalAxis(const Document& document, int axisIndex) {
   AxisReference direction;
   PlaneReference plane;
   if (axisIndex == 0) {
@@ -54,21 +64,47 @@ bool DraftToolSession::setPrincipalAxis(int axisIndex) {
   pullDirection_ = direction;
   rotationEdge_.reset();
   lastValidPreviewShape_.reset();
-  updatePreview();
+  updatePreview(document);
   return true;
 }
-bool DraftToolSession::setRotationEdge(EdgeReference value) {
-  if (!baseShape_ || faces_.size() != 1 || value.bodyId != bodyId_ ||
-      value.featureId != sourceFeatureId_) {
+bool DraftToolSession::setRotationEdge(const Document& document, EdgeReference value) {
+  error_.clear();
+  errorCode_ = OperationFailureCode::None;
+  if (!baseShape_ || baseShape_->IsNull()) {
+    errorCode_ = OperationFailureCode::MissingSource;
+    error_ = "Draft base shape is missing";
+    return false;
+  }
+  if (bodyId_ == kInvalidBodyId || sourceFeatureId_ == kInvalidFeatureId) {
+    errorCode_ = OperationFailureCode::InvalidInput;
+    error_ = "Draft Body or source Feature id is invalid";
+    return false;
+  }
+  if (faces_.size() != 1) {
+    errorCode_ = OperationFailureCode::InvalidInput;
+    error_ = "Draft rotation edge requires exactly one selected face";
+    return false;
+  }
+  if (faces_.front().bodyId != bodyId_ ||
+      faces_.front().featureId != sourceFeatureId_ ||
+      value.bodyId != bodyId_ || value.featureId != sourceFeatureId_) {
+    errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
     error_ = "Draft rotation edge no longer matches the selected surface";
+    return false;
+  }
+  if (!topologyIndex_) {
+    errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
+    error_ = "Draft topology could not be indexed";
+    if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
     return false;
   }
   gp_Pln plane;
   gp_Dir direction;
-  std::string structuralError;
-  if (!resolveDraftEdgeAxis(*baseShape_, faces_.front(), value, &plane,
-                            &direction, &structuralError)) {
-    error_ = std::move(structuralError);
+  const auto resolution = resolveDraftEdgeAxis(
+      *baseShape_, *topologyIndex_, faces_.front(), value, &plane, &direction);
+  if (!resolution) {
+    errorCode_ = resolution.failure.code;
+    error_ = resolution.failure.detail;
     previewShape_.reset();
     lastValidPreviewShape_.reset();
     lifecycle_ = ToolLifecycle::SelectingReference;
@@ -78,15 +114,15 @@ bool DraftToolSession::setRotationEdge(EdgeReference value) {
   neutralPlane_.reset();
   pullDirection_.reset();
   lastValidPreviewShape_.reset();
-  updatePreview();
+  updatePreview(document);
   return true;
 }
-void DraftToolSession::clearPrincipalAxis() {
+void DraftToolSession::clearPrincipalAxis(const Document& document) {
   neutralPlane_.reset();
   pullDirection_.reset();
   rotationEdge_.reset();
   lastValidPreviewShape_.reset();
-  updatePreview();
+  updatePreview(document);
 }
 std::optional<int> DraftToolSession::principalAxisIndex() const noexcept {
   if (rotationEdge_) return std::nullopt;
@@ -102,13 +138,13 @@ std::optional<int> DraftToolSession::principalAxisIndex() const noexcept {
     return 2;
   return std::nullopt;
 }
-void DraftToolSession::setAngleFromPanel(double value) {
+void DraftToolSession::setAngleFromPanel(const Document& document, double value) {
   angleDeg_ = std::clamp(value, -89.99, 89.99);
-  updatePreview();
+  updatePreview(document);
 }
-void DraftToolSession::setAngleFromManipulator(double value) {
+void DraftToolSession::setAngleFromManipulator(const Document& document, double value) {
   angleDeg_ = std::clamp(value, -89.99, 89.99);
-  updatePreview();
+  updatePreview(document);
 }
 BodyId DraftToolSession::bodyId() const noexcept { return bodyId_; }
 FeatureId DraftToolSession::sourceFeatureId() const noexcept { return sourceFeatureId_; }
@@ -142,35 +178,91 @@ std::vector<ToolParameterDescriptor> DraftToolSession::parameters() const {
 }
 std::shared_ptr<const TopoDS_Shape> DraftToolSession::previewShape() const { return previewShape_; }
 const std::string& DraftToolSession::error() const noexcept { return error_; }
-bool DraftToolSession::updatePreview() {
-  error_.clear();
-  if (!document_ || !baseShape_ || baseShape_->IsNull()) { previewShape_.reset(); lastValidPreviewShape_.reset(); error_ = "Draft base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-  if (faces_.empty()) { previewShape_.reset(); lifecycle_ = ToolLifecycle::SelectingInput; return false; }
-  if (!rotationEdge_ && (!neutralPlane_ || !pullDirection_)) { previewShape_.reset(); lifecycle_ = ToolLifecycle::SelectingReference; return false; }
+OperationFailureCode DraftToolSession::errorCode() const noexcept {
+  return errorCode_;
+}
+bool DraftToolSession::updatePreview() { return false; }
+bool DraftToolSession::updatePreview(const Document& document) {
+  error_.clear(); errorCode_ = OperationFailureCode::None;
+  if (!baseShape_ || baseShape_->IsNull()) { previewShape_.reset(); lastValidPreviewShape_.reset(); errorCode_ = OperationFailureCode::MissingSource; error_ = "Draft base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  if (bodyId_ == kInvalidBodyId || sourceFeatureId_ == kInvalidFeatureId) { previewShape_.reset(); lastValidPreviewShape_.reset(); errorCode_ = OperationFailureCode::InvalidInput; error_ = "Draft Body or source Feature id is invalid"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  if (faces_.empty()) { previewShape_.reset(); errorCode_ = OperationFailureCode::InvalidInput; error_ = "Draft requires at least one selected face"; lifecycle_ = ToolLifecycle::SelectingInput; return false; }
+  if (rotationEdge_ && faces_.size() != 1) { previewShape_.reset(); errorCode_ = OperationFailureCode::InvalidInput; error_ = "Draft rotation edge requires exactly one selected face"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  if (!rotationEdge_ && (!neutralPlane_ || !pullDirection_)) { previewShape_.reset(); errorCode_ = OperationFailureCode::InvalidInput; error_ = "Draft reference selection is incomplete"; lifecycle_ = ToolLifecycle::SelectingReference; return false; }
+  if (neutralPlane_ && !isKnownNeutralPlaneType(neutralPlane_->type)) {
+    previewShape_.reset();
+    errorCode_ = OperationFailureCode::InvalidInput;
+    error_ = "Draft neutral plane type is unsupported";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  if (!rotationEdge_ && neutralPlane_->type == NeutralPlaneType::BodyFace &&
+      !neutralPlane_->face) {
+    previewShape_.reset();
+    errorCode_ = OperationFailureCode::InvalidInput;
+    error_ = "Draft neutral face is missing";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  if (!rotationEdge_ && neutralPlane_->type == NeutralPlaneType::BodyFace &&
+      (neutralPlane_->face->bodyId != bodyId_ ||
+       neutralPlane_->face->featureId != sourceFeatureId_)) {
+    previewShape_.reset();
+    errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
+    error_ = "Draft neutral face must belong to the active source Feature";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  std::vector<TopologyReference> references;
+  references.reserve(faces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : faces_) {
-    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { previewShape_.reset(); error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    const auto resolved = resolveFaceReference(*baseShape_, face.topology());
-    if (!resolved) { previewShape_.reset(); error_ = "Draft face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    references.push_back(face.topology());
+  }
+  if (rotationEdge_ &&
+      (rotationEdge_->bodyId != bodyId_ ||
+       rotationEdge_->featureId != sourceFeatureId_)) {
+    previewShape_.reset();
+    errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
+    error_ = "Draft rotation edge no longer matches the selected surface";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  if (!topologyIndex_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyIndexUnavailable; error_ = "Draft topology could not be indexed"; if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
+    if (!resolved) { previewShape_.reset(); errorCode_ = operationFailureCode(resolved.failure); error_ = "Draft face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
     indices.push_back(resolved.index);
   }
   gp_Pln plane; gp_Dir direction;
   if (rotationEdge_) {
-    if (faces_.size() != 1 || rotationEdge_->bodyId != bodyId_ ||
-        rotationEdge_->featureId != sourceFeatureId_ ||
-        !resolveDraftEdgeAxis(*baseShape_, faces_.front(), *rotationEdge_,
-                              &plane, &direction, &error_)) {
+    const auto resolution = resolveDraftEdgeAxis(
+        *baseShape_, *topologyIndex_, faces_.front(), *rotationEdge_, &plane,
+        &direction);
+    if (!resolution) {
       previewShape_.reset();
+      errorCode_ = resolution.failure.code;
+      error_ = resolution.failure.detail;
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
-  } else if (!resolveDraftReferences(*document_, *baseShape_, *neutralPlane_,
-                                     *pullDirection_, &plane, &direction,
-                                     &error_)) { previewShape_.reset(); lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  } else {
+    const auto resolution = resolveDraftReferences(
+        document, *baseShape_, *topologyIndex_, *neutralPlane_,
+        *pullDirection_, &plane, &direction);
+    if (!resolution) {
+      previewShape_.reset();
+      errorCode_ = resolution.failure.code;
+      error_ = resolution.failure.detail;
+      lifecycle_ = ToolLifecycle::PreviewInvalid;
+      return false;
+    }
+  }
   auto candidate = buildDraftShape(*baseShape_, indices, plane, direction,
                                    std::abs(angleDeg_), angleDeg_ < 0.0,
                                    &error_);
   if (!candidate) {
+    errorCode_ = OperationFailureCode::GeometryOperationFailed;
     // Parameter-domain failure is recoverable. Keep displaying the last valid
     // trial, but remain PreviewInvalid so Apply cannot commit it as the newly
     // requested angle.
@@ -183,26 +275,28 @@ bool DraftToolSession::updatePreview() {
   lifecycle_ = ToolLifecycle::PreviewValid;
   return true;
 }
-std::optional<AngularToolManipulator> DraftToolSession::manipulator() const {
+std::optional<AngularToolManipulator> DraftToolSession::manipulator(
+    const Document& document) const {
   // Do not advertise an angle handle until geometry/reference selection has
   // produced a valid Draft preview.
   if (lifecycle_ != ToolLifecycle::PreviewValid || faces_.empty() ||
-      !baseShape_ || !document_ ||
+      !baseShape_ ||
+      !topologyIndex_ ||
       (!rotationEdge_ && (!neutralPlane_ || !pullDirection_)))
     return std::nullopt;
-  gp_Pln plane; gp_Dir direction; std::string ignored;
+  gp_Pln plane; gp_Dir direction;
   if (rotationEdge_) {
     if (faces_.size() != 1 ||
-        !resolveDraftEdgeAxis(*baseShape_, faces_.front(), *rotationEdge_,
-                              &plane, &direction, &ignored))
+        !resolveDraftEdgeAxis(*baseShape_, *topologyIndex_, faces_.front(),
+                              *rotationEdge_, &plane, &direction))
       return std::nullopt;
-  } else if (!resolveDraftReferences(*document_, *baseShape_, *neutralPlane_,
-                                     *pullDirection_, &plane, &direction,
-                                     &ignored))
+  } else if (!resolveDraftReferences(document, *baseShape_, *topologyIndex_,
+                                     *neutralPlane_, *pullDirection_, &plane,
+                                     &direction))
     return std::nullopt;
   Bnd_Box box;
-  if (const auto selected = resolveFaceReference(
-          *baseShape_, faces_.front().topology()))
+  if (const auto selected = topologyIndex_->resolveFace(
+          faces_.front().topology()))
     BRepBndLib::Add(*selected.subshape, box);
   else
     BRepBndLib::Add(*baseShape_, box);
@@ -213,6 +307,6 @@ std::optional<AngularToolManipulator> DraftToolSession::manipulator() const {
                                 {direction.X(), direction.Y(), direction.Z()},
                                 radius, angleDeg_, -89.99, 89.99};
 }
-void DraftToolSession::cancel() noexcept { previewShape_.reset(); lastValidPreviewShape_.reset(); faces_.clear(); neutralPlane_.reset(); pullDirection_.reset(); rotationEdge_.reset(); error_.clear(); document_ = nullptr; lifecycle_ = ToolLifecycle::Inactive; }
+void DraftToolSession::cancel() noexcept { previewShape_.reset(); lastValidPreviewShape_.reset(); topologyIndex_.reset(); topologyIndexError_.clear(); faces_.clear(); neutralPlane_.reset(); pullDirection_.reset(); rotationEdge_.reset(); error_.clear(); errorCode_ = OperationFailureCode::None; lifecycle_ = ToolLifecycle::Inactive; }
 
 }  // namespace solidar

@@ -17,15 +17,27 @@ namespace solidar {
 void FilletToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
                               ShapeFeature::ShapePtr baseShape,
                               std::vector<EdgeReference> edges, double radiusMm,
-                              std::optional<FeatureId> editingFeatureId) {
+                              std::optional<FeatureId> editingFeatureId,
+                              std::shared_ptr<const TopologyIndex> topologyIndex) {
   bodyId_ = bodyId;
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
+  topologyIndexError_.clear();
+  topologyIndex_ = std::move(topologyIndex);
+  if (topologyIndex_ &&
+      (!baseShape_ || baseShape_->IsNull() || !topologyIndex_->shape() ||
+       topologyIndex_->shape().get() != baseShape_.get()))
+    topologyIndex_.reset();
+  if (!topologyIndex_ && baseShape_ && !baseShape_->IsNull())
+    topologyIndex_ = TopologyIndex::build(baseShape_, kInvalidShapeRevision,
+                                          &topologyIndexError_);
   edges_ = std::move(edges);
   radius_.reset(radiusMm, 0.0, 100000.0);
   editingFeatureId_ = editingFeatureId;
   maximumValidRadiusMm_.reset();
+  pendingRequestedRadiusMm_.reset();
   limitReached_ = false;
+  previewBuildAttemptCount_ = 0;
   lifecycle_ = ToolLifecycle::Editing;
   updatePreview();
 }
@@ -33,6 +45,7 @@ void FilletToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
 void FilletToolSession::setEdges(std::vector<EdgeReference> edges) {
   edges_ = std::move(edges);
   maximumValidRadiusMm_.reset();
+  pendingRequestedRadiusMm_.reset();
   limitReached_ = false;
   updatePreview();
 }
@@ -42,7 +55,13 @@ void FilletToolSession::setRadiusFromPanel(double radiusMm) {
 }
 
 void FilletToolSession::setRadiusFromManipulator(double radiusMm) {
-  trySetRadius(radiusMm, true);
+  trySetRadius(radiusMm, false);
+}
+
+bool FilletToolSession::refineRadiusToBoundary(double requestedRadiusMm) {
+  const double target = pendingRequestedRadiusMm_.value_or(requestedRadiusMm);
+  pendingRequestedRadiusMm_.reset();
+  return trySetRadius(target, true);
 }
 
 BodyId FilletToolSession::bodyId() const noexcept { return bodyId_; }
@@ -60,6 +79,9 @@ std::optional<double> FilletToolSession::maximumValidRadiusMm() const noexcept {
   return maximumValidRadiusMm_;
 }
 bool FilletToolSession::limitReached() const noexcept { return limitReached_; }
+std::uint64_t FilletToolSession::previewBuildAttemptCount() const noexcept {
+  return previewBuildAttemptCount_;
+}
 ToolLifecycle FilletToolSession::lifecycle() const noexcept {
   return lifecycle_;
 }
@@ -82,11 +104,16 @@ std::shared_ptr<const TopoDS_Shape> FilletToolSession::previewShape() const {
   return previewShape_;
 }
 const std::string& FilletToolSession::error() const noexcept { return error_; }
+OperationFailureCode FilletToolSession::errorCode() const noexcept {
+  return errorCode_;
+}
 
 bool FilletToolSession::updatePreview() {
   previewShape_.reset();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   if (!baseShape_ || baseShape_->IsNull()) {
+    errorCode_ = OperationFailureCode::MissingSource;
     error_ = "Fillet base shape is missing";
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
@@ -95,17 +122,31 @@ bool FilletToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
+  if (!topologyIndex_) {
+    errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
+    error_ = "Fillet topology could not be indexed";
+    if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  std::vector<TopologyReference> references;
+  references.reserve(edges_.size());
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
   for (const auto& edge : edges_) {
     if (edge.bodyId != bodyId_ || edge.featureId != sourceFeatureId_) {
+      errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
       error_ = "Fillet edges no longer match the active Body";
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
-    const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+    references.push_back(edge.topology());
+  }
+  const auto resolutions = topologyIndex_->resolveEdges(references);
+  for (const auto& resolved : resolutions) {
     if (!resolved) {
-      error_ = "Fillet edge could not be resolved";
+      errorCode_ = operationFailureCode(resolved.failure);
+      error_ = "Fillet edge could not be resolved: " + resolved.error;
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
@@ -116,17 +157,18 @@ bool FilletToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::EditingParameters;
     return true;
   }
+  ++previewBuildAttemptCount_;
   previewShape_ = buildFilletShape(*baseShape_, indices, radius_.value(), &error_);
+  if (!previewShape_) errorCode_ = OperationFailureCode::GeometryOperationFailed;
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
 }
 
 std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
-  if (!baseShape_ || edges_.empty()) return std::nullopt;
+  if (!baseShape_ || edges_.empty() || !topologyIndex_) return std::nullopt;
   try {
-    const auto edge =
-        resolveEdgeReference(*baseShape_, edges_.front().topology());
+    const auto edge = topologyIndex_->resolveEdge(edges_.front().topology());
     if (!edge) return std::nullopt;
     const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
     if (!geometry) return std::nullopt;
@@ -144,22 +186,35 @@ std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
 bool FilletToolSession::trySetRadius(double radiusMm, bool clampToBoundary) {
   const auto candidate = radius_.candidate(radiusMm);
   if (!candidate || !baseShape_ || edges_.empty()) return false;
+  if (!clampToBoundary) {
+    pendingRequestedRadiusMm_ = *candidate;
+    maximumValidRadiusMm_.reset();
+    limitReached_ = false;
+  }
   const double previous = radius_.value();
+  if (std::abs(*candidate - previous) <= 1e-12 &&
+      lifecycle_ == ToolLifecycle::PreviewValid)
+    return true;
   const auto previousPreview = previewShape_;
   radius_.accept(*candidate);
   if (updatePreview()) {
+    pendingRequestedRadiusMm_.reset();
     limitReached_ = false;
     return true;
   }
   const std::string failure = error_.empty()
                                   ? "Fillet preview could not be built"
                                   : error_;
+  const OperationFailureCode failureCode = errorCode_;
 
-  if (*candidate > previous && previousPreview) {
+  if (clampToBoundary && *candidate > previous && previousPreview &&
+      topologyIndex_) {
+    std::vector<TopologyReference> references;
+    references.reserve(edges_.size());
+    for (const auto& edge : edges_) references.push_back(edge.topology());
     std::vector<std::size_t> indices;
     indices.reserve(edges_.size());
-    for (const auto& edge : edges_) {
-      const auto resolved = resolveEdgeReference(*baseShape_, edge.topology());
+    for (const auto& resolved : topologyIndex_->resolveEdges(references)) {
       if (!resolved) {
         indices.clear();
         break;
@@ -173,6 +228,7 @@ bool FilletToolSession::trySetRadius(double radiusMm, bool clampToBoundary) {
       for (int iteration = 0;
            iteration < 24 && upper - lower > 1e-4; ++iteration) {
         const double midpoint = lower + (upper - lower) * 0.5;
+        ++previewBuildAttemptCount_;
         auto preview = buildFilletShape(*baseShape_, indices, midpoint);
         if (preview) {
           lower = midpoint;
@@ -183,6 +239,7 @@ bool FilletToolSession::trySetRadius(double radiusMm, bool clampToBoundary) {
       }
       const double panelSafe = std::floor((lower + 1e-9) * 100.0) / 100.0;
       if (panelSafe >= previous && panelSafe < lower) {
+        ++previewBuildAttemptCount_;
         if (auto preview = buildFilletShape(*baseShape_, indices, panelSafe)) {
           lower = panelSafe;
           boundaryPreview = std::move(preview);
@@ -195,6 +252,7 @@ bool FilletToolSession::trySetRadius(double radiusMm, bool clampToBoundary) {
         previewShape_ = std::move(boundaryPreview);
         lifecycle_ = ToolLifecycle::PreviewValid;
         error_.clear();
+        errorCode_ = OperationFailureCode::None;
         return true;
       }
     }
@@ -204,14 +262,19 @@ bool FilletToolSession::trySetRadius(double radiusMm, bool clampToBoundary) {
   previewShape_ = previousPreview;
   lifecycle_ = ToolLifecycle::PreviewInvalid;
   error_ = failure;
+  errorCode_ = failureCode;
   return false;
 }
 
 void FilletToolSession::cancel() noexcept {
   previewShape_.reset();
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   edges_.clear();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   maximumValidRadiusMm_.reset();
+  pendingRequestedRadiusMm_.reset();
   limitReached_ = false;
   lifecycle_ = ToolLifecycle::Inactive;
 }

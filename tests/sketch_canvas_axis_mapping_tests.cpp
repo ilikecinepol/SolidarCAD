@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "ui/SketchCanvas.h"
 
 #include <cmath>
@@ -14,8 +16,6 @@ void require(bool condition, const char* message) {
     std::exit(EXIT_FAILURE);
   }
 }
-
-#define CHECK(condition) require((condition), #condition)
 
 void screenAxisToSketchModeAllRotations() {
   for (int q = 0; q < 4; ++q) {

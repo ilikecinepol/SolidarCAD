@@ -9,7 +9,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -20,14 +20,6 @@
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/PocketFeature.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 bool near(double actual, double expected, double tolerance = 1e-4) {
@@ -83,13 +75,13 @@ int main() {
       baseSketch.id, 50.0, "Extrude 1");
   auto* extrudePtr = extrude.get();
   body.addFeature(std::move(extrude));
-  assert(document.rebuild());
-  assert(near(volumeOf(*body.resultShape()), 140000.0));
+  CHECK(document.rebuild());
+  CHECK(near(volumeOf(*body.resultShape()), 140000.0));
 
   const auto topIndex = topFaceIndex(*body.resultShape(), 50.0);
-  assert(topIndex);
+  CHECK(topIndex);
   auto& pocketSketch = document.addSketch("Pocket profile");
-  assert(document.attachSketchToFace(
+  CHECK(document.attachSketchToFace(
       pocketSketch.id, {body.id(), extrudePtr->id(), *topIndex}));
   const auto localA =
       toLocal(pocketSketch.placement, {20.0, 10.0, 50.0});
@@ -101,47 +93,50 @@ int main() {
       pocketSketch.id, 20.0, "Pocket 1");
   auto* pocketPtr = pocket.get();
   body.addFeature(std::move(pocket));
-  assert(document.rebuild());
-  assert(pocketPtr->isValid());
-  assert(pocketPtr->hasShape());
-  assert(body.resultShape()->ShapeType() == TopAbs_SOLID);
-  assert(near(volumeOf(*body.resultShape()), 136000.0));
+  CHECK(document.rebuild());
+  CHECK(pocketPtr->isValid());
+  CHECK(pocketPtr->hasShape());
+  CHECK(body.resultShape()->ShapeType() == TopAbs_SOLID);
+  CHECK(near(volumeOf(*body.resultShape()), 136000.0));
 
   Bnd_Box bounds;
   BRepBndLib::Add(*body.resultShape(), bounds);
   double xMin, yMin, zMin, xMax, yMax, zMax;
   bounds.Get(xMin, yMin, zMin, xMax, yMax, zMax);
-  assert(near(xMax - xMin, 80.0));
-  assert(near(yMax - yMin, 35.0));
-  assert(near(zMax - zMin, 50.0));
+  CHECK(near(xMax - xMin, 80.0));
+  CHECK(near(yMax - yMin, 35.0));
+  CHECK(near(zMax - zMin, 50.0));
 
   const solidar::Document snapshot = document;
   pocketPtr->setDepthMm(30.0);
-  assert(pocketPtr->isDirty());
-  assert(document.rebuild());
-  assert(near(volumeOf(*body.resultShape()), 134000.0));
+  CHECK(pocketPtr->isDirty());
+  CHECK(document.rebuild());
+  CHECK(near(volumeOf(*body.resultShape()), 134000.0));
   const auto* snapshotPocket = dynamic_cast<const solidar::PocketFeature*>(
       snapshot.activeBody()->activeFeature());
-  assert(snapshotPocket);
-  assert(snapshotPocket->id() == pocketPtr->id());
-  assert(near(snapshotPocket->depthMm(), 20.0));
-  assert(near(volumeOf(*snapshot.activeBody()->resultShape()), 136000.0));
+  CHECK(snapshotPocket);
+  CHECK(snapshotPocket->id() == pocketPtr->id());
+  CHECK(near(snapshotPocket->depthMm(), 20.0));
+  CHECK(near(volumeOf(*snapshot.activeBody()->resultShape()), 136000.0));
 
   pocketPtr->setDepthMm(20.0);
   extrudePtr->setLengthMm(80.0);
-  assert(document.rebuild());
-  assert(near(pocketSketch.placement.origin.z, 80.0));
-  assert(near(pocketPtr->depthMm(), 20.0));
-  assert(near(volumeOf(*body.resultShape()), 220000.0));
+  CHECK(document.rebuild());
+  CHECK(near(pocketSketch.placement.origin.z, 80.0));
+  CHECK(near(pocketPtr->depthMm(), 20.0));
+  CHECK(near(volumeOf(*body.resultShape()), 220000.0));
 
+  const auto pocketLastValid = pocketPtr->shape();
   pocketPtr->setDepthMm(0.0);
-  assert(!document.rebuild());
-  assert(!pocketPtr->hasShape());
-  assert(!body.resultShape());
+  CHECK(!document.rebuild());
+  CHECK(!pocketPtr->shape());
+  CHECK(pocketPtr->lastValidShape() == pocketLastValid);
+  CHECK(body.lastValidResultShape() == pocketLastValid);
+  CHECK(!body.resultShape());
   pocketPtr->setDepthMm(std::numeric_limits<double>::quiet_NaN());
-  assert(!document.rebuild());
+  CHECK(!document.rebuild());
   pocketPtr->setDepthMm(std::numeric_limits<double>::infinity());
-  assert(!document.rebuild());
+  CHECK(!document.rebuild());
 
   solidar::Document missingBase;
   auto& orphanSketch = missingBase.addSketch();
@@ -151,8 +146,8 @@ int main() {
       orphanSketch.id, 10.0);
   auto* orphanPtr = orphanPocket.get();
   orphanBody.addFeature(std::move(orphanPocket));
-  assert(!missingBase.rebuild());
-  assert(orphanPtr->error() == "Pocket base shape is missing");
+  CHECK(!missingBase.rebuild());
+  CHECK(orphanPtr->error() == "Pocket base shape is missing");
 
   solidar::Document missingSketch;
   auto& missingBaseSketch = missingSketch.addSketch();
@@ -163,21 +158,22 @@ int main() {
   auto missingPocket = std::make_unique<solidar::PocketFeature>(999999, 2.0);
   auto* missingPtr = missingPocket.get();
   missingBody.addFeature(std::move(missingPocket));
-  assert(!missingSketch.rebuild());
-  assert(!missingPtr->hasShape());
+  CHECK(!missingSketch.rebuild());
+  CHECK(!missingPtr->hasShape());
 
   solidar::Document unresolved = snapshot;
-  auto& unresolvedProfile = unresolved.sketches().back();
+  auto& unresolvedProfile =
+      *unresolved.findSketch(snapshot.sketches().back().id);
   unresolvedProfile.support.face.faceIndex = 9999;
   unresolved.updateSketchPlacements();
-  assert(unresolvedProfile.supportResolved);
+  CHECK(unresolvedProfile.supportResolved);
   unresolvedProfile.support.face.persistentTag.clear();
   unresolvedProfile.support.face.signature.reset();
   unresolved.updateSketchPlacements();
-  assert(!unresolvedProfile.supportResolved);
+  CHECK(!unresolvedProfile.supportResolved);
   unresolved.activeBody()->activeFeature()->setDirty();
-  assert(!unresolved.rebuild());
-  assert(!unresolved.activeBody()->resultShape());
+  CHECK(!unresolved.rebuild());
+  CHECK(!unresolved.activeBody()->resultShape());
 
   // Pocket preserves a multi-solid Extrude container, rejects a cut that
   // splits one of its solids, and recovers in place without changing IDs.
@@ -205,6 +201,7 @@ int main() {
   CHECK(solidCount(*multiPocketPtr->shape()) == 2);
   CHECK(near(volumeOf(*multiPocketPtr->shape()), 2920.0));
 
+  const auto multiPocketLastValid = multiPocketPtr->shape();
   multiPocketSketch.geometry.clear();
   multiPocketSketch.geometry.addRectangle({9.0, -1.0}, {11.0, 11.0});
   multiPocketPtr->setDepthMm(10.0);
@@ -213,7 +210,9 @@ int main() {
   CHECK(multiPocketPtr->id() == multiPocketId);
   CHECK(multiPocketPtr->state() == solidar::FeatureState::Error);
   CHECK(multiPocketPtr->error().find("split") != std::string::npos);
-  CHECK(!multiPocketPtr->hasShape());
+  CHECK(!multiPocketPtr->shape());
+  CHECK(multiPocketPtr->lastValidShape() == multiPocketLastValid);
+  CHECK(multiBody.lastValidResultShape() == multiPocketLastValid);
   CHECK(!multiBody.resultShape());
 
   multiPocketSketch.geometry.clear();

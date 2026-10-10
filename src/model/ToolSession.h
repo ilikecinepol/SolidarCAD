@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "model/PartDesignToolFramework.h"
+#include "model/OperationFailure.h"
 #include "model/SketchPlacement.h"
 
 class TopoDS_Shape;
@@ -68,6 +69,13 @@ class ToolSession {
   }
   [[nodiscard]] virtual std::shared_ptr<const TopoDS_Shape> previewShape() const = 0;
   [[nodiscard]] virtual const std::string& error() const noexcept = 0;
+  [[nodiscard]] virtual OperationFailureCode errorCode() const noexcept {
+    return error().empty() ? OperationFailureCode::None
+                           : OperationFailureCode::Unknown;
+  }
+  [[nodiscard]] OperationFailure failure() const {
+    return {errorCode(), error()};
+  }
   virtual bool updatePreview() = 0;
   virtual void cancel() noexcept = 0;
 };

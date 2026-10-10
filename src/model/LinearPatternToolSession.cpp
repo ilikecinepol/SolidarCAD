@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "model/GeometryOperation.h"
+
 namespace solidar {
 
 void LinearPatternToolSession::begin(
@@ -16,8 +18,9 @@ void LinearPatternToolSession::begin(
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   direction_.reset();
-  spacing_.reset(spacingMm, 0.01, 100000.0);
-  count_ = std::clamp(count, 2, 100);
+  spacing_.reset(spacingMm, kMinimumPatternParameter,
+                 kMaximumPatternSpacingMm);
+  count_ = clampPatternCountForUi(count);
   operation_ = operation;
   editingFeatureId_ = editingFeatureId;
   previewShape_.reset();
@@ -60,7 +63,7 @@ void LinearPatternToolSession::setSpacingMm(double spacingMm) {
 }
 
 void LinearPatternToolSession::setCount(int count) {
-  count_ = std::clamp(count, 2, 100);
+  count_ = clampPatternCountForUi(count);
   updatePreview();
 }
 
@@ -120,9 +123,11 @@ LinearPatternToolSession::selectionRequirement() const {
 std::vector<ToolParameterDescriptor>
 LinearPatternToolSession::parameters() const {
   return {{"spacing", "Spacing", ToolParameterType::Distance,
-           spacing_.value(), 0.01, 100000.0, 0.1, "mm", true,
+           spacing_.value(), kMinimumPatternParameter,
+           kMaximumPatternSpacingMm, 0.1, "mm", true,
            ToolManipulatorType::Linear},
-          {"count", "Count", ToolParameterType::Integer, count_, 2.0, 100.0,
+          {"count", "Count", ToolParameterType::Integer, count_,
+           kMinimumPatternCount, kMaximumPatternCount,
            1.0, {}, true, ToolManipulatorType::None}};
 }
 
@@ -137,25 +142,33 @@ const std::string& LinearPatternToolSession::error() const noexcept {
 
 std::optional<LinearToolManipulator>
 LinearPatternToolSession::manipulator() const {
-  if (!sourceShape_ || sourceShape_->IsNull() || !direction_) return std::nullopt;
-  Bnd_Box bounds;
-  BRepBndLib::Add(*sourceShape_, bounds);
-  if (bounds.IsVoid()) return std::nullopt;
-  double minX = 0.0;
-  double minY = 0.0;
-  double minZ = 0.0;
-  double maxX = 0.0;
-  double maxY = 0.0;
-  double maxZ = 0.0;
-  bounds.Get(minX, minY, minZ, maxX, maxY, maxZ);
-  const Point3d center{(minX + maxX) * 0.5, (minY + maxY) * 0.5,
-                       (minZ + maxZ) * 0.5};
-  Vector3d axis{0.0, 0.0, 1.0};
-  if (*direction_ == PrincipalAxis::X)
-    axis = {1.0, 0.0, 0.0};
-  else if (*direction_ == PrincipalAxis::Y)
-    axis = {0.0, 1.0, 0.0};
-  return LinearToolManipulator{center, axis, spacing_.value(), 0.01, 100000.0};
+  std::optional<LinearToolManipulator> result;
+  runGeometryOperation([&] {
+    if (!sourceShape_ || sourceShape_->IsNull() || !direction_ ||
+        !validPrincipalAxis(*direction_))
+      return;
+    Bnd_Box bounds;
+    BRepBndLib::Add(*sourceShape_, bounds);
+    if (bounds.IsVoid()) return;
+    double minX = 0.0;
+    double minY = 0.0;
+    double minZ = 0.0;
+    double maxX = 0.0;
+    double maxY = 0.0;
+    double maxZ = 0.0;
+    bounds.Get(minX, minY, minZ, maxX, maxY, maxZ);
+    const Point3d center{(minX + maxX) * 0.5, (minY + maxY) * 0.5,
+                         (minZ + maxZ) * 0.5};
+    Vector3d axis{0.0, 0.0, 1.0};
+    if (*direction_ == PrincipalAxis::X)
+      axis = {1.0, 0.0, 0.0};
+    else if (*direction_ == PrincipalAxis::Y)
+      axis = {0.0, 1.0, 0.0};
+    result = LinearToolManipulator{center, axis, spacing_.value(),
+                                   kMinimumPatternParameter,
+                                   kMaximumPatternSpacingMm};
+  });
+  return result;
 }
 
 bool LinearPatternToolSession::updatePreview() {
@@ -168,6 +181,12 @@ bool LinearPatternToolSession::updatePreview() {
   }
   if (!direction_) {
     lifecycle_ = ToolLifecycle::SelectingReference;
+    return false;
+  }
+  if (!validPrincipalAxis(*direction_) ||
+      !validPatternOperation(operation_)) {
+    error_ = "Linear Pattern parameters are invalid";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
   previewShape_ = buildLinearPatternShape(

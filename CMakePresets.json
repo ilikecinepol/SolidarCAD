@@ -47,15 +47,67 @@
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/release/stage",
         "SOLIDAR_BUILD_TESTS": "OFF"
       }
+    },
+    {
+      "name": "sanitizers",
+      "displayName": "Sanitizers (ASan, plus UBSan on GCC/Clang)",
+      "inherits": "vcpkg-reproducible",
+      "binaryDir": "${sourceDir}/build/sanitizers",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SOLIDAR_BUILD_TESTS": "ON",
+        "SOLIDAR_ENABLE_SANITIZERS": "ON",
+        "SOLIDAR_TEST_TIMEOUT_SECONDS": "300"
+      }
+    },
+    {
+      "name": "static-analysis",
+      "displayName": "Static analysis (clang-tidy, opt-in)",
+      "inherits": "vcpkg-reproducible",
+      "binaryDir": "${sourceDir}/build/static-analysis",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SOLIDAR_BUILD_TESTS": "ON",
+        "SOLIDAR_ENABLE_CLANG_TIDY": "ON"
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "Project decoder fuzzing (Linux Clang, opt-in)",
+      "inherits": "vcpkg-reproducible",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "SOLIDAR_BUILD_TESTS": "OFF",
+        "SOLIDAR_BUILD_FUZZERS": "ON",
+        "SOLIDAR_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "performance",
+      "displayName": "Performance benchmarks (report-only, opt-in)",
+      "inherits": "vcpkg-reproducible",
+      "binaryDir": "${sourceDir}/build/performance",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SOLIDAR_BUILD_TESTS": "OFF",
+        "SOLIDAR_BUILD_BENCHMARKS": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
     { "name": "ci", "configurePreset": "ci" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "release", "configurePreset": "release" },
+    { "name": "sanitizers", "configurePreset": "sanitizers" },
+    { "name": "static-analysis", "configurePreset": "static-analysis" },
+    { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "performance", "configurePreset": "performance" }
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
-    { "name": "ci", "configurePreset": "ci", "output": { "outputOnFailure": true } }
+    { "name": "ci", "configurePreset": "ci", "output": { "outputOnFailure": true } },
+    { "name": "sanitizers", "configurePreset": "sanitizers", "output": { "outputOnFailure": true } }
   ]
 }

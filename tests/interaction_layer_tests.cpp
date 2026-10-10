@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <TopoDS_Shape.hxx>
 
@@ -8,14 +10,6 @@
 #include "model/Document.h"
 #include "ui/interaction/ContextActionResolver.h"
 #include "ui/interaction/InteractionInputMapper.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 int main() {
   using namespace solidar;

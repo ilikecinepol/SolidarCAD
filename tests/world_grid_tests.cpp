@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "ui/WorldGrid.h"
 #include "ui/ViewportCamera.h"
 
@@ -8,14 +10,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 using namespace solidar;

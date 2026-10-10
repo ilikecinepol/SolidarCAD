@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QTemporaryDir>
@@ -30,13 +32,6 @@ class TestFailure final : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
-
-#define CHECK(condition)                                                     \
-  do {                                                                       \
-    if (!(condition))                                                        \
-      throw TestFailure(std::string(__FILE__) + ":" +                       \
-                        std::to_string(__LINE__) + ": " #condition);         \
-  } while (false)
 
 solidar::sketch::Point toLocal(const solidar::SketchPlacement& placement,
                                solidar::Point3d world) {
@@ -76,14 +71,15 @@ class SilentFailureFeature final : public solidar::ShapeFeature {
  public:
   SilentFailureFeature() : ShapeFeature("Silent failure") {}
 
-  bool rebuild(const solidar::RebuildContext&) override {
+  [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
+    return std::make_unique<SilentFailureFeature>(*this);
+  }
+
+ protected:
+  bool rebuildImpl(const solidar::RebuildContext&) override {
     clearShape();
     markError({});
     return false;
-  }
-  [[nodiscard]] std::string typeName() const override { return "SilentFailure"; }
-  [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
-    return std::make_unique<SilentFailureFeature>(*this);
   }
 };
 
@@ -153,7 +149,8 @@ void lineArcExtrudeRecomputesAfterArcEdit() {
   CHECK(std::abs(volumeAfter - volumeBefore) > 1e-4);
 
   // Open the same Line + Arc loop by shortening only the Arc sweep. Rebuild
-  // must fail naturally, clear the stale result, and retain feature identity.
+  // must fail naturally, hide the Body result, retain last-valid B-Rep and
+  // keep feature identity.
   const double validSweep = kPi - 2.0 * startAngle;
   const auto validShape = extrudePtr->shape();
   editedProfile->geometry.removeArc(0);
@@ -166,9 +163,10 @@ void lineArcExtrudeRecomputesAfterArcEdit() {
   CHECK(!document.recompute());
   CHECK(extrudePtr->id() == extrudeId);
   CHECK(extrudePtr->state() == solidar::FeatureState::Error);
-  CHECK(!extrudePtr->hasShape());
   CHECK(!extrudePtr->shape());
+  CHECK(extrudePtr->lastValidShape() == validShape);
   CHECK(!body.resultShape());
+  CHECK(body.lastValidResultShape() == validShape);
   CHECK(!extrudePtr->error().empty());
   CHECK(!document.rebuildError().empty());
 
@@ -404,19 +402,31 @@ int main(int argc, char* argv[]) {
     CHECK(chamferPtr->id() == chamferId);
     CHECK(patternPtr->id() == patternId);
 
-    // A broken root profile must clear every real downstream B-Rep. Restoring
-    // the same Sketch rebuilds the complete chain without recreating Features.
+    // A broken root profile hides the active Body result but keeps each
+    // last-valid B-Rep for recovery. Restoring the same Sketch rebuilds the
+    // complete chain without recreating Features.
+    const auto extrudeLastValid = extrudePtr->shape();
+    const auto pocketLastValid = pocketPtr->shape();
+    const auto filletLastValid = filletPtr->shape();
+    const auto chamferLastValid = chamferPtr->shape();
+    const auto patternLastValid = patternPtr->shape();
     solidar::sketch::Sketch openProfile;
     openProfile.addLine({0.0, 0.0}, {80.0, 0.0});
     openProfile.addLine({80.0, 0.0}, {80.0, 40.0});
     CHECK(document.replaceSketchGeometry(baseSketchId, openProfile));
     CHECK(!document.recompute());
-    CHECK(extrudePtr->isFailed() && !extrudePtr->hasShape());
-    CHECK(pocketPtr->isFailed() && !pocketPtr->hasShape());
-    CHECK(filletPtr->isFailed() && !filletPtr->hasShape());
-    CHECK(chamferPtr->isFailed() && !chamferPtr->hasShape());
-    CHECK(patternPtr->isFailed() && !patternPtr->hasShape());
+    CHECK(extrudePtr->isFailed() && !extrudePtr->shape() &&
+          extrudePtr->lastValidShape() == extrudeLastValid);
+    CHECK(pocketPtr->isFailed() && !pocketPtr->shape() &&
+          pocketPtr->lastValidShape() == pocketLastValid);
+    CHECK(filletPtr->isFailed() && !filletPtr->shape() &&
+          filletPtr->lastValidShape() == filletLastValid);
+    CHECK(chamferPtr->isFailed() && !chamferPtr->shape() &&
+          chamferPtr->lastValidShape() == chamferLastValid);
+    CHECK(patternPtr->isFailed() && !patternPtr->shape() &&
+          patternPtr->lastValidShape() == patternLastValid);
     CHECK(!partBodyPtr->resultShape());
+    CHECK(partBodyPtr->lastValidResultShape() == patternLastValid);
     CHECK(extrudePtr->id() == extrudeId);
     CHECK(pocketPtr->id() == pocketId);
     CHECK(filletPtr->id() == filletId);
@@ -466,14 +476,22 @@ int main(int argc, char* argv[]) {
     CHECK(std::abs(solidar::test::volumeOf(*revolveBodyPtr->resultShape()) -
                    revolveVolume) > 1e-4);
 
-    // OCCT failure must be diagnostic and recoverable without stale geometry.
+    // OCCT failure is diagnostic and recoverable; Body result is hidden while
+    // the feature chain retains its last valid committed geometry.
+    const auto failedFilletLastValid = filletPtr->shape();
+    const auto blockedChamferLastValid = chamferPtr->shape();
+    const auto blockedPatternLastValid = patternPtr->shape();
     filletPtr->setRadiusMm(1000.0);
     CHECK(!document.recompute());
     CHECK(filletPtr->isFailed());
-    CHECK(!filletPtr->hasShape());
-    CHECK(chamferPtr->isFailed() && !chamferPtr->hasShape());
-    CHECK(patternPtr->isFailed() && !patternPtr->hasShape());
+    CHECK(!filletPtr->shape());
+    CHECK(filletPtr->lastValidShape() == failedFilletLastValid);
+    CHECK(chamferPtr->isFailed() && !chamferPtr->shape() &&
+          chamferPtr->lastValidShape() == blockedChamferLastValid);
+    CHECK(patternPtr->isFailed() && !patternPtr->shape() &&
+          patternPtr->lastValidShape() == blockedPatternLastValid);
     CHECK(!partBodyPtr->resultShape());
+    CHECK(partBodyPtr->lastValidResultShape() == blockedPatternLastValid);
     CHECK(!filletPtr->error().empty());
     CHECK(document.rebuildError() == filletPtr->error());
     filletPtr->setRadiusMm(2.0);
@@ -481,14 +499,12 @@ int main(int argc, char* argv[]) {
     checkAllValid(document);
     CHECK(document.rebuildError().empty());
 
-    // A failed feature without text must still produce a useful fallback.
+    // The guarded rebuild boundary normalizes an empty feature diagnostic.
     solidar::Document silentFailure;
     silentFailure.addBody("Fallback body")
         .addFeature(std::make_unique<SilentFailureFeature>());
     CHECK(!silentFailure.recompute());
-    CHECK(!silentFailure.rebuildError().empty());
-    CHECK(silentFailure.rebuildError().find("without a diagnostic") !=
-          std::string::npos);
+    CHECK(silentFailure.rebuildError() == "Geometry rebuild failed");
 
     // Persist the complete two-body history and rebuild it in a new Document.
     QTemporaryDir directory(

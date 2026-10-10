@@ -21,9 +21,13 @@ class MoveFeature final : public ShapeFeature {
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
   [[nodiscard]] Vector3d offsetMm() const noexcept;
   void setOffsetMm(Vector3d offsetMm) noexcept;
-  [[nodiscard]] std::string typeName() const override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::Move;
+  }
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   FeatureId sourceFeatureId_{kInvalidFeatureId};

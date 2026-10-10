@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QTemporaryDir>
@@ -26,14 +28,6 @@
 #include "model/FilletFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return false;                                                        \
-    }                                                                      \
-  } while (false)
 
 namespace {
 

@@ -20,10 +20,20 @@ void ExtrudeToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
                                ShapeFeature::ShapePtr baseShape,
                                FaceReference face, double lengthMm,
                                ExtrudeOperation operation, bool reversed,
-                               std::optional<FeatureId> editingFeatureId) {
+                               std::optional<FeatureId> editingFeatureId,
+                               std::shared_ptr<const TopologyIndex> topologyIndex) {
   bodyId_ = bodyId;
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
+  topologyIndexError_.clear();
+  topologyIndex_ = std::move(topologyIndex);
+  if (topologyIndex_ &&
+      (!baseShape_ || baseShape_->IsNull() || !topologyIndex_->shape() ||
+       topologyIndex_->shape().get() != baseShape_.get()))
+    topologyIndex_.reset();
+  if (!topologyIndex_ && baseShape_ && !baseShape_->IsNull())
+    topologyIndex_ = TopologyIndex::build(baseShape_, kInvalidShapeRevision,
+                                          &topologyIndexError_);
   face_ = std::move(face);
   sketchSource_ = false;
   profile_ = DocumentSketch{};
@@ -55,6 +65,8 @@ void ExtrudeToolSession::beginSketch(
   if (profileOverride_) profile_.geometry = *profileOverride_;
   profileId_ = profileId;
   baseShape_ = std::move(baseShape);
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   face_ = FaceReference{};
   geometry_.reset();
   sketchGeometry_.reset();
@@ -194,9 +206,13 @@ ExtrudeToolSession::subtractivePreviewShape() const noexcept {
 }
 
 const std::string& ExtrudeToolSession::error() const noexcept { return error_; }
+OperationFailureCode ExtrudeToolSession::errorCode() const noexcept {
+  return errorCode_;
+}
 
 bool ExtrudeToolSession::updatePreview() {
   subtractivePreviewShape_.reset();
+  errorCode_ = OperationFailureCode::None;
   if (sketchSource_) {
     // Sketch source: an invalid candidate must never destroy the last valid
     // preview, so previewShape_/sketchGeometry_ are only replaced on success.
@@ -205,7 +221,7 @@ bool ExtrudeToolSession::updatePreview() {
     SketchExtrudeGeometry geometry;
     if (!buildExtrusionFromSketch(profile_, baseShape_.get(), length_.value(),
                                   operation_, reversed_, &result, &geometry,
-                                  &error_)) {
+                                  &error_, &errorCode_)) {
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
@@ -219,17 +235,27 @@ bool ExtrudeToolSession::updatePreview() {
   geometry_.reset();
   error_.clear();
   if (!baseShape_ || baseShape_->IsNull()) {
+    errorCode_ = OperationFailureCode::MissingSource;
     error_ = "Extrude base shape is missing";
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
   if (operation_ == ExtrudeOperation::NewBody) {
+    errorCode_ = OperationFailureCode::InvalidInput;
     error_ = "Face extrusion cannot create a new body";
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
   if (face_.bodyId != bodyId_ || face_.featureId != sourceFeatureId_) {
-    error_ = "Extrude face no longer matches the active Body";
+    errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
+    error_ = "Extrude face no longer matches the active source Feature";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  if (!topologyIndex_) {
+    errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
+    error_ = "Extrude topology could not be indexed";
+    if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
@@ -237,9 +263,9 @@ bool ExtrudeToolSession::updatePreview() {
   TopoDS_Shape result;
   TopoDS_Shape sweptTool;
   FaceExtrudeGeometry geometry;
-  if (!buildExtrusionFromFace(*baseShape_, face_, length_.value(), operation_,
-                              reversed_, &result, &geometry, &error_,
-                              &sweptTool)) {
+  if (!buildExtrusionFromFace(*baseShape_, *topologyIndex_, face_,
+                              length_.value(), operation_, reversed_, &result,
+                              &geometry, &error_, &sweptTool, &errorCode_)) {
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
@@ -288,9 +314,10 @@ std::optional<LinearToolManipulator> ExtrudeToolSession::manipulator() const {
   if (geometry_) {
     geometry = *geometry_;
   } else {
-    if (!baseShape_ || baseShape_->IsNull()) return std::nullopt;
+    if (!baseShape_ || baseShape_->IsNull() || !topologyIndex_)
+      return std::nullopt;
     try {
-      const auto resolved = resolveFaceReference(*baseShape_, face_.topology());
+      const auto resolved = topologyIndex_->resolveFace(face_.topology());
       if (!resolved) return std::nullopt;
       gp_Pln plane;
       gp_Dir normal;
@@ -375,7 +402,10 @@ void ExtrudeToolSession::cancel() noexcept {
   profileOverride_.reset();
   profileId_ = kInvalidSketchId;
   sketchSource_ = false;
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   lifecycle_ = ToolLifecycle::Inactive;
 }
 

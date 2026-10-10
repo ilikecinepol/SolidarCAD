@@ -4,6 +4,7 @@
 
 #include "drawing/DrawingSource.h"
 #include "drawing/EskdRenderer.h"
+#include "ui/ThemeManager.h"
 
 namespace solidar {
 
@@ -38,7 +39,8 @@ std::size_t DrawingSheetView::sourceSolidCount() const noexcept {
 
 void DrawingSheetView::paintEvent(QPaintEvent*) {
   QPainter painter(this);
-  painter.fillRect(rect(), QColor(76, 82, 91));
+  const ThemeColors& theme = ThemeManager::instance().colors();
+  painter.fillRect(rect(), theme.surfaceAlt);
 
   constexpr double aspect = 210.0 / 297.0;
   const double availableWidth = width() - 40.0;
@@ -52,7 +54,9 @@ void DrawingSheetView::paintEvent(QPaintEvent*) {
   const QRectF page((width() - pageWidth) * 0.5,
                     (height() - pageHeight) * 0.5, pageWidth, pageHeight);
   painter.setPen(Qt::NoPen);
-  painter.setBrush(QColor(40, 40, 40, 90));
+  QColor pageShadow = theme.shadow;
+  pageShadow.setAlpha(90);
+  painter.setBrush(pageShadow);
   painter.drawRect(page.translated(4.0, 5.0));
   drawing::EskdRenderer::renderA4(painter, page, sketch_, {},
                                   sourceShape_.get());

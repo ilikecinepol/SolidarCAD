@@ -72,8 +72,23 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 option(SOLIDAR_BUILD_TESTS "Build unit tests" ON)
+option(SOLIDAR_BUILD_BENCHMARKS
+       "Build opt-in performance benchmarks (never registered with CTest)" OFF)
+option(SOLIDAR_BUILD_FUZZERS
+       "Build opt-in libFuzzer targets (Clang non-MSVC driver only)" OFF)
+option(SOLIDAR_ENABLE_SANITIZERS
+       "Instrument SolidarCAD targets with supported runtime sanitizers" OFF)
+option(SOLIDAR_ENABLE_CLANG_TIDY
+       "Run the repository clang-tidy profile while compiling" OFF)
+set(SOLIDAR_TEST_TIMEOUT_SECONDS "120" CACHE STRING
+    "Common per-test CTest timeout for the selected build profile")
+if(NOT SOLIDAR_TEST_TIMEOUT_SECONDS MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "SOLIDAR_TEST_TIMEOUT_SECONDS must be a positive integer")
+endif()
 set(SOLIDAR_REQUIRED_QT_VERSION "" CACHE STRING
     "Require an exact Qt version (empty accepts any supported Qt)")
+
+include(cmake/SolidarDeveloperProfiles.cmake)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets PrintSupport)
 if(SOLIDAR_REQUIRED_QT_VERSION
@@ -146,6 +161,14 @@ add_subdirectory(src)
 if(SOLIDAR_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(SOLIDAR_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
+endif()
+
+if(SOLIDAR_BUILD_FUZZERS)
+  add_subdirectory(fuzz)
 endif()
 
 install(FILES

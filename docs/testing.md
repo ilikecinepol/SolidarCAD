@@ -10,6 +10,85 @@ ctest --preset ci -L ui-smoke
 ctest --preset ci -L compliance
 ```
 
+Every CTest entry is registered through `solidar_add_test`. The registration
+boundary applies labels, a 120-second timeout, and the Windows Qt/OCCT runtime
+path. Configuration fails if a direct `add_test` bypasses that boundary.
+
+## Sanitizers
+
+The `sanitizers` preset is a supported test profile. It instruments project
+targets with AddressSanitizer on MSVC and with AddressSanitizer plus
+UndefinedBehaviorSanitizer on GCC/Clang. Qt and OCCT remain the pinned binary
+dependencies and are not themselves instrumented. Leak detection is disabled
+because those libraries retain process-global allocations; memory safety and
+undefined-behavior failures still stop the test immediately.
+The sanitizer preset applies the same centralized timeout rule with a
+300-second value because instrumentation makes the longest UI regression about
+an order of magnitude slower; ordinary CI remains at 120 seconds.
+
+Initialize the same vcpkg and Qt environment as the `ci` preset, then run:
+
+```bash
+cmake --preset sanitizers
+cmake --build --preset sanitizers --clean-first
+ctest --preset sanitizers
+```
+
+The Ubuntu `sanitizers` job in `.github/workflows/build.yml` runs this profile
+for every push and pull request. MSVC x64 is also supported locally; 32-bit
+MSVC and other compilers fail configuration with an explicit diagnostic rather
+than silently producing an uninstrumented build.
+
+## Static analysis
+
+The opt-in profile uses the repository `.clang-tidy` checks and requires a
+`clang-tidy` executable on `PATH`:
+
+```bash
+cmake --preset static-analysis
+cmake --build --preset static-analysis --clean-first
+```
+
+Missing tooling is a configure-time error. Static analysis is kept separate
+from the normal CI gate until the existing codebase has a reviewed warning
+baseline; enabling it cannot change release compiler flags.
+
+## Project decoder property and fuzz tests
+
+`project_decoder_property_tests` is part of ordinary CI. It applies 192
+fixed-seed byte mutations plus malformed boundary cases to a valid v2 file.
+For every rejected input it verifies deterministic classification, a non-empty
+diagnostic, unchanged destination `Document`, and unchanged input bytes.
+
+The libFuzzer target is opt-in and supported with Clang's non-MSVC driver on
+Linux. Initialize the reproducible Linux vcpkg/Qt environment and run:
+
+```bash
+cmake --preset fuzz
+cmake --build --preset fuzz --clean-first --target project_decoder_fuzz
+bash fuzz/run_project_decoder_fuzz.sh build/fuzz/fuzz/project_decoder_fuzz 60
+```
+
+The runner creates its mutable corpus and crash artifacts under a fresh system
+temporary directory and prints that path. The harness uses a fixed filename
+inside its own `QTemporaryDir`; fuzz bytes cannot select an output path. The
+MSVC compiler profile is intentionally rejected because it does not provide
+the libFuzzer driver used by this target.
+
+## Performance profiles
+
+Performance executables are opt-in and never registered with CTest:
+
+```bash
+cmake --preset performance
+cmake --build --preset performance --clean-first
+```
+
+See `benchmarks/README.md` for the stage-specific runners and CSV schemas.
+They report p50/p95/p99, memory, allocation and deterministic work counters.
+Wall-clock thresholds are deliberately absent from ordinary CI until a stable,
+dedicated measurement environment exists.
+
 ## Current coverage audit
 
 | Scenario | Automated coverage | MVP status | Remaining boundary |

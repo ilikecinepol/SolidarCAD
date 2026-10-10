@@ -6,15 +6,24 @@
 
 namespace solidar {
 
-void JoinBodiesToolSession::begin() {
+void JoinBodiesToolSession::begin(std::optional<FeatureId> editingFeatureId,
+                                  BodyId ownerBodyId) {
   bodies_.clear();
   previewShape_.reset();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   lifecycle_ = ToolLifecycle::SelectingInput;
+  editingFeatureId_ = editingFeatureId;
+  ownerBodyId_ = ownerBodyId;
 }
 
 void JoinBodiesToolSession::setBodies(std::vector<JoinBodyInput> bodies) {
   if (bodies.size() > 2) bodies.resize(2);
+  std::erase_if(bodies, [this](const JoinBodyInput& input) {
+    return input.bodyId == kInvalidBodyId || input.bodyId == ownerBodyId_;
+  });
+  if (bodies.size() == 2 && bodies[0].bodyId == bodies[1].bodyId)
+    bodies.resize(1);
   bodies_ = std::move(bodies);
   updatePreview();
 }
@@ -24,7 +33,7 @@ const std::vector<JoinBodyInput>& JoinBodiesToolSession::bodies() const noexcept
 }
 
 std::optional<FeatureId> JoinBodiesToolSession::editingFeatureId() const noexcept {
-  return std::nullopt;
+  return editingFeatureId_;
 }
 
 ToolLifecycle JoinBodiesToolSession::lifecycle() const noexcept {
@@ -52,16 +61,21 @@ JoinBodiesToolSession::previewShape() const {
 const std::string& JoinBodiesToolSession::error() const noexcept {
   return error_;
 }
+OperationFailureCode JoinBodiesToolSession::errorCode() const noexcept {
+  return errorCode_;
+}
 
 bool JoinBodiesToolSession::updatePreview() {
   previewShape_.reset();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   if (bodies_.size() != 2 || !bodies_[0].shape || !bodies_[1].shape) {
     lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
   previewShape_ =
-      buildJoinedBodiesShape(*bodies_[0].shape, *bodies_[1].shape, &error_);
+      buildJoinedBodiesShape(*bodies_[0].shape, *bodies_[1].shape, &error_,
+                             &errorCode_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
@@ -71,7 +85,10 @@ void JoinBodiesToolSession::cancel() noexcept {
   bodies_.clear();
   previewShape_.reset();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   lifecycle_ = ToolLifecycle::Inactive;
+  editingFeatureId_.reset();
+  ownerBodyId_ = kInvalidBodyId;
 }
 
 }  // namespace solidar

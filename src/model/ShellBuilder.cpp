@@ -29,10 +29,11 @@ std::shared_ptr<TopoDS_Shape> buildShellShape(
     if (error) *error = std::move(message);
     return std::shared_ptr<TopoDS_Shape>{};
   };
-  if (baseShape.IsNull()) return fail("Shell base shape is missing");
   if (!std::isfinite(thicknessMm) || thicknessMm <= 0.0)
     return fail("Shell thickness must be a finite positive value");
   if (faceIndices.empty()) return fail("Shell requires at least one face");
+  try {
+  if (baseShape.IsNull()) return fail("Shell base shape is missing");
   Bnd_Box bounds;
   BRepBndLib::Add(baseShape, bounds);
   double diagonal = 0.0;
@@ -75,35 +76,22 @@ std::shared_ptr<TopoDS_Shape> buildShellShape(
   const double localScale = std::min(shortestEdge, smallestFaceScale);
   if (std::isfinite(localScale) && thicknessMm > localScale * 8.0)
     return fail("Shell thickness is too large for local edges or faces");
-  try {
     std::string mappingError;
     auto selection =
         mapFacesToOwningSolids(baseShape, faceIndices, &mappingError);
     if (!selection) return fail("Shell " + mappingError);
     std::size_t owningSolidCount = 0;
-    for (const auto& indices : selection->localFaceIndices)
-      owningSolidCount += !indices.empty();
+    for (const auto& faces : selection->localFaces)
+      owningSolidCount += !faces.empty();
     if (owningSolidCount != 1)
       return fail("Shell v1 requires all removed faces to belong to one solid");
 
     for (std::size_t solidIndex = 0; solidIndex < selection->solids.size();
          ++solidIndex) {
-      const auto& indices = selection->localFaceIndices[solidIndex];
-      if (indices.empty()) continue;
+      const auto& selectedFaces = selection->localFaces[solidIndex];
+      if (selectedFaces.empty()) continue;
       NCollection_List<TopoDS_Shape> closingFaces;
-      for (const auto wanted : indices) {
-        std::size_t current = 0;
-        bool found = false;
-        for (TopExp_Explorer faces(selection->solids[solidIndex], TopAbs_FACE);
-             faces.More(); faces.Next(), ++current) {
-          if (current == wanted) {
-            closingFaces.Append(faces.Current());
-            found = true;
-            break;
-          }
-        }
-        if (!found) return fail("Shell face could not be resolved in owning solid");
-      }
+      for (const auto& face : selectedFaces) closingFaces.Append(face);
       // OCCT 8.0 documents global intersection and self-intersection cleanup
       // as incomplete. Skin/Arc with those switches disabled is its supported
       // robust path. INTERNAL-edge removal is also left disabled: on OCCT 8.0

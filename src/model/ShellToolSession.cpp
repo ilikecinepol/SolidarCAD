@@ -19,36 +19,53 @@ void ShellToolSession::begin(BodyId bodyId, FeatureId sourceFeatureId,
                              ShapeFeature::ShapePtr baseShape,
                              std::vector<FaceReference> faces,
                              double thickness, bool outside,
-                             std::optional<FeatureId> editingFeatureId) {
+                             std::optional<FeatureId> editingFeatureId,
+                             std::shared_ptr<const TopologyIndex> topologyIndex) {
   bodyId_ = bodyId; sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape); removedFaces_ = std::move(faces);
+  topologyIndexError_.clear();
+  topologyIndex_ = std::move(topologyIndex);
+  if (topologyIndex_ &&
+      (!baseShape_ || baseShape_->IsNull() || !topologyIndex_->shape() ||
+       topologyIndex_->shape().get() != baseShape_.get()))
+    topologyIndex_.reset();
+  if (!topologyIndex_ && baseShape_ && !baseShape_->IsNull())
+    topologyIndex_ = TopologyIndex::build(baseShape_, kInvalidShapeRevision,
+                                          &topologyIndexError_);
   thicknessMm_ = thickness; outside_ = outside;
   editingFeatureId_ = editingFeatureId;
   maximumValidThicknessMm_.reset();
+  pendingRequestedThicknessMm_.reset();
   limitReached_ = false;
+  previewBuildAttemptCount_ = 0;
   lifecycle_ = ToolLifecycle::Editing;
-  if (!updatePreview() && !removedFaces_.empty())
-    recoverBelowInvalidThickness(thicknessMm_);
+  updatePreview();
 }
 void ShellToolSession::setRemovedFaces(std::vector<FaceReference> value) {
   removedFaces_ = std::move(value);
   maximumValidThicknessMm_.reset();
+  pendingRequestedThicknessMm_.reset();
   limitReached_ = false;
-  if (!updatePreview() && !removedFaces_.empty())
-    recoverBelowInvalidThickness(thicknessMm_);
+  updatePreview();
 }
 void ShellToolSession::setThicknessFromPanel(double value) {
-  trySetThickness(value);
+  trySetThickness(value, false);
 }
 void ShellToolSession::setThicknessFromManipulator(double value) {
-  trySetThickness(std::max(0.01, value));
+  trySetThickness(std::max(0.01, value), false);
+}
+bool ShellToolSession::refineThicknessToBoundary(
+    double requestedThicknessMm) {
+  const double target = pendingRequestedThicknessMm_.value_or(
+      std::max(0.01, requestedThicknessMm));
+  pendingRequestedThicknessMm_.reset();
+  return trySetThickness(target, true);
 }
 void ShellToolSession::setOutside(bool value) {
   outside_ = value;
   maximumValidThicknessMm_.reset();
   limitReached_ = false;
-  if (!updatePreview() && !removedFaces_.empty())
-    recoverBelowInvalidThickness(thicknessMm_);
+  updatePreview();
 }
 BodyId ShellToolSession::bodyId() const noexcept { return bodyId_; }
 FeatureId ShellToolSession::sourceFeatureId() const noexcept { return sourceFeatureId_; }
@@ -60,6 +77,9 @@ std::optional<double> ShellToolSession::maximumValidThicknessMm() const noexcept
   return maximumValidThicknessMm_;
 }
 bool ShellToolSession::limitReached() const noexcept { return limitReached_; }
+std::uint64_t ShellToolSession::previewBuildAttemptCount() const noexcept {
+  return previewBuildAttemptCount_;
+}
 ToolLifecycle ShellToolSession::lifecycle() const noexcept { return lifecycle_; }
 ToolSelectionStage ShellToolSession::selectionStage() const noexcept { if (lifecycle_ == ToolLifecycle::Inactive) return ToolSelectionStage::None; return removedFaces_.empty() ? ToolSelectionStage::SelectingInput : ToolSelectionStage::EditingParameters; }
 std::optional<SelectionRequirement> ShellToolSession::selectionRequirement() const { if (!removedFaces_.empty()) return std::nullopt; return SelectionRequirement{SelectionType::Face, "Select faces to remove", 1, static_cast<std::size_t>(-1), true}; }
@@ -71,25 +91,35 @@ std::vector<ToolParameterDescriptor> ShellToolSession::parameters() const {
 }
 std::shared_ptr<const TopoDS_Shape> ShellToolSession::previewShape() const { return previewShape_; }
 const std::string& ShellToolSession::error() const noexcept { return error_; }
+OperationFailureCode ShellToolSession::errorCode() const noexcept {
+  return errorCode_;
+}
 bool ShellToolSession::updatePreview() {
-  previewShape_.reset(); error_.clear();
-  if (!baseShape_ || baseShape_->IsNull()) { error_ = "Shell base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  previewShape_.reset(); error_.clear(); errorCode_ = OperationFailureCode::None;
+  if (!baseShape_ || baseShape_->IsNull()) { errorCode_ = OperationFailureCode::MissingSource; error_ = "Shell base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
   if (removedFaces_.empty()) { lifecycle_ = ToolLifecycle::SelectingInput; return false; }
+  if (!topologyIndex_) { errorCode_ = OperationFailureCode::TopologyIndexUnavailable; error_ = "Shell topology could not be indexed"; if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  std::vector<TopologyReference> references;
+  references.reserve(removedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : removedFaces_) {
-    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { error_ = "Shell faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    const auto resolved = resolveFaceReference(*baseShape_, face.topology());
-    if (!resolved) { error_ = "Shell face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Shell faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    references.push_back(face.topology());
+  }
+  for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
+    if (!resolved) { errorCode_ = operationFailureCode(resolved.failure); error_ = "Shell face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
     indices.push_back(resolved.index);
   }
+  ++previewBuildAttemptCount_;
   previewShape_ = buildShellShape(*baseShape_, indices, thicknessMm_, outside_, &error_);
+  if (!previewShape_) errorCode_ = OperationFailureCode::GeometryOperationFailed;
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid : ToolLifecycle::PreviewInvalid;
   return static_cast<bool>(previewShape_);
 }
 std::optional<LinearToolManipulator> ShellToolSession::manipulator() const {
-  if (!baseShape_ || removedFaces_.empty()) return std::nullopt;
+  if (!baseShape_ || removedFaces_.empty() || !topologyIndex_) return std::nullopt;
   try {
-    const auto face = resolveFaceReference(*baseShape_, removedFaces_.front().topology());
+    const auto face = topologyIndex_->resolveFace(removedFaces_.front().topology());
     if (!face) return std::nullopt;
     double u0, u1, v0, v1; BRepTools::UVBounds(*face.subshape, u0, u1, v0, v1);
     BRepAdaptor_Surface surface(*face.subshape);
@@ -105,14 +135,23 @@ std::optional<LinearToolManipulator> ShellToolSession::manipulator() const {
   } catch (const Standard_Failure&) { return std::nullopt; }
 }
 
-bool ShellToolSession::trySetThickness(double value) {
+bool ShellToolSession::trySetThickness(double value, bool refineBoundary) {
   if (!std::isfinite(value) || value < 0.01 || !baseShape_ ||
       removedFaces_.empty())
     return false;
+  if (!refineBoundary) {
+    pendingRequestedThicknessMm_ = value;
+    maximumValidThicknessMm_.reset();
+    limitReached_ = false;
+  }
   const double previous = thicknessMm_;
+  if (std::abs(value - previous) <= 1e-12 &&
+      lifecycle_ == ToolLifecycle::PreviewValid)
+    return true;
   const auto previousPreview = previewShape_;
   thicknessMm_ = value;
   if (updatePreview()) {
+    pendingRequestedThicknessMm_.reset();
     maximumValidThicknessMm_.reset();
     limitReached_ = false;
     return true;
@@ -120,7 +159,8 @@ bool ShellToolSession::trySetThickness(double value) {
   const std::string failure = error_.empty()
                                   ? "Shell preview could not be built"
                                   : error_;
-  if (value > previous && previousPreview) {
+  const OperationFailureCode failureCode = errorCode_;
+  if (refineBoundary && value > previous && previousPreview) {
     thicknessMm_ = previous;
     previewShape_ = previousPreview;
     lifecycle_ = ToolLifecycle::PreviewValid;
@@ -128,15 +168,9 @@ bool ShellToolSession::trySetThickness(double value) {
   }
   thicknessMm_ = previous;
   previewShape_ = previousPreview;
-  if (previousPreview) {
-    if (value > previous) maximumValidThicknessMm_ = previous;
-    limitReached_ = true;
-    lifecycle_ = ToolLifecycle::PreviewValid;
-    error_.clear();
-    return false;
-  }
   lifecycle_ = ToolLifecycle::PreviewInvalid;
   error_ = failure;
+  errorCode_ = failureCode;
   return false;
 }
 
@@ -147,10 +181,15 @@ bool ShellToolSession::recoverBelowInvalidThickness(double upperInvalid) {
 
   std::vector<std::size_t> indices;
   indices.reserve(removedFaces_.size());
+  if (!topologyIndex_) return false;
+  std::vector<TopologyReference> references;
+  references.reserve(removedFaces_.size());
   for (const auto& face : removedFaces_) {
     if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_)
       return false;
-    const auto resolved = resolveFaceReference(*baseShape_, face.topology());
+    references.push_back(face.topology());
+  }
+  for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
     if (!resolved) return false;
     indices.push_back(resolved.index);
   }
@@ -171,6 +210,7 @@ bool ShellToolSession::recoverBelowInvalidThickness(double upperInvalid) {
        ++iteration) {
     const double midpoint = lower + (upper - lower) * 0.5;
     std::string ignored;
+    ++previewBuildAttemptCount_;
     auto preview = buildShellShape(*baseShape_, indices, midpoint, outside_,
                                    &ignored);
     if (preview) {
@@ -196,14 +236,19 @@ bool ShellToolSession::recoverBelowInvalidThickness(double upperInvalid) {
   limitReached_ = true;
   lifecycle_ = ToolLifecycle::PreviewValid;
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   return true;
 }
 
 void ShellToolSession::cancel() noexcept {
   previewShape_.reset();
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   removedFaces_.clear();
   error_.clear();
+  errorCode_ = OperationFailureCode::None;
   maximumValidThicknessMm_.reset();
+  pendingRequestedThicknessMm_.reset();
   limitReached_ = false;
   lifecycle_ = ToolLifecycle::Inactive;
 }

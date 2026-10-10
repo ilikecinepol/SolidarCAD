@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QImage>
 #include <QPixmap>
@@ -9,15 +11,6 @@
 #include "ui/SketchCanvas.h"
 #include "ui/ThemeManager.h"
 #include "ui/ToolIcon.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << "CHECK failed at line " << __LINE__ << ": "           \
-                << #condition << '\n';                                     \
-      return 1;                                                            \
-    }                                                                      \
-  } while (false)
 
 namespace {
 

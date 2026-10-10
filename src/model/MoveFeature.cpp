@@ -1,6 +1,7 @@
 #include "model/MoveFeature.h"
 
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <TopoDS_Shape.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
@@ -9,6 +10,7 @@
 #include <utility>
 
 #include "model/Body.h"
+#include "model/GeometryOperation.h"
 
 namespace solidar {
 namespace {
@@ -42,15 +44,35 @@ ShapeFeature::ShapePtr buildMovedShape(const TopoDS_Shape& source,
     return {};
   }
 
-  gp_Trsf transform;
-  transform.SetTranslation(gp_Vec(offsetMm.x, offsetMm.y, offsetMm.z));
-  BRepBuilderAPI_Transform moved(source, transform, true);
-  if (!moved.IsDone() || moved.Shape().IsNull()) {
-    if (error) *error = "Move transformation failed";
+  ShapeFeature::ShapePtr result;
+  GeometryFailure failure;
+  const bool completed = runGeometryOperation(
+      [&]() -> bool {
+        gp_Trsf transform;
+        transform.SetTranslation(gp_Vec(offsetMm.x, offsetMm.y, offsetMm.z));
+        BRepBuilderAPI_Transform moved(source, transform, true);
+        if (!moved.IsDone() || moved.Shape().IsNull()) {
+          if (error) *error = "Move transformation failed";
+          return false;
+        }
+        const TopoDS_Shape candidate = moved.Shape();
+        if (!BRepCheck_Analyzer(candidate).IsValid()) {
+          if (error) *error = "Move produced an invalid B-Rep shape";
+          return false;
+        }
+        result = std::make_shared<TopoDS_Shape>(candidate);
+        return true;
+      },
+      &failure);
+  if (!completed) {
+    if (failure.kind != GeometryFailureKind::None && error)
+      *error = failure.kind == GeometryFailureKind::OcctException
+                   ? "Move OpenCASCADE operation failed"
+                   : "Move geometry operation failed";
     return {};
   }
   if (error) error->clear();
-  return std::make_shared<TopoDS_Shape>(moved.Shape());
+  return result;
 }
 
 MoveFeature::MoveFeature(FeatureId sourceFeatureId, Vector3d offsetMm,
@@ -79,9 +101,8 @@ void MoveFeature::setOffsetMm(Vector3d offsetMm) noexcept {
   setDirty();
 }
 
-std::string MoveFeature::typeName() const { return "Move"; }
 
-bool MoveFeature::rebuild(const RebuildContext& context) {
+bool MoveFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!context.previousShape || context.previousShape->IsNull()) {
     markError("Move base shape is missing");

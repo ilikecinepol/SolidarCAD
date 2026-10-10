@@ -1,6 +1,5 @@
 #pragma once
 
-#include <functional>
 #include <map>
 #include <optional>
 
@@ -15,8 +14,6 @@ class PartDesignToolController final {
  public:
   struct Registration {
     ToolSession* session{};
-    std::function<void()> cancel;
-    std::function<void()> clearPresentation;
   };
 
   void registerTool(PartDesignToolKind kind, Registration registration);

@@ -5,13 +5,15 @@
 #include <algorithm>
 #include <cmath>
 
+#include "model/GeometryOperation.h"
+
 namespace solidar {
 
 void RevolveToolSession::begin(const Document& document, BodyId bodyId,
                                FeatureId sourceFeatureId,
                                ShapeFeature::ShapePtr baseShape,
                                std::optional<FeatureId> editingFeatureId) {
-  document_ = &document;
+  (void)document;
   bodyId_ = bodyId;
   sourceFeatureId_ = sourceFeatureId;
   baseShape_ = std::move(baseShape);
@@ -27,22 +29,23 @@ void RevolveToolSession::begin(const Document& document, BodyId bodyId,
   error_.clear();
 }
 void RevolveToolSession::setProfile(
-    SketchId value, std::optional<sketch::Sketch> profileOverride) {
+    const Document& document, SketchId value,
+    std::optional<sketch::Sketch> profileOverride) {
   profileSketchId_ = value;
   profileOverride_ = std::move(profileOverride);
-  updatePreview();
+  updatePreview(document);
 }
-void RevolveToolSession::clearProfile() {
+void RevolveToolSession::clearProfile(const Document& document) {
   profileSketchId_ = kInvalidSketchId;
   profileOverride_.reset();
-  updatePreview();
+  updatePreview(document);
 }
-void RevolveToolSession::setAxis(AxisReference value) { axis_ = value; updatePreview(); }
-void RevolveToolSession::clearAxis() { axis_.reset(); updatePreview(); }
-void RevolveToolSession::setAngleFromPanel(double value) { angleDeg_ = value; updatePreview(); }
-void RevolveToolSession::setAngleFromManipulator(double value) { angleDeg_ = std::clamp(value, 0.01, 360.0); updatePreview(); }
-void RevolveToolSession::setOperation(ExtrudeOperation value) { operation_ = value; updatePreview(); }
-void RevolveToolSession::setReversed(bool value) { reversed_ = value; updatePreview(); }
+void RevolveToolSession::setAxis(const Document& document, AxisReference value) { axis_ = value; updatePreview(document); }
+void RevolveToolSession::clearAxis(const Document& document) { axis_.reset(); updatePreview(document); }
+void RevolveToolSession::setAngleFromPanel(const Document& document, double value) { angleDeg_ = value; updatePreview(document); }
+void RevolveToolSession::setAngleFromManipulator(const Document& document, double value) { angleDeg_ = std::clamp(value, 0.01, 360.0); updatePreview(document); }
+void RevolveToolSession::setOperation(const Document& document, ExtrudeOperation value) { operation_ = value; updatePreview(document); }
+void RevolveToolSession::setReversed(const Document& document, bool value) { reversed_ = value; updatePreview(document); }
 SketchId RevolveToolSession::profileSketchId() const noexcept { return profileSketchId_; }
 const std::optional<sketch::Sketch>&
 RevolveToolSession::profileOverride() const noexcept {
@@ -81,9 +84,10 @@ std::vector<ToolParameterDescriptor> RevolveToolSession::parameters() const {
 std::shared_ptr<const TopoDS_Shape> RevolveToolSession::previewShape() const { return previewShape_; }
 const std::string& RevolveToolSession::error() const noexcept { return error_; }
 
-bool RevolveToolSession::updatePreview() {
+bool RevolveToolSession::updatePreview() { return false; }
+bool RevolveToolSession::updatePreview(const Document& document) {
   error_.clear();
-  if (!document_ || profileSketchId_ == kInvalidSketchId || !axis_) {
+  if (profileSketchId_ == kInvalidSketchId || !axis_) {
     previewShape_.reset();
     lifecycle_ = profileSketchId_ == kInvalidSketchId
                      ? ToolLifecycle::SelectingInput
@@ -96,8 +100,8 @@ bool RevolveToolSession::updatePreview() {
   const TopoDS_Shape* previous =
       operation_ == ExtrudeOperation::NewBody ? nullptr
                                                : (baseShape_ ? baseShape_.get() : nullptr);
-  RebuildContext context{const_cast<Document&>(*document_),
-                         document_->findBody(bodyId_), previous};
+  RebuildContext context{const_cast<Document&>(document),
+                         document.findBody(bodyId_), previous};
   if (!preview.rebuild(context)) {
     error_ = preview.error(); lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
@@ -106,36 +110,42 @@ bool RevolveToolSession::updatePreview() {
   return true;
 }
 
-std::optional<AngularToolManipulator> RevolveToolSession::manipulator() const {
-  if (!document_ || !axis_ || profileSketchId_ == kInvalidSketchId) return std::nullopt;
-  if (axis_->type == AxisReferenceType::GlobalX ||
-      axis_->type == AxisReferenceType::GlobalY ||
-      axis_->type == AxisReferenceType::GlobalZ) {
-    const Vector3d direction = axis_->type == AxisReferenceType::GlobalX
-                                   ? Vector3d{1.0, 0.0, 0.0}
-                                   : axis_->type == AxisReferenceType::GlobalY
-                                         ? Vector3d{0.0, 1.0, 0.0}
-                                         : Vector3d{0.0, 0.0, 1.0};
-    return AngularToolManipulator{{}, direction, 25.0, angleDeg_};
-  }
-  const auto* sketch = document_->findSketch(axis_->sketchId);
-  if (!sketch) return std::nullopt;
-  Point3d origin = sketch->placement.origin;
-  Vector3d direction = axis_->type == AxisReferenceType::SketchVerticalAxis
-                           ? sketch->placement.yDirection
-                           : sketch->placement.xDirection;
-  if (axis_->type == AxisReferenceType::SketchLine) {
-    const auto index = sketch->geometry.lineIndex(axis_->lineId);
-    if (!index) return std::nullopt;
-    const auto& line = sketch->geometry.lines()[*index];
-    origin = sketch->placement.toWorld(line.start.xMm, line.start.yMm);
-    const auto end = sketch->placement.toWorld(line.end.xMm, line.end.yMm);
-    direction = {end.x-origin.x, end.y-origin.y, end.z-origin.z};
-  }
-  return AngularToolManipulator{origin, direction, 25.0, angleDeg_};
+std::optional<AngularToolManipulator> RevolveToolSession::manipulator(
+    const Document& document) const {
+  std::optional<AngularToolManipulator> result;
+  runGeometryOperation([&] {
+    if (!axis_ || profileSketchId_ == kInvalidSketchId) return;
+    if (axis_->type == AxisReferenceType::GlobalX ||
+        axis_->type == AxisReferenceType::GlobalY ||
+        axis_->type == AxisReferenceType::GlobalZ) {
+      const Vector3d direction = axis_->type == AxisReferenceType::GlobalX
+                                     ? Vector3d{1.0, 0.0, 0.0}
+                                     : axis_->type == AxisReferenceType::GlobalY
+                                           ? Vector3d{0.0, 1.0, 0.0}
+                                           : Vector3d{0.0, 0.0, 1.0};
+      result = AngularToolManipulator{{}, direction, 25.0, angleDeg_};
+      return;
+    }
+    const auto* sketch = document.findSketch(axis_->sketchId);
+    if (!sketch) return;
+    Point3d origin = sketch->placement.origin;
+    Vector3d direction = axis_->type == AxisReferenceType::SketchVerticalAxis
+                             ? sketch->placement.yDirection
+                             : sketch->placement.xDirection;
+    if (axis_->type == AxisReferenceType::SketchLine) {
+      const auto index = sketch->geometry.lineIndex(axis_->lineId);
+      if (!index) return;
+      const auto& line = sketch->geometry.lines()[*index];
+      origin = sketch->placement.toWorld(line.start.xMm, line.start.yMm);
+      const auto end = sketch->placement.toWorld(line.end.xMm, line.end.yMm);
+      direction = {end.x - origin.x, end.y - origin.y, end.z - origin.z};
+    }
+    result = AngularToolManipulator{origin, direction, 25.0, angleDeg_};
+  });
+  return result;
 }
 void RevolveToolSession::cancel() noexcept {
-  document_ = nullptr; baseShape_.reset(); previewShape_.reset(); axis_.reset();
+  baseShape_.reset(); previewShape_.reset(); axis_.reset();
   editingFeatureId_.reset();
   profileSketchId_ = kInvalidSketchId; profileOverride_.reset(); error_.clear();
   lifecycle_ = ToolLifecycle::Inactive;

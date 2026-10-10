@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QTemporaryDir>
@@ -31,13 +33,6 @@ class TestFailure final : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
-
-#define CHECK(condition)                                                     \
-  do {                                                                       \
-    if (!(condition))                                                        \
-      throw TestFailure(std::string(__FILE__) + ":" +                       \
-                        std::to_string(__LINE__) + ": " #condition);         \
-  } while (false)
 
 double volumeOf(const TopoDS_Shape& shape) {
   GProp_GProps properties;
@@ -104,11 +99,15 @@ int main(int argc, char* argv[]) {
     CHECK(document.recompute());
     CHECK(std::abs(volumeOf(*chamfer->shape()) - volumeAtTwo) > 1e-5);
 
-    // Failure never exposes stale geometry and a valid edit recovers it.
+    // Failure hides the Body result while retaining last-valid feature B-Rep.
+    const auto chamferLastValid = chamfer->shape();
     chamfer->setDistanceMm(1000.0);
     CHECK(!document.recompute());
     CHECK(chamfer->isFailed());
-    CHECK(!chamfer->hasShape());
+    CHECK(!chamfer->shape());
+    CHECK(chamfer->lastValidShape() == chamferLastValid);
+    CHECK(body->lastValidResultShape() == chamferLastValid);
+    CHECK(!body->resultShape());
     CHECK(!chamfer->error().empty());
     chamfer->setDistanceMm(1.5);
     CHECK(document.recompute());
@@ -126,8 +125,14 @@ int main(int argc, char* argv[]) {
     // Preview, panel/manipulator synchronization, and Cancel are non-mutating.
     const auto upstream = body->features().front()->shape();
     CHECK(upstream);
+    const auto upstreamTopology =
+        body->features().front()->topologyIndex();
+    CHECK(upstreamTopology);
+    const auto sessionIndexBuilds =
+        solidar::TopologyIndex::buildAttemptCount();
     solidar::ChamferToolSession session;
-    session.begin(box.bodyId, box.extrudeId, upstream, {firstReference}, 1.0);
+    session.begin(box.bodyId, box.extrudeId, upstream, {firstReference}, 1.0,
+                  std::nullopt, upstreamTopology);
     CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(session.previewShape());
     CHECK(session.manipulator());
@@ -135,12 +140,15 @@ int main(int argc, char* argv[]) {
     CHECK(session.distanceMm() == 1.25);
     session.setDistanceFromManipulator(0.75);
     CHECK(session.distanceMm() == 0.75);
+    CHECK(solidar::TopologyIndex::buildAttemptCount() == sessionIndexBuilds);
     session.cancel();
     CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
     CHECK(body->features().size() == 2);
 
     // Multiple edges are supported when OCCT accepts the pair.
     std::vector<solidar::EdgeReference> pair;
+    const auto builderIndexBuilds =
+        solidar::TopologyIndex::buildAttemptCount();
     for (std::size_t index = 0; index < 64 && pair.empty(); ++index) {
       for (std::size_t other = index + 1; other < 64; ++other) {
         std::string error;
@@ -148,13 +156,16 @@ int main(int argc, char* argv[]) {
           if (error == "Chamfer edge could not be resolved") break;
           continue;
         }
-        pair = {solidar::makeEdgeReference(*upstream, box.bodyId, box.extrudeId,
-                                           index),
-                solidar::makeEdgeReference(*upstream, box.bodyId, box.extrudeId,
-                                           other)};
+        const auto first = upstreamTopology->createEdgeReference(
+            box.bodyId, box.extrudeId, index);
+        const auto second = upstreamTopology->createEdgeReference(
+            box.bodyId, box.extrudeId, other);
+        CHECK(first && second);
+        pair = {first.reference, second.reference};
         break;
       }
     }
+    CHECK(solidar::TopologyIndex::buildAttemptCount() == builderIndexBuilds);
     CHECK(pair.size() == 2);
     solidar::ChamferToolSession pairSession;
     pairSession.begin(box.bodyId, box.extrudeId, upstream, pair, 1.0);
@@ -172,8 +183,7 @@ int main(int argc, char* argv[]) {
     CHECK(pairSession.previewShape());
     CHECK(std::abs(pairSession.distanceMm() - 0.75) < 1e-9);
     CHECK(!pairSession.error().empty());
-    CHECK(pairSession.maximumValidDistanceMm());
-    CHECK(*pairSession.maximumValidDistanceMm() >= 0.75);
+    CHECK(!pairSession.maximumValidDistanceMm());
     CHECK(pairSession.edges() == pairReferences);
     pairSession.setDistanceFromManipulator(0.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::EditingParameters);
@@ -181,7 +191,13 @@ int main(int argc, char* argv[]) {
     pairSession.setDistanceFromPanel(1.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.edges() == pairReferences);
+    const auto buildsBeforeDrag = pairSession.previewBuildAttemptCount();
     pairSession.setDistanceFromManipulator(1000.0);
+    CHECK(pairSession.previewBuildAttemptCount() == buildsBeforeDrag + 1);
+    CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+    CHECK(!pairSession.limitReached());
+    const auto buildsBeforeBoundary = pairSession.previewBuildAttemptCount();
+    CHECK(pairSession.refineDistanceToBoundary(pairSession.distanceMm()));
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.previewShape());
     CHECK(pairSession.limitReached());
@@ -189,6 +205,9 @@ int main(int argc, char* argv[]) {
     CHECK(std::abs(pairSession.distanceMm() -
                    *pairSession.maximumValidDistanceMm()) < 1e-4);
     CHECK(pairSession.distanceMm() < 1000.0);
+    CHECK(pairSession.previewBuildAttemptCount() > buildsBeforeBoundary);
+    CHECK(pairSession.previewBuildAttemptCount() <=
+          buildsBeforeBoundary + 26);
 
     // A hollow body's oversized chamfer can remain a formally valid B-Rep
     // while crossing into unrelated inner faces. Treat the nearest such face

@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -16,13 +18,16 @@
 #include "ui/Viewport.h"
 #include "ui/ViewportCamera.h"
 
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
+namespace solidar {
+
+class MainWindowUndoTestAccess final {
+ public:
+  static void flushHover(Viewport& viewport, QPointF position) {
+    viewport.flushPendingHover(position);
+  }
+};
+
+}  // namespace solidar
 
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -56,7 +61,8 @@ int main(int argc, char** argv) {
   view.resize(800, 600);
   solidar::sketch::Sketch profile;
   profile.addRectangle({-6, -6}, {6, 6});
-  view.addSketch(profile, support, placement);
+  constexpr solidar::SketchId profileId = 42;
+  view.addSketch(profileId, profile, support, placement);
 
   const solidar::ViewportCameraState camera{
       view.cameraYawDegrees(), view.cameraPitchDegrees(), 1.0F, {}, view.size()};
@@ -67,13 +73,19 @@ int main(int argc, char** argv) {
       camera.worldToScreen({0, 0, 0});
 
   int picks = 0;
-  std::size_t pickedIndex = static_cast<std::size_t>(-1);
+  solidar::SketchId pickedSketchId = solidar::kInvalidSketchId;
+  solidar::Vector3d pickedNormal{};
   double lastValue = 0.0;
   int valueChanges = 0;
   QObject::connect(&view, &solidar::Viewport::directProfilePicked, &view,
-                   [&](std::size_t index) {
+                   [&](const solidar::ExtrusionSourcePick& pick) {
                      ++picks;
-                     pickedIndex = index;
+                     const auto* region =
+                         std::get_if<solidar::SketchRegionPick>(&pick.source);
+                     if (region) {
+                       pickedSketchId = region->sketchId;
+                       pickedNormal = region->placement.normal();
+                     }
                      const auto centroid = placement.toWorld(0, 0);
                      view.setToolManipulator(
                          {{centroid.x, centroid.y, centroid.z},
@@ -92,7 +104,10 @@ int main(int argc, char** argv) {
   mouse(view, QEvent::MouseButtonPress, pressPoint, Qt::LeftButton,
         Qt::LeftButton);
   CHECK(picks == 1);
-  CHECK(pickedIndex == 0);
+  CHECK(pickedSketchId == profileId);
+  CHECK(std::abs(pickedNormal.x - normal.x) < 1e-9);
+  CHECK(std::abs(pickedNormal.y - normal.y) < 1e-9);
+  CHECK(std::abs(pickedNormal.z - normal.z) < 1e-9);
   CHECK(view.extrusionCandidateSketchIndex() == 0);
   CHECK(!view.extrusionCandidateSketch().lines().empty() ||
         !view.extrusionCandidateSketch().circles().empty());
@@ -125,7 +140,7 @@ int main(int argc, char** argv) {
     solidar::sketch::Sketch hoverProfile;
     hoverProfile.addRectangle({-20.0, -10.0}, {20.0, 10.0});
     const auto hoverPlacement = solidar::SketchPlacement::xy();
-    hoverView.addSketch(hoverProfile, QStringLiteral("XY"), hoverPlacement);
+    hoverView.addSketch(1, hoverProfile, QStringLiteral("XY"), hoverPlacement);
     const solidar::ViewportCameraState hoverCamera{
         hoverView.cameraYawDegrees(), hoverView.cameraPitchDegrees(), 1.0F, {},
         hoverView.size()};
@@ -133,6 +148,7 @@ int main(int argc, char** argv) {
         hoverCamera.worldToScreen(hoverPlacement.toWorld(0.0, 0.0));
     hoverView.beginExtrusionSurfaceSelection();
     mouse(hoverView, QEvent::MouseMove, inside, Qt::NoButton, Qt::NoButton);
+    solidar::MainWindowUndoTestAccess::flushHover(hoverView, inside);
     const QRectF before = hoverView.extrusionHoverBounds();
     CHECK(!before.isEmpty());
     wheel(hoverView, inside, 120);
@@ -152,7 +168,7 @@ int main(int argc, char** argv) {
     arcProfile.addArc({0.0, 10.0}, 20.0, 0.0,
                       3.14159265358979323846);
     const auto arcPlacement = solidar::SketchPlacement::xy();
-    arcView.addSketch(arcProfile, QStringLiteral("XY"), arcPlacement);
+    arcView.addSketch(1, arcProfile, QStringLiteral("XY"), arcPlacement);
 
     const solidar::ViewportCameraState arcCamera{
         arcView.cameraYawDegrees(), arcView.cameraPitchDegrees(), 1.0F, {},
@@ -163,7 +179,9 @@ int main(int argc, char** argv) {
         arcCamera.worldToScreen(arcPlacement.toWorld(0.0, 20.0));
     int arcPicks = 0;
     QObject::connect(&arcView, &solidar::Viewport::directProfilePicked,
-                     &arcView, [&](std::size_t) { ++arcPicks; });
+                     &arcView, [&](const solidar::ExtrusionSourcePick&) {
+                       ++arcPicks;
+                     });
 
     mouse(arcView, QEvent::MouseButtonPress, insideRectangle,
           Qt::LeftButton, Qt::LeftButton);
@@ -224,7 +242,7 @@ int main(int argc, char** argv) {
     driftedProfile.addArc({0.0, 10.0 + 5e-6}, 20.0, 0.0,
                           3.14159265358979323846);
     const auto driftedPlacement = solidar::SketchPlacement::xy();
-    driftedArcView.addSketch(driftedProfile, QStringLiteral("XY"),
+    driftedArcView.addSketch(1, driftedProfile, QStringLiteral("XY"),
                              driftedPlacement);
     const solidar::ViewportCameraState driftedCamera{
         driftedArcView.cameraYawDegrees(),
@@ -257,7 +275,7 @@ int main(int argc, char** argv) {
                              3.14159265358979323846 * 0.5,
                              3.14159265358979323846);
     const auto placement = solidar::SketchPlacement::xy();
-    partialArcView.addSketch(partialArcProfile, QStringLiteral("XY"),
+    partialArcView.addSketch(1, partialArcProfile, QStringLiteral("XY"),
                              placement);
     const solidar::ViewportCameraState camera{
         partialArcView.cameraYawDegrees(),
@@ -271,7 +289,8 @@ int main(int argc, char** argv) {
     int picks = 0;
     QObject::connect(&partialArcView,
                      &solidar::Viewport::directProfilePicked,
-                     &partialArcView, [&](std::size_t) { ++picks; });
+                     &partialArcView,
+                     [&](const solidar::ExtrusionSourcePick&) { ++picks; });
     mouse(partialArcView, QEvent::MouseButtonPress, insideRectangle,
           Qt::LeftButton, Qt::LeftButton);
 
@@ -322,7 +341,7 @@ int main(int argc, char** argv) {
 
     const solidar::SketchPlacement partitionPlacement =
         solidar::SketchPlacement::xy();
-    partitionView.addSketch(partition, QStringLiteral("XY"),
+    partitionView.addSketch(1, partition, QStringLiteral("XY"),
                             partitionPlacement);
 
     const solidar::ViewportCameraState partitionCamera{
@@ -336,7 +355,9 @@ int main(int argc, char** argv) {
     int partitionPicks = 0;
     QObject::connect(
         &partitionView, &solidar::Viewport::directProfilePicked,
-        &partitionView, [&](std::size_t) { ++partitionPicks; });
+        &partitionView, [&](const solidar::ExtrusionSourcePick&) {
+          ++partitionPicks;
+        });
 
     mouse(partitionView, QEvent::MouseButtonPress, innerPoint,
           Qt::LeftButton, Qt::LeftButton);
@@ -383,7 +404,7 @@ int main(int argc, char** argv) {
     projectedBoundaryView.setSolidVisible(true);
 
     const auto placement = solidar::SketchPlacement::xy();
-    projectedBoundaryView.addSketch(profile, QStringLiteral("Верхняя"),
+    projectedBoundaryView.addSketch(1, profile, QStringLiteral("Верхняя"),
                                     placement);
     const solidar::ViewportCameraState camera{
         projectedBoundaryView.cameraYawDegrees(),
@@ -395,7 +416,8 @@ int main(int argc, char** argv) {
     int picks = 0;
     QObject::connect(&projectedBoundaryView,
                      &solidar::Viewport::directProfilePicked,
-                     &projectedBoundaryView, [&](std::size_t) { ++picks; });
+                     &projectedBoundaryView,
+                     [&](const solidar::ExtrusionSourcePick&) { ++picks; });
     mouse(projectedBoundaryView, QEvent::MouseButtonPress, insideTriangle,
           Qt::LeftButton, Qt::LeftButton);
 
@@ -441,7 +463,7 @@ int main(int argc, char** argv) {
     coincidentBoundaryView.setSolidVisible(true);
 
     const auto placement = solidar::SketchPlacement::xy();
-    coincidentBoundaryView.addSketch(profile, QStringLiteral("Верхняя"),
+    coincidentBoundaryView.addSketch(1, profile, QStringLiteral("Верхняя"),
                                      placement);
     const solidar::ViewportCameraState camera{
         coincidentBoundaryView.cameraYawDegrees(),
@@ -453,7 +475,8 @@ int main(int argc, char** argv) {
     int picks = 0;
     QObject::connect(&coincidentBoundaryView,
                      &solidar::Viewport::directProfilePicked,
-                     &coincidentBoundaryView, [&](std::size_t) { ++picks; });
+                     &coincidentBoundaryView,
+                     [&](const solidar::ExtrusionSourcePick&) { ++picks; });
     mouse(coincidentBoundaryView, QEvent::MouseButtonPress, insideRightRegion,
           Qt::LeftButton, Qt::LeftButton);
 
@@ -506,7 +529,7 @@ int main(int argc, char** argv) {
     projectedArcPocketView.setSolidVisible(true);
 
     const auto placement = solidar::SketchPlacement::xy();
-    projectedArcPocketView.addSketch(profile, QStringLiteral("Верхняя"),
+    projectedArcPocketView.addSketch(1, profile, QStringLiteral("Верхняя"),
                                      placement);
     const solidar::ViewportCameraState camera{
         projectedArcPocketView.cameraYawDegrees(),
@@ -519,7 +542,7 @@ int main(int argc, char** argv) {
     QObject::connect(&projectedArcPocketView,
                      &solidar::Viewport::directProfilePicked,
                      &projectedArcPocketView,
-                     [&](std::size_t) { ++picks; });
+                     [&](const solidar::ExtrusionSourcePick&) { ++picks; });
     mouse(projectedArcPocketView, QEvent::MouseButtonPress, insidePocket,
           Qt::LeftButton, Qt::LeftButton);
 
@@ -574,7 +597,7 @@ int main(int argc, char** argv) {
     projectedCirclePocketView.setSolidVisible(true);
 
     const auto placement = solidar::SketchPlacement::xy();
-    projectedCirclePocketView.addSketch(profile, QStringLiteral("Верхняя"),
+    projectedCirclePocketView.addSketch(1, profile, QStringLiteral("Верхняя"),
                                         placement);
     const solidar::ViewportCameraState camera{
         projectedCirclePocketView.cameraYawDegrees(),
@@ -587,7 +610,7 @@ int main(int argc, char** argv) {
     QObject::connect(&projectedCirclePocketView,
                      &solidar::Viewport::directProfilePicked,
                      &projectedCirclePocketView,
-                     [&](std::size_t) { ++picks; });
+                     [&](const solidar::ExtrusionSourcePick&) { ++picks; });
     mouse(projectedCirclePocketView, QEvent::MouseButtonPress, insidePocket,
           Qt::LeftButton, Qt::LeftButton);
 
@@ -631,7 +654,7 @@ int main(int argc, char** argv) {
     upperCells.addLine({38.0, 30.0}, {48.0, 30.0});
     upperCells.addLine({48.0, 30.0}, {48.0, 41.9});
     const auto placement = solidar::SketchPlacement::xy();
-    upperCellsView.addSketch(upperCells, QStringLiteral("XY"), placement);
+    upperCellsView.addSketch(1, upperCells, QStringLiteral("XY"), placement);
     const solidar::ViewportCameraState camera{
         upperCellsView.cameraYawDegrees(),
         upperCellsView.cameraPitchDegrees(), 1.0F, {}, upperCellsView.size()};
@@ -640,7 +663,8 @@ int main(int argc, char** argv) {
     int picks = 0;
     QObject::connect(&upperCellsView,
                      &solidar::Viewport::directProfilePicked,
-                     &upperCellsView, [&](std::size_t) { ++picks; });
+                     &upperCellsView,
+                     [&](const solidar::ExtrusionSourcePick&) { ++picks; });
     mouse(upperCellsView, QEvent::MouseButtonPress, leftUpper,
           Qt::LeftButton, Qt::LeftButton);
     CHECK(picks == 1);
@@ -671,7 +695,7 @@ int main(int argc, char** argv) {
         revolveSketch.lines()[constructionIndex].elementId, true);
     const auto constructionId = revolveSketch.lineId(constructionIndex);
     const auto revolvePlacement = solidar::SketchPlacement::xy();
-    revolveView.addSketch(revolveSketch, QStringLiteral("XY"),
+    revolveView.addSketch(1, revolveSketch, QStringLiteral("XY"),
                           revolvePlacement);
     const solidar::ViewportCameraState revolveCamera{
         revolveView.cameraYawDegrees(), revolveView.cameraPitchDegrees(),
@@ -687,11 +711,17 @@ int main(int argc, char** argv) {
     int profileChanges = 0;
     qulonglong pickedAxis = 0;
     QObject::connect(&revolveView,
-                     &solidar::Viewport::extrusionSurfacePicked,
-                     &revolveView, [&](const QString&) { ++surfacePicks; });
+                     &solidar::Viewport::extrusionSourcePicked,
+                     &revolveView,
+                     [&](const solidar::ExtrusionSourcePick&) {
+                       ++surfacePicks;
+                     });
     QObject::connect(&revolveView,
                      &solidar::Viewport::revolveProfileSelectionChanged,
-                     &revolveView, [&](std::size_t) { ++profileChanges; });
+                     &revolveView,
+                     [&](const solidar::ExtrusionSourcePick&) {
+                       ++profileChanges;
+                     });
     QObject::connect(&revolveView, &solidar::Viewport::revolveAxisPicked,
                      &revolveView,
                      [&](qulonglong token) { pickedAxis = token; });
@@ -730,7 +760,7 @@ int main(int argc, char** argv) {
     CHECK(lineLoop.lines()[0].elementId != lineLoop.lines()[1].elementId);
     CHECK(lineLoop.isClosed());
     const auto loopPlacement = solidar::SketchPlacement::xy();
-    lineLoopView.addSketch(lineLoop, QStringLiteral("XY"), loopPlacement);
+    lineLoopView.addSketch(1, lineLoop, QStringLiteral("XY"), loopPlacement);
     const solidar::ViewportCameraState loopCamera{
         lineLoopView.cameraYawDegrees(), lineLoopView.cameraPitchDegrees(),
         1.0F, {}, lineLoopView.size()};
@@ -738,8 +768,9 @@ int main(int argc, char** argv) {
         loopCamera.worldToScreen(loopPlacement.toWorld(12.5, 15.0));
     int loopPicks = 0;
     QObject::connect(&lineLoopView,
-                     &solidar::Viewport::extrusionSurfacePicked,
-                     &lineLoopView, [&](const QString&) { ++loopPicks; });
+                     &solidar::Viewport::extrusionSourcePicked,
+                     &lineLoopView,
+                     [&](const solidar::ExtrusionSourcePick&) { ++loopPicks; });
     lineLoopView.beginExtrusionSurfaceSelection();
     mouse(lineLoopView, QEvent::MouseButtonPress, inside,
           Qt::LeftButton, Qt::LeftButton);
@@ -763,7 +794,7 @@ int main(int argc, char** argv) {
 
     solidar::Viewport triangleView;
     triangleView.resize(800, 600);
-    triangleView.addSketch(triangle.geometry, QStringLiteral("XY"),
+    triangleView.addSketch(triangle.id, triangle.geometry, QStringLiteral("XY"),
                            triangle.placement);
     const solidar::ViewportCameraState triangleCamera{
         triangleView.cameraYawDegrees(), triangleView.cameraPitchDegrees(),
@@ -778,10 +809,10 @@ int main(int argc, char** argv) {
     solidar::RevolveToolSession triangleSession;
     triangleSession.begin(triangleDocument, solidar::kInvalidBodyId,
                           solidar::kInvalidFeatureId);
-    triangleSession.setProfile(triangle.id,
+    triangleSession.setProfile(triangleDocument, triangle.id,
                                triangleView.extrusionCandidateSketch());
-    triangleSession.setAngleFromPanel(232.08);
-    triangleSession.setAxis({solidar::AxisReferenceType::SketchLine,
+    triangleSession.setAngleFromPanel(triangleDocument, 232.08);
+    triangleSession.setAxis(triangleDocument, {solidar::AxisReferenceType::SketchLine,
                              triangle.id, boundaryAxis});
     if (triangleSession.lifecycle() != solidar::ToolLifecycle::PreviewValid)
       std::cerr << triangleSession.error() << '\n';
@@ -809,6 +840,40 @@ int main(int argc, char** argv) {
     mouse(globalAxisView, QEvent::MouseButtonPress, globalX,
           Qt::LeftButton, Qt::LeftButton);
     CHECK(pickedAxis == solidar::Viewport::kGlobalXAxisToken);
+  }
+
+  // The typed source event is the final action of the click path. A direct
+  // connection may synchronously replace the scene without causing a second
+  // event or any access to the invalidated interaction state.
+  {
+    solidar::Viewport reentrantView;
+    reentrantView.resize(800, 600);
+    solidar::sketch::Sketch rectangle;
+    rectangle.addRectangle({-8.0, -8.0}, {8.0, 8.0});
+    constexpr solidar::SketchId reentrantId = 91;
+    const auto reentrantPlacement = solidar::SketchPlacement::xy();
+    reentrantView.addSketch(reentrantId, rectangle,
+                            QStringLiteral("arbitrary display label"),
+                            reentrantPlacement);
+    const solidar::ViewportCameraState reentrantCamera{
+        reentrantView.cameraYawDegrees(), reentrantView.cameraPitchDegrees(),
+        1.0F, {}, reentrantView.size()};
+    int sourceEvents = 0;
+    solidar::SketchId emittedId = solidar::kInvalidSketchId;
+    QObject::connect(
+        &reentrantView, &solidar::Viewport::directProfilePicked,
+        &reentrantView, [&](const solidar::ExtrusionSourcePick& pick) {
+          ++sourceEvents;
+          if (const auto* region =
+                  std::get_if<solidar::SketchRegionPick>(&pick.source))
+            emittedId = region->sketchId;
+          reentrantView.resetScene();
+        });
+    mouse(reentrantView, QEvent::MouseButtonPress,
+          reentrantCamera.worldToScreen(reentrantPlacement.toWorld(0.0, 0.0)),
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(sourceEvents == 1);
+    CHECK(emittedId == reentrantId);
   }
 
   return EXIT_SUCCESS;

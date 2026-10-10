@@ -106,15 +106,22 @@ std::vector<DocumentSketch> closedProfileComponents(
 
 bool buildClassifiedRegionFaces(const DocumentSketch& profile,
                                 std::vector<TopoDS_Face>* regions,
-                                std::string* error) {
-  const auto fail = [&](std::string message) {
+                                std::string* error,
+                                OperationFailureCode* code) {
+  const auto fail = [&](OperationFailureCode failureCode,
+                        std::string message) {
+    if (code) *code = failureCode;
     if (error) *error = std::move(message);
     return false;
   };
-  if (!regions) return fail("Profile region output is missing");
+  if (!regions)
+    return fail(OperationFailureCode::InvalidInput,
+                "Profile region output is missing");
 
   const auto components = closedProfileComponents(profile);
-  if (components.empty()) return fail("Profile has insufficient geometry");
+  if (components.empty())
+    return fail(OperationFailureCode::InvalidProfileOpen,
+                "Profile has insufficient geometry");
 
   struct Contour {
     TopoDS_Face face;
@@ -126,19 +133,26 @@ bool buildClassifiedRegionFaces(const DocumentSketch& profile,
   std::vector<Contour> contours;
   contours.reserve(components.size());
   for (const auto& component : components) {
-    if (!isSupportedSingleSketchProfile(component, error)) return false;
+    if (!isSupportedSingleSketchProfile(component, error, code)) return false;
     TopoDS_Face face;
-    if (!buildPlanarFaceFromSketch(component, &face, error)) return false;
+    if (!buildPlanarFaceFromSketch(component, &face, error)) {
+      if (code) *code = OperationFailureCode::InvalidProfile;
+      return false;
+    }
     BRepCheck_Analyzer analyzer(face);
     if (!analyzer.IsValid())
-      return fail("Profile region is self-intersecting or invalid");
+      return fail(OperationFailureCode::InvalidProfileOverlap,
+                  "Profile region is self-intersecting or invalid");
     GProp_GProps properties;
     BRepGProp::SurfaceProperties(face, properties);
     const double area = std::abs(properties.Mass());
     if (!std::isfinite(area) || area <= kProfileAreaTolerance)
-      return fail("Profile region has zero area");
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile region has zero area");
     const TopoDS_Wire boundary = BRepTools::OuterWire(face);
-    if (boundary.IsNull()) return fail("Profile region boundary is invalid");
+    if (boundary.IsNull())
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile region boundary is invalid");
     contours.push_back({face, boundary, area});
   }
 
@@ -151,14 +165,17 @@ bool buildClassifiedRegionFaces(const DocumentSketch& profile,
                                           contours[second].boundary);
       distance.Perform();
       if (!distance.IsDone())
-        return fail("Could not classify profile region boundaries");
+        return fail(OperationFailureCode::InvalidProfile,
+                    "Could not classify profile region boundaries");
       if (distance.Value() <= kProfileEndpointTolerance)
-        return fail("Profile regions touch or intersect each other");
+        return fail(OperationFailureCode::InvalidProfileOverlap,
+                    "Profile regions touch or intersect each other");
 
       BRepAlgoAPI_Common common(contours[first].face, contours[second].face);
       common.Build();
       if (!common.IsDone() || common.Shape().IsNull())
-        return fail("Could not classify multiple profile regions");
+        return fail(OperationFailureCode::InvalidProfile,
+                    "Could not classify multiple profile regions");
       GProp_GProps overlap;
       BRepGProp::SurfaceProperties(common.Shape(), overlap);
       const double commonArea = std::abs(overlap.Mass());
@@ -172,10 +189,12 @@ bool buildClassifiedRegionFaces(const DocumentSketch& profile,
           std::max(kProfileAreaTolerance, contours[smaller].area * 1e-8);
       if (std::abs(commonArea - contours[smaller].area) >
           containmentTolerance)
-        return fail("Profile regions overlap without valid containment");
+        return fail(OperationFailureCode::InvalidProfileOverlap,
+                    "Profile regions overlap without valid containment");
       if (std::abs(contours[first].area - contours[second].area) <=
           containmentTolerance)
-        return fail("Profile regions are duplicate or ambiguous");
+        return fail(OperationFailureCode::InvalidProfileOverlap,
+                    "Profile regions are duplicate or ambiguous");
 
       // Keep the nearest containing contour as the direct parent.
       if (!contours[smaller].parent ||
@@ -191,11 +210,13 @@ bool buildClassifiedRegionFaces(const DocumentSketch& profile,
     while (contours[cursor].parent) {
       cursor = *contours[cursor].parent;
       if (++depth > contours.size())
-        return fail("Profile containment hierarchy is invalid");
+        return fail(OperationFailureCode::InvalidProfile,
+                    "Profile containment hierarchy is invalid");
     }
     contours[index].depth = depth;
     if (depth > 1)
-      return fail("Nested islands inside profile holes are not supported");
+      return fail(OperationFailureCode::InvalidProfileOverlap,
+                  "Nested islands inside profile holes are not supported");
   }
 
   std::vector<TopoDS_Face> builtRegions;
@@ -219,13 +240,19 @@ bool buildClassifiedRegionFaces(const DocumentSketch& profile,
       faceBuilder.Add(TopoDS::Wire(contours[hole].boundary.Reversed()));
     }
     faceBuilder.Build();
-    if (!faceBuilder.IsDone()) return fail("Could not build profile with holes");
+    if (!faceBuilder.IsDone())
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Could not build profile with holes");
     const TopoDS_Face region = faceBuilder.Face();
     BRepCheck_Analyzer analyzer(region);
-    if (!analyzer.IsValid()) return fail("Profile face with holes is invalid");
+    if (!analyzer.IsValid())
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile face with holes is invalid");
     builtRegions.push_back(region);
   }
-  if (builtRegions.empty()) return fail("Profile has no outer region");
+  if (builtRegions.empty())
+    return fail(OperationFailureCode::InvalidProfile,
+                "Profile has no outer region");
   *regions = std::move(builtRegions);
   return true;
 }
@@ -238,15 +265,17 @@ std::size_t shapeSolidCount(const TopoDS_Shape& shape) {
 }
 
 bool exactlyOneSolid(const TopoDS_Shape& shape, TopoDS_Shape* solid,
-                     std::string* error) {
+                     std::string* error, OperationFailureCode* code) {
   TopExp_Explorer solids(shape, TopAbs_SOLID);
   if (!solids.More()) {
+    if (code) *code = OperationFailureCode::GeometryOperationFailed;
     if (error) *error = "Extrude result does not contain a solid";
     return false;
   }
   TopoDS_Shape candidate = solids.Current();
   solids.Next();
   if (solids.More()) {
+    if (code) *code = OperationFailureCode::GeometryOperationFailed;
     if (error) *error = "Extrude result contains multiple solids";
     return false;
   }
@@ -257,27 +286,37 @@ bool exactlyOneSolid(const TopoDS_Shape& shape, TopoDS_Shape* solid,
 }  // namespace
 
 bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
-                                    std::string* error) {
-  const auto fail = [&](std::string message) {
+                                    std::string* error,
+                                    OperationFailureCode* code) try {
+  if (code) *code = OperationFailureCode::None;
+  const auto fail = [&](OperationFailureCode failureCode,
+                        std::string message) {
+    if (code) *code = failureCode;
     if (error) *error = std::move(message);
     return false;
   };
-  if (profile.id == kInvalidSketchId) return fail("Profile SketchId is invalid");
-  if (!profile.supportResolved) return fail("Profile support is unresolved");
+  if (profile.id == kInvalidSketchId)
+    return fail(OperationFailureCode::InvalidProfile,
+                "Profile SketchId is invalid");
+  if (!profile.supportResolved)
+    return fail(OperationFailureCode::MissingSource,
+                "Profile support is unresolved");
 
   const auto normal = profile.placement.normal();
   const double normalLength = std::sqrt(normal.x * normal.x + normal.y * normal.y +
                                         normal.z * normal.z);
   if (!std::isfinite(normal.x) || !std::isfinite(normal.y) ||
       !std::isfinite(normal.z) || normalLength < 1e-12)
-    return fail("Profile placement normal is degenerate");
+    return fail(OperationFailureCode::InvalidProfile,
+                "Profile placement normal is degenerate");
 
   std::vector<const sketch::Line*> lines;
   for (const auto& line : profile.geometry.lines()) {
     if (line.dashed) continue;
     if (!std::isfinite(line.start.xMm) || !std::isfinite(line.start.yMm) ||
         !std::isfinite(line.end.xMm) || !std::isfinite(line.end.yMm))
-      return fail("Profile line coordinates must be finite");
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile line coordinates must be finite");
     lines.push_back(&line);
   }
   std::vector<const sketch::Circle*> circles;
@@ -286,7 +325,8 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
     if (!std::isfinite(circle.center.xMm) ||
         !std::isfinite(circle.center.yMm) ||
         !std::isfinite(circle.radiusMm) || circle.radiusMm <= 0.0)
-      return fail("Profile circle must be finite and positive");
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile circle must be finite and positive");
     circles.push_back(&circle);
   }
   std::vector<const sketch::Arc*> arcs;
@@ -295,17 +335,22 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
     if (!std::isfinite(arc.center.xMm) ||
         !std::isfinite(arc.center.yMm) ||
         !std::isfinite(arc.radiusMm) || arc.radiusMm <= 0.0)
-      return fail("Profile arc must be finite and positive");
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile arc must be finite and positive");
     arcs.push_back(&arc);
   }
   if ((!lines.empty() || !arcs.empty()) && !circles.empty())
-    return fail("Extrude 2.0 supports one profile at a time");
+    return fail(OperationFailureCode::InvalidProfile,
+                "Extrude 2.0 supports one profile at a time");
   if (circles.size() == 1 && lines.empty() && arcs.empty()) return true;
-  if (!circles.empty()) return fail("Profile contains multiple circles");
+  if (!circles.empty())
+    return fail(OperationFailureCode::InvalidProfile,
+                "Profile contains multiple circles");
   // A closed wire may legitimately consist of only two edges, for example a
   // semicircular arc and its diameter or two arcs with common endpoints.
   if (lines.size() + arcs.size() < 2 || !profile.geometry.isClosed())
-    return fail("Profile is not one closed wire");
+    return fail(OperationFailureCode::InvalidProfileOpen,
+                "Profile is not one closed wire");
 
   // isClosed permits several independent loops. Walk endpoint-connected lines
   // and arcs to prove that every solid edge belongs to one wire.
@@ -344,11 +389,26 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
   }
   return reachedCount == edges.size()
              ? true
-             : fail("Profile contains multiple closed regions or holes");
+             : fail(OperationFailureCode::InvalidProfile,
+                    "Profile contains multiple closed regions or holes");
+} catch (const Standard_Failure&) {
+  if (code) *code = OperationFailureCode::GeometryOperationFailed;
+  if (error) *error = "OpenCASCADE profile validation failed";
+  return false;
+} catch (const std::exception& failure) {
+  if (code) *code = OperationFailureCode::GeometryOperationFailed;
+  if (error) *error = std::string("Profile validation failed: ") + failure.what();
+  return false;
+} catch (...) {
+  if (code) *code = OperationFailureCode::GeometryOperationFailed;
+  if (error) *error = "Unexpected profile validation failure";
+  return false;
 }
 
 bool isSupportedSketchProfile(const DocumentSketch& profile,
-                              std::string* error) {
+                              std::string* error,
+                              OperationFailureCode* code) try {
+  if (code) *code = OperationFailureCode::None;
   // Endpoint-connected contours are not independent regions.  Detect branch
   // vertices before component extraction so touching line/arc loops produce a
   // stable diagnostic on every OCCT platform rather than falling through to
@@ -369,33 +429,52 @@ bool isSupportedSketchProfile(const DocumentSketch& profile,
     for (const auto& endpoint : endpoints)
       if (samePoint(endpoints[index], endpoint)) ++degree;
     if (degree > 2) {
+      if (code) *code = OperationFailureCode::InvalidProfileOverlap;
       if (error) *error = "Profile regions touch each other";
       return false;
     }
   }
   try {
     std::vector<TopoDS_Face> regions;
-    return buildClassifiedRegionFaces(profile, &regions, error);
+    return buildClassifiedRegionFaces(profile, &regions, error, code);
   } catch (const Standard_Failure&) {
+    if (code) *code = OperationFailureCode::GeometryOperationFailed;
     if (error) *error = "Could not classify multiple profile regions";
     return false;
   }
+} catch (const Standard_Failure&) {
+  if (code) *code = OperationFailureCode::GeometryOperationFailed;
+  if (error) *error = "OpenCASCADE profile validation failed";
+  return false;
+} catch (const std::exception& failure) {
+  if (code) *code = OperationFailureCode::GeometryOperationFailed;
+  if (error) *error = std::string("Profile validation failed: ") + failure.what();
+  return false;
+} catch (...) {
+  if (code) *code = OperationFailureCode::GeometryOperationFailed;
+  if (error) *error = "Unexpected profile validation failure";
+  return false;
 }
 
 bool buildSketchProfileFaces(const DocumentSketch& profile,
                              std::vector<TopoDS_Face>* regions,
-                             std::string* error) {
+                             std::string* error,
+                             OperationFailureCode* code) {
+  if (code) *code = OperationFailureCode::None;
   if (!regions) {
+    if (code) *code = OperationFailureCode::InvalidInput;
     if (error) *error = "Profile region output is missing";
     return false;
   }
-  if (!isSupportedSketchProfile(profile, error)) return false;
+  if (!isSupportedSketchProfile(profile, error, code)) return false;
   try {
-    return buildClassifiedRegionFaces(profile, regions, error);
+    return buildClassifiedRegionFaces(profile, regions, error, code);
   } catch (const Standard_Failure&) {
+    if (code) *code = OperationFailureCode::GeometryOperationFailed;
     if (error) *error = "Could not build multiple profile regions";
     return false;
   } catch (...) {
+    if (code) *code = OperationFailureCode::GeometryOperationFailed;
     if (error) *error = "Unexpected profile region geometry error";
     return false;
   }
@@ -406,27 +485,43 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
                               double lengthMm, ExtrudeOperation operation,
                               bool reversed, TopoDS_Shape* result,
                               SketchExtrudeGeometry* geometry,
-                              std::string* error) {
-  const auto fail = [&](std::string message) {
+                              std::string* error,
+                              OperationFailureCode* code) {
+  if (code) *code = OperationFailureCode::None;
+  const auto fail = [&](std::string message,
+                        OperationFailureCode failureCode =
+                            OperationFailureCode::GeometryOperationFailed) {
+    if (code) *code = failureCode;
     if (error) *error = std::move(message);
     return false;
   };
-  if (!result) return fail("Sketch extrude result output is missing");
+  if (!result)
+    return fail("Sketch extrude result output is missing",
+                OperationFailureCode::InvalidInput);
   if (!std::isfinite(lengthMm) || lengthMm <= 0.0)
-    return fail("Extrude length must be a finite positive value");
-  if (!isSupportedSketchProfile(profile, error)) return false;
+    return fail("Extrude length must be a finite positive value",
+                OperationFailureCode::InvalidInput);
+  if (operation != ExtrudeOperation::NewBody &&
+      operation != ExtrudeOperation::Join &&
+      operation != ExtrudeOperation::Cut)
+    return fail("Extrude operation is invalid",
+                OperationFailureCode::InvalidInput);
+  if (!isSupportedSketchProfile(profile, error, code)) return false;
   if (operation == ExtrudeOperation::NewBody) {
     if (baseShape && !baseShape->IsNull())
-      return fail("Extrude New Body must be the first feature of a Body");
+      return fail("Extrude New Body must be the first feature of a Body",
+                  OperationFailureCode::InvalidInput);
   } else if (!baseShape || baseShape->IsNull()) {
     return fail(operation == ExtrudeOperation::Join
                     ? "Extrude Join base shape is missing"
-                    : "Extrude Cut base shape is missing");
+                    : "Extrude Cut base shape is missing",
+                OperationFailureCode::MissingSource);
   }
 
   try {
     std::vector<TopoDS_Face> regionFaces;
-    if (!buildClassifiedRegionFaces(profile, &regionFaces, error)) return false;
+    if (!buildClassifiedRegionFaces(profile, &regionFaces, error, code))
+      return false;
     std::vector<TopoDS_Shape> prismSolids;
     prismSolids.reserve(regionFaces.size());
     double totalArea = 0.0;
@@ -454,7 +549,7 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
         return fail("Could not build a solid prism");
       TopoDS_Shape prism = prismBuilder.Shape();
       TopoDS_Shape prismSolid;
-      if (!exactlyOneSolid(prism, &prismSolid, error)) return false;
+      if (!exactlyOneSolid(prism, &prismSolid, error, code)) return false;
       prismSolids.push_back(std::move(prismSolid));
     }
 
@@ -491,7 +586,8 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
             return fail("Extrude Join region boolean fuse failed");
           individualResult = fuse.Shape();
           if (shapeSolidCount(individualResult) > beforeSolidCount)
-            return fail("Extrude Join region does not intersect the body");
+            return fail("Extrude Join region does not intersect the body",
+                        OperationFailureCode::NoIntersection);
         } else {
           BRepAlgoAPI_Cut cut(*baseShape, prismSolid);
           cut.Build();
@@ -504,10 +600,12 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
         const double individualVolume = individualProperties.Mass();
         if (operation == ExtrudeOperation::Join &&
             individualVolume <= before + tolerance)
-          return fail("Extrude Join region does not intersect the body");
+          return fail("Extrude Join region does not intersect the body",
+                      OperationFailureCode::NoIntersection);
         if (operation == ExtrudeOperation::Cut &&
             individualVolume >= before - tolerance)
-          return fail("Extrude Cut region does not intersect the body");
+          return fail("Extrude Cut region does not intersect the body",
+                      OperationFailureCode::NoIntersection);
       }
 
       TopoDS_Shape booleanResult;
@@ -528,7 +626,8 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
         return fail("Extrude result does not contain a solid");
       if (operation == ExtrudeOperation::Join &&
           shapeSolidCount(booleanResult) > beforeSolidCount)
-        return fail("Extrude Join does not intersect the body");
+        return fail("Extrude Join does not intersect the body",
+                    OperationFailureCode::NoIntersection);
       if (operation == ExtrudeOperation::Cut &&
           shapeSolidCount(booleanResult) > beforeSolidCount)
         return fail("Extrude Cut would split the body");
@@ -537,9 +636,11 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
       BRepGProp::VolumeProperties(outputShape, afterProperties);
       const double after = afterProperties.Mass();
       if (operation == ExtrudeOperation::Join && after <= before + tolerance)
-        return fail("Extrude Join does not intersect the body");
+        return fail("Extrude Join does not intersect the body",
+                    OperationFailureCode::NoIntersection);
       if (operation == ExtrudeOperation::Cut && after >= before - tolerance)
-        return fail("Extrude Cut does not intersect the body");
+        return fail("Extrude Cut does not intersect the body",
+                    OperationFailureCode::NoIntersection);
       if (operation == ExtrudeOperation::Join) {
         ShapeUpgrade_UnifySameDomain unify(outputShape, true, true, false);
         unify.Build();

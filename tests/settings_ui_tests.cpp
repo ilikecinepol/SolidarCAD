@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
@@ -11,14 +13,6 @@
 #include "app/AppSettings.h"
 #include "home/HomeWindow.h"
 #include "ui/SettingsWidget.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 QPushButton* buttonByText(QWidget* root, const QString& text) {

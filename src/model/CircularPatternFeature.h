@@ -36,17 +36,21 @@ class CircularPatternFeature final : public ShapeFeature {
   void setAxis(PrincipalAxis value) noexcept;
   void setCount(int value) noexcept;
   void setAngleDeg(double value) noexcept;
-  [[nodiscard]] bool dependsOnFeature(
-      FeatureId featureId) const noexcept override;
-  [[nodiscard]] std::string typeName() const override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureDependencies dependencies() const override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::CircularPattern;
+  }
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
+
  private:
   BodyId sourceBodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{};
   PrincipalAxis axis_{PrincipalAxis::Z};
   int count_{2};
-  double angleDeg_{360.0};
+  double angleDeg_{kMaximumPatternAngleDeg};
   PatternOperation operation_{PatternOperation::Join};
 };
 }  // namespace solidar

@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QColor>
 #include <QDoubleSpinBox>
@@ -27,8 +29,6 @@ void require(bool condition, const char* message) {
     std::exit(EXIT_FAILURE);
   }
 }
-
-#define CHECK(condition) require((condition), #condition)
 
 bool editDimension(solidar::SketchCanvas& canvas, double currentValue,
                    double newValue) {
@@ -70,6 +70,28 @@ void click(solidar::SketchCanvas& canvas, QPointF point) {
   QMouseEvent release(QEvent::MouseButtonRelease, point, Qt::LeftButton,
                       Qt::NoButton, Qt::NoModifier);
   QApplication::sendEvent(&canvas, &release);
+}
+
+void moveMouse(solidar::SketchCanvas& canvas, QPointF point) {
+  QMouseEvent event(QEvent::MouseMove, point, Qt::NoButton,
+                    Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &event);
+}
+
+void shortRightClick(solidar::SketchCanvas& canvas, QPointF point) {
+  QMouseEvent press(QEvent::MouseButtonPress, point, Qt::RightButton,
+                    Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &press);
+  QMouseEvent release(QEvent::MouseButtonRelease, point, Qt::RightButton,
+                      Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &release);
+  QApplication::processEvents();
+}
+
+void pressEscape(solidar::SketchCanvas& canvas) {
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(&canvas, &escape);
+  QApplication::processEvents();
 }
 
 void doubleClick(solidar::SketchCanvas& canvas, QPointF point) {
@@ -889,6 +911,9 @@ int main(int argc, char** argv) {
     // initial dimension is radial and uses the same normal AutoDimension UI.
     solidar::sketch::Sketch radialGeometry;
     radialGeometry.addLine({3.0, 4.0}, {8.0, 4.0});
+    // A real endpoint overlaps the datum exactly. Origin priority must be
+    // explicit rather than inherited from adapter append order.
+    radialGeometry.addLine({0.0, 0.0}, {-10.0, 0.0});
     solidar::SketchCanvas radialCanvas;
     radialCanvas.resize(900, 650);
     radialCanvas.loadSketch(radialGeometry);
@@ -908,6 +933,7 @@ int main(int argc, char** argv) {
     CHECK(radialCanvas.sketch().dimensions().size() == 1);
     CHECK(radialCanvas.sketch().dimensions()[0].kind ==
           solidar::sketch::DimensionKind::PointDistance);
+    CHECK(radialCanvas.sketch().dimensions()[0].firstPoint.origin);
     const auto moved = radialCanvas.sketch().lines()[0].start;
     CHECK(std::abs(std::hypot(moved.xMm, moved.yMm) - 10.0) < 1e-6);
   }
@@ -1285,6 +1311,616 @@ int main(int argc, char** argv) {
     CHECK(std::abs(std::hypot(unchanged.end.xMm - unchanged.start.xMm,
                               unchanged.end.yMm - unchanged.start.yMm) -
                    40.0) < 1e-6);
+  }
+  {
+    for (const std::size_t removedIndex : {std::size_t{0}, std::size_t{1},
+                                           std::size_t{2}}) {
+      solidar::sketch::Sketch dimensionSketch;
+      dimensionSketch.addLine({0.0, 0.0}, {10.0, 0.0});
+      for (int index = 0; index < 3; ++index) {
+        solidar::sketch::Dimension dimension;
+        dimension.kind = solidar::sketch::DimensionKind::LineLength;
+        dimension.geometryId = dimensionSketch.lineId(0);
+        dimension.valueMm = 10.0;
+        dimension.offsetMm = 2.0 + index;
+        dimension.angleRad = 0.1 * index;
+        dimensionSketch.storeDimension(dimension);
+      }
+      solidar::SketchCanvas deleteCanvas;
+      deleteCanvas.resize(900, 650);
+      deleteCanvas.loadSketch(dimensionSketch);
+      deleteCanvas.show();
+      QApplication::processEvents();
+      const auto beforeDelete = deleteCanvas.sketch().semanticFingerprint();
+      std::vector<solidar::sketch::DimensionId> beforeIds;
+      for (const auto& dimension : deleteCanvas.sketch().dimensions())
+        beforeIds.push_back(dimension.id);
+      CHECK(beforeIds[0] != beforeIds[1]);
+      CHECK(beforeIds[1] != beforeIds[2]);
+
+      if (removedIndex == 2) {
+        const QPointF origin = screenPoint(deleteCanvas, {0.0, 0.0});
+        const double pixelsPerMm =
+            std::abs(screenPoint(deleteCanvas, {1.0, 0.0}).x() - origin.x());
+        const QPointF laterLabel =
+            screenPoint(deleteCanvas, {5.0, 0.0}) +
+            QPointF(0.0, (2.0 + 2.0 + 2.0) * pixelsPerMm);
+        QMouseEvent labelPress(QEvent::MouseButtonPress, laterLabel,
+                               Qt::LeftButton, Qt::LeftButton,
+                               Qt::NoModifier);
+        QApplication::sendEvent(&deleteCanvas, &labelPress);
+        CHECK(deleteCanvas.interactionState().dimension.draggingLabel.has_value());
+        CHECK(deleteCanvas.interactionState().dimension.draggingLabel->id ==
+              beforeIds[2]);
+        QMouseEvent labelRelease(QEvent::MouseButtonRelease, laterLabel,
+                                 Qt::LeftButton, Qt::NoButton,
+                                 Qt::NoModifier);
+        QApplication::sendEvent(&deleteCanvas, &labelRelease);
+      }
+      deleteCanvas.selectDimension(removedIndex);
+      QKeyEvent remove(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+      QApplication::sendEvent(&deleteCanvas, &remove);
+      QApplication::processEvents();
+      CHECK(deleteCanvas.sketch().dimensions().size() == 2);
+      const auto afterDelete = deleteCanvas.sketch().semanticFingerprint();
+      CHECK(afterDelete != beforeDelete);
+      std::vector<solidar::sketch::DimensionId> remaining;
+      for (const auto& dimension : deleteCanvas.sketch().dimensions())
+        remaining.push_back(dimension.id);
+      auto expected = beforeIds;
+      expected.erase(expected.begin() +
+                     static_cast<std::ptrdiff_t>(removedIndex));
+      CHECK(remaining == expected);
+      for (int cycle = 0; cycle < 2; ++cycle) {
+        deleteCanvas.undo();
+        CHECK(deleteCanvas.sketch().semanticFingerprint() == beforeDelete);
+        CHECK(deleteCanvas.sketch().dimensions().size() == 3);
+        deleteCanvas.redo();
+        CHECK(deleteCanvas.sketch().semanticFingerprint() == afterDelete);
+        CHECK(deleteCanvas.sketch().dimensions().size() == 2);
+      }
+    }
+
+    solidar::Document duplicateDocument;
+    auto& duplicateRecord =
+        duplicateDocument.addSketch("Duplicate dimensions");
+    const auto duplicateSketchId = duplicateRecord.id;
+    auto& duplicateSketch = duplicateRecord.geometry;
+    duplicateSketch.addLine({0.0, 0.0}, {10.0, 0.0});
+    for (int index = 0; index < 2; ++index) {
+      solidar::sketch::Dimension dimension;
+      dimension.kind = solidar::sketch::DimensionKind::LineLength;
+      dimension.geometryId = duplicateSketch.lineId(0);
+      dimension.valueMm = 10.0;
+      dimension.offsetMm = 2.0 + index;
+      dimension.angleRad = 0.1 * index;
+      duplicateSketch.storeDimension(dimension);
+    }
+    const auto firstId = duplicateSketch.dimensions()[0].id;
+    const auto secondId = duplicateSketch.dimensions()[1].id;
+    QTemporaryDir duplicateDirectory(
+        QDir::current().filePath("duplicate-dimension-ui-XXXXXX"));
+    CHECK(duplicateDirectory.isValid());
+    QString duplicateError;
+    const QString duplicatePath =
+        duplicateDirectory.filePath("duplicates.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        duplicatePath, duplicateDocument, &duplicateError));
+    solidar::Document restoredDuplicates;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        duplicatePath, &restoredDuplicates, &duplicateError));
+    const auto& restoredDimensions =
+        restoredDuplicates.sketches().front().geometry.dimensions();
+    CHECK(restoredDimensions.size() == 2);
+    CHECK(restoredDimensions[0].id == firstId);
+    CHECK(restoredDimensions[1].id == secondId);
+    auto* mutableRestored = restoredDuplicates.findSketch(duplicateSketchId);
+    CHECK(mutableRestored);
+    solidar::sketch::Dimension nextDimension;
+    nextDimension.kind = solidar::sketch::DimensionKind::LineLength;
+    nextDimension.geometryId = mutableRestored->geometry.lineId(0);
+    nextDimension.valueMm = 10.0;
+    mutableRestored->geometry.storeDimension(nextDimension);
+    CHECK(mutableRestored->geometry.dimensions().size() == 3);
+    const auto nextId = mutableRestored->geometry.dimensions().back().id;
+    CHECK(nextId != solidar::sketch::kInvalidDimensionId);
+    CHECK(nextId != firstId);
+    CHECK(nextId != secondId);
+  }
+  {
+    // Tangent guides retain the picker GeometryId. Two geometrically
+    // coincident lines with the same composite element id must not be resolved
+    // later by fuzzy endpoint/element matching.
+    solidar::sketch::Sketch tangentGeometry;
+    tangentGeometry.addLine({-20.0, 0.0}, {20.0, 0.0}, 42);
+    const auto excludedProjected = tangentGeometry.lineId(0);
+    tangentGeometry.setLineDashedById(excludedProjected, true);
+    tangentGeometry.addLine({-20.0, 0.0}, {20.0, 0.0}, 42);
+    const auto excludedConstruction = tangentGeometry.lineId(1);
+    tangentGeometry.setLineDashedById(excludedConstruction, true);
+    tangentGeometry.addLine({-20.0, 0.0}, {20.0, 0.0}, 42);
+    const auto horizontal = tangentGeometry.lineId(2);
+    solidar::sketch::Constraint projectedLock;
+    projectedLock.type = solidar::sketch::ConstraintType::Lock;
+    projectedLock.firstGeometry = excludedProjected;
+    CHECK(tangentGeometry.addConstraint(projectedLock) !=
+          solidar::sketch::kInvalidConstraintId);
+    tangentGeometry.addLine({0.0, -20.0}, {0.0, 20.0});
+    const auto vertical = tangentGeometry.lineId(3);
+    tangentGeometry.addLine({0.0, 20.0}, {20.0, 0.0});
+    const auto diagonal = tangentGeometry.lineId(4);
+    solidar::SketchCanvas tangentCanvas;
+    tangentCanvas.resize(900, 650);
+    tangentCanvas.loadSketch(tangentGeometry);
+    tangentCanvas.setCircleMode(
+        solidar::SketchCanvas::CircleMode::ThreeTangents);
+    tangentCanvas.setTool(solidar::SketchCanvas::Tool::Circle);
+    tangentCanvas.show();
+    QApplication::processEvents();
+    click(tangentCanvas, screenPoint(tangentCanvas, {-10.0, 0.0}));
+    click(tangentCanvas, screenPoint(tangentCanvas, {0.0, 10.0}));
+    click(tangentCanvas, screenPoint(tangentCanvas, {10.0, 10.0}));
+    CHECK(tangentCanvas.sketch().circles().size() == 1);
+    const auto circleId = tangentCanvas.sketch().circleId(0);
+    std::vector<solidar::sketch::GeometryId> tangentCarriers;
+    for (const auto& constraint : tangentCanvas.sketch().constraints()) {
+      if (constraint.type != solidar::sketch::ConstraintType::Tangent)
+        continue;
+      if (constraint.secondGeometry == circleId)
+        tangentCarriers.push_back(constraint.firstGeometry);
+      else if (constraint.firstGeometry == circleId)
+        tangentCarriers.push_back(constraint.secondGeometry);
+    }
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(),
+                    horizontal) != tangentCarriers.end());
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(),
+                    vertical) != tangentCarriers.end());
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(),
+                    diagonal) != tangentCarriers.end());
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(),
+                    excludedConstruction) == tangentCarriers.end());
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(),
+                    excludedProjected) == tangentCarriers.end());
+  }
+  {
+    // TwoTangentsRadius is one atomic gesture: both defining tangencies and
+    // the driving diameter must be present, and one Undo removes all of them.
+    solidar::sketch::Sketch tangentGeometry;
+    tangentGeometry.addLine({-20.0, 0.0}, {20.0, 0.0});
+    const auto horizontal = tangentGeometry.lineId(0);
+    tangentGeometry.addLine({0.0, -20.0}, {0.0, 20.0});
+    const auto vertical = tangentGeometry.lineId(1);
+    solidar::SketchCanvas tangentCanvas;
+    tangentCanvas.resize(900, 650);
+    tangentCanvas.loadSketch(tangentGeometry);
+    tangentCanvas.setCircleDiameter(8.0);
+    tangentCanvas.setCircleMode(
+        solidar::SketchCanvas::CircleMode::TwoTangentsRadius);
+    tangentCanvas.setTool(solidar::SketchCanvas::Tool::Circle);
+    tangentCanvas.show();
+    QApplication::processEvents();
+    click(tangentCanvas, screenPoint(tangentCanvas, {-10.0, 0.0}));
+    click(tangentCanvas, screenPoint(tangentCanvas, {0.0, 10.0}));
+    moveMouse(tangentCanvas, screenPoint(tangentCanvas, {4.0, 4.0}));
+    click(tangentCanvas, screenPoint(tangentCanvas, {4.0, 4.0}));
+    CHECK(tangentCanvas.sketch().circles().size() == 1);
+    CHECK(tangentCanvas.sketch().dimensions().size() == 1);
+    CHECK(tangentCanvas.sketch().dimensions().front().kind ==
+          solidar::sketch::DimensionKind::CircleDiameter);
+    const auto circleId = tangentCanvas.sketch().circleId(0);
+    std::vector<solidar::sketch::GeometryId> tangentCarriers;
+    bool diameterFound = false;
+    for (const auto& constraint : tangentCanvas.sketch().constraints()) {
+      if (constraint.type == solidar::sketch::ConstraintType::Tangent &&
+          constraint.secondGeometry == circleId)
+        tangentCarriers.push_back(constraint.firstGeometry);
+      if (constraint.type == solidar::sketch::ConstraintType::Diameter &&
+          constraint.firstGeometry == circleId)
+        diameterFound = true;
+    }
+    CHECK(tangentCarriers.size() == 2);
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(),
+                    horizontal) != tangentCarriers.end());
+    CHECK(std::find(tangentCarriers.begin(), tangentCarriers.end(), vertical) !=
+          tangentCarriers.end());
+    CHECK(diameterFound);
+    CHECK(tangentCanvas.undoHistorySize() == 1);
+    tangentCanvas.undo();
+    CHECK(tangentCanvas.sketch().circles().empty());
+    CHECK(tangentCanvas.sketch().dimensions().empty());
+    CHECK(tangentCanvas.sketch().constraints().empty());
+    tangentCanvas.redo();
+    CHECK(tangentCanvas.sketch().circles().size() == 1);
+    CHECK(tangentCanvas.sketch().dimensions().size() == 1);
+    CHECK(tangentCanvas.sketch().constraints().size() == 3);
+  }
+  {
+    // A required tangent rejected after circle creation must roll the complete
+    // TwoTangentsRadius gesture back. The nearby locked endpoint auto-binds
+    // the new center away from the exact two-line tangent solution.
+    solidar::sketch::Sketch conflictGeometry;
+    conflictGeometry.addLine({-20.0, 0.0}, {20.0, 0.0});
+    conflictGeometry.addLine({0.0, -20.0}, {0.0, 20.0});
+    conflictGeometry.addLine({4.5, 4.0}, {4.5, 4.1});
+    for (std::size_t index = 0; index < conflictGeometry.lines().size();
+         ++index) {
+      solidar::sketch::Constraint lock;
+      lock.type = solidar::sketch::ConstraintType::Lock;
+      lock.firstGeometry = conflictGeometry.lineId(index);
+      CHECK(conflictGeometry.addConstraint(lock) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+    const auto initialFingerprint = conflictGeometry.semanticFingerprint();
+    solidar::SketchCanvas conflictCanvas;
+    conflictCanvas.resize(900, 650);
+    conflictCanvas.loadSketch(conflictGeometry);
+    conflictCanvas.setCircleDiameter(8.0);
+    conflictCanvas.setCircleMode(
+        solidar::SketchCanvas::CircleMode::TwoTangentsRadius);
+    conflictCanvas.setTool(solidar::SketchCanvas::Tool::Circle);
+    conflictCanvas.show();
+    QApplication::processEvents();
+    int geometryChangedCount = 0;
+    QObject::connect(&conflictCanvas,
+                     &solidar::SketchCanvas::geometryChanged,
+                     [&geometryChangedCount] { ++geometryChangedCount; });
+    click(conflictCanvas, screenPoint(conflictCanvas, {-10.0, 0.0}));
+    click(conflictCanvas, screenPoint(conflictCanvas, {0.0, 10.0}));
+    moveMouse(conflictCanvas, screenPoint(conflictCanvas, {4.0, 4.0}));
+    click(conflictCanvas, screenPoint(conflictCanvas, {4.0, 4.0}));
+    CHECK(conflictCanvas.sketch().semanticFingerprint() == initialFingerprint);
+    CHECK(conflictCanvas.sketch().circles().empty());
+    CHECK(conflictCanvas.sketch().dimensions().empty());
+    CHECK(conflictCanvas.sketch().constraints().size() == 3);
+    CHECK(conflictCanvas.undoHistorySize() == 0);
+    CHECK(geometryChangedCount == 0);
+  }
+  {
+    // Legacy box selection intentionally selects curved entities when the
+    // rubber-band intersects their screen bounding rectangle, even if it is
+    // wholly inside the curve and does not cross the sampled stroke.
+    solidar::sketch::Sketch curves;
+    curves.addCircle({-50.0, 0.0}, 30.0);
+    curves.addArc({50.0, 0.0}, 30.0, 0.0,
+                  1.5707963267948966);
+    solidar::SketchCanvas boxCanvas;
+    boxCanvas.resize(900, 650);
+    boxCanvas.loadSketch(curves);
+    boxCanvas.show();
+    QApplication::processEvents();
+    const auto selectBox = [&boxCanvas](solidar::sketch::Point first,
+                                        solidar::sketch::Point second) {
+      const QPointF start = screenPoint(boxCanvas, first);
+      const QPointF finish = screenPoint(boxCanvas, second);
+      QMouseEvent press(QEvent::MouseButtonPress, start, Qt::LeftButton,
+                        Qt::LeftButton, Qt::NoModifier);
+      QApplication::sendEvent(&boxCanvas, &press);
+      QMouseEvent move(QEvent::MouseMove, finish, Qt::NoButton,
+                       Qt::LeftButton, Qt::NoModifier);
+      QApplication::sendEvent(&boxCanvas, &move);
+      QMouseEvent release(QEvent::MouseButtonRelease, finish, Qt::LeftButton,
+                          Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(&boxCanvas, &release);
+      QApplication::processEvents();
+    };
+    selectBox({-45.0, 5.0}, {-40.0, 10.0});
+    QKeyEvent removeCircle(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&boxCanvas, &removeCircle);
+    CHECK(boxCanvas.sketch().circles().empty());
+    CHECK(boxCanvas.sketch().arcs().size() == 1);
+
+    selectBox({60.0, 10.0}, {65.0, 15.0});
+    QKeyEvent removeArc(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&boxCanvas, &removeArc);
+    CHECK(boxCanvas.sketch().arcs().empty());
+  }
+  {
+    solidar::SketchCanvas diagnosticsCanvas;
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    diagnosticsCanvas.loadSketch(geometry);
+    diagnosticsCanvas.loadSketch(geometry);
+    diagnosticsCanvas.loadSketch(geometry);
+    CHECK(diagnosticsCanvas.fullDiagnosticsCount() == 0);
+    diagnosticsCanvas.flushConstraintDiagnostics();
+    CHECK(diagnosticsCanvas.fullDiagnosticsCount() == 1);
+    diagnosticsCanvas.flushConstraintDiagnostics();
+    CHECK(diagnosticsCanvas.fullDiagnosticsCount() == 1);
+  }
+  {
+    // Real event-path cancellation: every primitive can be abandoned with a
+    // short RMB click and the next gesture starts from a genuinely empty
+    // controller state.
+    for (const auto tool : {solidar::SketchCanvas::Tool::Line,
+                            solidar::SketchCanvas::Tool::Rectangle,
+                            solidar::SketchCanvas::Tool::Circle,
+                            solidar::SketchCanvas::Tool::Arc}) {
+      solidar::SketchCanvas gestureCanvas;
+      gestureCanvas.resize(900, 650);
+      gestureCanvas.show();
+      gestureCanvas.setTool(tool);
+      QApplication::processEvents();
+
+      const QPointF abandoned(300.0, 260.0);
+      click(gestureCanvas, abandoned);
+      CHECK(gestureCanvas.hasActiveInteraction());
+      shortRightClick(gestureCanvas, abandoned);
+      CHECK(!gestureCanvas.hasActiveInteraction());
+      CHECK(gestureCanvas.tool() == tool);
+
+      const QPointF first(360.0, 300.0);
+      const QPointF second(450.0, 330.0);
+      click(gestureCanvas, first);
+      click(gestureCanvas, second);
+      if (tool == solidar::SketchCanvas::Tool::Arc)
+        click(gestureCanvas, QPointF(405.0, 275.0));
+
+      if (tool == solidar::SketchCanvas::Tool::Line)
+        CHECK(gestureCanvas.sketch().lines().size() == 1);
+      else if (tool == solidar::SketchCanvas::Tool::Rectangle)
+        CHECK(gestureCanvas.sketch().lines().size() == 4);
+      else if (tool == solidar::SketchCanvas::Tool::Circle)
+        CHECK(gestureCanvas.sketch().circles().size() == 1);
+      else
+        CHECK(gestureCanvas.sketch().arcs().size() == 1);
+    }
+  }
+  {
+    // AutoDimension first operand is cancelled through the same RMB path;
+    // the following direct-line gesture must produce one clean dimension.
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-20.0, 10.0}, {20.0, 10.0});
+    solidar::SketchCanvas dimensionCanvas;
+    dimensionCanvas.resize(900, 650);
+    dimensionCanvas.loadSketch(geometry);
+    dimensionCanvas.show();
+    dimensionCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    QApplication::processEvents();
+    click(dimensionCanvas,
+          screenPoint(dimensionCanvas, {-20.0, 10.0}));
+    CHECK(dimensionCanvas.hasActiveInteraction());
+    shortRightClick(dimensionCanvas,
+                    screenPoint(dimensionCanvas, {-20.0, 10.0}));
+    CHECK(!dimensionCanvas.hasActiveInteraction());
+
+    click(dimensionCanvas, screenPoint(dimensionCanvas, {5.0, 10.0}));
+    auto* editor =
+        dimensionCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(editor != nullptr);
+    CHECK(dimensionCanvas.interactionState().autoDimension.target !=
+          solidar::SketchAutoDimensionTarget::None);
+    CHECK(editor->isVisible());
+    editor->setValue(30.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(editor, &enter);
+    QApplication::processEvents();
+    CHECK(dimensionCanvas.sketch().dimensions().size() == 1);
+  }
+  {
+    // Escape cancels a real two-operand constraint carrier. Re-entering the
+    // tool then creates the requested relation without the stale first line.
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-25.0, -10.0}, {-5.0, -10.0});
+    geometry.addLine({5.0, 8.0}, {25.0, 15.0});
+    solidar::SketchCanvas constraintCanvas;
+    constraintCanvas.resize(900, 650);
+    constraintCanvas.loadSketch(geometry);
+    constraintCanvas.show();
+    constraintCanvas.setTool(
+        solidar::SketchCanvas::Tool::ParallelConstraint);
+    QApplication::processEvents();
+    click(constraintCanvas,
+          screenPoint(constraintCanvas, {-15.0, -10.0}));
+    CHECK(constraintCanvas.hasActiveInteraction());
+    pressEscape(constraintCanvas);
+    CHECK(!constraintCanvas.hasActiveInteraction());
+    CHECK(constraintCanvas.tool() == solidar::SketchCanvas::Tool::Select);
+
+    constraintCanvas.setTool(
+        solidar::SketchCanvas::Tool::ParallelConstraint);
+    click(constraintCanvas,
+          screenPoint(constraintCanvas, {-15.0, -10.0}));
+    click(constraintCanvas,
+          screenPoint(constraintCanvas, {15.0, 11.5}));
+    CHECK(std::any_of(
+        constraintCanvas.sketch().constraints().begin(),
+        constraintCanvas.sketch().constraints().end(),
+        [](const solidar::sketch::Constraint& constraint) {
+          return constraint.type ==
+                 solidar::sketch::ConstraintType::Parallel;
+        }));
+  }
+  {
+    // Tool switching clears Mirror source selection. Reset/project replacement
+    // clears a live Trim preview; both canvases accept a fresh Line gesture.
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-20.0, 0.0}, {20.0, 0.0});
+    solidar::SketchCanvas mirrorCanvas;
+    mirrorCanvas.resize(900, 650);
+    mirrorCanvas.loadSketch(geometry);
+    mirrorCanvas.show();
+    mirrorCanvas.setTool(solidar::SketchCanvas::Tool::Mirror);
+    QApplication::processEvents();
+    click(mirrorCanvas, screenPoint(mirrorCanvas, {0.0, 0.0}));
+    CHECK(mirrorCanvas.hasActiveInteraction());
+    mirrorCanvas.setTool(solidar::SketchCanvas::Tool::Line);
+    CHECK(!mirrorCanvas.hasActiveInteraction());
+    click(mirrorCanvas, screenPoint(mirrorCanvas, {-10.0, 10.0}));
+    click(mirrorCanvas, screenPoint(mirrorCanvas, {10.0, 10.0}));
+    CHECK(mirrorCanvas.sketch().lines().size() == 2);
+
+    solidar::SketchCanvas trimCanvas;
+    trimCanvas.resize(900, 650);
+    trimCanvas.loadSketch(geometry);
+    trimCanvas.show();
+    trimCanvas.setTool(solidar::SketchCanvas::Tool::Trim);
+    QApplication::processEvents();
+    moveMouse(trimCanvas, screenPoint(trimCanvas, {0.0, 0.0}));
+    CHECK(trimCanvas.hasActiveInteraction());
+    trimCanvas.resetSketch();
+    CHECK(!trimCanvas.hasActiveInteraction());
+    CHECK(trimCanvas.tool() == solidar::SketchCanvas::Tool::Select);
+    trimCanvas.setTool(solidar::SketchCanvas::Tool::Line);
+    click(trimCanvas, screenPoint(trimCanvas, {-10.0, -10.0}));
+    click(trimCanvas, screenPoint(trimCanvas, {10.0, -10.0}));
+    CHECK(trimCanvas.sketch().lines().size() == 1);
+
+    trimCanvas.setTool(solidar::SketchCanvas::Tool::Circle);
+    click(trimCanvas, screenPoint(trimCanvas, {0.0, 10.0}));
+    CHECK(trimCanvas.hasActiveInteraction());
+    trimCanvas.loadSketch(geometry);
+    CHECK(!trimCanvas.hasActiveInteraction());
+    CHECK(trimCanvas.tool() == solidar::SketchCanvas::Tool::Select);
+  }
+  {
+    // Picker tie policy is deterministic through the real event path: a line
+    // and circle overlap exactly at (5, 0), and the stable line candidate
+    // wins without leaking a positional index into interaction state.
+    solidar::sketch::Sketch overlap;
+    overlap.addLine({-10.0, 0.0}, {10.0, 0.0});
+    overlap.addCircle({0.0, 0.0}, 5.0);
+    solidar::SketchCanvas overlapCanvas;
+    overlapCanvas.resize(900, 650);
+    overlapCanvas.loadSketch(overlap);
+    overlapCanvas.setTool(solidar::SketchCanvas::Tool::Select);
+    overlapCanvas.show();
+    QApplication::processEvents();
+    click(overlapCanvas, screenPoint(overlapCanvas, {5.0, 0.0}));
+    overlapCanvas.setSelectedDashed(true);
+    CHECK(overlapCanvas.sketch().lines()[0].dashed);
+    CHECK(!overlapCanvas.sketch().circles()[0].dashed);
+    pressEscape(overlapCanvas);
+    CHECK(!overlapCanvas.hasActiveInteraction());
+  }
+  {
+    // Arc construction style uses the same typed command/history path as
+    // lines and circles, including symmetric Undo/Redo.
+    solidar::sketch::Sketch geometry;
+    geometry.addArc({0.0, 0.0}, 12.0, 0.0,
+                    3.14159265358979323846 * 0.5, false);
+    solidar::SketchCanvas arcCanvas;
+    arcCanvas.resize(900, 650);
+    arcCanvas.loadSketch(geometry);
+    arcCanvas.show();
+    QApplication::processEvents();
+    click(arcCanvas, screenPoint(arcCanvas, {8.485281374, 8.485281374}));
+    arcCanvas.setSelectedDashed(true);
+    CHECK(arcCanvas.sketch().arcs().front().dashed);
+    CHECK(arcCanvas.undoHistorySize() == 1);
+    arcCanvas.undo();
+    CHECK(!arcCanvas.sketch().arcs().front().dashed);
+    arcCanvas.redo();
+    CHECK(arcCanvas.sketch().arcs().front().dashed);
+  }
+  {
+    // A locked-geometry drag is a rejected no-op: it must not publish a
+    // project modification or create an empty history entry.
+    solidar::sketch::Sketch locked;
+    locked.addLine({-10.0, 0.0}, {10.0, 0.0});
+    solidar::sketch::Constraint lock;
+    lock.type = solidar::sketch::ConstraintType::Lock;
+    lock.firstGeometry = locked.lineId(0);
+    CHECK(locked.addConstraint(lock) !=
+          solidar::sketch::kInvalidConstraintId);
+    solidar::SketchCanvas lockedCanvas;
+    lockedCanvas.resize(900, 650);
+    lockedCanvas.loadSketch(locked);
+    lockedCanvas.show();
+    QApplication::processEvents();
+    int geometryChangedCount = 0;
+    QObject::connect(&lockedCanvas, &solidar::SketchCanvas::geometryChanged,
+                     [&geometryChangedCount] { ++geometryChangedCount; });
+    const auto fingerprint = lockedCanvas.sketch().semanticFingerprint();
+    const auto start = screenPoint(lockedCanvas, {-10.0, 0.0});
+    QMouseEvent press(QEvent::MouseButtonPress, start, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&lockedCanvas, &press);
+    QMouseEvent move(QEvent::MouseMove, start + QPointF(30.0, -20.0),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&lockedCanvas, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease,
+                        start + QPointF(30.0, -20.0), Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&lockedCanvas, &release);
+    CHECK(lockedCanvas.sketch().semanticFingerprint() == fingerprint);
+    CHECK(lockedCanvas.undoHistorySize() == 0);
+    CHECK(geometryChangedCount == 0);
+  }
+  {
+    // Replacing a sketch during an active drag closes the gesture transaction
+    // and leaves only the replacement model.
+    solidar::sketch::Sketch initial;
+    initial.addLine({-10.0, 0.0}, {10.0, 0.0});
+    solidar::SketchCanvas dragCanvas;
+    dragCanvas.resize(900, 650);
+    dragCanvas.loadSketch(initial);
+    dragCanvas.show();
+    QApplication::processEvents();
+    const auto start = screenPoint(dragCanvas, {-10.0, 0.0});
+    QMouseEvent press(QEvent::MouseButtonPress, start, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&dragCanvas, &press);
+    QMouseEvent move(QEvent::MouseMove, start + QPointF(25.0, -10.0),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&dragCanvas, &move);
+    CHECK(dragCanvas.hasActiveInteraction());
+    solidar::sketch::Sketch replacement;
+    replacement.addCircle({3.0, 4.0}, 2.0);
+    dragCanvas.loadSketch(replacement);
+    CHECK(!dragCanvas.hasActiveInteraction());
+    CHECK(dragCanvas.sketch().lines().empty());
+    CHECK(dragCanvas.sketch().circles().size() == 1);
+    CHECK(dragCanvas.undoHistorySize() == 0);
+  }
+  {
+    // A successful gesture publishes one change and one history entry.
+    solidar::SketchCanvas lineCanvas;
+    lineCanvas.resize(900, 650);
+    lineCanvas.show();
+    lineCanvas.setTool(solidar::SketchCanvas::Tool::Line);
+    int geometryChangedCount = 0;
+    QObject::connect(&lineCanvas, &solidar::SketchCanvas::geometryChanged,
+                     [&geometryChangedCount] { ++geometryChangedCount; });
+    click(lineCanvas, screenPoint(lineCanvas, {-5.0, 0.0}));
+    click(lineCanvas, screenPoint(lineCanvas, {5.0, 0.0}));
+    CHECK(lineCanvas.sketch().lines().size() == 1);
+    CHECK(lineCanvas.undoHistorySize() == 1);
+    CHECK(geometryChangedCount == 1);
+  }
+  {
+    // A conflicting PointOnCircle command is an atomic UI rejection: no
+    // success text, modified signal, history item, or partial constraint.
+    solidar::sketch::Sketch geometry;
+    geometry.addCircle({0.0, 0.0}, 5.0);
+    geometry.addLine({20.0, 0.0}, {30.0, 0.0});
+    for (const auto id : {geometry.circleId(0), geometry.lineId(0)}) {
+      solidar::sketch::Constraint lock;
+      lock.type = solidar::sketch::ConstraintType::Lock;
+      lock.firstGeometry = id;
+      CHECK(geometry.addConstraint(lock) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+    solidar::SketchCanvas conflictCanvas;
+    conflictCanvas.resize(900, 650);
+    conflictCanvas.loadSketch(geometry);
+    conflictCanvas.show();
+    conflictCanvas.setTool(
+        solidar::SketchCanvas::Tool::CoincidentConstraint);
+    QApplication::processEvents();
+    int geometryChangedCount = 0;
+    QString status;
+    QObject::connect(&conflictCanvas,
+                     &solidar::SketchCanvas::geometryChanged,
+                     [&geometryChangedCount] { ++geometryChangedCount; });
+    QObject::connect(&conflictCanvas,
+                     &solidar::SketchCanvas::selectionChanged,
+                     [&status](const QString& value) { status = value; });
+    click(conflictCanvas, screenPoint(conflictCanvas, {5.0, 0.0}));
+    click(conflictCanvas, screenPoint(conflictCanvas, {20.0, 0.0}));
+    CHECK(conflictCanvas.sketch().constraints().size() == 2);
+    CHECK(conflictCanvas.undoHistorySize() == 0);
+    CHECK(geometryChangedCount == 0);
+    CHECK(status.contains(QString::fromUtf8("отклонено")));
   }
   return EXIT_SUCCESS;
 }

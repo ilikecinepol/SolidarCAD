@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "io/StepExchange.h"
 
 #include <BRepAdaptor_Surface.hxx>
@@ -15,6 +17,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <gp_Pnt.hxx>
 
@@ -28,6 +31,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
@@ -36,16 +40,26 @@
 #include "model/ImportedShapeFeature.h"
 #include "project/ProjectFile.h"
 
-#define CHECK(condition)                                                     \
-  do {                                                                       \
-    if (!(condition)) {                                                      \
-      std::fprintf(stderr, "%s:%d: CHECK(%s) failed\n", __FILE__, __LINE__, \
-                   #condition);                                              \
-      return 1;                                                              \
-    }                                                                        \
-  } while (false)
-
 namespace {
+
+class PresetValidShapeFeature final : public solidar::ShapeFeature {
+ public:
+  explicit PresetValidShapeFeature(ShapePtr shape)
+      : ShapeFeature("Preset invalid fixture") {
+    setShape(std::move(shape));
+    markValid();
+  }
+
+  [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
+    return std::make_unique<PresetValidShapeFeature>(*this);
+  }
+
+ protected:
+  bool rebuildImpl(const solidar::RebuildContext&) override {
+    markValid();
+    return true;
+  }
+};
 
 solidar::Document documentWithShape(const TopoDS_Shape& shape,
                                     const std::string& name = "Source") {
@@ -54,6 +68,14 @@ solidar::Document documentWithShape(const TopoDS_Shape& shape,
   body.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
       std::make_shared<const TopoDS_Shape>(shape), name));
   (void)document.recompute();
+  return document;
+}
+
+solidar::Document documentWithUncheckedShape(const TopoDS_Shape& shape) {
+  solidar::Document document;
+  auto& body = document.addBody("Invalid fixture Body");
+  body.addFeature(std::make_unique<PresetValidShapeFeature>(
+      std::make_shared<const TopoDS_Shape>(shape)));
   return document;
 }
 
@@ -82,6 +104,18 @@ std::array<double, 3> dimensions(const TopoDS_Shape& shape) {
 
 bool near(double actual, double expected, double tolerance = 1e-6) {
   return std::abs(actual - expected) <= tolerance;
+}
+
+bool writeBytes(const QString& path, const QByteArray& bytes) {
+  QFile file(path);
+  return file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+         file.write(bytes) == bytes.size() && file.flush();
+}
+
+bool fileBytesEqual(const QString& path, const QByteArray& expected) {
+  QFile file(path);
+  return file.open(QIODevice::ReadOnly) && file.readAll() == expected &&
+         file.error() == QFileDevice::NoError;
 }
 
 }  // namespace
@@ -150,6 +184,30 @@ int main(int argc, char* argv[]) {
   CHECK(roundTripMulti);
   CHECK(BRepCheck_Analyzer(*roundTripMulti).IsValid());
   CHECK(countSubshapes(*roundTripMulti, TopAbs_SOLID) == 2);
+
+  // Separate Bodies are emitted as separate STEP roots, and every available
+  // root must be transferred on import.
+  solidar::Document separateBodies;
+  auto& firstBody = separateBodies.addBody("Root A");
+  firstBody.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+      std::make_shared<const TopoDS_Shape>(
+          BRepPrimAPI_MakeBox(8.0, 9.0, 10.0).Shape()),
+      "Root A"));
+  auto& secondBody = separateBodies.addBody("Root B");
+  secondBody.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+      std::make_shared<const TopoDS_Shape>(
+          BRepPrimAPI_MakeBox(gp_Pnt(30.0, 0.0, 0.0), 4.0, 5.0, 6.0)
+              .Shape()),
+      "Root B"));
+  CHECK(separateBodies.recompute());
+  const QString separateRootsPath =
+      temporary.filePath(QStringLiteral("separate-roots.step"));
+  CHECK(solidar::io::exportDocumentStep(separateRootsPath, separateBodies,
+                                        &error));
+  const auto separateRoots =
+      solidar::io::readStepFile(separateRootsPath, &error);
+  CHECK(separateRoots);
+  CHECK(countSubshapes(*separateRoots, TopAbs_SOLID) == 2);
 
   // D. Invalid input fails without changing the destination document.
   const QString invalidPath = temporary.filePath(QStringLiteral("invalid.step"));
@@ -260,6 +318,64 @@ int main(int argc, char* argv[]) {
   CHECK(countSubshapes(*finalBodyRoundTrip, TopAbs_SOLID) == 1);
   CHECK(near(volume(*finalBodyRoundTrip), finalVolume, 1e-4));
   CHECK(std::abs(volume(*finalBodyRoundTrip) - intermediateVolume) > 1e-4);
+
+  // I. Export is all-or-nothing: a failed active operation must not be
+  // silently replaced by its retained presentation shape or omitted when
+  // another Body is valid. An existing destination survives unchanged.
+  auto incompleteDocument = documentWithShape(box, "Valid Body");
+  auto& failedBody = incompleteDocument.addBody("Failed Body");
+  auto retainedFailedFeature = std::make_unique<PresetValidShapeFeature>(
+      std::make_shared<const TopoDS_Shape>(
+          BRepPrimAPI_MakeBox(4.0, 5.0, 6.0).Shape()));
+  auto* retainedFailedFeaturePtr = retainedFailedFeature.get();
+  failedBody.addFeature(std::move(retainedFailedFeature));
+  retainedFailedFeaturePtr->markBlocked("Deliberate test failure");
+  CHECK(incompleteDocument.bodies().front().resultShape());
+  CHECK(retainedFailedFeaturePtr->isFailed());
+  CHECK(retainedFailedFeaturePtr->hasLastValidShape());
+  const QByteArray sentinel("existing STEP sentinel\0bytes", 28);
+  const QString incompletePath =
+      temporary.filePath(QStringLiteral("incomplete-document.step"));
+  CHECK(writeBytes(incompletePath, sentinel));
+  CHECK(!solidar::io::exportDocumentStep(incompletePath, incompleteDocument,
+                                         &error));
+  CHECK(!error.isEmpty());
+  CHECK(fileBytesEqual(incompletePath, sentinel));
+
+  // A truly empty Body carries no failed history and may be omitted.
+  auto documentWithEmptyBody = documentWithShape(box, "Valid with empty");
+  documentWithEmptyBody.addBody("Empty Body");
+  const QString emptyBodyPath =
+      temporary.filePath(QStringLiteral("empty-body.step"));
+  CHECK(solidar::io::exportDocumentStep(emptyBodyPath, documentWithEmptyBody,
+                                        &error));
+  CHECK(error.isEmpty());
+
+  // J. A malformed but non-null OCCT face is rejected behind the adapter
+  // exception boundary and cannot replace an existing destination.
+  TopoDS_Face invalidFace;
+  BRep_Builder invalidBuilder;
+  invalidBuilder.MakeFace(invalidFace);
+  CHECK(!invalidFace.IsNull());
+  auto invalidFaceDocument = documentWithUncheckedShape(invalidFace);
+  CHECK(invalidFaceDocument.bodies().front().resultShape());
+  const QString invalidFacePath =
+      temporary.filePath(QStringLiteral("invalid-face.step"));
+  CHECK(writeBytes(invalidFacePath, sentinel));
+  CHECK(!solidar::io::exportDocumentStep(invalidFacePath, invalidFaceDocument,
+                                         &error));
+  CHECK(!error.isEmpty());
+  CHECK(fileBytesEqual(invalidFacePath, sentinel));
+
+  // K. Reject oversized input before readAll() attempts to allocate it.
+  const QString oversizedPath =
+      temporary.filePath(QStringLiteral("oversized.step"));
+  QFile oversized(oversizedPath);
+  CHECK(oversized.open(QIODevice::WriteOnly));
+  CHECK(oversized.resize(solidar::io::kMaximumStepFileBytes + 1));
+  oversized.close();
+  CHECK(!solidar::io::readStepFile(oversizedPath, &error));
+  CHECK(!error.isEmpty());
 
   return 0;
 }

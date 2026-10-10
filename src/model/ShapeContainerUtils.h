@@ -1,6 +1,8 @@
 #pragma once
 
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -11,12 +13,12 @@ namespace solidar {
 
 struct SolidEdgeSelection {
   std::vector<TopoDS_Shape> solids;
-  std::vector<std::vector<std::size_t>> localEdgeIndices;
+  std::vector<std::vector<TopoDS_Edge>> localEdges;
 };
 
 struct SolidFaceSelection {
   std::vector<TopoDS_Shape> solids;
-  std::vector<std::vector<std::size_t>> localFaceIndices;
+  std::vector<std::vector<TopoDS_Face>> localFaces;
 };
 
 [[nodiscard]] std::optional<SolidEdgeSelection> mapEdgesToOwningSolids(

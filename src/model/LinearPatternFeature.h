@@ -36,11 +36,15 @@ class LinearPatternFeature final : public ShapeFeature {
   void setDirection(PrincipalAxis value) noexcept;
   void setCount(int value) noexcept;
   void setSpacingMm(double value) noexcept;
-  [[nodiscard]] bool dependsOnFeature(
-      FeatureId featureId) const noexcept override;
-  [[nodiscard]] std::string typeName() const override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureDependencies dependencies() const override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::LinearPattern;
+  }
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
+
  private:
   BodyId sourceBodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{};

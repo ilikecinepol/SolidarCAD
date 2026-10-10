@@ -14,26 +14,39 @@
 
 #include "model/Body.h"
 #include "model/DraftBuilder.h"
+#include "model/GeometryOperation.h"
 #include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
 namespace {
-bool resolveDirection(const Document& document, const AxisReference& reference,
-                      gp_Dir* result, std::string* error) {
+DraftReferenceResolution resolveDirection(const Document& document,
+                                          const AxisReference& reference,
+                                          gp_Dir* result) {
+  const auto fail = [](OperationFailureCode code, std::string detail) {
+    return DraftReferenceResolution{{code, std::move(detail)}};
+  };
+  if (!isKnownAxisReferenceType(reference.type)) {
+    return fail(OperationFailureCode::InvalidInput,
+                "Draft pull direction type is unsupported");
+  }
   Vector3d direction{};
   if (reference.type == AxisReferenceType::GlobalX) direction = {1, 0, 0};
   else if (reference.type == AxisReferenceType::GlobalY) direction = {0, 1, 0};
   else if (reference.type == AxisReferenceType::GlobalZ) direction = {0, 0, 1};
   else {
     const auto* sketch = document.findSketch(reference.sketchId);
-    if (!sketch) { *error = "Draft direction sketch was not found"; return false; }
+    if (!sketch)
+      return fail(OperationFailureCode::MissingSource,
+                  "Draft direction sketch was not found");
     if (reference.type == AxisReferenceType::SketchHorizontalAxis)
       direction = sketch->placement.xDirection;
     else if (reference.type == AxisReferenceType::SketchVerticalAxis)
       direction = sketch->placement.yDirection;
     else {
       const auto index = sketch->geometry.lineIndex(reference.lineId);
-      if (!index) { *error = "Draft direction line was not found"; return false; }
+      if (!index)
+        return fail(OperationFailureCode::MissingSource,
+                    "Draft direction line was not found");
       const auto& line = sketch->geometry.lines()[*index];
       const auto a = sketch->placement.toWorld(line.start.xMm, line.start.yMm);
       const auto b = sketch->placement.toWorld(line.end.xMm, line.end.yMm);
@@ -43,98 +56,246 @@ bool resolveDirection(const Document& document, const AxisReference& reference,
   const double length = std::sqrt(direction.x * direction.x +
                                   direction.y * direction.y +
                                   direction.z * direction.z);
-  if (!std::isfinite(length) || length < 1e-12) { *error = "Draft pull direction is invalid"; return false; }
-  *result = gp_Dir(direction.x, direction.y, direction.z); return true;
+  if (!std::isfinite(length) || length < 1e-12)
+    return fail(OperationFailureCode::UnsupportedGeometry,
+                "Draft pull direction is invalid");
+  *result = gp_Dir(direction.x, direction.y, direction.z);
+  return {};
 }
 }
 
-bool resolveDraftReferences(const Document& document,
-                            const TopoDS_Shape& baseShape,
-                            const PlaneReference& plane,
-                            const AxisReference& direction,
-                            gp_Pln* resolvedPlane,
-                            gp_Dir* resolvedDirection, std::string* error) {
-  if (!resolveDirection(document, direction, resolvedDirection, error)) return false;
-  if (plane.type == NeutralPlaneType::GlobalXY) *resolvedPlane = gp_Pln(gp_Pnt(0,0,0), gp_Dir(0,0,1));
-  else if (plane.type == NeutralPlaneType::GlobalXZ) *resolvedPlane = gp_Pln(gp_Pnt(0,0,0), gp_Dir(0,1,0));
-  else if (plane.type == NeutralPlaneType::GlobalYZ) *resolvedPlane = gp_Pln(gp_Pnt(0,0,0), gp_Dir(1,0,0));
-  else {
-    if (!plane.face) { *error = "Draft neutral face is missing"; return false; }
-    const auto face = resolveFaceReference(baseShape, plane.face->topology());
-    if (!face) { *error = "Draft neutral face could not be resolved: " + face.error; return false; }
-    BRepAdaptor_Surface surface(*face.subshape);
-    if (surface.GetType() != GeomAbs_Plane) { *error = "Draft neutral face must be planar"; return false; }
-    *resolvedPlane = surface.Plane();
+namespace {
+DraftReferenceResolution resolveDraftReferencesIndexed(
+    const Document& document, const TopoDS_Shape& baseShape,
+    const TopologyIndex* topology, const PlaneReference& plane,
+    const AxisReference& direction, gp_Pln* resolvedPlane,
+    gp_Dir* resolvedDirection) {
+  if (!resolvedPlane || !resolvedDirection)
+    return {{OperationFailureCode::InvalidInput,
+             "Draft reference outputs are missing"}};
+  OperationFailure typedFailure;
+  gp_Pln pendingPlane;
+  gp_Dir pendingDirection;
+  GeometryFailure failure;
+  const bool resolved = runGeometryOperation(
+      [&]() -> bool {
+        if (topology &&
+            (!topology->shape() || !topology->shape()->IsEqual(baseShape))) {
+          typedFailure = {OperationFailureCode::InvalidInput,
+                          "Draft topology index does not match the base shape"};
+          return false;
+        }
+        if (!isKnownNeutralPlaneType(plane.type)) {
+          typedFailure = {OperationFailureCode::InvalidInput,
+                          "Draft neutral plane type is unsupported"};
+          return false;
+        }
+        const auto directionResolution =
+            resolveDirection(document, direction, &pendingDirection);
+        if (!directionResolution) {
+          typedFailure = directionResolution.failure;
+          return false;
+        }
+        if (plane.type == NeutralPlaneType::GlobalXY)
+          pendingPlane = gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+        else if (plane.type == NeutralPlaneType::GlobalXZ)
+          pendingPlane = gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0));
+        else if (plane.type == NeutralPlaneType::GlobalYZ)
+          pendingPlane = gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0));
+        else {
+          if (!plane.face) {
+            typedFailure = {OperationFailureCode::InvalidInput,
+                            "Draft neutral face is missing"};
+            return false;
+          }
+          const auto face = topology
+                                ? topology->resolveFace(plane.face->topology())
+                                : resolveFaceReference(baseShape,
+                                                       plane.face->topology());
+          if (!face) {
+            typedFailure = {operationFailureCode(face.failure),
+                            "Draft neutral face could not be resolved: " +
+                                face.error};
+            return false;
+          }
+          BRepAdaptor_Surface surface(*face.subshape);
+          if (surface.GetType() != GeomAbs_Plane) {
+            typedFailure = {OperationFailureCode::UnsupportedGeometry,
+                            "Draft neutral face must be planar"};
+            return false;
+          }
+          pendingPlane = surface.Plane();
+        }
+        return true;
+      },
+      &failure);
+  if (!resolved && failure.kind != GeometryFailureKind::None)
+    typedFailure = {
+        OperationFailureCode::GeometryOperationFailed,
+        failure.kind == GeometryFailureKind::OcctException
+            ? "Draft OpenCASCADE reference resolution failed"
+            : "Draft reference resolution failed"};
+  if (!resolved) {
+    if (!typedFailure)
+      typedFailure = {OperationFailureCode::Unknown,
+                      "Draft reference resolution failed"};
+    return {std::move(typedFailure)};
   }
-  return true;
+  *resolvedPlane = pendingPlane;
+  *resolvedDirection = pendingDirection;
+  return {};
 }
 
-bool resolveDraftEdgeAxis(const TopoDS_Shape& baseShape,
-                          const FaceReference& draftedFace,
-                          const EdgeReference& rotationEdge,
-                          gp_Pln* resolvedPlane,
-                          gp_Dir* resolvedDirection,
-                          std::string* error) {
-  const auto face = resolveFaceReference(baseShape, draftedFace.topology());
-  if (!face) {
-    *error = "Draft face could not be resolved: " + face.error;
-    return false;
-  }
-  const auto edge = resolveEdgeReference(baseShape, rotationEdge.topology());
-  if (!edge) {
-    *error = "Draft rotation edge could not be resolved: " + edge.error;
-    return false;
-  }
+DraftReferenceResolution resolveDraftEdgeAxisIndexed(
+    const TopoDS_Shape& baseShape, const TopologyIndex* topology,
+    const FaceReference& draftedFace, const EdgeReference& rotationEdge,
+    gp_Pln* resolvedPlane, gp_Dir* resolvedDirection) {
+  if (!resolvedPlane || !resolvedDirection)
+    return {{OperationFailureCode::InvalidInput,
+             "Draft edge-axis outputs are missing"}};
+  OperationFailure typedFailure;
+  gp_Pln pendingPlane;
+  gp_Dir pendingDirection;
+  GeometryFailure failure;
+  const bool resolved = runGeometryOperation(
+      [&]() -> bool {
+        if (topology &&
+            (!topology->shape() || !topology->shape()->IsEqual(baseShape))) {
+          typedFailure = {OperationFailureCode::InvalidInput,
+                          "Draft topology index does not match the base shape"};
+          return false;
+        }
+        const auto face = topology
+                              ? topology->resolveFace(draftedFace.topology())
+                              : resolveFaceReference(baseShape,
+                                                     draftedFace.topology());
+        if (!face) {
+          typedFailure = {operationFailureCode(face.failure),
+                          "Draft face could not be resolved: " + face.error};
+          return false;
+        }
+        const auto edge = topology
+                              ? topology->resolveEdge(rotationEdge.topology())
+                              : resolveEdgeReference(baseShape,
+                                                     rotationEdge.topology());
+        if (!edge) {
+          typedFailure = {
+              operationFailureCode(edge.failure),
+              "Draft rotation edge could not be resolved: " + edge.error};
+          return false;
+        }
 
-  bool adjacent = false;
-  for (TopExp_Explorer edges(*face.subshape, TopAbs_EDGE); edges.More();
-       edges.Next()) {
-    if (TopoDS::Edge(edges.Current()).IsSame(*edge.subshape)) {
-      adjacent = true;
-      break;
-    }
-  }
-  if (!adjacent) {
-    *error = "Draft rotation edge must belong to the selected face";
-    return false;
-  }
+        bool adjacent = false;
+        for (TopExp_Explorer edges(*face.subshape, TopAbs_EDGE); edges.More();
+             edges.Next()) {
+          if (TopoDS::Edge(edges.Current()).IsSame(*edge.subshape)) {
+            adjacent = true;
+            break;
+          }
+        }
+        if (!adjacent) {
+          typedFailure = {
+              OperationFailureCode::UnsupportedGeometry,
+              "Draft rotation edge must belong to the selected face"};
+          return false;
+        }
 
-  BRepAdaptor_Surface surface(*face.subshape);
-  if (surface.GetType() != GeomAbs_Plane) {
-    *error = "Draft edge axis requires a planar selected face";
-    return false;
-  }
-  BRepAdaptor_Curve curve(*edge.subshape);
-  if (curve.GetType() != GeomAbs_Line) {
-    *error = "Draft rotation edge must be straight";
-    return false;
-  }
+        BRepAdaptor_Surface surface(*face.subshape);
+        if (surface.GetType() != GeomAbs_Plane) {
+          typedFailure = {
+              OperationFailureCode::UnsupportedGeometry,
+              "Draft edge axis requires a planar selected face"};
+          return false;
+        }
+        BRepAdaptor_Curve curve(*edge.subshape);
+        if (curve.GetType() != GeomAbs_Line) {
+          typedFailure = {OperationFailureCode::UnsupportedGeometry,
+                          "Draft rotation edge must be straight"};
+          return false;
+        }
 
-  const gp_Dir faceNormal = surface.Plane().Axis().Direction();
-  const gp_Dir edgeDirection = curve.Line().Direction();
-  gp_Vec neutralNormal(faceNormal);
-  neutralNormal.Cross(gp_Vec(edgeDirection));
-  if (neutralNormal.SquareMagnitude() < 1e-18) {
-    *error = "Draft rotation edge direction is invalid";
-    return false;
+        const gp_Dir faceNormal = surface.Plane().Axis().Direction();
+        const gp_Dir edgeDirection = curve.Line().Direction();
+        gp_Vec neutralNormal(faceNormal);
+        neutralNormal.Cross(gp_Vec(edgeDirection));
+        if (neutralNormal.SquareMagnitude() < 1e-18) {
+          typedFailure = {OperationFailureCode::UnsupportedGeometry,
+                          "Draft rotation edge direction is invalid"};
+          return false;
+        }
+        const gp_Dir direction(neutralNormal);
+        const double first = curve.FirstParameter();
+        const double last = curve.LastParameter();
+        const gp_Pnt point = curve.Value((first + last) * 0.5);
+        pendingPlane = gp_Pln(point, direction);
+        pendingDirection = direction;
+        return true;
+      },
+      &failure);
+  if (!resolved && failure.kind != GeometryFailureKind::None)
+    typedFailure = {
+        OperationFailureCode::GeometryOperationFailed,
+        failure.kind == GeometryFailureKind::OcctException
+            ? "Draft OpenCASCADE edge resolution failed"
+            : "Draft edge resolution failed"};
+  if (!resolved) {
+    if (!typedFailure)
+      typedFailure = {OperationFailureCode::Unknown,
+                      "Draft edge resolution failed"};
+    return {std::move(typedFailure)};
   }
-  const gp_Dir direction(neutralNormal);
-  const double first = curve.FirstParameter();
-  const double last = curve.LastParameter();
-  const gp_Pnt point = curve.Value((first + last) * 0.5);
-  *resolvedPlane = gp_Pln(point, direction);
-  *resolvedDirection = direction;
-  return true;
+  *resolvedPlane = pendingPlane;
+  *resolvedDirection = pendingDirection;
+  return {};
+}
+}  // namespace
+
+DraftReferenceResolution resolveDraftReferences(
+    const Document& document, const TopoDS_Shape& baseShape,
+    const PlaneReference& plane, const AxisReference& direction,
+    gp_Pln* resolvedPlane, gp_Dir* resolvedDirection) {
+  return resolveDraftReferencesIndexed(document, baseShape, nullptr, plane,
+                                       direction, resolvedPlane,
+                                       resolvedDirection);
+}
+
+DraftReferenceResolution resolveDraftReferences(
+    const Document& document, const TopoDS_Shape& baseShape,
+    const TopologyIndex& topology, const PlaneReference& plane,
+    const AxisReference& direction, gp_Pln* resolvedPlane,
+    gp_Dir* resolvedDirection) {
+  return resolveDraftReferencesIndexed(document, baseShape, &topology, plane,
+                                       direction, resolvedPlane,
+                                       resolvedDirection);
+}
+
+DraftReferenceResolution resolveDraftEdgeAxis(
+    const TopoDS_Shape& baseShape, const FaceReference& draftedFace,
+    const EdgeReference& rotationEdge, gp_Pln* resolvedPlane,
+    gp_Dir* resolvedDirection) {
+  return resolveDraftEdgeAxisIndexed(baseShape, nullptr, draftedFace,
+                                     rotationEdge, resolvedPlane,
+                                     resolvedDirection);
+}
+
+DraftReferenceResolution resolveDraftEdgeAxis(
+    const TopoDS_Shape& baseShape, const TopologyIndex& topology,
+    const FaceReference& draftedFace, const EdgeReference& rotationEdge,
+    gp_Pln* resolvedPlane, gp_Dir* resolvedDirection) {
+  return resolveDraftEdgeAxisIndexed(baseShape, &topology, draftedFace,
+                                     rotationEdge, resolvedPlane,
+                                     resolvedDirection);
 }
 
 DraftFeature::DraftFeature(FeatureId source, std::vector<FaceReference> faces,
                            PlaneReference plane, AxisReference direction,
                            double angle, bool reversed, std::string name,
                            std::optional<EdgeReference> rotationEdge)
-    : ShapeFeature(name.empty() ? "Draft" : std::move(name)), sourceFeatureId_(source),
-      draftedFaces_(std::move(faces)), neutralPlane_(std::move(plane)),
-      pullDirection_(direction), rotationEdge_(std::move(rotationEdge)),
-      angleDeg_(angle), reversed_(reversed) {}
+    : ShapeFeature(name.empty() ? "Draft" : std::move(name)),
+      sourceFeatureId_(source), draftedFaces_(std::move(faces)),
+      neutralPlane_(std::move(plane)), pullDirection_(direction),
+      rotationEdge_(std::move(rotationEdge)), angleDeg_(angle),
+      reversed_(reversed) {}
 DraftFeature::DraftFeature(FeatureId id, FeatureId source, std::vector<FaceReference> faces,
                            PlaneReference plane, AxisReference direction,
                            double angle, bool reversed, std::string name,
@@ -156,21 +317,50 @@ void DraftFeature::setPullDirection(AxisReference value) { if (pullDirection_ !=
 void DraftFeature::setRotationEdge(std::optional<EdgeReference> value) { if (rotationEdge_ != value) { rotationEdge_ = std::move(value); setDirty(); } }
 void DraftFeature::setAngleDeg(double value) noexcept { if (angleDeg_ != value) { angleDeg_ = value; setDirty(); } }
 void DraftFeature::setReversed(bool value) noexcept { if (reversed_ != value) { reversed_ = value; setDirty(); } }
-std::string DraftFeature::typeName() const { return "Draft"; }
-bool DraftFeature::dependsOnSketch(SketchId id) const noexcept {
-  return !rotationEdge_ && pullDirection_.sketchId == id;
+FeatureDependencies DraftFeature::dependencies() const {
+  FeatureDependencies result;
+  if (!rotationEdge_ && isSketchAxisReferenceType(pullDirection_.type) &&
+      pullDirection_.sketchId != kInvalidSketchId)
+    result.sketchIds.push_back(pullDirection_.sketchId);
+  return result;
 }
-bool DraftFeature::rebuild(const RebuildContext& context) {
+bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!context.previousShape || context.previousShape->IsNull()) { markError("Draft base shape is missing"); return false; }
   if (!context.body || draftedFaces_.empty()) { markError(draftedFaces_.empty() ? "Draft requires at least one face" : "Draft face belongs to a different Body"); return false; }
+  if (!isKnownNeutralPlaneType(neutralPlane_.type)) {
+    markError("Draft neutral plane type is unsupported");
+    return false;
+  }
   const auto& features = context.body->features(); std::size_t ownIndex = features.size();
   for (std::size_t i = 0; i < features.size(); ++i) if (features[i].get() == this) { ownIndex = i; break; }
   if (ownIndex == 0 || ownIndex == features.size() || features[ownIndex - 1]->id() != sourceFeatureId_) { markError("Draft source Feature could not be resolved"); return false; }
+  if (neutralPlane_.type == NeutralPlaneType::BodyFace &&
+      (!neutralPlane_.face ||
+       neutralPlane_.face->bodyId != context.body->id() ||
+       neutralPlane_.face->featureId != sourceFeatureId_)) {
+    markError("Draft neutral face must belong to the active source Feature");
+    return false;
+  }
+  std::string topologyError;
+  const auto topology = context.previousFeature
+                            ? context.previousFeature->topologyIndex(&topologyError)
+                            : TopologyIndex::build(*context.previousShape,
+                                                   kInvalidShapeRevision,
+                                                   &topologyError);
+  if (!topology) {
+    markError("Draft topology could not be indexed: " + topologyError);
+    return false;
+  }
+  std::vector<TopologyReference> references;
+  references.reserve(draftedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : draftedFaces_) {
     if (face.bodyId != context.body->id() || face.featureId != sourceFeatureId_) { markError("Draft faces must belong to the active source Feature"); return false; }
-    const auto resolved = resolveFaceReference(*context.previousShape, face.topology());
+    references.push_back(face.topology());
+  }
+  const auto resolutions = topology->resolveFaces(references);
+  for (const auto& resolved : resolutions) {
     if (!resolved) { markError("Draft face could not be resolved: " + resolved.error); return false; }
     indices.push_back(resolved.index);
   }
@@ -185,12 +375,22 @@ bool DraftFeature::rebuild(const RebuildContext& context) {
       markError("Draft rotation edge belongs to a different Body");
       return false;
     }
-    if (!resolveDraftEdgeAxis(*context.previousShape, draftedFaces_.front(),
-                              *rotationEdge_, &plane, &direction, &error)) {
-      markError(std::move(error));
+    const auto resolution = resolveDraftEdgeAxisIndexed(
+        *context.previousShape, topology.get(), draftedFaces_.front(),
+        *rotationEdge_, &plane, &direction);
+    if (!resolution) {
+      markError(resolution.failure.detail);
       return false;
     }
-  } else if (!resolveDraftReferences(context.document, *context.previousShape, neutralPlane_, pullDirection_, &plane, &direction, &error)) { markError(std::move(error)); return false; }
+  } else {
+    const auto resolution = resolveDraftReferencesIndexed(
+        context.document, *context.previousShape, topology.get(),
+        neutralPlane_, pullDirection_, &plane, &direction);
+    if (!resolution) {
+      markError(resolution.failure.detail);
+      return false;
+    }
+  }
   auto result = buildDraftShape(*context.previousShape, indices, plane, direction, angleDeg_, reversed_, &error);
   if (!result) { markError(std::move(error)); return false; }
   setShape(std::move(result)); markValid(); return true;

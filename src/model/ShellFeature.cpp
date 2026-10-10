@@ -29,9 +29,8 @@ bool ShellFeature::outside() const noexcept { return outside_; }
 void ShellFeature::setRemovedFaces(std::vector<FaceReference> value) { if (removedFaces_ != value) { removedFaces_ = std::move(value); setDirty(); } }
 void ShellFeature::setThicknessMm(double value) noexcept { if (thicknessMm_ != value) { thicknessMm_ = value; setDirty(); } }
 void ShellFeature::setOutside(bool value) noexcept { if (outside_ != value) { outside_ = value; setDirty(); } }
-std::string ShellFeature::typeName() const { return "Shell"; }
 
-bool ShellFeature::rebuild(const RebuildContext& context) {
+bool ShellFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(thicknessMm_) || thicknessMm_ <= 0.0) {
     markError("Shell thickness must be a finite positive value"); return false;
@@ -52,12 +51,27 @@ bool ShellFeature::rebuild(const RebuildContext& context) {
       features[ownIndex - 1]->id() != sourceFeatureId_) {
     markError("Shell source Feature could not be resolved"); return false;
   }
+  std::string topologyError;
+  const auto topology = context.previousFeature
+                            ? context.previousFeature->topologyIndex(&topologyError)
+                            : TopologyIndex::build(*context.previousShape,
+                                                   kInvalidShapeRevision,
+                                                   &topologyError);
+  if (!topology) {
+    markError("Shell topology could not be indexed: " + topologyError);
+    return false;
+  }
+  std::vector<TopologyReference> references;
+  references.reserve(removedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : removedFaces_) {
     if (face.bodyId != context.body->id() || face.featureId != sourceFeatureId_) {
       markError("Shell faces must belong to the active source Feature"); return false;
     }
-    const auto resolved = resolveFaceReference(*context.previousShape, face.topology());
+    references.push_back(face.topology());
+  }
+  const auto resolutions = topology->resolveFaces(references);
+  for (const auto& resolved : resolutions) {
     if (!resolved) { markError("Shell face could not be resolved: " + resolved.error); return false; }
     indices.push_back(resolved.index);
   }

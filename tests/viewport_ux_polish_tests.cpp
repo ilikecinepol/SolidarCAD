@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "model/EdgeManipulatorGeometry.h"
 #include "ui/ExtrusionPreviewGeometry.h"
 #include "ui/ManipulatorLayout.h"
@@ -17,14 +19,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 bool close(double a, double b, double epsilon = 1e-5) {

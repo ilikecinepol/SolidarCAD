@@ -15,7 +15,8 @@ struct JoinBodyInput {
 
 class JoinBodiesToolSession final : public ToolSession {
  public:
-  void begin();
+  void begin(std::optional<FeatureId> editingFeatureId = std::nullopt,
+             BodyId ownerBodyId = kInvalidBodyId);
   void setBodies(std::vector<JoinBodyInput> bodies);
 
   [[nodiscard]] const std::vector<JoinBodyInput>& bodies() const noexcept;
@@ -26,6 +27,7 @@ class JoinBodiesToolSession final : public ToolSession {
   selectionRequirement() const override;
   [[nodiscard]] std::shared_ptr<const TopoDS_Shape> previewShape() const override;
   [[nodiscard]] const std::string& error() const noexcept override;
+  [[nodiscard]] OperationFailureCode errorCode() const noexcept override;
   bool updatePreview() override;
   void cancel() noexcept override;
 
@@ -34,6 +36,9 @@ class JoinBodiesToolSession final : public ToolSession {
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;
   std::string error_;
+  OperationFailureCode errorCode_{OperationFailureCode::None};
+  std::optional<FeatureId> editingFeatureId_;
+  BodyId ownerBodyId_{kInvalidBodyId};
 };
 
 }  // namespace solidar

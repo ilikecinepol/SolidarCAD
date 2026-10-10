@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "ui/ViewCube.h"
 #include "ui/Viewport.h"
 #include "ui/ViewportCamera.h"
@@ -11,10 +13,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-
-#define CHECK(condition) do { if (!(condition)) { \
-  std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-  return EXIT_FAILURE; } } while (false)
 
 namespace {
 QPointF centroid(const QPolygonF& polygon) {

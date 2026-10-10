@@ -10,7 +10,7 @@ namespace solidar {
 
 class CircularPatternToolSession final : public ToolSession {
  public:
-  void begin(double angleDeg = 360.0, int count = 4,
+  void begin(double angleDeg = kMaximumPatternAngleDeg, int count = 4,
              PatternOperation operation = PatternOperation::NewBody,
              std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setBody(BodyId bodyId, FeatureId sourceFeatureId,

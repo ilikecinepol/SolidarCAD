@@ -28,9 +28,6 @@ void PartDesignToolController::activate(PartDesignToolKind kind) {
 
 void PartDesignToolController::deactivate(PartDesignToolKind kind) noexcept {
   if (active_ != kind) return;
-  const auto found = registrations_.find(active_);
-  if (found != registrations_.end() && found->second.clearPresentation)
-    found->second.clearPresentation();
   SOLIDAR_TOOL_LOG("Tool applied/closed kind=" << static_cast<int>(kind));
   active_ = PartDesignToolKind::None;
   temporaryStage_.reset();
@@ -44,10 +41,8 @@ void PartDesignToolController::cancelActive() {
   active_ = PartDesignToolKind::None;
   temporaryStage_.reset();
   returnStage_ = ToolSelectionStage::None;
-  if (found != registrations_.end()) {
-    if (found->second.cancel) found->second.cancel();
-    if (found->second.clearPresentation) found->second.clearPresentation();
-  }
+  if (found != registrations_.end() && found->second.session)
+    found->second.session->cancel();
   SOLIDAR_TOOL_LOG("Tool cancelled kind=" << static_cast<int>(previous));
   (void)previous;
 }

@@ -93,7 +93,6 @@ add_library(solidar_model
   model/ShellToolSession.h
   model/SketchPlacement.cpp
   model/SketchPlacement.h
-  model/SolidFeature.h
   model/TopologyReferenceResolver.cpp
   model/TopologyReferenceResolver.h
   model/TopologyReference.h
@@ -121,6 +120,8 @@ solidar_warnings(solidar_model)
 add_library(solidar_project
   project/ProjectFile.cpp
   project/ProjectFile.h
+  io/DocumentExportShapes.cpp
+  io/DocumentExportShapes.h
   io/StlExporter.cpp
   io/StlExporter.h
   io/StepExchange.cpp
@@ -151,6 +152,16 @@ solidar_warnings(solidar_theme)
 add_library(solidar_sketch_ui
   sketch/SketchRibbon.cpp
   sketch/SketchRibbon.h
+  ui/SketchCommandController.cpp
+  ui/SketchCommandController.h
+  ui/SketchInteractionController.cpp
+  ui/SketchInteractionController.h
+  ui/SketchHitTester.cpp
+  ui/SketchHitTester.h
+  ui/SketchHitSceneAdapter.cpp
+  ui/SketchHitSceneAdapter.h
+  ui/SketchRenderer.cpp
+  ui/SketchRenderer.h
   ui/SketchCanvas.cpp
   ui/SketchCanvas.h
 )
@@ -168,7 +179,8 @@ add_library(solidar_drawing_ui
   ui/DrawingSheetView.h
 )
 target_include_directories(solidar_drawing_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_drawing_ui PUBLIC solidar_model Qt6::Widgets)
+target_link_libraries(solidar_drawing_ui PUBLIC solidar_model solidar_theme
+  Qt6::Widgets)
 solidar_warnings(solidar_drawing_ui)
 
 add_library(solidar_viewport3d
@@ -183,12 +195,13 @@ add_library(solidar_viewport3d
   ui/ModelRibbon.h
   ui/PartDesignToolHelp.cpp
   ui/PartDesignToolHelp.h
-  ui/PartDesignHistory.cpp
-  ui/PartDesignHistory.h
+  ui/PreviewUpdateCoordinator.cpp
+  ui/PreviewUpdateCoordinator.h
   ui/HistoryTimelineWidget.cpp
   ui/HistoryTimelineWidget.h
   ui/Viewport.cpp
   ui/Viewport.h
+  ui/ViewportInteractionTypes.h
   ui/ViewCube.cpp
   ui/ViewCube.h
   ui/WorldGrid.cpp
@@ -214,10 +227,22 @@ target_link_libraries(solidar_viewport3d PUBLIC solidar_model solidar_theme Qt6:
 solidar_warnings(solidar_viewport3d)
 
 add_library(solidar_editor
+  ui/application/ModelCommandHistory.cpp
+  ui/application/ModelCommandHistory.h
+  ui/application/PartDesignCoordinator.cpp
+  ui/application/PartDesignCoordinator.h
+  ui/application/ProjectApplicationService.cpp
+  ui/application/ProjectApplicationService.h
   ui/EditorFactory.cpp
   ui/EditorFactory.h
+  ui/FeatureUiRegistry.cpp
+  ui/FeatureUiRegistry.h
   ui/MainWindow.cpp
   ui/MainWindow.h
+  ui/PartDesignErrorLocalization.cpp
+  ui/PartDesignErrorLocalization.h
+  ui/PartDesignHistory.cpp
+  ui/PartDesignHistory.h
   ui/ToolParametersPanel.cpp
   ui/ToolParametersPanel.h
   ui/tools/PartDesignToolController.cpp

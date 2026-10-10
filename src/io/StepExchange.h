@@ -12,6 +12,10 @@ class Document;
 
 namespace solidar::io {
 
+// Resource boundary for the stream-based STEP decoder. The size check is
+// performed before QFile::readAll() allocates the payload.
+inline constexpr qint64 kMaximumStepFileBytes = 256LL * 1024 * 1024;
+
 // Read an exact OCCT B-Rep from STEP. The stream-based implementation keeps
 // Windows Unicode paths out of the narrow filename API used by OCCT.
 [[nodiscard]] std::shared_ptr<const TopoDS_Shape> readStepFile(

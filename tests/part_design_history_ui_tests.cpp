@@ -1,6 +1,10 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QDir>
 #include <QTemporaryDir>
+#include <TopoDS_Shape.hxx>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -11,6 +15,7 @@
 #include "model/DraftFeature.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletFeature.h"
+#include "model/ImportedShapeFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/MirrorFeature.h"
 #include "model/MoveFeature.h"
@@ -19,11 +24,75 @@
 #include "model/ShellFeature.h"
 #include "project/ProjectFile.h"
 #include "ui/PartDesignHistory.h"
-
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
+#include "ui/FeatureUiRegistry.h"
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  using Kind = solidar::FeatureKind;
+  using Route = solidar::FeatureEditorRoute;
+  using StepType = solidar::HistoryStepType;
+  struct ExpectedDescriptor {
+    Kind kind;
+    StepType stepType;
+    bool editable;
+    Route route;
+  };
+  constexpr std::array<ExpectedDescriptor, 13> kExpectedDescriptors{{
+      {Kind::ImportedShape, StepType::ImportedShape, false, Route::None},
+      {Kind::Extrude, StepType::Extrude, true, Route::Extrude},
+      {Kind::Revolve, StepType::Revolve, true, Route::Revolve},
+      {Kind::Pocket, StepType::Pocket, true, Route::Pocket},
+      {Kind::Fillet, StepType::Fillet, true, Route::Fillet},
+      {Kind::Chamfer, StepType::Chamfer, true, Route::Chamfer},
+      {Kind::Mirror, StepType::Mirror, true, Route::Mirror},
+      {Kind::Move, StepType::Move, true, Route::Move},
+      {Kind::LinearPattern, StepType::LinearPattern, true,
+       Route::LinearPattern},
+      {Kind::CircularPattern, StepType::CircularPattern, true,
+       Route::CircularPattern},
+      {Kind::JoinBodies, StepType::JoinBodies, true, Route::JoinBodies},
+      {Kind::Shell, StepType::Shell, true, Route::Shell},
+      {Kind::Draft, StepType::Draft, true, Route::Draft},
+  }};
+  const auto descriptors = solidar::featureUiDescriptors();
+  CHECK(descriptors.size() == kExpectedDescriptors.size());
+  std::set<Kind> registeredKinds;
+  std::set<Route> registeredRoutes;
+  for (std::size_t index = 0; index < descriptors.size(); ++index) {
+    const auto& descriptor = descriptors[index];
+    const auto& expected = kExpectedDescriptors[index];
+    CHECK(descriptor.kind == expected.kind);
+    CHECK(descriptor.historyType == expected.stepType);
+    CHECK(descriptor.editable == expected.editable);
+    CHECK(descriptor.editorRoute == expected.route);
+    CHECK(descriptor.titleUtf8 != nullptr);
+    CHECK(!descriptor.title().isEmpty());
+    CHECK(descriptor.formatParameters != nullptr);
+    CHECK(descriptor.consumesSketch != nullptr);
+    CHECK(registeredKinds.insert(descriptor.kind).second);
+    CHECK(registeredRoutes.insert(descriptor.editorRoute).second ||
+          descriptor.editorRoute == Route::None);
+    CHECK(solidar::featureUiDescriptor(descriptor.kind) == &descriptor);
+  }
+
+  solidar::Document importedDocument;
+  auto& importedBody = importedDocument.addBody("Imported body");
+  const auto importedId = importedBody
+                              .addFeature(std::make_unique<
+                                          solidar::ImportedShapeFeature>(
+                                  std::make_shared<const TopoDS_Shape>(),
+                                  "Imported source"))
+                              .id();
+  const auto importedSteps =
+      solidar::buildPartDesignHistory(importedDocument, importedBody);
+  CHECK(importedSteps.size() == 1);
+  CHECK(importedSteps.front().featureId == importedId);
+  CHECK(importedSteps.front().type == StepType::ImportedShape);
+  CHECK(!importedSteps.front().editable);
+  CHECK(!importedSteps.front().icon.isNull());
+  CHECK(importedSteps.front().title.contains(QString::fromUtf8("Импорт")));
+  CHECK(!importedSteps.front().title.contains(QString::fromUtf8("Эскиз")));
+
   solidar::Document sketchOnlyDocument;
   const auto sketchOnlyId = sketchOnlyDocument.addSketch("Standalone").id;
   const auto sketchOnlySteps = solidar::buildPartDesignHistory(

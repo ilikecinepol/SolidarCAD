@@ -1,12 +1,14 @@
 #include "model/MirrorFeature.h"
 
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Trsf.hxx>
 
 #include "model/Body.h"
+#include "model/GeometryOperation.h"
 
 namespace solidar {
 namespace {
@@ -32,20 +34,43 @@ ShapeFeature::ShapePtr buildMirrorShape(const TopoDS_Shape& source,
     if (error) *error = "Mirror base shape is missing";
     return {};
   }
-  gp_Trsf transform;
-  transform.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), normal(plane)));
-  BRepBuilderAPI_Transform reflected(source, transform, true);
-  if (!reflected.IsDone() || reflected.Shape().IsNull()) {
-    if (error) *error = "Mirror transformation failed";
+  if (!validMirrorPlane(plane)) {
+    if (error) *error = "Mirror plane is invalid";
     return {};
   }
-  BRep_Builder builder;
-  TopoDS_Compound compound;
-  builder.MakeCompound(compound);
-  builder.Add(compound, source);
-  builder.Add(compound, reflected.Shape());
+  ShapeFeature::ShapePtr result;
+  GeometryFailure failure;
+  const bool completed = runGeometryOperation(
+      [&]() -> bool {
+        gp_Trsf transform;
+        transform.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), normal(plane)));
+        BRepBuilderAPI_Transform reflected(source, transform, true);
+        if (!reflected.IsDone() || reflected.Shape().IsNull()) {
+          if (error) *error = "Mirror transformation failed";
+          return false;
+        }
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        builder.Add(compound, source);
+        builder.Add(compound, reflected.Shape());
+        if (!BRepCheck_Analyzer(compound).IsValid()) {
+          if (error) *error = "Mirror produced an invalid B-Rep shape";
+          return false;
+        }
+        result = std::make_shared<TopoDS_Shape>(compound);
+        return true;
+      },
+      &failure);
+  if (!completed) {
+    if (failure.kind != GeometryFailureKind::None && error)
+      *error = failure.kind == GeometryFailureKind::OcctException
+                   ? "Mirror OpenCASCADE operation failed"
+                   : "Mirror geometry operation failed";
+    return {};
+  }
   if (error) error->clear();
-  return std::make_shared<TopoDS_Shape>(compound);
+  return result;
 }
 
 MirrorFeature::MirrorFeature(FeatureId source, MirrorPlane plane,
@@ -62,8 +87,7 @@ void MirrorFeature::setPlane(MirrorPlane value) noexcept {
   plane_ = value;
   setDirty();
 }
-std::string MirrorFeature::typeName() const { return "Mirror"; }
-bool MirrorFeature::rebuild(const RebuildContext& context) {
+bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!context.previousShape || context.previousShape->IsNull()) {
     markError("Mirror base shape is missing");

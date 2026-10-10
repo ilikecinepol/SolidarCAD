@@ -5,15 +5,11 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "ui/FeatureUiRegistry.h"
 
 class QToolButton;
 
 namespace solidar {
-
-enum class HistoryStepType {
-  Sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, JoinBodies, Move, Mirror,
-  LinearPattern, CircularPattern, Shell, Draft
-};
 
 struct HistoryStep {
   HistoryStepType type{HistoryStepType::Sketch};
@@ -23,6 +19,7 @@ struct HistoryStep {
   QString title;
   QString tooltip;
   QIcon icon;
+  bool editable{true};
   FeatureState state{FeatureState::Valid};
   ShapeFeature::ShapePtr shape;
 };

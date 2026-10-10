@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -29,7 +31,6 @@
 #undef NDEBUG
 #endif
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -55,23 +56,18 @@ class TestFailure final : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
-#define CHECK(condition)                                                     \
-  do {                                                                       \
-    if (!(condition)) {                                                      \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n';  \
-      throw TestFailure(std::string(__FILE__) + ":" +                        \
-                        std::to_string(__LINE__) + ": " #condition);         \
-    }                                                                        \
-  } while (false)
-
 solidar::SketchEditContext faceContext(const TopoDS_Shape& shape,
                                        double topZ, bool autoProject) {
   const auto face = solidar::test::topPlanarFace(shape, topZ);
   CHECK(face);
   const auto placement = solidar::resolveFacePlacement(shape, *face).placement;
-  return {solidar::kInvalidSketchId, placement,
-          std::make_shared<TopoDS_Shape>(shape),
-          solidar::makeFaceReference(shape, 1, 1, *face), autoProject};
+  auto shapePtr = std::make_shared<TopoDS_Shape>(shape);
+  const auto topology = solidar::TopologyIndex::build(shapePtr);
+  CHECK(topology);
+  const auto reference = topology->createFaceReference(1, 1, *face);
+  CHECK(reference);
+  return {solidar::kInvalidSketchId, placement, std::move(shapePtr), topology,
+          reference.reference, autoProject};
 }
 
 std::set<std::size_t> projectedElements(const solidar::SketchCanvas& canvas) {
@@ -146,6 +142,7 @@ void autoProjectionRegressionTests() {
   datum.setSketchEditContext({solidar::kInvalidSketchId,
                               solidar::SketchPlacement::xy(),
                               std::make_shared<TopoDS_Shape>(box),
+                              {},
                               std::nullopt, true});
   CHECK(datum.sketch().lines().empty());
   CHECK(datum.sketch().constraints().empty());
@@ -465,6 +462,16 @@ void sketchConstraintToolTests() {
                          return constraint.type == type;
                        });
   };
+  const auto hoverIs = [](const solidar::SketchCanvas& canvas,
+                          solidar::SketchGeometryOperandKind kind) {
+    const auto& hover = canvas.interactionState().constraint.hoverOperand;
+    return hover && hover->kind == kind;
+  };
+  const auto hoverGeometryIs = [](const solidar::SketchCanvas& canvas,
+                                  solidar::sketch::GeometryId geometryId) {
+    const auto& hover = canvas.interactionState().constraint.hoverOperand;
+    return hover && hover->geometryId == geometryId;
+  };
 
   // Exercise the actual two-click UI path reported by the user. Both tools
   // must create a persistent relation, not merely show a success message.
@@ -486,10 +493,10 @@ void sketchConstraintToolTests() {
     const QPointF first = screenPoint(-20.0, -7.0);
     const QPointF second = screenPoint(17.5, 13.5);
     move(canvas, first);
-    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     click(canvas, first);
     move(canvas, second);
-    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     click(canvas, second);
     CHECK(hasConstraint(canvas.sketch(), type));
   }
@@ -508,10 +515,10 @@ void sketchConstraintToolTests() {
     QApplication::processEvents();
 
     move(canvas, screenPoint(0.0, 0.0));
-    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     click(canvas, screenPoint(0.0, 0.0));
     move(canvas, screenPoint(5.0, 16.0));
-    CHECK(canvas.property("constraintHoverKind").toInt() == 2);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Circle));
     click(canvas, screenPoint(5.0, 16.0));
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Tangent));
@@ -537,21 +544,21 @@ void sketchConstraintToolTests() {
              solidar::SketchCanvas::Tool::PerpendicularConstraint}) {
       canvas.setTool(tool);
       move(canvas, screenPoint(-20.0, 3.5));
-      CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+      CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     }
     canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
     move(canvas, screenPoint(-30.0, 0.0));
-    CHECK(canvas.property("constraintHoverKind").toInt() == 4);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Point));
 
     canvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
     move(canvas, screenPoint(-20.0, 3.5));
-    CHECK(canvas.property("constraintHoverKind").toInt() == 1);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     move(canvas, screenPoint(0.0, -20.0));
-    CHECK(canvas.property("constraintHoverKind").toInt() == 6);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::YAxis));
 
     canvas.setTool(solidar::SketchCanvas::Tool::LockConstraint);
     move(canvas, screenPoint(30.0, 8.0));
-    CHECK(canvas.property("constraintHoverKind").toInt() == 3);
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Arc));
     click(canvas, screenPoint(30.0, 8.0));
     CHECK(canvas.sketch().isGeometryLocked(canvas.sketch().arcId(0)));
   }
@@ -606,8 +613,8 @@ void sketchConstraintToolTests() {
         QStringLiteral("primaryDimension"));
     CHECK(input != nullptr);
     CHECK(input->isVisible());
-    CHECK(canvas.property("autoDimensionTarget").toString() ==
-          QStringLiteral("points"));
+    CHECK(canvas.interactionState().autoDimension.target ==
+          solidar::SketchAutoDimensionTarget::Points);
     input->setValue(25.0);
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(input, &enter);
@@ -621,8 +628,7 @@ void sketchConstraintToolTests() {
     click(canvas, screenPoint((sized.start.xMm + sized.end.xMm) * 0.5,
                               (sized.start.yMm + sized.end.yMm) * 0.5));
     move(canvas, screenPoint(sized.end.xMm, sized.end.yMm));
-    CHECK(canvas.property("constraintHoverGeometry").toULongLong() ==
-          projectionLine);
+    CHECK(hoverGeometryIs(canvas, projectionLine));
     click(canvas, screenPoint(sized.end.xMm, sized.end.yMm));
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Perpendicular));
@@ -704,8 +710,7 @@ void sketchConstraintToolTests() {
     QApplication::processEvents();
     click(tangentCanvas, screenPoint(-8.0, -20.5));
     move(tangentCanvas, screenPoint(10.0, 0.0));
-    CHECK(tangentCanvas.property("constraintHoverGeometry").toULongLong() ==
-          projectionCircle);
+    CHECK(hoverGeometryIs(tangentCanvas, projectionCircle));
     click(tangentCanvas, screenPoint(10.0, 0.0));
     CHECK(hasConstraint(tangentCanvas.sketch(),
                         solidar::sketch::ConstraintType::Tangent));
@@ -768,8 +773,8 @@ void sketchConstraintToolTests() {
           screenPoint((tangent.start.xMm + tangent.end.xMm) * 0.5,
                       (tangent.start.yMm + tangent.end.yMm) * 0.5));
     click(canvas, screenPoint(20.0, -25.0));
-    CHECK(canvas.property("autoDimensionTarget").toString() ==
-          QStringLiteral("angle"));
+    CHECK(canvas.interactionState().autoDimension.target ==
+          solidar::SketchAutoDimensionTarget::Angle);
     auto* input = canvas.findChild<QDoubleSpinBox*>(
         QStringLiteral("primaryDimension"));
     CHECK(input != nullptr);

@@ -1,6 +1,13 @@
+#include "TestAssertions.h"
+
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -12,7 +19,6 @@
 #include "model/MoveFeature.h"
 #include "project/ProjectFile.h"
 #include "TestGeometryUtils.h"
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv); solidar::Document document;
   auto& sketch = document.addSketch(); sketch.geometry.addRectangle({10,0},{20,5});
@@ -39,7 +45,8 @@ int main(int argc, char** argv) {
   CHECK(directory.isValid());
   QString error; const QString path = directory.filePath("patterns.solidar");
   CHECK(solidar::project::ProjectFile::saveDocument(path, document, &error));
-  solidar::Document restored; CHECK(solidar::project::ProjectFile::loadDocument(path, &restored, &error));
+  solidar::Document restored;
+  CHECK(solidar::project::ProjectFile::loadDocument(path, &restored, &error));
   CHECK(restored.recompute());
   CHECK(restored.bodies().size() == 2);
   const auto* loaded = restored.findBody(sourceBodyId); CHECK(loaded);
@@ -61,5 +68,114 @@ int main(int argc, char** argv) {
   CHECK(loadedPattern->sourceBodyId() == sourceBodyId);
   CHECK(solidar::test::solidCount(*loadedCopies->resultShape()) ==
         solidar::test::solidCount(*loaded->resultShape()));
+
+  solidar::Document reorderedDocument;
+  auto& reorderedSketch = reorderedDocument.addSketch("Reordered source");
+  reorderedSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 6.0});
+  auto& sourceBody = reorderedDocument.addBody("Source body");
+  auto sourceExtrude = std::make_unique<solidar::ExtrudeFeature>(
+      reorderedSketch.id, 4.0, "Source extrude");
+  const auto sourceFeatureId = sourceExtrude->id();
+  sourceBody.addFeature(std::move(sourceExtrude));
+  const auto reorderedSourceBodyId = sourceBody.id();
+
+  auto& dependentBody = reorderedDocument.addBody("Dependent pattern");
+  auto dependentPattern = std::make_unique<solidar::LinearPatternFeature>(
+      reorderedSourceBodyId, sourceFeatureId, solidar::PrincipalAxis::X, 2,
+      20.0, solidar::PatternOperation::NewBody);
+  const auto dependentPatternId = dependentPattern->id();
+  dependentBody.addFeature(std::move(dependentPattern));
+  const auto dependentBodyId = dependentBody.id();
+  CHECK(reorderedDocument.recompute());
+  const auto* savedSource =
+      reorderedDocument.findBody(reorderedSourceBodyId);
+  const auto* savedDependent = reorderedDocument.findBody(dependentBodyId);
+  CHECK(savedSource && savedSource->resultShape());
+  CHECK(savedDependent && savedDependent->resultShape());
+  const double savedSourceVolume =
+      solidar::test::volumeOf(*savedSource->resultShape());
+  const double savedDependentVolume =
+      solidar::test::volumeOf(*savedDependent->resultShape());
+  CHECK(savedSourceVolume > 0.0);
+  CHECK(savedDependentVolume > 0.0);
+
+  const QString reorderedPath = directory.filePath("reordered-bodies.solidar");
+  CHECK(solidar::project::ProjectFile::saveDocument(
+      reorderedPath, reorderedDocument, &error));
+  QFile savedFile(reorderedPath);
+  CHECK(savedFile.open(QIODevice::ReadOnly));
+  const QJsonDocument savedJson = QJsonDocument::fromJson(savedFile.readAll());
+  savedFile.close();
+  CHECK(savedJson.isObject());
+  QJsonObject root = savedJson.object();
+  CHECK(root.value(QStringLiteral("version")).toInt() == 2);
+  CHECK(root.value(QStringLiteral("model")).isObject());
+  QJsonObject model = root.value(QStringLiteral("model")).toObject();
+  CHECK(model.value(QStringLiteral("bodies")).isArray());
+  const QJsonArray bodies = model.value(QStringLiteral("bodies")).toArray();
+  CHECK(bodies.size() == 2);
+  QJsonArray reversedBodies;
+  for (qsizetype index = bodies.size(); index > 0; --index)
+    reversedBodies.append(bodies.at(index - 1));
+  model.insert(QStringLiteral("bodies"), reversedBodies);
+  root.insert(QStringLiteral("model"), model);
+
+  QFile reorderedFile(reorderedPath);
+  CHECK(reorderedFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+  const QByteArray reorderedPayload =
+      QJsonDocument(root).toJson(QJsonDocument::Compact);
+  CHECK(reorderedFile.write(reorderedPayload) == reorderedPayload.size());
+  reorderedFile.close();
+
+  auto staged = solidar::project::ProjectFile::stageLoad(reorderedPath);
+  CHECK(staged.kind == solidar::project::ProjectLoadKind::ValidV2);
+  CHECK(staged.error.isEmpty());
+  CHECK(staged.document.has_value());
+  solidar::Document reorderedRestored = std::move(*staged.document);
+  CHECK(reorderedRestored.bodies().size() == 2);
+
+  const auto* restoredSource =
+      reorderedRestored.findBody(reorderedSourceBodyId);
+  const auto* restoredDependent = reorderedRestored.findBody(dependentBodyId);
+  CHECK(restoredSource && restoredSource->features().size() == 1);
+  CHECK(restoredDependent && restoredDependent->features().size() == 1);
+  CHECK(restoredSource->features().front()->id() == sourceFeatureId);
+  CHECK(restoredDependent->features().front()->id() == dependentPatternId);
+  const auto* restoredPattern =
+      dynamic_cast<const solidar::LinearPatternFeature*>(
+          restoredDependent->features().front().get());
+  CHECK(restoredPattern);
+  CHECK(restoredPattern->sourceBodyId() == reorderedSourceBodyId);
+  CHECK(restoredPattern->sourceFeatureId() == sourceFeatureId);
+  CHECK(restoredPattern->operation() == solidar::PatternOperation::NewBody);
+  CHECK(restoredSource->resultShape() &&
+        !restoredSource->resultShape()->IsNull());
+  CHECK(restoredDependent->resultShape() &&
+        !restoredDependent->resultShape()->IsNull());
+  CHECK(solidar::test::near(
+      solidar::test::volumeOf(*restoredSource->resultShape()),
+      savedSourceVolume));
+  CHECK(solidar::test::near(
+      solidar::test::volumeOf(*restoredDependent->resultShape()),
+      savedDependentVolume));
+
+  const auto dependentShapeBefore = restoredDependent->resultShape();
+  const double dependentVolumeBefore =
+      solidar::test::volumeOf(*dependentShapeBefore);
+  auto* restoredExtrude = dynamic_cast<solidar::ExtrudeFeature*>(
+      restoredSource->features().front().get());
+  CHECK(restoredExtrude);
+  restoredExtrude->setLengthMm(9.0);
+  CHECK(reorderedRestored.recomputeFrom(sourceFeatureId));
+
+  restoredSource = reorderedRestored.findBody(reorderedSourceBodyId);
+  restoredDependent = reorderedRestored.findBody(dependentBodyId);
+  CHECK(restoredSource && restoredSource->resultShape());
+  CHECK(restoredDependent && restoredDependent->resultShape());
+  CHECK(restoredDependent->resultShape() != dependentShapeBefore);
+  CHECK(std::abs(solidar::test::volumeOf(*restoredSource->resultShape()) -
+                 savedSourceVolume) > 1.0e-4);
+  CHECK(std::abs(solidar::test::volumeOf(*restoredDependent->resultShape()) -
+                 dependentVolumeBefore) > 1.0e-4);
   return EXIT_SUCCESS;
 }

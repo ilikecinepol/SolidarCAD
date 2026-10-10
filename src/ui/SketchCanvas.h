@@ -7,12 +7,17 @@
 #include <QWidget>
 
 #include <optional>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
 #include "sketch/Sketch.h"
 #include "model/Document.h"
 #include "ui/BodyRenderMesh.h"
+#include "ui/SketchCommandController.h"
+#include "ui/SketchInteractionController.h"
+#include "ui/SketchHitSceneAdapter.h"
+#include "ui/SketchRenderer.h"
 #include "ui/ViewCube.h"
 
 class QKeyEvent;
@@ -22,6 +27,7 @@ class QWheelEvent;
 class QDoubleSpinBox;
 class QEvent;
 class QVariantAnimation;
+class QTimer;
 
 namespace solidar {
 
@@ -29,13 +35,9 @@ struct SketchEditContext {
   SketchId sketchId{kInvalidSketchId};
   SketchPlacement placement{SketchPlacement::xy()};
   ShapeFeature::ShapePtr supportShape;
+  std::shared_ptr<const TopologyIndex> supportTopologyIndex;
   std::optional<FaceReference> supportFace;
   bool autoProjectSupportFace{false};
-};
-
-struct SketchSceneReference {
-  sketch::Sketch geometry;
-  SketchPlacement placement{SketchPlacement::xy()};
 };
 
 class SketchCanvas final : public QWidget {
@@ -99,7 +101,8 @@ class SketchCanvas final : public QWidget {
   // Global camera orientation consumed by the shared ViewCube.  The sketch
   // camera itself is stored in the active plane's local coordinate frame.
   [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
-  void setReferenceBody(BoxParameters box, const QString& support, bool visible);
+  void setReferenceBody(BoxParameters box, const SketchPlacement& placement,
+                        bool visible);
   // Preserves the current 3D viewport's visual up direction when the sketch
   // plane is opened. This changes presentation only, never SketchPlacement.
   void setInitialViewUp(Vector3d worldUp) noexcept;
@@ -112,8 +115,16 @@ class SketchCanvas final : public QWidget {
   void setReferenceProfile(const sketch::Sketch& profile, bool visible);
   [[nodiscard]] bool canUndo() const noexcept;
   [[nodiscard]] bool canRedo() const noexcept;
+  [[nodiscard]] std::size_t undoHistorySize() const noexcept;
+  [[nodiscard]] std::size_t undoHistoryRetainedBytes() const noexcept;
+  [[nodiscard]] std::size_t committedRenderSceneBuildCount() const noexcept;
+  void flushConstraintDiagnostics();
+  [[nodiscard]] std::size_t fullDiagnosticsCount() const noexcept;
   [[nodiscard]] Tool tool() const noexcept;
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
+  [[nodiscard]] const SketchToolState& interactionState() const noexcept;
+  [[nodiscard]] bool hasActiveInteraction() const noexcept;
+  void selectDimension(std::size_t index) noexcept;
   [[nodiscard]] bool hasRealReferenceBody() const noexcept;
   [[nodiscard]] std::size_t referenceFaceEdgeCount() const noexcept;
   [[nodiscard]] std::size_t referenceBodyEdgeCount() const noexcept;
@@ -187,6 +198,8 @@ signals:
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
+  [[nodiscard]] SketchRenderSnapshot renderSnapshot() const;
+  void markCommittedRenderSceneDirty() noexcept;
   enum class SelectionKind { None, Line, Circle, Arc };
   enum class ConstructionSnapKind {
     None,
@@ -225,22 +238,24 @@ signals:
       sketch::Point center, double radiusMm, double startAngleRad = 0.0,
       double sweepAngleRad = 2.0 * 3.14159265358979323846,
       int segmentCount = 72) const;
-  [[nodiscard]] double circleDistanceToScreenPoint(
-      const sketch::Circle& circle, QPointF point) const;
   void animateViewToDirection(Point3d direction);
   void animateViewRotationBy(double deltaDeg);
   void clearViewCubeHover();
   [[nodiscard]] QPointF mapPoint(sketch::Point point) const;
   [[nodiscard]] sketch::Point unmapPoint(QPointF point) const;
-  [[nodiscard]] double arcDistanceToScreenPoint(
-      const sketch::Arc& arc, QPointF point) const;
   [[nodiscard]] sketch::Point snappedPoint(QPointF point) const;
   [[nodiscard]] ConstructionSnap constructionSnapAt(QPointF position) const;
   bool commitDraggedPointSnap(sketch::PointReference movingPoint,
                               const ConstructionSnap& snap);
-  [[nodiscard]] std::optional<std::size_t> referenceEdgeAt(QPointF position) const;
+  [[nodiscard]] std::optional<SketchProjectionEdgeToken> referenceEdgeAt(
+      QPointF position) const;
+  [[nodiscard]] std::optional<SketchProjectionEdgeToken>
+  projectionTokenForFlatEdge(std::size_t edgeVectorIndex) const noexcept;
   [[nodiscard]] const RenderEdge* referenceEdge(
       std::size_t edgeVectorIndex) const noexcept;
+  [[nodiscard]] const RenderEdge* referenceEdge(
+      const SketchProjectionEdgeToken& token) const noexcept;
+  bool projectReferenceEdge(const SketchProjectionEdgeToken& token);
   void fitReferenceGeometry();
   bool appendProjectedEdge(const RenderEdge& edge, bool recordUndo,
                            bool reportStatus);
@@ -261,7 +276,15 @@ signals:
   void commitDimensionEditor();
   void hideDimensionEditor();
   void notifyGeometryChanged();
+  [[nodiscard]] SketchCommandResult executeCommand(
+      const SketchCommand& command);
+  [[nodiscard]] SketchCommandResult executeLiveCommand(
+      const SketchLiveCommand& command);
+  void applyCommandEffects(const SketchCommandEffects& effects);
+  void runConstraintDiagnostics();
   void pushUndoState();
+  [[nodiscard]] bool finalizeUndoState();
+  void cancelPendingUndo();
   void commitCirclePoint(sketch::Point point);
   void commitArcPoint(sketch::Point point);
   void commitRectanglePoint(sketch::Point point);
@@ -275,13 +298,24 @@ signals:
   void handleTangentConstraintClick(QPointF position);
   [[nodiscard]] std::optional<sketch::GeometryId> lineAt(
       QPointF position, double tolerancePx = 9.0) const;
+  [[nodiscard]] SketchHitScene hitScene(
+      const SketchHitTolerancePolicy& tolerance = {},
+      bool includeDatums = false) const;
+  [[nodiscard]] std::optional<SketchPickEntityRef> geometryAt(
+      QPointF position, double tolerancePx = 9.0,
+      const SketchPickFilter& filter = {},
+      sketch::GeometryId excludedGeometry = sketch::kInvalidGeometryId) const;
+  [[nodiscard]] std::optional<SketchPickPointRef> pointAt(
+      QPointF position, double tolerancePx = 10.0,
+      const SketchPickFilter& filter = {},
+      sketch::GeometryId excludedGeometry = sketch::kInvalidGeometryId,
+      std::size_t excludedElement = 0) const;
+  [[nodiscard]] std::optional<std::vector<sketch::Line>>
+  resolvedCircleGuideLines() const;
   [[nodiscard]] std::vector<sketch::GeometryId> closedLineContour(
       sketch::GeometryId seed) const;
-  enum class MirrorGeometryKind { Line, Circle, Arc };
-  struct MirrorGeometryRef {
-    MirrorGeometryKind kind{MirrorGeometryKind::Line};
-    sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
-  };
+  using MirrorGeometryKind = SketchMirrorGeometryKind;
+  using MirrorGeometryRef = SketchMirrorGeometryRef;
   [[nodiscard]] std::optional<MirrorGeometryRef> mirrorGeometryAt(
       QPointF position, double tolerancePx = 9.0) const;
   [[nodiscard]] std::vector<MirrorGeometryRef> closedMirrorContour(
@@ -289,16 +323,8 @@ signals:
   void setMirrorSourceSelection(
       const std::vector<MirrorGeometryRef>& source);
   bool mirrorContourAboutLine(sketch::GeometryId axisId);
-  enum class TrimGeometryKind { Line, Circle, Arc };
-  struct TrimPreview {
-    TrimGeometryKind kind{TrimGeometryKind::Line};
-    sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
-    // Normalized parameter interval on the source primitive. For circles the
-    // end may exceed 1.0 when the highlighted interval wraps through 0.
-    double firstParameter{};
-    double secondParameter{1.0};
-    bool fullGeometry{false};
-  };
+  using TrimGeometryKind = SketchTrimGeometryKind;
+  using TrimPreview = SketchTrimPreview;
   [[nodiscard]] std::optional<TrimPreview> trimPreviewAt(
       QPointF position) const;
   bool trimAt(QPointF position);
@@ -311,12 +337,26 @@ signals:
   [[nodiscard]] bool beginDimensionLabelDrag(QPointF position);
   [[nodiscard]] bool beginDimensionLineDrag(QPointF position);
   [[nodiscard]] std::optional<std::size_t> dimensionAt(
-      QPointF position) const;
+      QPointF position,
+      std::optional<SketchDimensionHitKind> requiredKind = std::nullopt) const;
+  [[nodiscard]] std::optional<SketchDimensionReference> dimensionReference(
+      std::size_t index) const;
+  [[nodiscard]] std::optional<std::size_t> dimensionIndex(
+      const SketchDimensionReference& reference) const;
 
   sketch::Sketch sketch_;
-  std::vector<sketch::Sketch> undoStack_;
-  std::vector<sketch::Sketch> redoStack_;
-  Tool tool_{Tool::Select};
+  SketchRenderer renderer_;
+  mutable SketchRenderSceneCache renderSceneCache_;
+  std::uint64_t renderSceneRevision_{1};
+  std::uint64_t sketchGeneration_{1};
+  SketchCommandController commandController_;
+  SketchInteractionController interaction_;
+  std::vector<sketch::SketchDelta> undoStack_;
+  std::vector<sketch::SketchDelta> redoStack_;
+  std::optional<SketchTransactionToken> pendingUndoTransaction_;
+  bool commandSequenceFailed_{};
+  std::size_t undoRetainedBytes_{};
+  std::size_t redoRetainedBytes_{};
   SelectionKind selectionKind_{SelectionKind::None};
   sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
@@ -326,46 +366,33 @@ signals:
   std::vector<std::size_t> selectedElementIds_;
   std::vector<sketch::GeometryId> selectedCircleIds_;
   std::vector<sketch::GeometryId> selectedArcIds_;
-  bool selectionBoxActive_{false};
-  QPointF selectionBoxStart_{};
-  QPointF selectionBoxCurrent_{};
-  bool selectionBoxAdditive_{false};
-  std::optional<sketch::Point> anchor_;
-  std::optional<sketch::PointReference> coincidentFirstPoint_;
   sketch::Point hoverPoint_{};
   std::optional<ConstructionSnap> constructionHover_;
-  std::optional<TrimPreview> trimHover_;
-  sketch::Point dragPoint_{};
-  bool dragging_{false};
   QDoubleSpinBox* primaryDimension_{nullptr};
   QDoubleSpinBox* secondaryDimension_{nullptr};
   double pixelsPerMm_{5.0};
   double snapStepMm_{5.0};
   bool snapEnabled_{false};
   bool gridVisible_{true};
-  std::optional<std::size_t> hoveredProjectionEdge_;
+  std::optional<SketchProjectionEdgeToken> hoveredProjectionEdge_;
   Vector3d preferredViewUp_{};
   double initialViewRotationDeg_{0.0};
   double viewRotationDeg_{0.0};
   double viewYawDeg_{0.0};
   double viewPitchDeg_{0.0};
   QVariantAnimation* viewCubeAnimation_{nullptr};
+  QTimer* constraintDiagnosticsTimer_{nullptr};
+  std::size_t fullDiagnosticsCount_{};
   ViewCubeHit cubeHover_;
   ViewCubeHit cubePressed_;
   CircleMode circleMode_{CircleMode::CenterRadius};
   double circleDiameterMm_{20.0};
-  std::vector<sketch::Point> circlePoints_;
-  std::vector<sketch::Point> arcPoints_;
-  std::vector<sketch::Line> circleGuideLines_;
   RectangleMode rectangleMode_{RectangleMode::TwoPoints};
-  std::vector<sketch::Point> rectanglePoints_;
-  std::vector<MirrorGeometryRef> mirrorSourceGeometry_;
   BoxParameters referenceBox_{};
-  QString referenceSupport_;
   bool referenceBodyVisible_{false};
-  BodyRenderMesh referenceBodyMesh_;
-  BodyRenderMesh referenceFaceMesh_;
-  std::vector<BodyRenderMesh> sceneBodyMeshes_;
+  std::shared_ptr<const BodyRenderMesh> referenceBodyMesh_;
+  std::shared_ptr<const BodyRenderMesh> referenceFaceMesh_;
+  std::vector<std::shared_ptr<const BodyRenderMesh>> sceneBodyMeshes_;
   std::vector<SketchSceneReference> sceneSketches_;
   SketchPlacement referencePlacement_{SketchPlacement::xy()};
   bool realReferenceBodyVisible_{false};

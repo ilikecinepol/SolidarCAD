@@ -1,6 +1,7 @@
 #include "model/LinearPatternFeature.h"
 
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Trsf.hxx>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include "model/Body.h"
 #include "model/Document.h"
+#include "model/GeometryOperation.h"
 
 namespace solidar {
 namespace {
@@ -51,36 +53,59 @@ ShapeFeature::ShapePtr buildLinearPatternShape(const TopoDS_Shape& source,
                                                int count, double spacingMm,
                                                std::string* error,
                                                bool includeSource) {
-  if (count < 2) {
-    if (error) *error = "Linear Pattern count must be at least 2";
+  if (!validPatternCount(count)) {
+    if (error) *error = "Linear Pattern count must be in [2, 100]";
     return {};
   }
-  if (!std::isfinite(spacingMm) || spacingMm <= 0.0) {
+  if (!validPatternSpacing(spacingMm)) {
     if (error)
-      *error = "Linear Pattern spacing must be finite and positive";
+      *error = "Linear Pattern spacing must be finite and in [0.01, 100000]";
+    return {};
+  }
+  if (!validPrincipalAxis(direction)) {
+    if (error) *error = "Linear Pattern direction is invalid";
     return {};
   }
   if (source.IsNull()) {
     if (error) *error = "Linear Pattern base shape is missing";
     return {};
   }
-  BRep_Builder builder;
-  TopoDS_Compound compound;
-  builder.MakeCompound(compound);
-  if (includeSource) builder.Add(compound, source);
-  for (int index = 1; index < count; ++index) {
-    gp_Trsf transform;
-    transform.SetTranslation(
-        directionVector(direction, spacingMm * static_cast<double>(index)));
-    BRepBuilderAPI_Transform copy(source, transform, true);
-    if (!copy.IsDone() || copy.Shape().IsNull()) {
-      if (error) *error = "Linear Pattern transformation failed";
-      return {};
-    }
-    builder.Add(compound, copy.Shape());
+  ShapeFeature::ShapePtr result;
+  GeometryFailure failure;
+  const bool completed = runGeometryOperation(
+      [&]() -> bool {
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        if (includeSource) builder.Add(compound, source);
+        for (int index = 1; index < count; ++index) {
+          gp_Trsf transform;
+          transform.SetTranslation(directionVector(
+              direction, spacingMm * static_cast<double>(index)));
+          BRepBuilderAPI_Transform copy(source, transform, true);
+          if (!copy.IsDone() || copy.Shape().IsNull()) {
+            if (error) *error = "Linear Pattern transformation failed";
+            return false;
+          }
+          builder.Add(compound, copy.Shape());
+        }
+        if (!BRepCheck_Analyzer(compound).IsValid()) {
+          if (error) *error = "Linear Pattern produced an invalid B-Rep shape";
+          return false;
+        }
+        result = std::make_shared<TopoDS_Shape>(compound);
+        return true;
+      },
+      &failure);
+  if (!completed) {
+    if (failure.kind != GeometryFailureKind::None && error)
+      *error = failure.kind == GeometryFailureKind::OcctException
+                   ? "Linear Pattern OpenCASCADE operation failed"
+                   : "Linear Pattern geometry operation failed";
+    return {};
   }
   if (error) error->clear();
-  return std::make_shared<TopoDS_Shape>(compound);
+  return result;
 }
 
 LinearPatternFeature::LinearPatternFeature(FeatureId source, PrincipalAxis axis,
@@ -118,13 +143,19 @@ PatternOperation LinearPatternFeature::operation() const noexcept {
 void LinearPatternFeature::setDirection(PrincipalAxis value) noexcept { if (direction_ != value) { direction_ = value; setDirty(); } }
 void LinearPatternFeature::setCount(int value) noexcept { if (count_ != value) { count_ = value; setDirty(); } }
 void LinearPatternFeature::setSpacingMm(double value) noexcept { if (spacingMm_ != value) { spacingMm_ = value; setDirty(); } }
-bool LinearPatternFeature::dependsOnFeature(FeatureId featureId) const noexcept {
-  return operation_ == PatternOperation::NewBody &&
-         sourceFeatureId_ == featureId;
+FeatureDependencies LinearPatternFeature::dependencies() const {
+  FeatureDependencies result;
+  if (operation_ == PatternOperation::NewBody &&
+      sourceFeatureId_ != kInvalidFeatureId)
+    result.featureIds.push_back(sourceFeatureId_);
+  return result;
 }
-std::string LinearPatternFeature::typeName() const { return "LinearPattern"; }
-bool LinearPatternFeature::rebuild(const RebuildContext& context) {
+bool LinearPatternFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
+  if (!validPatternOperation(operation_)) {
+    markError("Linear Pattern operation is invalid");
+    return false;
+  }
   const TopoDS_Shape* source = resolvedSource(
       this, context, sourceBodyId_, sourceFeatureId_, operation_);
   if (!source || source->IsNull()) {

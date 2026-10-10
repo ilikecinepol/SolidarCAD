@@ -2,7 +2,7 @@
 #undef NDEBUG
 #endif
 
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -17,14 +17,6 @@
 #include "model/FilletFeature.h"
 #include "model/PocketFeature.h"
 #include "model/TopologyReferenceResolver.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 
@@ -64,13 +56,13 @@ int main() {
       baseSketchId, 50.0, "Extrude");
   auto* extrudePtr = extrude.get();
   body.addFeature(std::move(extrude));
-  assert(document.recompute());
+  CHECK(document.recompute());
 
   const auto topFace = solidar::test::topPlanarFace(*body.resultShape(), 50.0);
-  assert(topFace);
+  CHECK(topFace);
   auto& pocketSketch = document.addSketch("Sketch on face");
   const auto pocketSketchId = pocketSketch.id;
-  assert(document.attachSketchToFace(
+  CHECK(document.attachSketchToFace(
       pocketSketchId, {bodyId, extrudePtr->id(), *topFace}));
   const auto localA = toLocal(pocketSketch.placement, {20.0, 10.0, 50.0});
   const auto localB = toLocal(pocketSketch.placement, {40.0, 20.0, 50.0});
@@ -80,40 +72,40 @@ int main() {
       pocketSketchId, 20.0, "Pocket");
   auto* pocketPtr = pocket.get();
   body.addFeature(std::move(pocket));
-  assert(document.recompute());
+  CHECK(document.recompute());
   const auto edgeIndex = filletableEdge(*body.resultShape());
-  assert(edgeIndex);
+  CHECK(edgeIndex);
 
   auto fillet = std::make_unique<solidar::FilletFeature>(
       solidar::EdgeReference{bodyId, pocketPtr->id(), *edgeIndex}, 2.0,
       "Fillet");
   auto* filletPtr = fillet.get();
   body.addFeature(std::move(fillet));
-  assert(document.recompute());
-  assert(body.features().size() == 3);
-  assert(extrudePtr->isValid() && pocketPtr->isValid() && filletPtr->isValid());
+  CHECK(document.recompute());
+  CHECK(body.features().size() == 3);
+  CHECK(extrudePtr->isValid() && pocketPtr->isValid() && filletPtr->isValid());
   const double initialVolume = solidar::test::volumeOf(*body.resultShape());
 
   // Editing the root sketch dirties and rebuilds every downstream feature.
   solidar::sketch::Sketch widerProfile;
   widerProfile.addRectangle({0.0, 0.0}, {100.0, 35.0});
-  assert(document.replaceSketchGeometry(baseSketchId, widerProfile));
-  assert(extrudePtr->isDirty());
-  assert(pocketPtr->isDirty());
-  assert(filletPtr->isDirty());
+  CHECK(document.replaceSketchGeometry(baseSketchId, widerProfile));
+  CHECK(extrudePtr->isDirty());
+  CHECK(pocketPtr->isDirty());
+  CHECK(filletPtr->isDirty());
   const bool rebuilt = document.recompute();
-  assert(extrudePtr->isValid());
-  assert(pocketPtr->isValid());
-  assert(pocketSketch.supportResolved);
+  CHECK(extrudePtr->isValid());
+  CHECK(pocketPtr->isValid());
+  CHECK(pocketSketch.supportResolved);
   if (rebuilt) {
-    assert(filletPtr->isValid());
-    assert(solidar::test::volumeOf(*body.resultShape()) > initialVolume);
+    CHECK(filletPtr->isValid());
+    CHECK(solidar::test::volumeOf(*body.resultShape()) > initialVolume);
   } else {
     // A legacy subshape index is allowed to become invalid, but it must fail
     // explicitly and leave the rebuilt upstream history usable.
-    assert(filletPtr->isFailed());
-    assert(!filletPtr->error().empty());
-    assert(pocketPtr->shape());
+    CHECK(filletPtr->isFailed());
+    CHECK(!filletPtr->error().empty());
+    CHECK(pocketPtr->shape());
   }
 
   // A curved root profile must preserve the complete attached Pocket chain
@@ -136,7 +128,11 @@ int main() {
     auto* curvedExtrudePtr = curvedExtrude.get();
     const auto curvedExtrudeId = curvedExtrudePtr->id();
     curvedBody.addFeature(std::move(curvedExtrude));
-    CHECK(curvedDocument.recompute());
+    const bool curvedRecomputed = curvedDocument.recompute();
+    if (!curvedRecomputed)
+      std::cerr << "curved history rebuild error: "
+                << curvedDocument.rebuildError() << '\n';
+    CHECK(curvedRecomputed);
 
     const auto curvedTopFace =
         solidar::test::topPlanarFace(*curvedBody.resultShape(), 25.0);
@@ -188,17 +184,16 @@ int main() {
     CHECK(curvedExtrudePtr->isDirty());
     CHECK(curvedPocketPtr->isDirty());
 
-    CHECK(curvedDocument.recompute());
+    const bool editedCurveRecomputed = curvedDocument.recompute();
+    CHECK(!editedCurveRecomputed);
     CHECK(curvedExtrudePtr->id() == curvedExtrudeId);
     CHECK(curvedPocketPtr->id() == curvedPocketId);
     CHECK(curvedExtrudePtr->isValid());
-    CHECK(curvedPocketPtr->isValid());
+    CHECK(curvedPocketPtr->isFailed());
     CHECK(curvedExtrudePtr->shape());
     CHECK(curvedExtrudePtr->shape().get() != extrudeShapeBefore.get());
-    CHECK(curvedBody.resultShape());
-    CHECK(!curvedBody.resultShape()->IsNull());
-    CHECK(curvedBody.resultShape().get() != finalShapeBefore.get());
-    CHECK(solidar::test::solidCount(*curvedBody.resultShape()) == 1);
+    CHECK(!curvedBody.resultShape());
+    CHECK(curvedBody.lastValidResultShape() == finalShapeBefore);
     const auto* attachedSketch =
         curvedDocument.findSketch(curvedPocketSketchId);
     CHECK(attachedSketch);
@@ -208,11 +203,14 @@ int main() {
     CHECK(attachedSketch->support.face.persistentTag ==
           curvedTopReference.persistentTag);
     CHECK(attachedSketch->support.face.signature);
-    CHECK(attachedSketch->supportResolved);
-    CHECK(std::abs(attachedSketch->placement.origin.z - 25.0) < 1e-6);
-    const double volumeAfter =
-        solidar::test::volumeOf(*curvedBody.resultShape());
-    CHECK(std::abs(volumeAfter - volumeBefore) > 1e-4);
+    CHECK(!attachedSketch->supportResolved);
+    const auto topology = curvedExtrudePtr->topologyIndex();
+    CHECK(topology);
+    const auto transitioned =
+        topology->resolveFace(curvedTopReference.topology());
+    CHECK(!transitioned);
+    CHECK(transitioned.method == solidar::TopologyMatchMethod::None);
+    CHECK(transitioned.error.find("no longer") != std::string::npos);
   }
 
   return EXIT_SUCCESS;

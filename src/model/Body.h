@@ -34,15 +34,21 @@ class Body final {
       const noexcept;
   [[nodiscard]] ShapeFeature* activeFeature() noexcept;
   [[nodiscard]] const ShapeFeature* activeFeature() const noexcept;
+  // Authoritative current result. Failed/blocked active Features never expose
+  // stale geometry through this dependency-facing API.
   [[nodiscard]] ShapeFeature::ShapePtr resultShape() const noexcept;
-  [[nodiscard]] bool rebuild(const RebuildContext& context);
+  // Explicit presentation fallback to the newest validated committed Shape.
+  // This must not be used as an input to feature rebuilds or new operations.
+  [[nodiscard]] ShapeFeature::ShapePtr lastValidResultShape() const noexcept;
   void markDirtyFrom(std::size_t index) noexcept;
   [[nodiscard]] std::optional<std::size_t> featureIndex(
       FeatureId id) const noexcept;
   void eraseFeaturesFrom(std::size_t index);
 
  private:
+  friend class Document;
   static BodyId nextId() noexcept;
+  static void reserveId(BodyId id) noexcept;
 
   BodyId id_{kInvalidBodyId};
   std::string name_;

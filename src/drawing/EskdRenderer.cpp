@@ -36,6 +36,8 @@ constexpr double kLeftMarginMm = 20.0;
 constexpr double kOtherMarginMm = 5.0;
 constexpr double kTitleWidthMm = 185.0;
 constexpr double kTitleHeightMm = 55.0;
+const QColor kPaperColor(Qt::white);
+const QColor kInkColor(Qt::black);
 
 void line(QPainter& painter, double x1, double y1, double x2, double y2) {
   painter.drawLine(QPointF(x1, y1), QPointF(x2, y2));
@@ -56,14 +58,14 @@ void arrow(QPainter& painter, QPointF tip, bool pointsRight) {
   shape << tip << QPointF(tip.x() - direction * 3.0, tip.y() - 0.7)
         << QPointF(tip.x() - direction * 3.0, tip.y() + 0.7);
   painter.save();
-  painter.setBrush(Qt::black);
+  painter.setBrush(kInkColor);
   painter.drawPolygon(shape);
   painter.restore();
 }
 
 void horizontalDimension(QPainter& painter, double left, double right,
                          double objectY, double dimensionY, double value) {
-  painter.setPen(QPen(Qt::black, 0.18));
+  painter.setPen(QPen(kInkColor, 0.18));
   line(painter, left, objectY - 1.0, left, dimensionY - 2.0);
   line(painter, right, objectY - 1.0, right, dimensionY - 2.0);
   line(painter, left - 2.0, dimensionY, right + 2.0, dimensionY);
@@ -76,7 +78,7 @@ void horizontalDimension(QPainter& painter, double left, double right,
 
 void verticalDimension(QPainter& painter, double bottom, double top,
                        double objectX, double dimensionX, double value) {
-  painter.setPen(QPen(Qt::black, 0.18));
+  painter.setPen(QPen(kInkColor, 0.18));
   line(painter, objectX + 1.0, bottom, dimensionX + 2.0, bottom);
   line(painter, objectX + 1.0, top, dimensionX + 2.0, top);
   line(painter, dimensionX, bottom + 2.0, dimensionX, top - 2.0);
@@ -92,7 +94,7 @@ void verticalDimension(QPainter& painter, double bottom, double top,
   QPolygonF topArrow{{dimensionX, top}, {dimensionX - 0.7, top - 3.0},
                      {dimensionX + 0.7, top - 3.0}};
   painter.save();
-  painter.setBrush(Qt::black);
+  painter.setBrush(kInkColor);
   painter.drawPolygon(bottomArrow);
   painter.drawPolygon(topArrow);
   painter.restore();
@@ -101,9 +103,9 @@ void verticalDimension(QPainter& painter, double bottom, double top,
 void titleBlock(QPainter& painter, const TitleBlockData& data) {
   const double left = kPageWidthMm - kOtherMarginMm - kTitleWidthMm;
   const double top = kPageHeightMm - kOtherMarginMm - kTitleHeightMm;
-  painter.setPen(QPen(Qt::black, 0.5));
+  painter.setPen(QPen(kInkColor, 0.5));
   painter.drawRect(QRectF(left, top, kTitleWidthMm, kTitleHeightMm));
-  painter.setPen(QPen(Qt::black, 0.18));
+  painter.setPen(QPen(kInkColor, 0.18));
 
   line(painter, left, top + 15, left + 185, top + 15);
   line(painter, left, top + 30, left + 185, top + 30);
@@ -247,7 +249,7 @@ std::optional<ProjectedDrawingBounds> drawProjectedShape(
   const QPointF modelCenter((minX + maxX) * 0.5, (minY + maxY) * 0.5);
   const QPointF pageCenter = area.center();
 
-  painter.setPen(QPen(Qt::black, 0.5));
+  painter.setPen(QPen(kInkColor, 0.5));
   QTransform fit;
   fit.translate(pageCenter.x(), pageCenter.y());
   fit.scale(scale, scale);
@@ -266,12 +268,12 @@ void EskdRenderer::renderA4(QPainter& painter, const QRectF& target,
                             const TopoDS_Shape* sourceShape) {
   painter.save();
   painter.setRenderHint(QPainter::Antialiasing);
-  painter.fillRect(target, Qt::white);
+  painter.fillRect(target, kPaperColor);
   painter.translate(target.topLeft());
   painter.scale(target.width() / kPageWidthMm, target.height() / kPageHeightMm);
   painter.setBrush(Qt::NoBrush);
 
-  painter.setPen(QPen(Qt::black, 0.5));
+  painter.setPen(QPen(kInkColor, 0.5));
   painter.drawRect(QRectF(kLeftMarginMm, kOtherMarginMm,
                           kPageWidthMm - kLeftMarginMm - kOtherMarginMm,
                           kPageHeightMm - 2.0 * kOtherMarginMm));
@@ -305,13 +307,13 @@ void EskdRenderer::renderA4(QPainter& painter, const QRectF& target,
     };
 
     for (const auto& segment : sketch.lines()) {
-      painter.setPen(QPen(Qt::black, 0.7,
+      painter.setPen(QPen(kInkColor, 0.7,
                           segment.dashed ? Qt::DashLine : Qt::SolidLine));
       painter.drawLine(map(segment.start), map(segment.end));
     }
-    painter.setPen(QPen(Qt::black, 0.7));
+    painter.setPen(QPen(kInkColor, 0.7));
     for (const auto& circle : sketch.circles()) {
-      painter.setPen(QPen(Qt::black, 0.7,
+      painter.setPen(QPen(kInkColor, 0.7,
                           circle.dashed ? Qt::DashLine : Qt::SolidLine));
       const QPointF circleCenter = map(circle.center);
       const double radius = circle.radiusMm * scale;

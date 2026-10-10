@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "sketch/Sketch.h"
 #include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/SketchSolver.h"
@@ -18,8 +20,6 @@ void require(bool condition, const char* message) {
     std::exit(EXIT_FAILURE);
   }
 }
-
-#define CHECK(condition) require((condition), #condition)
 
 ConstraintId lockGeometry(Sketch& sketch, GeometryId id) {
   Constraint lock;

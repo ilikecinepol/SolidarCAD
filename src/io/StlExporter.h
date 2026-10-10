@@ -1,25 +1,23 @@
 #pragma once
 
-#include <QPointF>
 #include <QString>
-#include <vector>
 
 #include "model/Document.h"
-#include "model/SolidFeature.h"
-#include "sketch/Sketch.h"
 
 namespace solidar::io {
+
+namespace detail {
+
+// BRepMesh_IncrementalMesh reports a bit mask independently from IsDone().
+// Keep the acceptance policy testable without exposing OCCT types here.
+[[nodiscard]] bool isAcceptableStlMeshingStatus(int statusFlags) noexcept;
+
+}  // namespace detail
 
 // Export the authoritative final B-Rep of every Body in the Document.
 // This is the production STL path. It preserves fillets, chamfers, cuts,
 // revolves, shells, drafts, mirrors and patterns exactly as rebuilt by OCCT.
 bool exportDocumentAsciiStl(const QString& path, const Document& document,
                             QString* error = nullptr);
-
-bool exportAsciiStl(const QString& path, const sketch::Sketch& profile,
-                    const QString& support, const BoxParameters& box,
-                    QPointF bodyPosition,
-                    const std::vector<SolidFeature>& features = {},
-                    QString* error = nullptr);
 
 }  // namespace solidar::io

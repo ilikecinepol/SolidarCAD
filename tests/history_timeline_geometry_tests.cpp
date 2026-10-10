@@ -1,7 +1,8 @@
+#include "TestAssertions.h"
+
 #include <cstdlib>
 #include <iostream>
 #include "ui/HistoryTimelineWidget.h"
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 int main() {
   solidar::HistoryTimelineGeometry one{1};
   CHECK(one.trackStart() == one.center(0));

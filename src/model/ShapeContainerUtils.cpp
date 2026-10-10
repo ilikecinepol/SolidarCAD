@@ -6,7 +6,7 @@
 #include <TopoDS_Compound.hxx>
 #include <algorithm>
 #include <optional>
-#include "model/TopologyReferenceResolver.h"
+#include <unordered_map>
 
 namespace solidar {
 
@@ -25,20 +25,29 @@ std::optional<SolidEdgeSelection> mapEdgesToOwningSolids(
     if (error) *error = "Shape does not contain a solid";
     return std::nullopt;
   }
-  result.localEdgeIndices.resize(result.solids.size());
-  for (const auto globalIndex : globalIndices) {
-    const auto selected = resolveEdge(shape, globalIndex);
-    if (!selected) {
+  result.localEdges.resize(result.solids.size());
+  std::unordered_map<std::size_t, std::vector<std::size_t>> requested;
+  for (std::size_t i = 0; i < globalIndices.size(); ++i)
+    requested[globalIndices[i]].push_back(i);
+  std::vector<std::optional<TopoDS_Shape>> selected(globalIndices.size());
+  std::size_t rawIndex = 0;
+  for (TopExp_Explorer edges(shape, TopAbs_EDGE); edges.More();
+       edges.Next(), ++rawIndex) {
+    const auto found = requested.find(rawIndex);
+    if (found == requested.end()) continue;
+    for (const auto position : found->second) selected[position] = edges.Current();
+  }
+  for (const auto& selectedEdge : selected) {
+    if (!selectedEdge) {
       if (error) *error = "Selected edge could not be resolved";
       return std::nullopt;
     }
     bool owned = false;
     for (std::size_t solidIndex = 0; solidIndex < result.solids.size(); ++solidIndex) {
-      std::size_t localIndex = 0;
       for (TopExp_Explorer edges(result.solids[solidIndex], TopAbs_EDGE);
-           edges.More(); edges.Next(), ++localIndex) {
-        if (edges.Current().IsSame(*selected)) {
-          result.localEdgeIndices[solidIndex].push_back(localIndex);
+           edges.More(); edges.Next()) {
+        if (edges.Current().IsSame(*selectedEdge)) {
+          result.localEdges[solidIndex].push_back(TopoDS::Edge(edges.Current()));
           owned = true;
           break;
         }
@@ -68,28 +77,30 @@ std::optional<SolidFaceSelection> mapFacesToOwningSolids(
     if (error) *error = "Shape does not contain a solid";
     return std::nullopt;
   }
-  result.localFaceIndices.resize(result.solids.size());
-  for (const auto globalIndex : globalIndices) {
-    std::size_t current = 0;
-    std::optional<TopoDS_Shape> selected;
-    for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More();
-         faces.Next(), ++current)
-      if (current == globalIndex) {
-        selected = faces.Current();
-        break;
-      }
-    if (!selected) {
+  result.localFaces.resize(result.solids.size());
+  std::unordered_map<std::size_t, std::vector<std::size_t>> requested;
+  for (std::size_t i = 0; i < globalIndices.size(); ++i)
+    requested[globalIndices[i]].push_back(i);
+  std::vector<std::optional<TopoDS_Shape>> selected(globalIndices.size());
+  std::size_t rawIndex = 0;
+  for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More();
+       faces.Next(), ++rawIndex) {
+    const auto found = requested.find(rawIndex);
+    if (found == requested.end()) continue;
+    for (const auto position : found->second) selected[position] = faces.Current();
+  }
+  for (const auto& selectedFace : selected) {
+    if (!selectedFace) {
       if (error) *error = "Selected face could not be resolved";
       return std::nullopt;
     }
     bool owned = false;
     for (std::size_t solidIndex = 0; solidIndex < result.solids.size();
          ++solidIndex) {
-      std::size_t localIndex = 0;
       for (TopExp_Explorer faces(result.solids[solidIndex], TopAbs_FACE);
-           faces.More(); faces.Next(), ++localIndex) {
-        if (faces.Current().IsSame(*selected)) {
-          result.localFaceIndices[solidIndex].push_back(localIndex);
+           faces.More(); faces.Next()) {
+        if (faces.Current().IsSame(*selectedFace)) {
+          result.localFaces[solidIndex].push_back(TopoDS::Face(faces.Current()));
           owned = true;
           break;
         }

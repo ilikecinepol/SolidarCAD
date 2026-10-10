@@ -1,24 +1,35 @@
+#include "TestAssertions.h"
+
 #include <limits>
 #include <memory>
 
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 
 #include "TestGeometryUtils.h"
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+#include "model/GeometryOperation.h"
 #include "model/MoveFeature.h"
 #include "model/MoveToolSession.h"
 
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
+#include <Standard_Failure.hxx>
 
 int main() {
+  solidar::GeometryFailure failure;
+  CHECK(!solidar::runGeometryOperation(
+      []() -> bool { throw Standard_Failure("unstable OCCT text"); },
+      &failure));
+  CHECK(failure.kind == solidar::GeometryFailureKind::OcctException);
+  CHECK(!solidar::runGeometryOperation(
+      []() -> bool { throw std::runtime_error("unstable std text"); },
+      &failure));
+  CHECK(failure.kind == solidar::GeometryFailureKind::StandardException);
+  CHECK(!solidar::runGeometryOperation(
+      []() -> bool { throw 7; }, &failure));
+  CHECK(failure.kind == solidar::GeometryFailureKind::UnknownException);
+
   solidar::Document document;
   auto& sketch = document.addSketch();
   sketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});

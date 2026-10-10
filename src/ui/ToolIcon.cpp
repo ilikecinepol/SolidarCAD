@@ -58,6 +58,11 @@ void drawCube(QPainter& painter, QPointF offset = {}) {
 
 void drawTool(QPainter& p, ToolIconKind kind) {
   switch (kind) {
+    case ToolIconKind::ImportedShape:
+      drawCube(p);
+      p.drawLine(5, 10, 17, 10);
+      arrowHead(p, {18, 10}, {1, 0});
+      break;
     case ToolIconKind::CreateSketch:
       p.drawPolygon(QPolygonF{{7, 33}, {27, 33}, {39, 25}, {19, 25}});
       p.drawLine(10, 28, 22, 28);

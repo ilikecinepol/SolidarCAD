@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -6,8 +8,28 @@
 #include "model/CircularPatternToolSession.h"
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
+#include "model/PatternTypes.h"
+#include <limits>
 int main() {
+  CHECK(!solidar::validPatternCount(0));
+  CHECK(!solidar::validPatternCount(1));
+  CHECK(solidar::validPatternCount(2));
+  CHECK(solidar::validPatternCount(100));
+  CHECK(!solidar::validPatternCount(101));
+  CHECK(!solidar::validPatternCount(std::numeric_limits<int>::max()));
+  CHECK(solidar::clampPatternCountForUi(std::numeric_limits<int>::max()) ==
+        solidar::kMaximumPatternCount);
+  CHECK(!solidar::validPrincipalAxis(
+      static_cast<solidar::PrincipalAxis>(99)));
+  CHECK(!solidar::validPatternOperation(
+      static_cast<solidar::PatternOperation>(99)));
+  CHECK(!solidar::validPatternAngle(0.009));
+  CHECK(solidar::validPatternAngle(0.01));
+  solidar::CircularPatternToolSession lowerBoundSession;
+  lowerBoundSession.begin(0.009, 2);
+  CHECK(solidar::test::near(lowerBoundSession.angleDeg(), 0.01));
+  lowerBoundSession.begin(0.01, 2);
+  CHECK(solidar::test::near(lowerBoundSession.angleDeg(), 0.01));
   solidar::Document document; auto& sketch = document.addSketch();
   sketch.geometry.addRectangle({10,0},{20,5}); auto& body = document.addBody();
   auto base = std::make_unique<solidar::ExtrudeFeature>(sketch.id, 5.0);
@@ -47,8 +69,47 @@ int main() {
 
   ptr->setCount(3); ptr->setAngleDeg(90); body.markDirtyFrom(1); CHECK(document.recompute());
   CHECK(ptr->id() == id && solidar::test::solidCount(*body.resultShape()) == 3);
-  ptr->setAngleDeg(0); body.markDirtyFrom(1); CHECK(!document.recompute() && !ptr->hasShape());
+  const auto lastValidPattern = ptr->shape();
+  ptr->setAngleDeg(0.009); body.markDirtyFrom(1); CHECK(!document.recompute());
+  CHECK(ptr->isFailed() && !ptr->shape());
+  CHECK(ptr->lastValidShape() == lastValidPattern);
+  CHECK(!body.resultShape());
+  CHECK(body.lastValidResultShape() == lastValidPattern);
   ptr->setAngleDeg(180); body.markDirtyFrom(1); CHECK(document.recompute());
+
+  std::string patternError;
+  const auto sourceShape = body.features().front()->shape();
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 0, 360.0, &patternError));
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 1, 360.0, &patternError));
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 101, 360.0, &patternError));
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, static_cast<solidar::PrincipalAxis>(99), 2, 360.0,
+      &patternError));
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 2, 360.01, &patternError));
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 2,
+      std::numeric_limits<double>::quiet_NaN(), &patternError));
+  CHECK(!solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 2, 0.009, &patternError));
+  CHECK(solidar::buildCircularPatternShape(
+      *sourceShape, solidar::PrincipalAxis::Z, 2, 0.01, &patternError));
+
+  const auto sourceBeforeInvalidPreview = sourceShape;
+  session.begin(180.0, 3);
+  session.setBody(body.id(), baseId, sourceShape);
+  session.setAxis(static_cast<solidar::PrincipalAxis>(99));
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!session.previewShape());
+  CHECK(sourceShape == sourceBeforeInvalidPreview);
+  session.setAxis(solidar::PrincipalAxis::Z);
+  session.setOperation(static_cast<solidar::PatternOperation>(99));
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!session.previewShape());
+  CHECK(sourceShape == sourceBeforeInvalidPreview);
 
   solidar::Document separate;
   auto& sourceSketch = separate.addSketch();
@@ -71,7 +132,7 @@ int main() {
   const double before = solidar::test::volumeOf(
       *separate.bodies()[1].resultShape());
   sourcePtr->setLengthMm(8.0);
-  separate.bodies()[0].markDirtyFrom(0);
+  separate.findBody(sourceBodyId)->markDirtyFrom(0);
   CHECK(separate.recompute());
   CHECK(solidar::test::volumeOf(*separate.bodies()[1].resultShape()) > before);
   return EXIT_SUCCESS;

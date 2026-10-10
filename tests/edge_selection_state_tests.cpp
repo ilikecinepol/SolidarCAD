@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -11,11 +13,6 @@ bool check(bool condition, const char* expression, int line) {
   std::cerr << __FILE__ << ':' << line << ": " << expression << '\n';
   return false;
 }
-
-#define CHECK(condition)                         \
-  do {                                           \
-    if (!check((condition), #condition, __LINE__)) return EXIT_FAILURE; \
-  } while (false)
 
 }  // namespace
 

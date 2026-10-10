@@ -39,8 +39,8 @@ Resolution is centralized in `TopologyReferenceResolver` and uses this order:
 3. legacy index only when persistent data is absent;
 4. a specific diagnostic on missing or ambiguous matches.
 
-The v1 centralized tolerance policy permits 20% of the source-shape diagonal
-for normalized position, 35% relative change in area/length/radius, a direction
+The v1 centralized tolerance policy permits 35% of the target (current) shape
+diagonal for normalized position, 35% relative change in area/length/radius, a direction
 cosine of at least 0.996, and treats best scores within 0.01 as ambiguous.
 Candidates are collected in one linear B-Rep traversal; no tessellation,
 pointer identity or whole-shape hashing is used.

@@ -8,6 +8,8 @@
 #include <cmath>
 #include <utility>
 
+#include "model/GeometryOperation.h"
+
 namespace solidar {
 
 void CircularPatternToolSession::begin(
@@ -17,8 +19,9 @@ void CircularPatternToolSession::begin(
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   axis_.reset();
-  angle_.reset(angleDeg, 0.01, 360.0);
-  count_ = std::clamp(count, 2, 100);
+  angle_.reset(angleDeg, kMinimumPatternParameter,
+               kMaximumPatternAngleDeg);
+  count_ = clampPatternCountForUi(count);
   operation_ = operation;
   editingFeatureId_ = editingFeatureId;
   previewShape_.reset();
@@ -62,7 +65,7 @@ void CircularPatternToolSession::setAngleDeg(double angleDeg) {
 }
 
 void CircularPatternToolSession::setCount(int count) {
-  count_ = std::clamp(count, 2, 100);
+  count_ = clampPatternCountForUi(count);
   updatePreview();
 }
 
@@ -121,9 +124,12 @@ CircularPatternToolSession::selectionRequirement() const {
 
 std::vector<ToolParameterDescriptor>
 CircularPatternToolSession::parameters() const {
-  return {{"angle", "Angle", ToolParameterType::Angle, angle_.value(), 0.01,
-           360.0, 1.0, "deg", true, ToolManipulatorType::Angular},
-          {"count", "Count", ToolParameterType::Integer, count_, 2.0, 100.0,
+  return {{"angle", "Angle", ToolParameterType::Angle, angle_.value(),
+           kMinimumPatternParameter,
+           kMaximumPatternAngleDeg, 1.0, "deg", true,
+           ToolManipulatorType::Angular},
+          {"count", "Count", ToolParameterType::Integer, count_,
+           kMinimumPatternCount, kMaximumPatternCount,
            1.0, {}, true, ToolManipulatorType::None}};
 }
 
@@ -138,33 +144,39 @@ const std::string& CircularPatternToolSession::error() const noexcept {
 
 std::optional<AngularToolManipulator>
 CircularPatternToolSession::manipulator() const {
-  if (!sourceShape_ || sourceShape_->IsNull() || !axis_) return std::nullopt;
-  Bnd_Box bounds;
-  BRepBndLib::Add(*sourceShape_, bounds);
-  if (bounds.IsVoid()) return std::nullopt;
-  double minX = 0.0;
-  double minY = 0.0;
-  double minZ = 0.0;
-  double maxX = 0.0;
-  double maxY = 0.0;
-  double maxZ = 0.0;
-  bounds.Get(minX, minY, minZ, maxX, maxY, maxZ);
-  const double radialX = std::max(std::abs(minX), std::abs(maxX));
-  const double radialY = std::max(std::abs(minY), std::abs(maxY));
-  const double radialZ = std::max(std::abs(minZ), std::abs(maxZ));
-  double radius = 25.0;
-  Vector3d direction{0.0, 0.0, 1.0};
-  if (*axis_ == PrincipalAxis::X) {
-    direction = {1.0, 0.0, 0.0};
-    radius = std::hypot(radialY, radialZ);
-  } else if (*axis_ == PrincipalAxis::Y) {
-    direction = {0.0, 1.0, 0.0};
-    radius = std::hypot(radialX, radialZ);
-  } else {
-    radius = std::hypot(radialX, radialY);
-  }
-  radius = std::max(10.0, radius * 1.15);
-  return AngularToolManipulator{{}, direction, radius, angle_.value()};
+  std::optional<AngularToolManipulator> result;
+  runGeometryOperation([&] {
+    if (!sourceShape_ || sourceShape_->IsNull() || !axis_ ||
+        !validPrincipalAxis(*axis_))
+      return;
+    Bnd_Box bounds;
+    BRepBndLib::Add(*sourceShape_, bounds);
+    if (bounds.IsVoid()) return;
+    double minX = 0.0;
+    double minY = 0.0;
+    double minZ = 0.0;
+    double maxX = 0.0;
+    double maxY = 0.0;
+    double maxZ = 0.0;
+    bounds.Get(minX, minY, minZ, maxX, maxY, maxZ);
+    const double radialX = std::max(std::abs(minX), std::abs(maxX));
+    const double radialY = std::max(std::abs(minY), std::abs(maxY));
+    const double radialZ = std::max(std::abs(minZ), std::abs(maxZ));
+    double radius = 25.0;
+    Vector3d direction{0.0, 0.0, 1.0};
+    if (*axis_ == PrincipalAxis::X) {
+      direction = {1.0, 0.0, 0.0};
+      radius = std::hypot(radialY, radialZ);
+    } else if (*axis_ == PrincipalAxis::Y) {
+      direction = {0.0, 1.0, 0.0};
+      radius = std::hypot(radialX, radialZ);
+    } else {
+      radius = std::hypot(radialX, radialY);
+    }
+    radius = std::max(10.0, radius * 1.15);
+    result = AngularToolManipulator{{}, direction, radius, angle_.value()};
+  });
+  return result;
 }
 
 bool CircularPatternToolSession::updatePreview() {
@@ -177,6 +189,11 @@ bool CircularPatternToolSession::updatePreview() {
   }
   if (!axis_) {
     lifecycle_ = ToolLifecycle::SelectingReference;
+    return false;
+  }
+  if (!validPrincipalAxis(*axis_) || !validPatternOperation(operation_)) {
+    error_ = "Circular Pattern parameters are invalid";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
   previewShape_ = buildCircularPatternShape(

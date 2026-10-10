@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include "project/ProjectFile.h"
 
 #include <QCoreApplication>
@@ -13,14 +15,6 @@
 
 // Every critical check uses CHECK (not assert) so it remains active in the
 // Release CI build where NDEBUG is defined.
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
-
 // Crash-free "New Project" lifecycle regression. Repeats the create ->
 // validate -> load -> destroy cycle that previously faulted when stale tool
 // and B-Rep state outlived a replaced Document. The whole test is model-level

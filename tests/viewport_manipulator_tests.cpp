@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <TopoDS_Shape.hxx>
 
@@ -16,14 +18,6 @@
 #include "ui/ViewCube.h"
 #include "ui/Viewport.h"
 #include "ui/ViewportCamera.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 void mouse(solidar::Viewport& view, QEvent::Type type, QPointF position,

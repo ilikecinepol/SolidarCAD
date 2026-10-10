@@ -13,7 +13,6 @@
 #include <cmath>
 #include <utility>
 
-#include "model/TopologyReferenceResolver.h"
 #include "model/EdgeFeatureLimits.h"
 #include "model/ShapeContainerUtils.h"
 
@@ -68,17 +67,10 @@ std::shared_ptr<TopoDS_Shape> buildChamferShape(
     if (!selection) return fail("Chamfer " + mappingError);
     for (std::size_t solidIndex = 0; solidIndex < selection->solids.size();
          ++solidIndex) {
-      const auto& indices = selection->localEdgeIndices[solidIndex];
-      if (indices.empty()) continue;
+      const auto& selectedEdges = selection->localEdges[solidIndex];
+      if (selectedEdges.empty()) continue;
       BRepFilletAPI_MakeChamfer maker(selection->solids[solidIndex]);
-      std::vector<TopoDS_Edge> selectedEdges;
-      selectedEdges.reserve(indices.size());
-      for (const auto edgeIndex : indices) {
-        const auto edge = resolveEdge(selection->solids[solidIndex], edgeIndex);
-        if (!edge) return fail("Chamfer edge could not be resolved in owning solid");
-        maker.Add(distanceMm, *edge);
-        selectedEdges.push_back(*edge);
-      }
+      for (const auto& edge : selectedEdges) maker.Add(distanceMm, edge);
       if (const auto clearance = minimumEdgeFeatureClearance(
               selection->solids[solidIndex], selectedEdges)) {
         const double tolerance = std::max(1e-7, *clearance * 1e-6);

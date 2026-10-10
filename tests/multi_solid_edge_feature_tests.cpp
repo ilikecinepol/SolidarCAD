@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -8,7 +10,6 @@
 #include "model/ExtrudeFeature.h"
 #include "model/FilletBuilder.h"
 #include "model/LinearPatternFeature.h"
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 int main() {
   solidar::Document document; auto& sketch = document.addSketch();
   sketch.geometry.addRectangle({0,0},{10,10}); auto& body = document.addBody();

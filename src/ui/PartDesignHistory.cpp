@@ -3,19 +3,13 @@
 #include <QHash>
 #include <QToolButton>
 
-#include "model/ChamferFeature.h"
-#include "model/CircularPatternFeature.h"
-#include "model/DraftFeature.h"
-#include "model/ExtrudeFeature.h"
-#include "model/FilletFeature.h"
-#include "model/LinearPatternFeature.h"
-#include "model/JoinBodiesFeature.h"
-#include "model/MirrorFeature.h"
-#include "model/MoveFeature.h"
-#include "model/PocketFeature.h"
-#include "model/RevolveFeature.h"
-#include "model/ShellFeature.h"
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+
 #include "ui/PartDesignToolHelp.h"
+#include "ui/FeatureUiRegistry.h"
+#include "ui/ToolIcon.h"
 
 namespace solidar {
 namespace {
@@ -26,95 +20,37 @@ QString stateText(FeatureState state) {
   return QStringLiteral("Error");
 }
 
-QString operationText(ExtrudeOperation operation) {
-  if (operation == ExtrudeOperation::NewBody) return QString::fromUtf8("Новое тело");
-  if (operation == ExtrudeOperation::Join) return QString::fromUtf8("Объединение");
-  return QString::fromUtf8("Вырез");
-}
-
-QString operationText(PatternOperation operation) {
-  return operation == PatternOperation::NewBody
-             ? QString::fromUtf8("Новое тело")
-             : QString::fromUtf8("Добавление");
-}
-
-QString planeText(MirrorPlane plane) {
-  if (plane == MirrorPlane::XY) return QStringLiteral("XY");
-  if (plane == MirrorPlane::XZ) return QStringLiteral("XZ");
-  return QStringLiteral("YZ");
-}
-
 HistoryStep featureStep(const Body& body, const ShapeFeature& feature,
                         QHash<int, int>& counts) {
   HistoryStep step;
   step.bodyId = body.id(); step.featureId = feature.id();
-  step.state = feature.state(); step.shape = feature.shape();
-  PartDesignToolKind kind = PartDesignToolKind::None;
-  QStringList parameters;
-  if (const auto* v = dynamic_cast<const ExtrudeFeature*>(&feature)) {
-    step.type = HistoryStepType::Extrude; kind = PartDesignToolKind::Extrude;
-    parameters << QString::fromUtf8("Длина: %1 мм").arg(v->lengthMm(), 0, 'f', 2)
-               << QString::fromUtf8("Операция: %1").arg(operationText(v->operation()));
-  } else if (const auto* v = dynamic_cast<const PocketFeature*>(&feature)) {
-    step.type = HistoryStepType::Pocket; kind = PartDesignToolKind::Pocket;
-    parameters << QString::fromUtf8("Глубина: %1 мм").arg(v->depthMm(), 0, 'f', 2);
-  } else if (const auto* v = dynamic_cast<const RevolveFeature*>(&feature)) {
-    step.type = HistoryStepType::Revolve; kind = PartDesignToolKind::Revolve;
-    parameters << QString::fromUtf8("Угол: %1°").arg(v->angleDeg(), 0, 'f', 2);
-  } else if (const auto* v = dynamic_cast<const FilletFeature*>(&feature)) {
-    step.type = HistoryStepType::Fillet; kind = PartDesignToolKind::Fillet;
-    parameters << QString::fromUtf8("Радиус: %1 мм").arg(v->radiusMm(), 0, 'f', 2)
-               << QString::fromUtf8("Рёбер: %1").arg(v->edges().size());
-  } else if (const auto* v = dynamic_cast<const ChamferFeature*>(&feature)) {
-    step.type = HistoryStepType::Chamfer; kind = PartDesignToolKind::Chamfer;
-    parameters << QString::fromUtf8("Размер: %1 мм").arg(v->distanceMm(), 0, 'f', 2)
-               << QString::fromUtf8("Рёбер: %1").arg(v->edges().size());
-  } else if (dynamic_cast<const JoinBodiesFeature*>(&feature)) {
-    step.type = HistoryStepType::JoinBodies;
-    kind = PartDesignToolKind::JoinBodies;
-    parameters << QString::fromUtf8("Исходных тел: 2");
-  } else if (const auto* v = dynamic_cast<const MoveFeature*>(&feature)) {
-    step.type = HistoryStepType::Move; kind = PartDesignToolKind::Move;
-    const auto offset = v->offsetMm();
-    parameters << QString::fromUtf8("X: %1 мм").arg(offset.x, 0, 'f', 2)
-               << QString::fromUtf8("Y: %1 мм").arg(offset.y, 0, 'f', 2)
-               << QString::fromUtf8("Z: %1 мм").arg(offset.z, 0, 'f', 2);
-  } else if (const auto* v = dynamic_cast<const MirrorFeature*>(&feature)) {
-    step.type = HistoryStepType::Mirror; kind = PartDesignToolKind::Mirror;
-    parameters << QString::fromUtf8("Плоскость: %1").arg(planeText(v->plane()));
-  } else if (const auto* v = dynamic_cast<const LinearPatternFeature*>(&feature)) {
-    step.type = HistoryStepType::LinearPattern; kind = PartDesignToolKind::LinearPattern;
-    parameters << QString::fromUtf8("Количество: %1").arg(v->count())
-               << QString::fromUtf8("Шаг: %1 мм").arg(v->spacingMm(), 0, 'f', 2)
-               << QString::fromUtf8("Операция: %1").arg(operationText(v->operation()));
-  } else if (const auto* v = dynamic_cast<const CircularPatternFeature*>(&feature)) {
-    step.type = HistoryStepType::CircularPattern; kind = PartDesignToolKind::CircularPattern;
-    parameters << QString::fromUtf8("Количество: %1").arg(v->count())
-               << QString::fromUtf8("Угол: %1°").arg(v->angleDeg(), 0, 'f', 2)
-               << QString::fromUtf8("Операция: %1").arg(operationText(v->operation()));
-  } else if (const auto* v = dynamic_cast<const ShellFeature*>(&feature)) {
-    step.type = HistoryStepType::Shell; kind = PartDesignToolKind::Shell;
-    parameters << QString::fromUtf8("Толщина: %1 мм").arg(v->thicknessMm(), 0, 'f', 2)
-               << QString::fromUtf8("Удаляемых граней: %1").arg(v->removedFaces().size())
-               << (v->outside() ? QString::fromUtf8("Направление: наружу")
-                                : QString::fromUtf8("Направление: внутрь"));
-  } else if (const auto* v = dynamic_cast<const DraftFeature*>(&feature)) {
-    step.type = HistoryStepType::Draft; kind = PartDesignToolKind::Draft;
-    const double signedAngle = v->reversed() ? -v->angleDeg() : v->angleDeg();
-    parameters << QString::fromUtf8("Угол: %1°").arg(signedAngle, 0, 'f', 2)
-               << QString::fromUtf8("Граней: %1").arg(v->draftedFaces().size());
+  step.state = feature.state();
+  step.shape = feature.lastValidShape();
+  const auto* descriptor = featureUiDescriptor(feature.kind());
+  if (!descriptor) {
+    step.type = HistoryStepType::Unknown;
+    step.title = QString::fromUtf8("Неизвестная операция");
+    step.editable = false;
+  } else {
+    step.type = descriptor->historyType;
+    step.editable = descriptor->editable;
   }
-  const auto* help = partDesignToolHelp(kind);
+  const QStringList parameters = descriptor
+                                     ? formatFeatureParameters(*descriptor,
+                                                               feature)
+                                     : QStringList{};
   const int number = ++counts[static_cast<int>(step.type)];
-  step.title = help ? help->title + QStringLiteral(" %1").arg(number)
-                    : QString::fromStdString(feature.typeName());
-  step.icon = partDesignToolIcon(kind);
+  if (descriptor) {
+    step.title = descriptor->title() + QStringLiteral(" %1").arg(number);
+    step.icon = toolIcon(descriptor->iconKind);
+  }
   step.tooltip = step.title;
   if (!parameters.isEmpty()) step.tooltip += QLatin1Char('\n') + parameters.join(QLatin1Char('\n'));
   step.tooltip += QString::fromUtf8("\nСостояние: %1").arg(stateText(step.state));
   if (!feature.error().empty())
     step.tooltip += QString::fromUtf8("\nДиагностика: ") + QString::fromStdString(feature.error());
-  step.tooltip += QString::fromUtf8("\nНажмите для редактирования");
+  if (step.editable)
+    step.tooltip += QString::fromUtf8("\nНажмите для редактирования");
   return step;
 }
 
@@ -130,6 +66,15 @@ std::vector<HistoryStep> buildPartDesignHistory(const Document& document,
   std::vector<HistoryStep> result;
   QHash<int, int> counts;
   QHash<SketchId, bool> emitted;
+  std::unordered_map<FeatureId, FeatureDependencies> declaredByFeature;
+  std::unordered_map<BodyId, std::unordered_set<SketchId>> sketchesByBody;
+  for (const auto& candidateBody : document.bodies())
+    for (const auto& feature : candidateBody.features()) {
+      auto declared = feature->dependencies();
+      auto& bodySketches = sketchesByBody[candidateBody.id()];
+      bodySketches.insert(declared.sketchIds.begin(), declared.sketchIds.end());
+      declaredByFeature.emplace(feature->id(), std::move(declared));
+    }
   auto addSketch = [&](const DocumentSketch& sketch) {
     if (emitted.value(sketch.id, false)) return;
     HistoryStep step;
@@ -146,24 +91,29 @@ std::vector<HistoryStep> buildPartDesignHistory(const Document& document,
     return result;
   }
   for (const auto& feature : body->features()) {
+    const auto& declared = declaredByFeature.at(feature->id());
     for (const auto& sketch : document.sketches())
-      if (feature->dependsOnSketch(sketch.id)) addSketch(sketch);
+      if (std::find(declared.sketchIds.begin(), declared.sketchIds.end(),
+                    sketch.id) != declared.sketchIds.end())
+        addSketch(sketch);
     result.push_back(featureStep(*body, *feature, counts));
     for (const auto& sketch : document.sketches())
       if (sketch.support.type == SketchSupportType::Face &&
           sketch.support.face.featureId == feature->id()) {
-        bool consumed = false;
-        for (const auto& candidate : body->features())
-          consumed = consumed || candidate->dependsOnSketch(sketch.id);
-        if (!consumed) addSketch(sketch);
+        const auto bodySketches = sketchesByBody.find(body->id());
+        if (bodySketches == sketchesByBody.end() ||
+            !bodySketches->second.contains(sketch.id))
+          addSketch(sketch);
       }
   }
   for (const auto& sketch : document.sketches()) {
     bool usedByAnotherBody = false;
     for (const auto& candidateBody : document.bodies()) {
       if (candidateBody.id() == body->id()) continue;
-      for (const auto& feature : candidateBody.features())
-        usedByAnotherBody = usedByAnotherBody || feature->dependsOnSketch(sketch.id);
+      const auto candidateSketches = sketchesByBody.find(candidateBody.id());
+      usedByAnotherBody = candidateSketches != sketchesByBody.end() &&
+                          candidateSketches->second.contains(sketch.id);
+      if (usedByAnotherBody) break;
     }
     if (!usedByAnotherBody) addSketch(sketch);
   }
@@ -181,18 +131,9 @@ bool isSketchConsumedByPartDesign(const Document& document,
       // "Consumed" is intentionally narrower than dependsOnSketch(): e.g. a
       // Revolve axis sketch is a dependency but is not the profile that should
       // be auto-hidden after the solid feature is created.
-      if (const auto* extrude =
-              dynamic_cast<const ExtrudeFeature*>(feature.get())) {
-        if (!extrude->isFaceSource() &&
-            extrude->profileSketchId() == sketchId)
-          return true;
-      } else if (const auto* pocket =
-                     dynamic_cast<const PocketFeature*>(feature.get())) {
-        if (pocket->profileSketchId() == sketchId) return true;
-      } else if (const auto* revolve =
-                     dynamic_cast<const RevolveFeature*>(feature.get())) {
-        if (revolve->profileSketchId() == sketchId) return true;
-      }
+      const auto* descriptor = featureUiDescriptor(feature->kind());
+      if (descriptor && featureConsumesSketch(*descriptor, *feature, sketchId))
+        return true;
     }
   }
   return false;

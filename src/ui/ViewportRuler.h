@@ -14,6 +14,7 @@ class QPainter;
 namespace solidar {
 
 struct ThemeColors;
+class ProjectedPickingScene;
 
 enum class RulerSnapKind { Surface, Edge, Vertex };
 
@@ -38,6 +39,8 @@ class ViewportRuler final {
   [[nodiscard]] bool updateHover(const BodyRenderMesh& mesh,
                                  const ViewportCameraState& camera,
                                  QPointF cursor);
+  [[nodiscard]] bool updateHover(const ProjectedPickingScene& scene,
+                                 QPointF cursor, bool exact = false);
   void clearHover() noexcept;
   [[nodiscard]] RulerClickResult commitHoveredPoint() noexcept;
   [[nodiscard]] RulerClickResult commitPoint(const RulerHit& hit) noexcept;

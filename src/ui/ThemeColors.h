@@ -29,14 +29,47 @@ struct ThemeColors {
   QColor selectionText;
   QColor danger;
   QColor warning;
+  QColor shadow;
 
   QColor viewportBackground;
+  QColor viewportSurface;
+  QColor viewportSurfaceLight;
+  QColor viewportSurfaceDark;
+  QColor viewportEdge;
+  QColor viewportHandle;
+  QColor viewportHover;
+  QColor viewportSelection;
+  QColor viewportAngular;
+  QColor previewPositive;
+  QColor previewNegative;
+  QColor timelineTrack;
 
   QColor gridMinor;
   QColor gridMajor;
   QColor axisX;
   QColor axisY;
   QColor axisZ;
+
+  // Sketcher semantic paint roles. Keeping these in the global theme contract
+  // gives Light, Dark and System-resolved rendering the same ownership model
+  // as the rest of the application.
+  QColor sketchBackground;
+  QColor sketchRulerBackground;
+  QColor sketchDatum;
+  QColor sketchCommitted;
+  QColor sketchCommittedLocked;
+  QColor sketchSelected;
+  QColor sketchSelectedLocked;
+  QColor sketchEndpointFill;
+  QColor sketchTrim;
+  QColor sketchProjection;
+  QColor sketchConstraint;
+  QColor sketchDimension;
+  QColor sketchDimensionSelected;
+  QColor sketchDimensionText;
+  QColor sketchDimensionSelectedText;
+  QColor sketchTransient;
+  QColor sketchHud;
 
   QColor cubeTop;
   QColor cubeFront;

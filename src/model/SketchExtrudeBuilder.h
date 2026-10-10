@@ -9,6 +9,7 @@
 #include <TopoDS_Shape.hxx>
 
 #include "model/ExtrudeFeature.h"
+#include "model/OperationFailure.h"
 
 namespace solidar {
 struct DocumentSketch;
@@ -22,14 +23,16 @@ struct SketchExtrudeGeometry {
 // solid circle. Construction geometry is ignored; multiple loops and holes are
 // rejected because ExtrudeFeature persists only the owning SketchId.
 [[nodiscard]] bool isSupportedSingleSketchProfile(
-    const DocumentSketch& profile, std::string* error = nullptr);
+    const DocumentSketch& profile, std::string* error = nullptr,
+    OperationFailureCode* code = nullptr);
 
 // Multi-region profile contract used after Ctrl-selection. Each simple,
 // non-degenerate closed contour must be strictly disjoint from every other
 // contour; nesting, overlap, touching and self-intersection are rejected.
 // Construction geometry is ignored. A single-region profile remains valid.
 [[nodiscard]] bool isSupportedSketchProfile(
-    const DocumentSketch& profile, std::string* error = nullptr);
+    const DocumentSketch& profile, std::string* error = nullptr,
+    OperationFailureCode* code = nullptr);
 
 // Resolves the same validated multi-region profile used by Extrude into one
 // planar face per outer region (with nested holes already applied). Revolve
@@ -37,7 +40,7 @@ struct SketchExtrudeGeometry {
 // profile geometry instead of maintaining subtly different contour rules.
 [[nodiscard]] bool buildSketchProfileFaces(
     const DocumentSketch& profile, std::vector<TopoDS_Face>* regions,
-    std::string* error = nullptr);
+    std::string* error = nullptr, OperationFailureCode* code = nullptr);
 
 // Authoritative sketch extrusion builder shared by interactive previews and
 // ExtrudeFeature recompute. baseShape must be null for NewBody and non-null for
@@ -48,6 +51,7 @@ bool buildExtrusionFromSketch(const DocumentSketch& profile,
                               double lengthMm, ExtrudeOperation operation,
                               bool reversed, TopoDS_Shape* result,
                               SketchExtrudeGeometry* geometry,
-                              std::string* error);
+                              std::string* error,
+                              OperationFailureCode* code = nullptr);
 
 }  // namespace solidar

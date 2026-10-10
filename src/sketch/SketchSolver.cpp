@@ -115,6 +115,7 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         // Applied in final relationship passes below. This simple solver is
         // sequential, so relative geometry constraints must be last.
         break;
+      case ConstraintType::Radius:
       case ConstraintType::Diameter:
         if (constraint.firstGeometry == kInvalidGeometryId ||
             !sketch.circleIndex(constraint.firstGeometry) ||
@@ -124,8 +125,11 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
           break;
         }
 
-        if (sketch.setCircleDiameterById(constraint.firstGeometry,
-                                         constraint.value))
+        if (sketch.setCircleDiameterById(
+                constraint.firstGeometry,
+                constraint.type == ConstraintType::Radius
+                    ? constraint.value * 2.0
+                    : constraint.value))
           ++result.applied;
         else
           ++result.invalidReferences;
@@ -1903,38 +1907,61 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
 }
 
 
-SolveResult BasicSketchSolver::solveStable(
+namespace {
+thread_local int solverMutationDepth = 0;
+
+struct SolverMutationScope final {
+  SolverMutationScope() { ++solverMutationDepth; }
+  ~SolverMutationScope() { --solverMutationDepth; }
+};
+}  // namespace
+
+SolveResult BasicSketchSolver::solveStableLowLevel(
     Sketch& sketch, int maxPasses) {
-  // Some low-level geometry mutators re-apply the active constraints after
-  // moving a point. Those mutators are also used by solve() itself (notably
-  // for datum-axis constraints), so an incompatible axis/dimension pair can
-  // otherwise enter solveStable() recursively until the process exhausts its
-  // stack. The outer solve already owns stabilization; nested requests only
-  // need to let it continue with the geometry that was just updated.
-  static thread_local bool solveInProgress = false;
-  if (solveInProgress)
-    return {};
-
-  struct SolveScope final {
-    explicit SolveScope(bool& active) : active_(active) {
-      active_ = true;
-    }
-    ~SolveScope() { active_ = false; }
-
-    bool& active_;
-  } solveScope(solveInProgress);
-
   SolveResult last;
   double previousResidual =
       std::numeric_limits<double>::infinity();
   int stagnantPasses = 0;
 
+  struct LockedLine { GeometryId id; Line value; };
+  struct LockedCircle { GeometryId id; Circle value; };
+  struct LockedArc { GeometryId id; Arc value; };
+  std::vector<LockedLine> lockedLines;
+  std::vector<LockedCircle> lockedCircles;
+  std::vector<LockedArc> lockedArcs;
+  for (std::size_t index = 0; index < sketch.lineIds_.size(); ++index)
+    if (sketch.isGeometryLocked(sketch.lineIds_[index]))
+      lockedLines.push_back({sketch.lineIds_[index], sketch.lines_[index]});
+  for (std::size_t index = 0; index < sketch.circleIds_.size(); ++index)
+    if (sketch.isGeometryLocked(sketch.circleIds_[index]))
+      lockedCircles.push_back({sketch.circleIds_[index], sketch.circles_[index]});
+  for (std::size_t index = 0; index < sketch.arcIds_.size(); ++index)
+    if (sketch.isGeometryLocked(sketch.arcIds_[index]))
+      lockedArcs.push_back({sketch.arcIds_[index], sketch.arcs_[index]});
+
+  const std::size_t lockedCount =
+      lockedLines.size() + lockedCircles.size() + lockedArcs.size();
+
   for (int pass = 0;
        pass < std::max(1, maxPasses);
        ++pass) {
-    const Sketch lockedBaseline = sketch;
-    last = solve(sketch);
-    sketch.restoreLockedGeometryFrom(lockedBaseline);
+    SolverMutationScope mutationScope;
+    const SolveResult passResult = solve(sketch);
+    last.applied += passResult.applied;
+    last.unsupported += passResult.unsupported;
+    last.invalidReferences += passResult.invalidReferences;
+    ++last.passes;
+    last.lockedSnapshotSize = lockedCount;
+
+    for (const auto& item : lockedLines)
+      if (const auto index = sketch.lineIndex(item.id))
+        sketch.lines_[*index] = item.value;
+    for (const auto& item : lockedCircles)
+      if (const auto index = sketch.circleIndex(item.id))
+        sketch.circles_[*index] = item.value;
+    for (const auto& item : lockedArcs)
+      if (const auto index = sketch.arcIndex(item.id))
+        sketch.arcs_[*index] = item.value;
 
     const auto audit =
         analyzeConstraintSystem(sketch, false);
@@ -1967,6 +1994,252 @@ SolveResult BasicSketchSolver::solveStable(
   }
 
   return last;
+}
+
+SolveResult BasicSketchSolver::solveStableComponent(
+    Sketch& sketch, const std::vector<GeometryId>& dirtyGeometry,
+    int maxPasses) {
+  SolveResult total;
+  if (solverMutationDepth > 0) {
+    total.converged = false;
+    total.deferredByActiveSolve = true;
+    return total;
+  }
+
+  std::vector<ConstraintComponent> components;
+  std::vector<GeometryId> consumed;
+  std::vector<GeometryId> orderedSeeds = dirtyGeometry;
+  std::sort(orderedSeeds.begin(), orderedSeeds.end());
+  orderedSeeds.erase(std::unique(orderedSeeds.begin(), orderedSeeds.end()),
+                     orderedSeeds.end());
+  for (const auto seed : orderedSeeds) {
+    if (std::binary_search(consumed.begin(), consumed.end(), seed)) continue;
+    auto component = sketch.connectedComponent({seed});
+    if (component.geometryIds.empty()) continue;
+    consumed.insert(consumed.end(), component.geometryIds.begin(),
+                    component.geometryIds.end());
+    std::sort(consumed.begin(), consumed.end());
+    consumed.erase(std::unique(consumed.begin(), consumed.end()), consumed.end());
+    components.push_back(std::move(component));
+  }
+
+  total.converged = true;
+  for (const auto& component : components) {
+    Sketch local;
+    local.clear();
+    std::size_t lineCount = 0;
+    std::size_t circleCount = 0;
+    std::size_t arcCount = 0;
+    for (const auto id : component.geometryIds) {
+      const auto location = sketch.geometryLocation(id);
+      if (!location) continue;
+      lineCount += location->kind == GeometryKind::Line;
+      circleCount += location->kind == GeometryKind::Circle;
+      arcCount += location->kind == GeometryKind::Arc;
+    }
+    local.lines_.reserve(lineCount); local.lineIds_.reserve(lineCount);
+    local.circles_.reserve(circleCount); local.circleIds_.reserve(circleCount);
+    local.arcs_.reserve(arcCount); local.arcIds_.reserve(arcCount);
+    local.constraints_.reserve(component.constraintIds.size());
+    local.centerNodeElementIds_.reserve(lineCount);
+    local.nextElementId_ = sketch.nextElementId_;
+    local.nextGeometryId_ = sketch.nextGeometryId_;
+    local.nextConstraintId_ = sketch.nextConstraintId_;
+
+    for (const auto id : component.geometryIds) {
+      const auto location = sketch.geometryLocation(id);
+      if (!location) continue;
+      switch (location->kind) {
+        case GeometryKind::Line:
+          local.lines_.push_back(sketch.lines_[location->index]);
+          local.lineIds_.push_back(id);
+          break;
+        case GeometryKind::Circle:
+          local.circles_.push_back(sketch.circles_[location->index]);
+          local.circleIds_.push_back(id);
+          break;
+        case GeometryKind::Arc:
+          local.arcs_.push_back(sketch.arcs_[location->index]);
+          local.arcIds_.push_back(id);
+          break;
+      }
+    }
+    for (const auto elementId : sketch.centerNodeElementIds_) {
+      const bool present = std::any_of(
+          local.lines_.begin(), local.lines_.end(),
+          [elementId](const Line& line) { return line.elementId == elementId; });
+      if (present) local.centerNodeElementIds_.push_back(elementId);
+    }
+    for (const auto id : component.constraintIds) {
+      const auto index = sketch.constraintIndex(id);
+      if (index) local.constraints_.push_back(sketch.constraints_[*index]);
+    }
+    local.invalidateStructureIndexes();
+    local.updateBounds();
+
+    SolveResult result = solveStableLowLevel(local, maxPasses);
+    ++total.componentsVisited;
+    total.geometriesVisited += component.geometryIds.size();
+    total.constraintsVisited += component.constraintIds.size();
+    total.applied += result.applied;
+    total.unsupported += result.unsupported;
+    total.invalidReferences += result.invalidReferences;
+    total.passes += result.passes;
+    total.lockedSnapshotSize += result.lockedSnapshotSize;
+    total.allocationCount += local.ownedAllocationBlocks();
+    total.allocatedBytes += local.ownedBytes();
+    total.peakOwnedBytes = std::max(
+        total.peakOwnedBytes, sketch.ownedBytes() + local.ownedBytes());
+    total.violatedConstraints += result.violatedConstraints;
+    total.maxNormalizedResidual =
+        std::max(total.maxNormalizedResidual, result.maxNormalizedResidual);
+    total.converged = total.converged && result.converged;
+
+    for (std::size_t index = 0; index < local.lineIds_.size(); ++index)
+      if (const auto target = sketch.lineIndex(local.lineIds_[index]))
+        sketch.lines_[*target] = local.lines_[index];
+    for (std::size_t index = 0; index < local.circleIds_.size(); ++index)
+      if (const auto target = sketch.circleIndex(local.circleIds_[index]))
+        sketch.circles_[*target] = local.circles_[index];
+    for (std::size_t index = 0; index < local.arcIds_.size(); ++index)
+      if (const auto target = sketch.arcIndex(local.arcIds_[index]))
+        sketch.arcs_[*target] = local.arcs_[index];
+  }
+  sketch.updateBounds();
+  return total;
+}
+
+SolveResult BasicSketchSolver::solveStableHistoricalForBenchmark(
+    Sketch& sketch, int maxPasses) {
+  SolveResult result;
+  if (solverMutationDepth > 0) {
+    result.converged = false;
+    result.deferredByActiveSolve = true;
+    return result;
+  }
+  double previousResidual = std::numeric_limits<double>::infinity();
+  int stagnantPasses = 0;
+  result.converged = true;
+  result.componentsVisited = 1;
+  result.geometriesVisited = sketch.lines_.size() + sketch.circles_.size() +
+                             sketch.arcs_.size();
+  result.constraintsVisited = sketch.constraints_.size();
+  for (int pass = 0; pass < std::max(1, maxPasses); ++pass) {
+    // This is the historical whole-Sketch lock snapshot. Keeping it isolated
+    // here makes the baseline honest without reintroducing it into production.
+    Sketch baseline = sketch;
+    result.allocationCount += baseline.ownedAllocationBlocks();
+    result.allocatedBytes += baseline.ownedBytes();
+    result.peakOwnedBytes = std::max(
+        result.peakOwnedBytes, sketch.ownedBytes() + baseline.ownedBytes());
+    result.lockedSnapshotSize = result.geometriesVisited;
+    SolveResult passResult;
+    {
+      SolverMutationScope mutationScope;
+      passResult = solve(sketch);
+    }
+    result.applied += passResult.applied;
+    result.unsupported += passResult.unsupported;
+    result.invalidReferences += passResult.invalidReferences;
+    ++result.passes;
+    sketch.restoreLockedGeometryFrom(baseline);
+    const auto audit = analyzeConstraintSystem(sketch, false);
+    result.converged = !audit.conflicting;
+    result.violatedConstraints = audit.violations.size();
+    result.maxNormalizedResidual = audit.maxNormalizedResidual;
+    if (result.converged) break;
+    const double improvement = previousResidual - audit.maxNormalizedResidual;
+    if (improvement <= std::max(1e-6, previousResidual * 1e-8))
+      ++stagnantPasses;
+    else
+      stagnantPasses = 0;
+    previousResidual = audit.maxNormalizedResidual;
+    if (stagnantPasses >= 3) break;
+  }
+  sketch.updateBounds();
+  return result;
+}
+
+SolveResult BasicSketchSolver::translateThenSolveForBenchmark(
+    Sketch& sketch, const std::vector<GeometryId>& dirtyGeometry,
+    double dxMm, double dyMm, bool historical) {
+  for (const auto id : dirtyGeometry) {
+    const auto index = sketch.lineIndex(id);
+    if (!index) continue;
+    sketch.lines_[*index].start.xMm += dxMm;
+    sketch.lines_[*index].start.yMm += dyMm;
+    sketch.lines_[*index].end.xMm += dxMm;
+    sketch.lines_[*index].end.yMm += dyMm;
+  }
+  sketch.invalidateStructureIndexes();
+  sketch.updateBounds();
+  return historical ? solveStableHistoricalForBenchmark(sketch)
+                    : solveStableComponent(sketch, dirtyGeometry);
+}
+
+SolveResult BasicSketchSolver::solveStable(
+    Sketch& sketch, int maxPasses) {
+  if (solverMutationDepth > 0) {
+    SolveResult deferred;
+    deferred.converged = false;
+    deferred.deferredByActiveSolve = true;
+    return deferred;
+  }
+  const std::uint64_t fingerprint = sketch.solverFingerprint();
+  if (sketch.hasLastSolvedFingerprint_ &&
+      sketch.lastSolvedFingerprint_ == fingerprint) {
+    SolveResult cached;
+    cached.converged = sketch.lastSolveConverged_;
+    cached.violatedConstraints = sketch.lastSolveViolatedConstraints_;
+    cached.maxNormalizedResidual = sketch.lastSolveMaxNormalizedResidual_;
+    cached.unsupported = sketch.lastSolveUnsupported_;
+    cached.invalidReferences = sketch.lastSolveInvalidReferences_;
+    return cached;
+  }
+
+  const auto components = sketch.constraintComponents();
+  std::vector<GeometryId> seeds;
+  seeds.reserve(components.size());
+  for (const auto& component : components) {
+    if (!component.constraintIds.empty() && !component.geometryIds.empty())
+      seeds.push_back(component.geometryIds.front());
+  }
+  if (seeds.empty() && sketch.constraints_.empty()) {
+    sketch.lastSolvedFingerprint_ = fingerprint;
+    sketch.hasLastSolvedFingerprint_ = true;
+    sketch.lastSolveConverged_ = true;
+    sketch.lastSolveViolatedConstraints_ = 0;
+    sketch.lastSolveMaxNormalizedResidual_ = 0.0;
+    sketch.lastSolveUnsupported_ = 0;
+    sketch.lastSolveInvalidReferences_ = 0;
+    return {};
+  }
+  SolveResult result = solveStableComponent(sketch, seeds, maxPasses);
+  std::vector<ConstraintId> visited;
+  for (const auto& component : components)
+    visited.insert(visited.end(), component.constraintIds.begin(),
+                   component.constraintIds.end());
+  std::sort(visited.begin(), visited.end());
+  visited.erase(std::unique(visited.begin(), visited.end()), visited.end());
+  for (const auto& constraint : sketch.constraints_) {
+    if (!std::binary_search(visited.begin(), visited.end(), constraint.id)) {
+      ++result.invalidReferences;
+      ++result.constraintsVisited;
+      result.converged = false;
+    }
+  }
+  const auto audit = analyzeConstraintSystem(sketch, false);
+  result.converged = result.converged && !audit.conflicting;
+  result.violatedConstraints = audit.violations.size();
+  result.maxNormalizedResidual = audit.maxNormalizedResidual;
+  sketch.lastSolvedFingerprint_ = sketch.solverFingerprint();
+  sketch.hasLastSolvedFingerprint_ = true;
+  sketch.lastSolveConverged_ = result.converged;
+  sketch.lastSolveViolatedConstraints_ = result.violatedConstraints;
+  sketch.lastSolveMaxNormalizedResidual_ = result.maxNormalizedResidual;
+  sketch.lastSolveUnsupported_ = result.unsupported;
+  sketch.lastSolveInvalidReferences_ = result.invalidReferences;
+  return result;
 }
 
 }  // namespace solidar::sketch

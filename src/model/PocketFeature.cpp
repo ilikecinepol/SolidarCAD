@@ -51,13 +51,15 @@ void PocketFeature::setDepthMm(double value) noexcept {
   depthMm_ = value;
   setDirty();
 }
-std::string PocketFeature::typeName() const { return "Pocket"; }
 
-bool PocketFeature::dependsOnSketch(SketchId sketchId) const noexcept {
-  return profileSketchId_ == sketchId;
+FeatureDependencies PocketFeature::dependencies() const {
+  FeatureDependencies result;
+  if (profileSketchId_ != kInvalidSketchId)
+    result.sketchIds.push_back(profileSketchId_);
+  return result;
 }
 
-bool PocketFeature::rebuild(const RebuildContext& context) {
+bool PocketFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(depthMm_) || depthMm_ <= 0.0) {
     markError("Pocket depth must be a finite positive value");

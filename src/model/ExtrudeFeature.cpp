@@ -194,15 +194,15 @@ void ExtrudeFeature::setReversed(bool value) noexcept {
   setDirty();
 }
 
-std::string ExtrudeFeature::typeName() const { return "Extrude"; }
 
-bool ExtrudeFeature::dependsOnSketch(SketchId sketchId) const noexcept {
-  if (const auto* sketch = std::get_if<SketchExtrudeSource>(&source_))
-    return sketch->sketchId == sketchId;
-  return false;
+FeatureDependencies ExtrudeFeature::dependencies() const {
+  FeatureDependencies result;
+  const SketchId sketchId = profileSketchId();
+  if (sketchId != kInvalidSketchId) result.sketchIds.push_back(sketchId);
+  return result;
 }
 
-bool ExtrudeFeature::rebuild(const RebuildContext& context) {
+bool ExtrudeFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(lengthMm_) || lengthMm_ <= 0.0) {
     markError("Extrude length must be a finite positive value");
@@ -232,13 +232,23 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
     markError("Extrude face belongs to a different Body");
     return false;
   }
+  if (!context.previousFeature ||
+      source.face.featureId != context.previousFeature->id()) {
+    markError("Extrude face must belong to the immediate source Feature");
+    return false;
+  }
   try {
     std::string faceError;
+    const auto topology = context.previousFeature->topologyIndex(&faceError);
+    if (!topology) {
+      markError("Extrude topology could not be indexed: " + faceError);
+      return false;
+    }
     TopoDS_Shape result;
     FaceExtrudeGeometry geometry;
-    if (!buildExtrusionFromFace(*context.previousShape, source.face, lengthMm_,
-                                operation_, reversed_, &result, &geometry,
-                                &faceError)) {
+    if (!buildExtrusionFromFace(*context.previousShape, *topology, source.face,
+                                lengthMm_, operation_, reversed_, &result,
+                                &geometry, &faceError)) {
       markError("Extrude " + faceError);
       return false;
     }
@@ -380,6 +390,14 @@ bool ExtrudeFeature::resolveProfileOverride(const sketch::Sketch& source,
 
 std::unique_ptr<Feature> ExtrudeFeature::clone() const {
   return std::make_unique<ExtrudeFeature>(*this);
+}
+
+void ExtrudeFeature::prepareForHistory() {
+  // Region IDs are a rebuild cache derived from the retained profile override;
+  // keeping them would make the history budget depend on an implementation
+  // detail rather than the compact parametric definition.
+  profileSelectionIds_.reset();
+  ShapeFeature::prepareForHistory();
 }
 
 }  // namespace solidar

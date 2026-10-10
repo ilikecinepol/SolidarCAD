@@ -7,6 +7,7 @@
 #include "model/TopologyReference.h"
 
 class TopoDS_Shape;
+class TopoDS_Face;
 
 namespace solidar {
 
@@ -99,6 +100,8 @@ struct ResolvedFacePlacement {
 
 [[nodiscard]] ResolvedFacePlacement resolveFacePlacement(
     const TopoDS_Shape& shape, std::size_t faceIndex);
+[[nodiscard]] ResolvedFacePlacement resolveFacePlacement(
+    const TopoDS_Face& face);
 [[nodiscard]] ResolvedFacePlacement resolveFacePlacement(
     const TopoDS_Shape& shape, const TopologyReference& reference);
 

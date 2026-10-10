@@ -13,12 +13,19 @@ class ImportedShapeFeature final : public ShapeFeature {
   ImportedShapeFeature(FeatureId id, ShapePtr shape, std::string name = {});
 
   [[nodiscard]] const ShapePtr& importedShape() const noexcept;
-  [[nodiscard]] std::string typeName() const override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::ImportedShape;
+  }
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+  void prepareForHistory() override;
+  [[nodiscard]] const std::string& historyArchive() const noexcept;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   ShapePtr importedShape_;
+  std::string historyArchive_;
 };
 
 }  // namespace solidar

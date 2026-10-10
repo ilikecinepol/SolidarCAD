@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QImage>
 #include <QPainter>
@@ -9,14 +11,6 @@
 
 #include "ui/ThemeColors.h"
 #include "ui/ViewportRuler.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");

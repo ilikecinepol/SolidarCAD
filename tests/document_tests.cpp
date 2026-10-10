@@ -1,7 +1,16 @@
 #include "model/Document.h"
+#include "model/TopologyReferenceResolver.h"
 #include "sketch/Sketch.h"
 
-#include <cassert>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRep_Builder.hxx>
+#include <Standard_Failure.hxx>
+#include <TopoDS_Face.hxx>
+
+#include "TestAssertions.h"
+#include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 
@@ -17,9 +26,12 @@ class TestShapeFeature final : public solidar::ShapeFeature {
   TestShapeFeature(solidar::FeatureId id, std::string name, bool succeeds)
       : ShapeFeature(id, std::move(name)), succeeds_(succeeds) {}
 
-  bool rebuild(const solidar::RebuildContext&) override {
+ protected:
+  bool rebuildImpl(const solidar::RebuildContext&) override {
     ++rebuildCount;
     if (succeeds_) {
+      setShape(std::make_shared<TopoDS_Shape>(
+          BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Shape()));
       markValid();
       return true;
     }
@@ -28,10 +40,13 @@ class TestShapeFeature final : public solidar::ShapeFeature {
     return false;
   }
 
-  [[nodiscard]] std::string typeName() const override { return "TestShape"; }
-  [[nodiscard]] bool dependsOnSketch(
-      solidar::SketchId sketchId) const noexcept override {
-    return dependsOn_ == sketchId;
+ public:
+
+  [[nodiscard]] solidar::FeatureDependencies dependencies() const override {
+    solidar::FeatureDependencies result;
+    if (dependsOn_ != solidar::kInvalidSketchId)
+      result.sketchIds.push_back(dependsOn_);
+    return result;
   }
   [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
     return std::make_unique<TestShapeFeature>(*this);
@@ -46,61 +61,101 @@ class TestShapeFeature final : public solidar::ShapeFeature {
   solidar::SketchId dependsOn_{solidar::kInvalidSketchId};
 };
 
+enum class GuardedMode {
+  Valid,
+  InvalidBRep,
+  OcctException,
+  StandardException,
+  UnknownException,
+};
+
+class GuardedShapeFeature final : public solidar::ShapeFeature {
+ public:
+  [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
+    return std::make_unique<GuardedShapeFeature>(*this);
+  }
+
+  GuardedMode mode{GuardedMode::Valid};
+  int rebuildCount{0};
+
+ protected:
+  bool rebuildImpl(const solidar::RebuildContext&) override {
+    ++rebuildCount;
+    if (mode == GuardedMode::OcctException)
+      throw Standard_Failure("synthetic OCCT failure");
+    if (mode == GuardedMode::StandardException)
+      throw std::runtime_error("synthetic standard failure");
+    if (mode == GuardedMode::UnknownException) throw 7;
+    if (mode == GuardedMode::InvalidBRep) {
+      BRep_Builder builder;
+      TopoDS_Face invalidFace;
+      builder.MakeFace(invalidFace);
+      setShape(std::make_shared<TopoDS_Shape>(invalidFace));
+      markValid();
+      return true;
+    }
+    setShape(std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape()));
+    markValid();
+    return true;
+  }
+};
+
 }  // namespace
 
 int main() {
   solidar::Document document;
-  assert(document.sketches().empty());
-  assert(document.bodies().empty());
+  CHECK(document.sketches().empty());
+  CHECK(document.bodies().empty());
 
   auto& profile = document.addSketch();
   const auto profileId = profile.id;
-  assert(profileId != solidar::kInvalidSketchId);
-  assert(profile.name == "Sketch 1");
-  assert(document.findSketch(profileId) == &profile);
-  assert(document.findSketch(solidar::kInvalidSketchId) == nullptr);
+  CHECK(profileId != solidar::kInvalidSketchId);
+  CHECK(profile.name == "Sketch 1");
+  CHECK(document.findSketch(profileId) == &profile);
+  CHECK(document.findSketch(solidar::kInvalidSketchId) == nullptr);
 
   document.addSketch(5000, "Restored sketch");
   const auto generatedSketchId = document.addSketch("After restore").id;
-  assert(generatedSketchId > 5000);
+  CHECK(generatedSketchId > 5000);
 
   auto& firstBody = document.addBody();
   const auto firstBodyId = firstBody.id();
-  assert(firstBodyId != solidar::kInvalidBodyId);
-  assert(firstBody.name() == "Body 1");
+  CHECK(firstBodyId != solidar::kInvalidBodyId);
+  CHECK(firstBody.name() == "Body 1");
 
   auto& secondBody = document.addBody("Body 2");
   const auto secondBodyId = secondBody.id();
-  assert(secondBodyId != firstBodyId);
-  assert(document.activeBody() == &secondBody);
-  assert(document.findBody(firstBodyId) != nullptr);
-  assert(document.findBody(secondBodyId) == &secondBody);
-  assert(document.findBody(solidar::kInvalidBodyId) == nullptr);
+  CHECK(secondBodyId != firstBodyId);
+  CHECK(document.activeBody() == &secondBody);
+  CHECK(document.findBody(firstBodyId) != nullptr);
+  CHECK(document.findBody(secondBodyId) == &secondBody);
+  CHECK(document.findBody(solidar::kInvalidBodyId) == nullptr);
 
   // Adding to a vector may invalidate references, so resolve model objects by
   // their stable ID just as a future ExtrudeFeature will resolve its Sketch.
   auto* body = document.findBody(firstBodyId);
-  assert(body != nullptr);
+  CHECK(body != nullptr);
   auto first = std::make_unique<TestShapeFeature>("First", true);
   const auto firstId = first->id();
   auto* firstPtr = first.get();
   auto second = std::make_unique<TestShapeFeature>("Second", true);
   const auto secondId = second->id();
-  assert(secondId != firstId);
+  CHECK(secondId != firstId);
   auto* secondPtr = second.get();
   body->addFeature(std::move(first));
   body->addFeature(std::move(second));
-  assert(document.rebuild());
-  assert(firstPtr->rebuildCount == 1);
-  assert(firstPtr->isValid());
-  assert(body->activeFeature()->name() == "Second");
+  CHECK(document.rebuild());
+  CHECK(firstPtr->rebuildCount == 1);
+  CHECK(firstPtr->isValid());
+  CHECK(body->activeFeature()->name() == "Second");
 
   body->markDirtyFrom(1);
-  assert(!firstPtr->isDirty());
-  assert(secondPtr->isDirty());
-  assert(document.rebuild());
-  assert(firstPtr->rebuildCount == 1);
-  assert(secondPtr->rebuildCount == 2);
+  CHECK(!firstPtr->isDirty());
+  CHECK(secondPtr->isDirty());
+  CHECK(document.rebuild());
+  CHECK(firstPtr->rebuildCount == 1);
+  CHECK(secondPtr->rebuildCount == 2);
 
   // Sketch edits propagate from the first dependent feature through the
   // ordered Body history, without UI knowledge of concrete feature types.
@@ -115,59 +170,141 @@ int main() {
   auto* downstreamPtr = downstream.get();
   dependencyBody.addFeature(std::move(dependent));
   dependencyBody.addFeature(std::move(downstream));
-  assert(dependencyDocument.recompute());
-  assert(dependentPtr->rebuildCount == 1);
-  assert(downstreamPtr->rebuildCount == 1);
+  CHECK(dependencyDocument.recompute());
+  CHECK(dependentPtr->rebuildCount == 1);
+  CHECK(downstreamPtr->rebuildCount == 1);
 
   solidar::sketch::Sketch replacement;
   replacement.setRectangle(20.0, 10.0);
-  assert(dependencyDocument.replaceSketchGeometry(dependencySketchId,
+  CHECK(dependencyDocument.replaceSketchGeometry(dependencySketchId,
                                                    replacement));
-  assert(dependentPtr->isDirty());
-  assert(downstreamPtr->isDirty());
-  assert(dependencyDocument.recompute());
-  assert(dependentPtr->rebuildCount == 2);
-  assert(downstreamPtr->rebuildCount == 2);
+  CHECK(dependentPtr->isDirty());
+  CHECK(downstreamPtr->isDirty());
+  CHECK(dependencyDocument.recompute());
+  CHECK(dependentPtr->rebuildCount == 2);
+  CHECK(downstreamPtr->rebuildCount == 2);
 
-  assert(dependencyDocument.recomputeFrom(downstreamPtr->id()));
-  assert(dependentPtr->rebuildCount == 2);
-  assert(downstreamPtr->rebuildCount == 3);
-  assert(!dependencyDocument.recomputeFrom(solidar::kInvalidFeatureId));
+  CHECK(dependencyDocument.recomputeFrom(downstreamPtr->id()));
+  CHECK(dependentPtr->rebuildCount == 2);
+  CHECK(downstreamPtr->rebuildCount == 3);
+  CHECK(!dependencyDocument.recomputeFrom(solidar::kInvalidFeatureId));
 
   // Document snapshots used by the existing undo stack must deep-copy bodies.
   solidar::Document snapshot = document;
   auto* snapshotBody = snapshot.findBody(firstBodyId);
-  assert(snapshotBody != nullptr);
-  assert(snapshotBody != document.findBody(firstBodyId));
-  assert(snapshotBody->id() == firstBodyId);
-  assert(snapshotBody->features().front()->id() == firstId);
-  assert(snapshot.findSketch(profileId) != document.findSketch(profileId));
-  assert(snapshot.findSketch(profileId)->id == profileId);
+  CHECK(snapshotBody != nullptr);
+  CHECK(snapshotBody != document.findBody(firstBodyId));
+  CHECK(snapshotBody->id() == firstBodyId);
+  CHECK(snapshotBody->features().front()->id() == firstId);
+  CHECK(snapshot.findSketch(profileId) != document.findSketch(profileId));
+  CHECK(snapshot.findSketch(profileId)->id == profileId);
   firstPtr->setDirty();
   document.findSketch(profileId)->name = "Changed profile";
-  assert(snapshotBody->features().front()->isValid());
-  assert(snapshot.findSketch(profileId)->name == "Sketch 1");
+  CHECK(snapshotBody->features().front()->isValid());
+  CHECK(snapshot.findSketch(profileId)->name == "Sketch 1");
 
   // Restored IDs advance the generators, preventing collisions after load.
   solidar::Document restored;
   restored.addBody(6000, "Restored body");
-  assert(restored.addBody("Generated body").id() > 6000);
+  CHECK(restored.addBody("Generated body").id() > 6000);
   auto restoredFeature =
       std::make_unique<TestShapeFeature>(7000, "Restored feature", true);
   const auto restoredFeatureId = restoredFeature->id();
   auto generatedFeature = std::make_unique<TestShapeFeature>("Generated", true);
-  assert(restoredFeatureId == 7000);
-  assert(generatedFeature->id() > restoredFeatureId);
+  CHECK(restoredFeatureId == 7000);
+  CHECK(generatedFeature->id() > restoredFeatureId);
 
   auto& failingBody = document.addBody("Failing body");
   auto failing = std::make_unique<TestShapeFeature>("Failure", false);
   auto* failingPtr = failing.get();
   failingBody.addFeature(std::move(failing));
-  assert(!document.rebuild());
-  assert(!failingPtr->isValid());
-  assert(failingPtr->isFailed());
-  assert(!failingPtr->error().empty());
-  assert(document.rebuildError() == "test rebuild failure");
+  CHECK(!document.rebuild());
+  CHECK(!failingPtr->isValid());
+  CHECK(failingPtr->isFailed());
+  CHECK(!failingPtr->error().empty());
+  CHECK(document.rebuildError() == "test rebuild failure");
+
+  // Every feature rebuild crosses one noexcept geometry boundary.  An OCCT
+  // exception must become a stable model error while preserving the last
+  // valid committed B-Rep pointer for a later parameter correction.
+  for (const GuardedMode failureMode : {
+           GuardedMode::InvalidBRep, GuardedMode::OcctException,
+           GuardedMode::StandardException, GuardedMode::UnknownException}) {
+    solidar::Document guardedDocument;
+    auto& guardedBody = guardedDocument.addBody("Guarded body");
+    const auto guardedBodyId = guardedBody.id();
+    auto guarded = std::make_unique<GuardedShapeFeature>();
+    auto* guardedPtr = guarded.get();
+    guardedBody.addFeature(std::move(guarded));
+    auto downstream =
+        std::make_unique<TestShapeFeature>("Guarded downstream", true);
+    auto* downstreamPtr = downstream.get();
+    guardedBody.addFeature(std::move(downstream));
+    auto& independentBody = guardedDocument.addBody("Independent body");
+    auto independent =
+        std::make_unique<TestShapeFeature>("Independent", true);
+    auto* independentPtr = independent.get();
+    independentBody.addFeature(std::move(independent));
+
+    CHECK(guardedDocument.recompute());
+    const auto lastValidShape = guardedPtr->shape();
+    const auto downstreamLastValid = downstreamPtr->shape();
+    CHECK(lastValidShape && downstreamLastValid);
+    guardedPtr->mode = failureMode;
+    guardedPtr->setDirty();
+    independentPtr->setDirty();
+    if (failureMode == GuardedMode::InvalidBRep) {
+      BRep_Builder builder;
+      TopoDS_Face invalidFace;
+      builder.MakeFace(invalidFace);
+      CHECK(!invalidFace.IsNull());
+      CHECK(!BRepCheck_Analyzer(invalidFace).IsValid());
+    }
+    CHECK(!guardedDocument.recompute());
+    CHECK(guardedPtr->isFailed());
+    CHECK(!guardedPtr->error().empty());
+    CHECK(!guardedPtr->shape());
+    CHECK(guardedPtr->lastValidShape() == lastValidShape);
+    CHECK(downstreamPtr->isFailed());
+    CHECK(!downstreamPtr->error().empty());
+    CHECK(!downstreamPtr->shape());
+    CHECK(downstreamPtr->lastValidShape() == downstreamLastValid);
+    const auto* failedBody = guardedDocument.findBody(guardedBodyId);
+    CHECK(failedBody);
+    CHECK(!failedBody->resultShape());
+    CHECK(failedBody->lastValidResultShape() == downstreamLastValid);
+    CHECK(independentPtr->isValid());
+    CHECK(independentPtr->rebuildCount == 2);
+  }
+
+  // The public, non-virtual entry itself is the firewall: direct callers do
+  // not need to know about a second guarded API and cannot invoke rebuildImpl.
+  {
+    solidar::Document directDocument;
+    GuardedShapeFeature directFeature;
+    solidar::Feature& publicEntry = directFeature;
+    solidar::RebuildContext context{directDocument, nullptr, nullptr};
+    CHECK(publicEntry.rebuild(context));
+    auto committed = directFeature.shape();
+    CHECK(committed);
+    for (const GuardedMode failureMode : {
+             GuardedMode::OcctException, GuardedMode::StandardException,
+             GuardedMode::UnknownException}) {
+      directFeature.mode = failureMode;
+      directFeature.setDirty();
+      CHECK(!publicEntry.rebuild(context));
+      CHECK(directFeature.isFailed());
+      CHECK(!directFeature.error().empty());
+      CHECK(!directFeature.shape());
+      CHECK(directFeature.lastValidShape() == committed);
+
+      directFeature.mode = GuardedMode::Valid;
+      directFeature.setDirty();
+      CHECK(publicEntry.rebuild(context));
+      committed = directFeature.shape();
+      CHECK(committed);
+    }
+  }
 
   // A persisted Error state without its old text must be recomputed so the
   // concrete builder can produce a current diagnostic.
@@ -177,24 +314,98 @@ int main() {
   auto* retryPtr = retry.get();
   retryPtr->failWithoutMessage();
   retryBody.addFeature(std::move(retry));
-  assert(!retryDocument.rebuild());
-  assert(retryPtr->rebuildCount == 1);
-  assert(retryDocument.rebuildError() == "test rebuild failure");
+  CHECK(!retryDocument.rebuild());
+  CHECK(retryPtr->rebuildCount == 1);
+  CHECK(retryDocument.rebuildError() == "test rebuild failure");
 
   // A failed Body must not prevent independent Bodies from recomputing.
   auto& laterBody = document.addBody("Later body");
   auto later = std::make_unique<TestShapeFeature>("Not reached", true);
   auto* laterPtr = later.get();
   laterBody.addFeature(std::move(later));
-  assert(!document.rebuild());
-  assert(!laterPtr->isDirty());
-  assert(laterPtr->isValid());
-  assert(laterPtr->rebuildCount == 1);
-  assert(laterPtr->error().empty());
-  assert(document.rebuildError() == "test rebuild failure");
+  CHECK(!document.rebuild());
+  CHECK(!laterPtr->isDirty());
+  CHECK(laterPtr->isValid());
+  CHECK(laterPtr->rebuildCount == 1);
+  CHECK(laterPtr->error().empty());
+  CHECK(document.rebuildError() == "test rebuild failure");
+
+  // Geometry-only edits dirty consumers of a face-supported Sketch, but do
+  // not recompute its placement. Attachment and upstream Feature rebuilds do.
+  {
+    solidar::Document placementDocument;
+    auto& placementBody = placementDocument.addBody("Placement body");
+    auto support = std::make_unique<TestShapeFeature>("Support", true);
+    auto* supportPtr = support.get();
+    placementBody.addFeature(std::move(support));
+    CHECK(placementDocument.recompute());
+    auto& supportedSketch =
+        placementDocument.addSketch("Face-supported sketch");
+    const auto supportedSketchId = supportedSketch.id;
+    supportedSketch.geometry.addRectangle({0.1, 0.1}, {0.4, 0.4});
+    auto& independentSketch =
+        placementDocument.addSketch("Independent face-supported sketch");
+    const auto independentSketchId = independentSketch.id;
+    independentSketch.geometry.addCircle({0.5, 0.5}, 0.1);
+    const auto supportReference = solidar::makeFaceReference(
+        *supportPtr->shape(), placementBody.id(), supportPtr->id(), 0);
+    CHECK(supportReference.signature);
+    CHECK(placementDocument.attachSketchToFace(independentSketchId,
+                                                supportReference));
+    const auto* independentState =
+        placementDocument.findSketch(independentSketchId);
+    CHECK(independentState);
+    const auto independentPlacementRevision =
+        independentState->placementRevision;
+    const auto buildsBeforeTargetAttach =
+        solidar::TopologyIndex::buildAttemptCount();
+    CHECK(placementDocument.attachSketchToFace(supportedSketchId,
+                                               supportReference));
+    CHECK(independentState->placementRevision ==
+          independentPlacementRevision);
+    CHECK(solidar::TopologyIndex::buildAttemptCount() ==
+          buildsBeforeTargetAttach);
+    auto consumer = std::make_unique<TestShapeFeature>(
+        "Sketch consumer", true, supportedSketchId);
+    auto* consumerPtr = consumer.get();
+    placementBody.addFeature(std::move(consumer));
+    CHECK(placementDocument.recompute());
+    auto* sketchState = placementDocument.findSketch(supportedSketchId);
+    CHECK(sketchState && !sketchState->placementDirty);
+    const auto placementRevision = sketchState->placementRevision;
+    const auto placement = sketchState->placement;
+    const auto consumerRebuilds = consumerPtr->rebuildCount;
+
+    solidar::sketch::Sketch geometryEdit;
+    geometryEdit.addRectangle({0.2, 0.2}, {0.6, 0.6});
+    CHECK(placementDocument.replaceSketchGeometry(supportedSketchId,
+                                                   geometryEdit));
+    CHECK(consumerPtr->isDirty());
+    CHECK(!sketchState->placementDirty);
+    CHECK(independentState->placementRevision ==
+          independentPlacementRevision);
+    CHECK(solidar::TopologyIndex::buildAttemptCount() ==
+          buildsBeforeTargetAttach);
+    CHECK(placementDocument.recompute());
+    CHECK(consumerPtr->rebuildCount == consumerRebuilds + 1);
+    CHECK(sketchState->placementRevision == placementRevision);
+    CHECK(sketchState->placement.origin.x == placement.origin.x);
+    CHECK(sketchState->placement.origin.y == placement.origin.y);
+    CHECK(sketchState->placement.origin.z == placement.origin.z);
+    CHECK(sketchState->placement.xDirection.x == placement.xDirection.x);
+    CHECK(sketchState->placement.xDirection.y == placement.xDirection.y);
+    CHECK(sketchState->placement.xDirection.z == placement.xDirection.z);
+    CHECK(sketchState->placement.yDirection.x == placement.yDirection.x);
+    CHECK(sketchState->placement.yDirection.y == placement.yDirection.y);
+    CHECK(sketchState->placement.yDirection.z == placement.yDirection.z);
+
+    supportPtr->setDirty();
+    CHECK(placementDocument.recompute());
+    CHECK(sketchState->placementRevision == placementRevision + 1);
+  }
 
   document.setBox({100.0, 50.0, 12.0});
-  assert(document.box().widthMm == 100.0);
+  CHECK(document.box().widthMm == 100.0);
 
   bool rejected = false;
   try {
@@ -202,31 +413,31 @@ int main() {
   } catch (const std::invalid_argument&) {
     rejected = true;
   }
-  assert(rejected);
+  CHECK(rejected);
 
   solidar::sketch::Sketch sketch;
-  assert(sketch.lines().empty());
-  assert(sketch.circles().empty());
+  CHECK(sketch.lines().empty());
+  CHECK(sketch.circles().empty());
   sketch.setRectangle(80.0, 35.0);
-  assert(sketch.lines().size() == 4);
-  assert(sketch.isClosed());
-  assert(sketch.widthMm() == 80.0);
+  CHECK(sketch.lines().size() == 4);
+  CHECK(sketch.isClosed());
+  CHECK(sketch.widthMm() == 80.0);
   const auto rectangleId = sketch.lines().front().elementId;
   sketch.translateElement(rectangleId, 10.0, 5.0);
-  assert(sketch.lines().front().start.xMm == -30.0);
-  assert(sketch.lines().front().start.yMm == -12.5);
-  for (const auto& line : sketch.lines()) assert(line.elementId == rectangleId);
+  CHECK(sketch.lines().front().start.xMm == -30.0);
+  CHECK(sketch.lines().front().start.yMm == -12.5);
+  for (const auto& line : sketch.lines()) CHECK(line.elementId == rectangleId);
 
   sketch.addCircle({0.0, 0.0}, 5.0);
   sketch.translateCircle(0, 15.0, -10.0);
-  assert(sketch.circles().front().center.xMm == 15.0);
-  assert(sketch.circles().front().center.yMm == -10.0);
+  CHECK(sketch.circles().front().center.xMm == 15.0);
+  CHECK(sketch.circles().front().center.yMm == -10.0);
   bool sketchRejected = false;
   try {
     sketch.setRectangle(-1.0, 35.0);
   } catch (const std::invalid_argument&) {
     sketchRejected = true;
   }
-  assert(sketchRejected);
+  CHECK(sketchRejected);
   return 0;
 }

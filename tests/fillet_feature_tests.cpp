@@ -10,7 +10,7 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
 
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -21,17 +21,10 @@
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+#include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/FilletToolSession.h"
 #include "model/TopologyReferenceResolver.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 
@@ -79,7 +72,7 @@ solidar::FilletFeature* addFillet(solidar::Document& document,
                                   const BoxModel& box, double radius,
                                   std::size_t edgeIndex = 0) {
   auto* body = document.findBody(box.bodyId);
-  assert(body);
+  CHECK(body);
   auto& feature = body->addFeature(std::make_unique<solidar::FilletFeature>(
       solidar::EdgeReference{box.bodyId, box.extrudeId, edgeIndex}, radius,
       "Fillet"));
@@ -93,20 +86,20 @@ int main() {
   // surface while remaining a single solid.
   solidar::Document document;
   const BoxModel box = addBox(document);
-  assert(document.rebuild());
+  CHECK(document.rebuild());
   const double baseVolume = volumeOf(*document.findBody(box.bodyId)->resultShape());
   const std::size_t baseFaces = countFaces(*document.findBody(box.bodyId)->resultShape());
   auto* fillet = addFillet(document, box, 5.0);
-  assert(fillet);
-  assert(fillet->edge().bodyId == box.bodyId);
-  assert(fillet->edge().featureId == box.extrudeId);
+  CHECK(fillet);
+  CHECK(fillet->edge().bodyId == box.bodyId);
+  CHECK(fillet->edge().featureId == box.extrudeId);
   const auto topologyReference = fillet->edge().topology();
-  assert(topologyReference.kind == solidar::TopologyKind::Edge);
-  assert(topologyReference.hasValidOwner());
-  assert(topologyReference.legacyIndex == fillet->edge().edgeIndex);
+  CHECK(topologyReference.kind == solidar::TopologyKind::Edge);
+  CHECK(topologyReference.hasValidOwner());
+  CHECK(topologyReference.legacyIndex == fillet->edge().edgeIndex);
   const auto sourceShape =
       document.findBody(box.bodyId)->features().front()->shape();
-  assert(sourceShape);
+  CHECK(sourceShape);
   // Viewport picking reports the raw TopExp traversal index. Every visible
   // occurrence, including an alias of an already visited OCCT edge, must be
   // canonicalized into a resolvable persistent reference.
@@ -115,134 +108,147 @@ int main() {
        explorer.Next(), ++rawEdgeIndex) {
     const auto picked = solidar::makeEdgeReference(
         *sourceShape, box.bodyId, box.extrudeId, rawEdgeIndex);
-    assert(picked.signature);
-    assert(solidar::resolveEdgeReference(*sourceShape, picked.topology()));
+    CHECK(picked.signature);
+    CHECK(solidar::resolveEdgeReference(*sourceShape, picked.topology()));
   }
-  assert(rawEdgeIndex > 0);
-  assert(solidar::resolveEdge(
+  CHECK(rawEdgeIndex > 0);
+  const auto builderIndexBuilds =
+      solidar::TopologyIndex::buildAttemptCount();
+  std::string directBuilderError;
+  CHECK(solidar::buildFilletShape(*sourceShape, {0}, 1.0,
+                                  &directBuilderError));
+  CHECK(solidar::TopologyIndex::buildAttemptCount() == builderIndexBuilds);
+  CHECK(solidar::resolveEdge(
       *sourceShape, topologyReference));
   auto wrongKind = topologyReference;
   wrongKind.kind = solidar::TopologyKind::Face;
-  assert(!solidar::resolveEdge(
+  CHECK(!solidar::resolveEdge(
       *sourceShape, wrongKind));
-  assert(document.rebuild());
-  assert(fillet->isValid());
-  assert(fillet->hasShape());
-  assert(fillet->shape()->ShapeType() == TopAbs_SOLID);
-  assert(volumeOf(*fillet->shape()) < baseVolume - 1e-7);
-  assert(countFaces(*fillet->shape()) != baseFaces);
-  assert(hasCurvedFace(*fillet->shape()));
+  CHECK(document.rebuild());
+  CHECK(fillet->isValid());
+  CHECK(fillet->hasShape());
+  CHECK(fillet->shape()->ShapeType() == TopAbs_SOLID);
+  CHECK(volumeOf(*fillet->shape()) < baseVolume - 1e-7);
+  CHECK(countFaces(*fillet->shape()) != baseFaces);
+  CHECK(hasCurvedFace(*fillet->shape()));
 
   // Radius edits dirty and rebuild the feature. Snapshot ownership remains
   // independent and preserves FeatureId, radius, and the earlier B-Rep.
   fillet->setRadiusMm(2.0);
-  assert(fillet->isDirty());
-  assert(document.rebuild());
+  CHECK(fillet->isDirty());
+  CHECK(document.rebuild());
   const double radius2Volume = volumeOf(*fillet->shape());
   const solidar::Document snapshot = document;
   const auto filletId = fillet->id();
   fillet->setRadiusMm(5.0);
-  assert(document.rebuild());
-  assert(fillet->isValid());
-  assert(std::abs(volumeOf(*fillet->shape()) - radius2Volume) > 1e-7);
+  CHECK(document.rebuild());
+  CHECK(fillet->isValid());
+  CHECK(std::abs(volumeOf(*fillet->shape()) - radius2Volume) > 1e-7);
   const auto* snapshotFillet = dynamic_cast<const solidar::FilletFeature*>(
       snapshot.findBody(box.bodyId)->activeFeature());
-  assert(snapshotFillet);
-  assert(snapshotFillet->id() == filletId);
-  assert(snapshotFillet->radiusMm() == 2.0);
-  assert(std::abs(volumeOf(*snapshotFillet->shape()) - radius2Volume) < 1e-7);
+  CHECK(snapshotFillet);
+  CHECK(snapshotFillet->id() == filletId);
+  CHECK(snapshotFillet->radiusMm() == 2.0);
+  CHECK(std::abs(volumeOf(*snapshotFillet->shape()) - radius2Volume) < 1e-7);
 
   // Upstream edits propagate Dirty state through Body::rebuild and rebuild the
   // fillet from the new previousShape.
   auto* body = document.findBody(box.bodyId);
   auto* extrude = dynamic_cast<solidar::ExtrudeFeature*>(body->features()[0].get());
-  assert(extrude);
+  CHECK(extrude);
   extrude->setLengthMm(80.0);
   body->markDirtyFrom(0);
-  assert(document.rebuild());
-  assert(fillet->isValid() && fillet->hasShape());
+  CHECK(document.rebuild());
+  CHECK(fillet->isValid() && fillet->hasShape());
 
   // Invalid references and radii fail without retaining a stale shape.
   solidar::Document invalidEdgeDocument;
   const BoxModel invalidBox = addBox(invalidEdgeDocument);
-  assert(invalidEdgeDocument.rebuild());
+  CHECK(invalidEdgeDocument.rebuild());
   auto* invalidEdge = addFillet(invalidEdgeDocument, invalidBox, 5.0, 999999);
-  assert(!invalidEdgeDocument.rebuild());
-  assert(invalidEdge->state() == solidar::FeatureState::Error);
-  assert(invalidEdge->error() == "Fillet edge could not be resolved");
-  assert(!invalidEdge->hasShape());
+  CHECK(!invalidEdgeDocument.rebuild());
+  CHECK(invalidEdge->state() == solidar::FeatureState::Error);
+  CHECK(invalidEdge->error().find("Fillet edge could not be resolved: ") == 0);
+  CHECK(invalidEdge->error().size() >
+        std::string("Fillet edge could not be resolved: ").size());
+  CHECK(!invalidEdge->hasShape());
 
   for (const double invalidRadius :
        {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
         std::numeric_limits<double>::infinity()}) {
     solidar::Document invalidRadiusDocument;
     const BoxModel invalidRadiusBox = addBox(invalidRadiusDocument);
-    assert(invalidRadiusDocument.rebuild());
+    CHECK(invalidRadiusDocument.rebuild());
     auto* invalid =
         addFillet(invalidRadiusDocument, invalidRadiusBox, invalidRadius);
-    assert(!invalidRadiusDocument.rebuild());
-    assert(invalid->state() == solidar::FeatureState::Error);
-    assert(!invalid->hasShape());
+    CHECK(!invalidRadiusDocument.rebuild());
+    CHECK(invalid->state() == solidar::FeatureState::Error);
+    CHECK(!invalid->hasShape());
   }
 
   solidar::Document oversizedDocument;
   const BoxModel oversizedBox = addBox(oversizedDocument);
-  assert(oversizedDocument.rebuild());
+  CHECK(oversizedDocument.rebuild());
   auto* oversized = addFillet(oversizedDocument, oversizedBox, 1000.0);
-  assert(!oversizedDocument.rebuild());
-  assert(oversized->error() == "Fillet exceeds the source shape boundary");
-  assert(!oversized->hasShape());
+  CHECK(!oversizedDocument.rebuild());
+  CHECK(oversized->error() == "Fillet exceeds the source shape boundary");
+  CHECK(!oversized->hasShape());
 
   // Repeated valid/invalid radius edits remain recoverable and never expose a
   // stale result after OCCT rejects a radius.
   solidar::Document stressDocument;
   const BoxModel stressBox = addBox(stressDocument, 40.0, 30.0, 20.0);
-  assert(stressDocument.rebuild());
+  CHECK(stressDocument.rebuild());
   auto* stressFillet = addFillet(stressDocument, stressBox, 1.0);
   for (const double radius : {1.0, 2.0, 4.0}) {
     stressFillet->setRadiusMm(radius);
-    assert(stressDocument.rebuild());
-    assert(stressFillet->isValid() && stressFillet->hasShape());
+    CHECK(stressDocument.rebuild());
+    CHECK(stressFillet->isValid() && stressFillet->hasShape());
   }
+  const auto stressLastValid = stressFillet->shape();
   stressFillet->setRadiusMm(1000.0);
-  assert(!stressDocument.rebuild());
-  assert(stressFillet->isFailed());
-  assert(!stressFillet->hasShape());
+  CHECK(!stressDocument.rebuild());
+  CHECK(stressFillet->isFailed());
+  CHECK(!stressFillet->shape());
+  CHECK(stressFillet->lastValidShape() == stressLastValid);
+  CHECK(stressDocument.findBody(stressBox.bodyId)->lastValidResultShape() ==
+        stressLastValid);
+  CHECK(!stressDocument.findBody(stressBox.bodyId)->resultShape());
   stressFillet->setRadiusMm(2.0);
-  assert(stressDocument.rebuild());
-  assert(stressFillet->isValid() && stressFillet->hasShape());
+  CHECK(stressDocument.rebuild());
+  CHECK(stressFillet->isValid() && stressFillet->hasShape());
 
   solidar::Document missingBaseDocument;
   auto& emptyBody = missingBaseDocument.addBody();
   auto& missingBase = emptyBody.addFeature(
       std::make_unique<solidar::FilletFeature>(
           solidar::EdgeReference{emptyBody.id(), 123, 0}, 5.0));
-  assert(!missingBaseDocument.rebuild());
-  assert(missingBase.error() == "Fillet base shape is missing");
-  assert(!missingBase.hasShape());
+  CHECK(!missingBaseDocument.rebuild());
+  CHECK(missingBase.error() == "Fillet base shape is missing");
+  CHECK(!missingBase.hasShape());
 
   // Exact BodyId binding keeps a second Body unchanged.
   solidar::Document multiBodyDocument;
   const BoxModel first = addBox(multiBodyDocument);
   const BoxModel second = addBox(multiBodyDocument, 30.0, 30.0, 30.0);
-  assert(multiBodyDocument.rebuild());
+  CHECK(multiBodyDocument.rebuild());
   const double firstBefore =
       volumeOf(*multiBodyDocument.findBody(first.bodyId)->resultShape());
   const double secondBefore =
       volumeOf(*multiBodyDocument.findBody(second.bodyId)->resultShape());
   addFillet(multiBodyDocument, first, 3.0);
-  assert(multiBodyDocument.rebuild());
-  assert(multiBodyDocument.bodies().size() == 2);
-  assert(volumeOf(*multiBodyDocument.findBody(first.bodyId)->resultShape()) <
+  CHECK(multiBodyDocument.rebuild());
+  CHECK(multiBodyDocument.bodies().size() == 2);
+  CHECK(volumeOf(*multiBodyDocument.findBody(first.bodyId)->resultShape()) <
          firstBefore - 1e-7);
-  assert(std::abs(volumeOf(
+  CHECK(std::abs(volumeOf(
                       *multiBodyDocument.findBody(second.bodyId)->resultShape()) -
                   secondBefore) < 1e-7);
 
   // One feature resolves and fillets multiple source edges.
   solidar::Document multiEdgeDocument;
   const BoxModel multiEdgeBox = addBox(multiEdgeDocument);
-  assert(multiEdgeDocument.rebuild());
+  CHECK(multiEdgeDocument.rebuild());
   auto* multiEdgeBody = multiEdgeDocument.findBody(multiEdgeBox.bodyId);
   const auto multiEdgeSource = multiEdgeBody->resultShape();
   CHECK(multiEdgeSource);
@@ -281,8 +287,7 @@ int main() {
   CHECK(multiEdgeSession.previewShape());
   CHECK(std::abs(multiEdgeSession.radiusMm() - 1.0) < 1e-9);
   CHECK(!multiEdgeSession.error().empty());
-  CHECK(multiEdgeSession.maximumValidRadiusMm());
-  CHECK(*multiEdgeSession.maximumValidRadiusMm() >= 1.0);
+  CHECK(!multiEdgeSession.maximumValidRadiusMm());
   CHECK(multiEdgeSession.edges() == selectedReferences);
   multiEdgeSession.setRadiusFromManipulator(0.0);
   CHECK(multiEdgeSession.lifecycle() ==
@@ -292,7 +297,19 @@ int main() {
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::PreviewValid);
   CHECK(multiEdgeSession.edges() == selectedReferences);
+  const auto buildsBeforeDrag =
+      multiEdgeSession.previewBuildAttemptCount();
   multiEdgeSession.setRadiusFromManipulator(1000.0);
+  CHECK(multiEdgeSession.previewBuildAttemptCount() == buildsBeforeDrag + 1);
+  CHECK(multiEdgeSession.lifecycle() ==
+        solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!multiEdgeSession.limitReached());
+  const auto buildsBeforeBoundary =
+      multiEdgeSession.previewBuildAttemptCount();
+  // The panel has already rolled back to the last valid value. Exact release
+  // must refine the failed raw drag request retained by the session.
+  CHECK(multiEdgeSession.refineRadiusToBoundary(
+      multiEdgeSession.radiusMm()));
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::PreviewValid);
   CHECK(multiEdgeSession.previewShape());
@@ -301,14 +318,17 @@ int main() {
   CHECK(std::abs(multiEdgeSession.radiusMm() -
                  *multiEdgeSession.maximumValidRadiusMm()) < 1e-4);
   CHECK(multiEdgeSession.radiusMm() < 1000.0);
+  CHECK(multiEdgeSession.previewBuildAttemptCount() > buildsBeforeBoundary);
+  CHECK(multiEdgeSession.previewBuildAttemptCount() <=
+        buildsBeforeBoundary + 26);
   const double multiEdgeBefore = volumeOf(*multiEdgeBody->resultShape());
   auto feature =
       std::make_unique<solidar::FilletFeature>(verticalEdges, 3.0, "Two edges");
   auto* multiFillet = feature.get();
   multiEdgeBody->addFeature(std::move(feature));
-  assert(multiEdgeDocument.rebuild());
-  assert(multiFillet->isValid() && multiFillet->edges().size() == 2);
-  assert(std::abs(volumeOf(*multiEdgeBody->resultShape()) - multiEdgeBefore) >
+  CHECK(multiEdgeDocument.rebuild());
+  CHECK(multiFillet->isValid() && multiFillet->edges().size() == 2);
+  CHECK(std::abs(volumeOf(*multiEdgeBody->resultShape()) - multiEdgeBefore) >
          1e-3);
 
   solidar::FilletToolSession editSession;
@@ -322,30 +342,30 @@ int main() {
   // Document or add history until the UI accepts the session.
   solidar::Document previewDocument;
   const BoxModel previewBox = addBox(previewDocument, 40.0, 30.0, 20.0);
-  assert(previewDocument.rebuild());
+  CHECK(previewDocument.rebuild());
   auto* previewBody = previewDocument.findBody(previewBox.bodyId);
   const auto originalShape = previewBody->resultShape();
   const double originalVolume = volumeOf(*originalShape);
   const std::size_t originalFeatureCount = previewBody->features().size();
   solidar::FilletToolSession session;
   session.begin(previewBody->id(), previewBox.extrudeId, originalShape, {}, 2.0);
-  assert(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
-  assert(session.selectionStage() ==
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
+  CHECK(session.selectionStage() ==
          solidar::ToolSelectionStage::SelectingInput);
-  assert(!session.previewShape() && session.error().empty());
+  CHECK(!session.previewShape() && session.error().empty());
   session.setEdges({{previewBody->id(), previewBox.extrudeId, 0}});
-  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   session.begin(previewBody->id(), previewBox.extrudeId, originalShape,
                 {{previewBody->id(), previewBox.extrudeId, 0}}, 2.0);
-  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   session.setRadiusFromPanel(3.0);
-  assert(session.radiusMm() == 3.0);
+  CHECK(session.radiusMm() == 3.0);
   session.setRadiusFromManipulator(4.0);
-  assert(session.radiusMm() == 4.0);
-  assert(previewBody->features().size() == originalFeatureCount);
-  assert(previewBody->resultShape() == originalShape);
-  assert(std::abs(volumeOf(*previewBody->resultShape()) - originalVolume) < 1e-7);
+  CHECK(session.radiusMm() == 4.0);
+  CHECK(previewBody->features().size() == originalFeatureCount);
+  CHECK(previewBody->resultShape() == originalShape);
+  CHECK(std::abs(volumeOf(*previewBody->resultShape()) - originalVolume) < 1e-7);
   session.cancel();
-  assert(session.lifecycle() == solidar::ToolLifecycle::Inactive);
-  assert(previewBody->features().size() == originalFeatureCount);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
+  CHECK(previewBody->features().size() == originalFeatureCount);
 }

@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -13,8 +15,6 @@
 #include "model/ShellFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "ui/PartDesignHistory.h"
-
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -70,5 +70,21 @@ int main(int argc, char** argv) {
   CHECK(body.features()[0]->id() == extrudeId);
   CHECK(body.features()[1]->id() == chamferId);
   CHECK(body.features()[2]->id() == shellId);
+
+  // A failed current rebuild remains explicit, while history presents the
+  // last validated geometry that was committed before the failure.
+  const auto extrudeLastValid = extrude.shape();
+  auto* extrudeFeature = dynamic_cast<solidar::ExtrudeFeature*>(&extrude);
+  CHECK(extrudeFeature != nullptr);
+  extrudeFeature->setLengthMm(0.0);
+  CHECK(!document.recompute());
+  CHECK(extrude.state() == solidar::FeatureState::Error);
+  CHECK(!extrude.shape());
+  CHECK(extrude.lastValidShape() == extrudeLastValid);
+  const auto failedSteps = solidar::buildPartDesignHistory(document, body);
+  CHECK(failedSteps.size() == 4);
+  CHECK(failedSteps[1].featureId == extrudeId);
+  CHECK(failedSteps[1].state == solidar::FeatureState::Error);
+  CHECK(failedSteps[1].shape == extrudeLastValid);
   return EXIT_SUCCESS;
 }

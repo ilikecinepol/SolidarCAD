@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -6,7 +8,6 @@
 #include "model/ExtrudeFeature.h"
 #include "model/MirrorFeature.h"
 #include "model/MirrorToolSession.h"
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 int main() {
   solidar::Document document;
   auto& sketch = document.addSketch("profile");
@@ -50,6 +51,17 @@ int main() {
 
   mirrorPtr->setPlane(solidar::MirrorPlane::XZ); body.markDirtyFrom(1);
   CHECK(document.recompute() && mirrorPtr->id() == mirrorId);
+  std::string invalidPlaneError;
+  CHECK(!solidar::buildMirrorShape(
+      *body.features().front()->shape(),
+      static_cast<solidar::MirrorPlane>(99), &invalidPlaneError));
+  session.begin();
+  const auto sourceBeforeInvalidPreview = body.features().front()->shape();
+  session.setBody(body.id(), extrusionId, sourceBeforeInvalidPreview);
+  session.setPlane(static_cast<solidar::MirrorPlane>(99));
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!session.previewShape());
+  CHECK(body.features().front()->shape() == sourceBeforeInvalidPreview);
   solidar::sketch::Sketch wider; wider.addRectangle({10, 0}, {25, 10});
   CHECK(document.replaceSketchGeometry(sketch.id, wider)); CHECK(document.recompute());
   CHECK(mirrorPtr->id() == mirrorId);

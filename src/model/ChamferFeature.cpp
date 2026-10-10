@@ -47,9 +47,8 @@ void ChamferFeature::setDistanceMm(double value) noexcept {
   setDirty();
 }
 
-std::string ChamferFeature::typeName() const { return "Chamfer"; }
 
-bool ChamferFeature::rebuild(const RebuildContext& context) {
+bool ChamferFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(distanceMm_) || distanceMm_ <= 0.0) {
     markError("Chamfer distance must be a finite positive value");
@@ -89,11 +88,23 @@ bool ChamferFeature::rebuild(const RebuildContext& context) {
     return false;
   }
 
+  std::string topologyError;
+  const auto topology = context.previousFeature
+                            ? context.previousFeature->topologyIndex(&topologyError)
+                            : TopologyIndex::build(*context.previousShape,
+                                                   kInvalidShapeRevision,
+                                                   &topologyError);
+  if (!topology) {
+    markError("Chamfer topology could not be indexed: " + topologyError);
+    return false;
+  }
+  std::vector<TopologyReference> references;
+  references.reserve(edges_.size());
+  for (const auto& edge : edges_) references.push_back(edge.topology());
+  const auto resolutions = topology->resolveEdges(references);
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
-  for (const auto& edge : edges_) {
-    const auto resolved =
-        resolveEdgeReference(*context.previousShape, edge.topology());
+  for (const auto& resolved : resolutions) {
     if (!resolved) {
       markError("Chamfer edge could not be resolved: " + resolved.error);
       return false;

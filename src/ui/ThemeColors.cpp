@@ -26,14 +26,44 @@ ThemeColors lightThemeColors() {
   c.selectionText = QColor("#075fdd");
   c.danger = QColor("#c62828");
   c.warning = QColor("#b97a00");
+  c.shadow = QColor("#23344c");
 
   c.viewportBackground = QColor("#f6f9fc");
+  c.viewportSurface = QColor("#89939d");
+  c.viewportSurfaceLight = QColor("#c4cbd2");
+  c.viewportSurfaceDark = QColor("#66717c");
+  c.viewportEdge = QColor("#4d5863");
+  c.viewportHandle = c.onAccent;
+  c.viewportHover = QColor("#00a6ff");
+  c.viewportSelection = QColor("#ff8a24");
+  c.viewportAngular = QColor("#ef7d00");
+  c.previewPositive = QColor("#197df5");
+  c.previewNegative = QColor("#e0424c");
+  c.timelineTrack = c.textSecondary;
 
   c.gridMinor = QColor("#e4e9f1");
   c.gridMajor = QColor("#ccd4e0");
   c.axisX = QColor("#c4706c");
   c.axisY = QColor("#6ca26c");
   c.axisZ = QColor("#6a84c8");
+
+  c.sketchBackground = QColor("#fbfcff");
+  c.sketchRulerBackground = QColor("#f3f6fb");
+  c.sketchDatum = QColor("#596570");
+  c.sketchCommitted = QColor("#1469d7");
+  c.sketchCommittedLocked = QColor("#8b5cf6");
+  c.sketchSelected = QColor("#ff8a24");
+  c.sketchSelectedLocked = QColor("#a78bfa");
+  c.sketchEndpointFill = QColor("#ffffff");
+  c.sketchTrim = QColor("#ff4d4f");
+  c.sketchProjection = QColor("#0a72ff");
+  c.sketchConstraint = QColor("#1469d7");
+  c.sketchDimension = QColor("#315e9d");
+  c.sketchDimensionSelected = QColor("#ff8a24");
+  c.sketchDimensionText = QColor("#244a82");
+  c.sketchDimensionSelectedText = QColor("#d76400");
+  c.sketchTransient = QColor("#0872f9");
+  c.sketchHud = QColor("#536985");
 
   c.cubeTop = QColor("#f5f8fc");
   c.cubeFront = QColor("#dbe3ee");
@@ -73,14 +103,44 @@ ThemeColors darkThemeColors() {
   c.selectionText = QColor("#cfe4ff");
   c.danger = QColor("#ef7a70");
   c.warning = QColor("#e0a53d");
+  c.shadow = QColor("#000000");
 
   c.viewportBackground = QColor("#1b2026");
+  c.viewportSurface = QColor("#697583");
+  c.viewportSurfaceLight = QColor("#8b98a6");
+  c.viewportSurfaceDark = QColor("#454f5b");
+  c.viewportEdge = QColor("#a1acb8");
+  c.viewportHandle = c.onAccent;
+  c.viewportHover = QColor("#52c3ff");
+  c.viewportSelection = QColor("#ffad66");
+  c.viewportAngular = QColor("#ffad66");
+  c.previewPositive = c.accent;
+  c.previewNegative = c.danger;
+  c.timelineTrack = c.textSecondary;
 
   c.gridMinor = QColor("#272d35");
   c.gridMajor = QColor("#333b46");
   c.axisX = QColor("#b06b67");
   c.axisY = QColor("#6ba06b");
   c.axisZ = QColor("#7a90c8");
+
+  c.sketchBackground = c.viewportBackground;
+  c.sketchRulerBackground = c.surface;
+  c.sketchDatum = c.textSecondary;
+  c.sketchCommitted = c.accentHover;
+  c.sketchCommittedLocked = QColor("#b6a0ff");
+  c.sketchSelected = QColor("#ffad66");
+  c.sketchSelectedLocked = QColor("#d0c4ff");
+  c.sketchEndpointFill = c.surface;
+  c.sketchTrim = c.danger;
+  c.sketchProjection = c.accent;
+  c.sketchConstraint = c.accentHover;
+  c.sketchDimension = QColor("#8fbbff");
+  c.sketchDimensionSelected = c.warning;
+  c.sketchDimensionText = c.textPrimary;
+  c.sketchDimensionSelectedText = QColor("#ffc56a");
+  c.sketchTransient = c.accent;
+  c.sketchHud = c.textSecondary;
 
   c.cubeTop = QColor("#2c333c");
   c.cubeFront = QColor("#3b434e");

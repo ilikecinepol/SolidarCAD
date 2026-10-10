@@ -11,7 +11,6 @@
 #include <string>
 
 #include "model/Document.h"
-#include "model/SolidFeature.h"
 #include "sketch/Sketch.h"
 #include "ui/BodyRenderMesh.h"
 #include "ui/ViewportPicking.h"
@@ -19,6 +18,7 @@
 #include "ui/ViewportRenderer.h"
 #include "ui/ViewportRuler.h"
 #include "ui/ViewCube.h"
+#include "ui/ViewportInteractionTypes.h"
 #include "model/ToolSession.h"
 
 class QMouseEvent;
@@ -27,6 +27,7 @@ class QWheelEvent;
 class QKeyEvent;
 class QDoubleSpinBox;
 class QVariantAnimation;
+class QTimer;
 
 namespace solidar {
 
@@ -36,6 +37,17 @@ struct BodyViewShape {
   BodyId bodyId{kInvalidBodyId};
   FeatureId featureId{kInvalidFeatureId};
   ShapeFeature::ShapePtr shape;
+  std::shared_ptr<const TopologyIndex> topologyIndex;
+  ShapeRevision shapeRevision{kInvalidShapeRevision};
+};
+
+// Immutable-by-convention presentation snapshot rebuilt from Document.
+// Viewport owns the copies strictly for rendering and picking.
+struct SketchPresentationSnapshot {
+  SketchId sketchId{kInvalidSketchId};
+  sketch::Sketch geometry;
+  QString presentationLabel;
+  SketchPlacement placement{SketchPlacement::xy()};
 };
 
 enum class SelectionFilter { Any, Face, Edge, Plane };
@@ -67,22 +79,26 @@ class Viewport final : public QOpenGLWidget {
   void setSketch(const sketch::Sketch& sketch);
   void setSketch(const sketch::Sketch& sketch,
                  const SketchPlacement& placement);
-  void setSolidSketch(const sketch::Sketch& sketch);
+  void setSolidSketch(const sketch::Sketch& sketch,
+                      const SketchPlacement& placement);
   void setSolidVisible(bool visible);
   void setSolidSupport(const QString& supportName);
   void setSketchVisible(bool visible);
-  void addSketch(const sketch::Sketch& sketch, const QString& supportName);
-  void addSketch(const sketch::Sketch& sketch, const QString& supportName,
+  void addSketch(SketchId sketchId, const sketch::Sketch& sketch,
+                 const QString& supportName,
                  const SketchPlacement& placement);
-  void updateSketch(std::size_t index, const sketch::Sketch& sketch,
-                    const QString& supportName);
   void updateSketch(std::size_t index, const sketch::Sketch& sketch,
                     const QString& supportName,
                     const SketchPlacement& placement);
   void removeSketch(std::size_t index);
+  void replaceSketchPresentations(
+      std::vector<SketchPresentationSnapshot> sketches);
   void setSketchVisible(std::size_t index, bool visible);
   void setOriginVisible(bool visible);
   void setBasePlaneVisible(int plane, bool visible);
+  [[nodiscard]] bool sketchVisible() const noexcept;
+  [[nodiscard]] bool sketchVisible(std::size_t index) const noexcept;
+  [[nodiscard]] bool originVisible() const noexcept;
   [[nodiscard]] bool basePlaneVisible(int plane) const noexcept;
   [[nodiscard]] bool sketchPlaneSelectionActive() const noexcept;
   void resetScene();
@@ -136,7 +152,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool hasSelectedFace() const noexcept;
   [[nodiscard]] QString selectedFaceName() const;
   [[nodiscard]] std::optional<std::size_t> selectedBodyFaceIndex() const noexcept;
-  [[nodiscard]] std::optional<FaceReference> selectedBodyFace() const noexcept;
+  [[nodiscard]] std::optional<FaceReference> selectedBodyFace() const;
   [[nodiscard]] std::vector<FaceReference> selectedBodyFaces() const;
   void setSelectedBodyFaces(const std::vector<FaceReference>& faces);
   void setFaceMultiSelectionMode(bool enabled) noexcept;
@@ -160,7 +176,12 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool marqueeActive() const noexcept;
   void setToolPreviewShape(BodyId bodyId, FeatureId featureId,
                            ShapeFeature::ShapePtr shape);
-  void setToolCutPreviewShape(ShapeFeature::ShapePtr shape);  void setToolPreviewPresentation(ToolPreviewPresentation presentation) noexcept;
+  // ReplaceSource normally hides only bodyId. Multi-source operations such as
+  // Join explicitly provide both inputs; invalid/NewBody previews replace none.
+  void setToolPreviewReplacedBodies(std::vector<BodyId> bodyIds);
+  void setToolCutPreviewShape(ShapeFeature::ShapePtr shape);
+  void setToolPreviewPresentation(
+      ToolPreviewPresentation presentation) noexcept;
   void clearToolPreviewShape();
   void setToolManipulator(const LinearToolManipulator& manipulator);
   [[nodiscard]] double toolManipulatorHudValue() const noexcept;
@@ -175,7 +196,8 @@ class Viewport final : public QOpenGLWidget {
   void setAngularToolManipulator(const AngularToolManipulator& manipulator);
   [[nodiscard]] const std::optional<AngularToolManipulator>&
   angularToolManipulator() const noexcept { return angularToolManipulator_; }
-  void clearToolManipulator();  // CAD keyboard traversal targets only numeric fields rendered in the
+  void clearToolManipulator();
+  // CAD keyboard traversal targets only numeric fields rendered in the
   // viewport. Right-hand tool panels may call this to hand Tab into the HUD.
   [[nodiscard]] bool focusToolParameterField(bool backward = false);
   // Seeds the tool-manipulator drag from an arbitrary scene point and world
@@ -203,11 +225,6 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] QString extrusionCandidateSupport() const;
   [[nodiscard]] std::size_t extrusionCandidateSketchIndex() const noexcept;
   [[nodiscard]] bool extrusionCandidateOnBodyCap() const noexcept;
-  void commitAdditiveExtrusion(const sketch::Sketch& sketch,
-                               const QString& supportName,
-                               double startMm, double lengthMm);
-  void removeLastAdditiveExtrusion();
-  [[nodiscard]] const std::vector<SolidFeature>& solidFeatures() const noexcept;
   [[nodiscard]] const sketch::Sketch& solidSketch() const noexcept;
   [[nodiscard]] QString solidSupport() const;
   [[nodiscard]] QPointF bodyPosition() const noexcept;
@@ -219,7 +236,8 @@ class Viewport final : public QOpenGLWidget {
 
  signals:
   void selectionChanged(const QString& description);
-  void sketchPlanePicked(const QString& planeName);
+  void interactionCancelled(ViewportCancelReason reason);
+  void sketchPlanePicked(const SketchPlanePick& pick);
   void mirrorBodyPicked(BodyId bodyId);
   void mirrorPlanePicked(int planeIndex);
   void moveBodyPicked(BodyId bodyId);
@@ -229,12 +247,7 @@ class Viewport final : public QOpenGLWidget {
   void circularPatternAxisPicked(int axisIndex);
   void draftAxisPicked(int axisIndex);
   void draftEdgeAxisPicked(const EdgeReference& edge);
-  void extrusionSurfacePicked(const QString& surfaceName);
-  // Native FaceReference capture for face extrusion. Emitted alongside the
-  // legacy string signal only when a real B-Rep body face was picked (never
-  // for a base plane or sketch contour). The face is resolved against the
-  // current owning body topology range so bodyId/featureId are authoritative.
-  void extrusionFacePicked(const FaceReference& face);
+  void extrusionSourcePicked(const ExtrusionSourcePick& pick);
   void extrusionPreviewLengthChanged(double lengthMm);
   void bodyMoveCommitted(QPointF previous, QPointF current);
   void bodyEdgeSelectionChanged();
@@ -245,6 +258,8 @@ class Viewport final : public QOpenGLWidget {
   void toolManipulatorValueChanged(double valueMm);
   void translationToolManipulatorValueChanged(int axisIndex, double valueMm);
   void angularToolManipulatorValueChanged(double angleDeg);
+  void toolManipulatorDragFinished();
+  void extrusionManipulatorDragFinished();
   // Emitted after a HUD field commit via Enter (after the value has been routed
   // to the session preview). MainWindow uses it to perform the active tool's
   // Accept without re-interpreting the already-committed value.
@@ -255,11 +270,11 @@ class Viewport final : public QOpenGLWidget {
   // Emitted while Revolve is already waiting for an axis and the user
   // Ctrl-adds/removes another profile region. The candidate geometry and
   // sketch index are read through the public profile-selection accessors.
-  void revolveProfileSelectionChanged(std::size_t sketchIndex);
+  void revolveProfileSelectionChanged(const ExtrusionSourcePick& pick);
   // Direct interaction: a visible closed sketch profile was pressed in normal
   // mode. MainWindow maps the display index to a SketchId and starts the
   // sketch Extrude session (contract 4).
-  void directProfilePicked(std::size_t sketchIndex);
+  void directProfilePicked(const ExtrusionSourcePick& pick);
   void rulerActiveChanged(bool active);
   void rulerPointPicked(int selectedPointCount);
   void rulerMeasurementChanged(double distanceMm);
@@ -271,7 +286,8 @@ class Viewport final : public QOpenGLWidget {
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
-  void keyPressEvent(QKeyEvent* event) override;  bool eventFilter(QObject* watched, QEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
   void leaveEvent(QEvent* event) override;
 
  private:
@@ -307,9 +323,21 @@ class Viewport final : public QOpenGLWidget {
   translationManipulatorLayouts() const;
   [[nodiscard]] std::optional<AngularVisual> angularVisual() const;
   void rebuildSelectedExtrusionSketch();
-  void updateBodyHover(QPointF position);
-  void rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
-                          bool clearSelection);
+  void updateBodyHover(QPointF position, bool exact = false);
+  [[nodiscard]] bool rebuildBodyDisplay(
+      const std::vector<BodyViewShape>& shapes, bool clearSelection,
+      ViewportMeshQuality quality);
+  [[nodiscard]] Point3d displayedBodyCenter() const noexcept;
+  [[nodiscard]] double displayedBodyDiagonal() const noexcept;
+  [[nodiscard]] bool hasDisplayedBodyTriangles() const noexcept;
+  [[nodiscard]] QRectF projectedDisplayedBodyBounds() const;
+  [[nodiscard]] const ProjectedPickingScene& pickingScene() const;
+  [[nodiscard]] std::vector<PickingMeshInput> pickingMeshInputs() const;
+  void synchronizeRendererResources();
+  void scheduleHover(QPointF viewPosition);
+  void flushPendingHover(std::optional<QPointF> exactPosition = std::nullopt);
+  void invalidatePendingHover();
+  void processHoverAt(QPointF viewPosition, bool exact = false);
   void selectInRect(const QRectF& rect, bool additive, bool singleOnly = false);
   void cancelMarquee();
   void cancelActiveInteraction();
@@ -319,9 +347,9 @@ class Viewport final : public QOpenGLWidget {
   void commitEdgeSelection(std::size_t globalIndex, bool toggle);
   void commitFaceSelection(std::size_t globalIndex, bool toggle);
   [[nodiscard]] std::optional<EdgeReference> edgeReferenceForGlobalIndex(
-      std::size_t index) const noexcept;
+      std::size_t index) const;
   [[nodiscard]] std::optional<FaceReference> faceReferenceForGlobalIndex(
-      std::size_t index) const noexcept;
+      std::size_t index) const;
   enum class PickMode {
     None,
     SketchPlane,
@@ -346,22 +374,45 @@ class Viewport final : public QOpenGLWidget {
   };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
-  BodyRenderMesh bodyRenderMesh_;
+  struct BodyDisplayMesh {
+    std::shared_ptr<const BodyRenderMesh> mesh;
+    BodyMeshKey identity;
+    std::size_t firstFace{};
+    std::size_t firstEdge{};
+  };
+  std::vector<BodyDisplayMesh> bodyDisplayMeshes_;
+  BodyRenderMeshCache bodyMeshCache_;
+  // Legacy callers do not own a model ShapeRevision. Give every explicit
+  // replacement a fresh structural revision so reusing and mutating the same
+  // shared_ptr can never hit a stale CPU/GPU/projection cache entry.
+  ShapeRevision fallbackBodyShapeRevision_{1};
+  mutable ProjectedPickingScene pickingScene_;
+  Point3d displayedBodyCenter_{};
+  double displayedBodyDiagonal_{};
   ShapeFeature::ShapePtr toolPreviewShape_;
   BodyRenderMesh toolPreviewRenderMesh_;
+  // Presentation revisions are owned by Viewport instead of BodyRenderMesh:
+  // each transaction builds a fresh mesh whose local revision starts at one.
+  // These monotonic values keep a stable preview GPU slot from mistaking new
+  // geometry for the previously uploaded transaction.
+  std::uint64_t toolPreviewPresentationRevision_{};
   ShapeFeature::ShapePtr toolCutPreviewShape_;
-  BodyRenderMesh toolCutPreviewRenderMesh_;  ToolPreviewPresentation toolPreviewPresentation_{
+  BodyRenderMesh toolCutPreviewRenderMesh_;
+  std::uint64_t toolCutPreviewPresentationRevision_{};
+  ToolPreviewPresentation toolPreviewPresentation_{
       ToolPreviewPresentation::OverlaySourceSelection};
   ViewportRenderer renderer_;
   ViewportDisplayMode displayMode_{ViewportDisplayMode::ShadedWithEdges};
   ViewportMeshQuality meshQuality_{ViewportMeshQuality::Normal};
   BodyId toolPreviewBodyId_{kInvalidBodyId};
   FeatureId toolPreviewFeatureId_{kInvalidFeatureId};
+  std::vector<BodyId> toolPreviewReplacedBodyIds_;
   std::vector<BodyViewShape> bodyViewShapes_;
   struct BodyTopologyRange {
     BodyId bodyId{kInvalidBodyId};
     FeatureId featureId{kInvalidFeatureId};
     ShapeFeature::ShapePtr shape;
+    std::shared_ptr<const TopologyIndex> topologyIndex;
     std::size_t firstFace{};
     std::size_t faceCount{};
     std::size_t firstEdge{};
@@ -373,11 +424,12 @@ class Viewport final : public QOpenGLWidget {
   sketch::Sketch sketch_;
   SketchPlacement sketchPlacement_{SketchPlacement::xy()};
   sketch::Sketch solidSketch_;
-  std::vector<SolidFeature> additiveExtrusions_;
+  SketchPlacement solidSketchPlacement_{SketchPlacement::xy()};
   bool solidVisible_{false};
   QString solidSupportName_{QStringLiteral("XY")};
   bool sketchVisible_{true};
   struct DisplaySketch {
+    SketchId sketchId{kInvalidSketchId};
     sketch::Sketch geometry;
     QString supportName;
     SketchPlacement placement;
@@ -412,6 +464,8 @@ class Viewport final : public QOpenGLWidget {
   std::vector<sketch::Sketch> selectedExtrusionRegionSketches_;
   sketch::Sketch hoveredExtrusionSketch_;
   sketch::Sketch selectedExtrusionSketch_;
+  SketchPlacement hoveredExtrusionPlacement_{SketchPlacement::xy()};
+  SketchPlacement selectedExtrusionPlacement_{SketchPlacement::xy()};
   QString hoveredExtrusionSupport_;
   QString selectedExtrusionSupport_;
   QString hoveredExtrusionSurface_;
@@ -432,6 +486,10 @@ class Viewport final : public QOpenGLWidget {
   bool selectedExtrusionBodyFace_{false};
   bool hoveredExtrusionOnBodyCap_{false};
   bool selectedExtrusionOnBodyCap_{false};
+  bool hoveredExtrusionReverse_{false};
+  bool selectedExtrusionReverse_{false};
+  std::optional<LegacySolidFacePick> hoveredLegacySolidFace_;
+  std::optional<LegacySolidFacePick> selectedLegacySolidFace_;
   bool draggingExtrusionHandle_{false};
   std::optional<LinearToolManipulator> toolManipulator_;
   std::optional<TranslationToolManipulator> translationToolManipulator_;
@@ -457,6 +515,10 @@ class Viewport final : public QOpenGLWidget {
   float pitch_{25.0F};
   float zoom_{1.0F};
   ViewportRuler ruler_;
+  QTimer* hoverFrameTimer_{nullptr};
+  std::optional<QPointF> pendingHoverPosition_;
+  std::uint64_t sceneGeneration_{0};
+  std::uint64_t pendingHoverGeneration_{0};
   SketchPlacement workGridPlacement_{SketchPlacement::xy()};
   bool workGridVisible_{true};
 };

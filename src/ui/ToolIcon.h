@@ -8,6 +8,7 @@ namespace solidar {
 // geometry in one painter guarantees the same stroke, palette and rendering
 // quality for every tool, including menus and the compact history view.
 enum class ToolIconKind {
+  ImportedShape,
   CreateSketch,
   Extrude,
   Pocket,

@@ -9,7 +9,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -21,14 +21,6 @@
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/ExtrudeOperationDetector.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 
@@ -76,7 +68,7 @@ std::size_t topFaceOf(const TopoDS_Shape& shape, double z) {
         near(resolved.placement.origin.z, z))
       return index;
   }
-  assert(false && "Top face was not found");
+  CHECK(false && "Top face was not found");
   return 0;
 }
 
@@ -85,16 +77,16 @@ std::size_t topFaceOf(const TopoDS_Shape& shape, double z) {
 int main() {
   const auto xy = solidar::SketchPlacement::xy();
   const auto xyPoint = xy.toWorld(10.0, 20.0);
-  assert(near(xyPoint.x, 10.0));
-  assert(near(xyPoint.y, 20.0));
-  assert(near(xyPoint.z, 0.0));
+  CHECK(near(xyPoint.x, 10.0));
+  CHECK(near(xyPoint.y, 20.0));
+  CHECK(near(xyPoint.z, 0.0));
   for (const auto& placement : {solidar::SketchPlacement::xy(),
                                 solidar::SketchPlacement::xz(),
                                 solidar::SketchPlacement::yz()}) {
     const auto world = placement.toWorld(-17.5, 8.25);
     const auto local = placement.toLocal(world);
-    assert(near(local.x, -17.5));
-    assert(near(local.y, 8.25));
+    CHECK(near(local.x, -17.5));
+    CHECK(near(local.y, 8.25));
   }
 
   solidar::Document document;
@@ -108,43 +100,47 @@ int main() {
   auto* extrudePtr = extrude.get();
   body.addFeature(std::move(extrude));
 
-  assert(document.rebuild());
-  assert(extrudePtr->isValid());
-  assert(extrudePtr->hasShape());
-  assert(body.resultShape());
-  assert(!body.resultShape()->IsNull());
-  assert(body.resultShape()->ShapeType() == TopAbs_SOLID);
+  CHECK(document.rebuild());
+  CHECK(extrudePtr->isValid());
+  CHECK(extrudePtr->hasShape());
+  CHECK(body.resultShape());
+  CHECK(!body.resultShape()->IsNull());
+  CHECK(body.resultShape()->ShapeType() == TopAbs_SOLID);
   auto bounds = extentsOf(*body.resultShape());
-  assert(near(bounds.x, 80.0));
-  assert(near(bounds.y, 35.0));
-  assert(near(bounds.z, 50.0));
+  CHECK(near(bounds.x, 80.0));
+  CHECK(near(bounds.y, 35.0));
+  CHECK(near(bounds.z, 50.0));
 
   // BoxParameters is compatibility/UI data, never the source of Body geometry.
   document.setBox({999.0, 777.0, 333.0});
-  assert(document.rebuild());
+  CHECK(document.rebuild());
   bounds = extentsOf(*body.resultShape());
-  assert(near(bounds.x, 80.0));
-  assert(near(bounds.y, 35.0));
-  assert(near(bounds.z, 50.0));
+  CHECK(near(bounds.x, 80.0));
+  CHECK(near(bounds.y, 35.0));
+  CHECK(near(bounds.z, 50.0));
 
   const solidar::Document snapshot = document;
   extrudePtr->setLengthMm(80.0);
-  assert(extrudePtr->isDirty());
-  assert(document.rebuild());
+  CHECK(extrudePtr->isDirty());
+  CHECK(document.rebuild());
   bounds = extentsOf(*body.resultShape());
-  assert(near(bounds.z, 80.0));
+  CHECK(near(bounds.z, 80.0));
   const auto* snapshotExtrude = dynamic_cast<const solidar::ExtrudeFeature*>(
       snapshot.activeBody()->activeFeature());
-  assert(snapshotExtrude);
-  assert(snapshotExtrude->id() == extrudePtr->id());
-  assert(near(snapshotExtrude->lengthMm(), 50.0));
-  assert(near(extentsOf(*snapshot.activeBody()->resultShape()).z, 50.0));
+  CHECK(snapshotExtrude);
+  CHECK(snapshotExtrude->id() == extrudePtr->id());
+  CHECK(near(snapshotExtrude->lengthMm(), 50.0));
+  CHECK(near(extentsOf(*snapshot.activeBody()->resultShape()).z, 50.0));
 
-  // A failed rebuild must clear the old successful result, not leave stale 3D.
+  // A failed rebuild hides the Body result but preserves last-valid B-Rep for
+  // recovery and diagnostics.
+  const auto extrudeLastValid = extrudePtr->shape();
   extrudePtr->setLengthMm(0.0);
-  assert(!document.rebuild());
-  assert(!extrudePtr->hasShape());
-  assert(!body.resultShape());
+  CHECK(!document.rebuild());
+  CHECK(!extrudePtr->shape());
+  CHECK(extrudePtr->lastValidShape() == extrudeLastValid);
+  CHECK(!body.resultShape());
+  CHECK(body.lastValidResultShape() == extrudeLastValid);
 
   solidar::Document xzDocument;
   auto& xzSketch = xzDocument.addSketch("XZ Rectangle");
@@ -153,11 +149,11 @@ int main() {
   auto& xzBody = xzDocument.addBody();
   xzBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       xzSketch.id, 50.0, "XZ Extrude"));
-  assert(xzDocument.rebuild());
+  CHECK(xzDocument.rebuild());
   const auto xzBounds = extentsOf(*xzBody.resultShape());
-  assert(near(xzBounds.x, 80.0));
-  assert(near(xzBounds.y, 50.0));
-  assert(near(xzBounds.z, 35.0));
+  CHECK(near(xzBounds.x, 80.0));
+  CHECK(near(xzBounds.y, 50.0));
+  CHECK(near(xzBounds.z, 35.0));
 
   solidar::Document attachedDocument;
   auto& baseSketch = attachedDocument.addSketch("Base");
@@ -167,7 +163,7 @@ int main() {
       baseSketch.id, 50.0, "Base Extrude");
   auto* baseExtrudePtr = baseExtrude.get();
   attachedBody.addFeature(std::move(baseExtrude));
-  assert(attachedDocument.rebuild());
+  CHECK(attachedDocument.rebuild());
 
   std::optional<std::size_t> topFaceIndex;
   for (std::size_t index = 0; index < 32; ++index) {
@@ -180,55 +176,55 @@ int main() {
       break;
     }
   }
-  assert(topFaceIndex);
+  CHECK(topFaceIndex);
   auto& faceSketch = attachedDocument.addSketch("Sketch on top face");
   faceSketch.geometry.addRectangle({-25.0, 5.0}, {-15.0, 15.0});
-  assert(attachedDocument.attachSketchToFace(
+  CHECK(attachedDocument.attachSketchToFace(
       faceSketch.id,
       {attachedBody.id(), baseExtrudePtr->id(), *topFaceIndex}));
-  assert(faceSketch.supportResolved);
-  assert(near(faceSketch.placement.origin.z, 50.0));
+  CHECK(faceSketch.supportResolved);
+  CHECK(near(faceSketch.placement.origin.z, 50.0));
   const auto faceOrigin = faceSketch.placement.toWorld(0.0, 0.0);
   const auto faceX = faceSketch.placement.toWorld(10.0, 0.0);
   const auto faceY = faceSketch.placement.toWorld(0.0, 10.0);
   const auto faceNormal = faceSketch.placement.normal();
-  assert(near(faceOrigin.z, 50.0));
-  assert(near(faceX.z, 50.0));
-  assert(near(faceY.z, 50.0));
-  assert(near(faceNormal.x, 0.0));
-  assert(near(faceNormal.y, 0.0));
-  assert(near(faceNormal.z, 1.0));
+  CHECK(near(faceOrigin.z, 50.0));
+  CHECK(near(faceX.z, 50.0));
+  CHECK(near(faceY.z, 50.0));
+  CHECK(near(faceNormal.x, 0.0));
+  CHECK(near(faceNormal.y, 0.0));
+  CHECK(near(faceNormal.z, 1.0));
   const auto faceRoundTrip = faceSketch.placement.toLocal(
       faceSketch.placement.toWorld(-21.0, 12.0));
-  assert(near(faceRoundTrip.x, -21.0));
-  assert(near(faceRoundTrip.y, 12.0));
-  assert(near(std::hypot(faceX.x - faceOrigin.x,
+  CHECK(near(faceRoundTrip.x, -21.0));
+  CHECK(near(faceRoundTrip.y, 12.0));
+  CHECK(near(std::hypot(faceX.x - faceOrigin.x,
                          faceX.y - faceOrigin.y),
               10.0));
-  assert(near(std::hypot(faceY.x - faceOrigin.x,
+  CHECK(near(std::hypot(faceY.x - faceOrigin.x,
                          faceY.y - faceOrigin.y),
               10.0));
 
   const solidar::Document attachedSnapshot = attachedDocument;
   baseExtrudePtr->setLengthMm(80.0);
-  assert(attachedDocument.rebuild());
-  assert(faceSketch.supportResolved);
-  assert(near(faceSketch.placement.origin.z, 80.0));
-  assert(near(faceSketch.geometry.lines().front().start.xMm, -25.0));
-  assert(near(faceSketch.geometry.lines().front().start.yMm, 5.0));
+  CHECK(attachedDocument.rebuild());
+  CHECK(faceSketch.supportResolved);
+  CHECK(near(faceSketch.placement.origin.z, 80.0));
+  CHECK(near(faceSketch.geometry.lines().front().start.xMm, -25.0));
+  CHECK(near(faceSketch.geometry.lines().front().start.yMm, 5.0));
   const auto& snapshotFaceSketch = attachedSnapshot.sketches().back();
-  assert(snapshotFaceSketch.support.type == solidar::SketchSupportType::Face);
-  assert(near(snapshotFaceSketch.placement.origin.z, 50.0));
+  CHECK(snapshotFaceSketch.support.type == solidar::SketchSupportType::Face);
+  CHECK(near(snapshotFaceSketch.placement.origin.z, 50.0));
 
   faceSketch.support.face.faceIndex = 9999;
   attachedDocument.updateSketchPlacements();
   // Persistent identity, rather than the compatibility index, owns the link.
-  assert(faceSketch.supportResolved);
+  CHECK(faceSketch.supportResolved);
   faceSketch.support.face.persistentTag.clear();
   faceSketch.support.face.signature.reset();
   attachedDocument.updateSketchPlacements();
-  assert(!faceSketch.supportResolved);
-  assert(!faceSketch.geometry.lines().empty());
+  CHECK(!faceSketch.supportResolved);
+  CHECK(!faceSketch.geometry.lines().empty());
 
   solidar::Document openProfile;
   auto& openSketch = openProfile.addSketch();
@@ -239,9 +235,9 @@ int main() {
       openSketch.id, 10.0);
   auto* openPtr = openExtrude.get();
   openBody.addFeature(std::move(openExtrude));
-  assert(!openProfile.rebuild());
-  assert(openPtr->state() == solidar::FeatureState::Error);
-  assert(!openPtr->hasShape());
+  CHECK(!openProfile.rebuild());
+  CHECK(openPtr->state() == solidar::FeatureState::Error);
+  CHECK(!openPtr->hasShape());
 
   solidar::Document invalidLength;
   auto& validSketch = invalidLength.addSketch();
@@ -250,23 +246,23 @@ int main() {
   auto zero = std::make_unique<solidar::ExtrudeFeature>(validSketch.id, 0.0);
   auto* zeroPtr = zero.get();
   invalidBody.addFeature(std::move(zero));
-  assert(!invalidLength.rebuild());
-  assert(zeroPtr->state() == solidar::FeatureState::Error);
-  assert(!zeroPtr->hasShape());
+  CHECK(!invalidLength.rebuild());
+  CHECK(zeroPtr->state() == solidar::FeatureState::Error);
+  CHECK(!zeroPtr->hasShape());
 
   zeroPtr->setLengthMm(std::numeric_limits<double>::infinity());
-  assert(!invalidLength.rebuild());
+  CHECK(!invalidLength.rebuild());
   zeroPtr->setLengthMm(std::numeric_limits<double>::quiet_NaN());
-  assert(!invalidLength.rebuild());
+  CHECK(!invalidLength.rebuild());
 
   solidar::Document missingProfile;
   auto& missingBody = missingProfile.addBody();
   auto missing = std::make_unique<solidar::ExtrudeFeature>(999999, 10.0);
   auto* missingPtr = missing.get();
   missingBody.addFeature(std::move(missing));
-  assert(!missingProfile.rebuild());
-  assert(missingPtr->state() == solidar::FeatureState::Error);
-  assert(!missingPtr->hasShape());
+  CHECK(!missingProfile.rebuild());
+  CHECK(missingPtr->state() == solidar::FeatureState::Error);
+  CHECK(!missingPtr->hasShape());
 
   // A single Circle is a first-class profile on any Sketch placement.
   solidar::Document circleDocument;
@@ -275,8 +271,8 @@ int main() {
   auto& circleBody = circleDocument.addBody();
   circleBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       circleSketch.id, 50.0, "Cylinder"));
-  assert(circleDocument.rebuild());
-  assert(std::abs(volumeOf(*circleBody.resultShape()) -
+  CHECK(circleDocument.rebuild());
+  CHECK(std::abs(volumeOf(*circleBody.resultShape()) -
                   std::numbers::pi * 100.0 * 50.0) < 1e-3);
 
   solidar::Document xzCircleDocument;
@@ -286,11 +282,11 @@ int main() {
   auto& xzCircleBody = xzCircleDocument.addBody();
   xzCircleBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       xzCircle.id, 50.0, "XZ Cylinder"));
-  assert(xzCircleDocument.rebuild());
+  CHECK(xzCircleDocument.rebuild());
   const auto xzCylinderBounds = extentsOf(*xzCircleBody.resultShape());
-  assert(near(xzCylinderBounds.x, 20.0));
-  assert(near(xzCylinderBounds.y, 50.0));
-  assert(near(xzCylinderBounds.z, 20.0));
+  CHECK(near(xzCylinderBounds.x, 20.0));
+  CHECK(near(xzCylinderBounds.y, 50.0));
+  CHECK(near(xzCylinderBounds.z, 20.0));
 
   // Circle Join and Cut share the same prism builder and preserve one Body.
   solidar::Document booleanDocument;
@@ -301,39 +297,39 @@ int main() {
       booleanBase.id, 50.0, "Base");
   const auto booleanBaseFeatureId = booleanBaseFeature->id();
   booleanBody.addFeature(std::move(booleanBaseFeature));
-  assert(booleanDocument.rebuild());
+  CHECK(booleanDocument.rebuild());
   auto& joinCircle = booleanDocument.addSketch("Join circle");
   const auto joinCircleId = joinCircle.id;
   joinCircle.geometry.addCircle({10.0, 10.0}, 5.0);
-  assert(booleanDocument.attachSketchToFace(
+  CHECK(booleanDocument.attachSketchToFace(
       joinCircle.id, {booleanBody.id(), booleanBaseFeatureId,
                       topFaceOf(*booleanBody.resultShape(), 50.0)}));
   booleanBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       joinCircle.id, 20.0, "Circle Join", solidar::ExtrudeOperation::Join));
-  assert(booleanDocument.rebuild());
-  assert(booleanDocument.bodies().size() == 1);
-  assert(std::abs(volumeOf(*booleanBody.resultShape()) -
+  CHECK(booleanDocument.rebuild());
+  CHECK(booleanDocument.bodies().size() == 1);
+  CHECK(std::abs(volumeOf(*booleanBody.resultShape()) -
                   (140000.0 + std::numbers::pi * 25.0 * 20.0)) < 1e-2);
 
   auto& cutCircle = booleanDocument.addSketch("Cut circle");
   cutCircle.geometry.addCircle({25.0, 10.0}, 5.0);
   const auto* joinFeature = booleanBody.activeFeature();
-  assert(booleanDocument.attachSketchToFace(
+  CHECK(booleanDocument.attachSketchToFace(
       cutCircle.id, {booleanBody.id(), joinFeature->id(),
                      topFaceOf(*booleanBody.resultShape(), 50.0)}));
   booleanBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       cutCircle.id, 20.0, "Circle Cut", solidar::ExtrudeOperation::Cut, true));
-  assert(booleanDocument.rebuild());
-  assert(booleanDocument.bodies().size() == 1);
-  assert(std::abs(volumeOf(*booleanBody.resultShape()) - 140000.0) < 1e-2);
+  CHECK(booleanDocument.rebuild());
+  CHECK(booleanDocument.bodies().size() == 1);
+  CHECK(std::abs(volumeOf(*booleanBody.resultShape()) - 140000.0) < 1e-2);
 
   auto* mutableBase = dynamic_cast<solidar::ExtrudeFeature*>(
       booleanBody.features().front().get());
-  assert(mutableBase);
+  CHECK(mutableBase);
   mutableBase->setLengthMm(80.0);
-  assert(booleanDocument.rebuild());
-  assert(near(booleanDocument.findSketch(joinCircleId)->placement.origin.z, 80.0));
-  assert(std::abs(volumeOf(*booleanBody.resultShape()) - 224000.0) < 1e-2);
+  CHECK(booleanDocument.rebuild());
+  CHECK(near(booleanDocument.findSketch(joinCircleId)->placement.origin.z, 80.0));
+  CHECK(std::abs(volumeOf(*booleanBody.resultShape()) - 224000.0) < 1e-2);
 
   // New Body is independent from the active Body and becomes the new active Body.
   auto& secondProfile = booleanDocument.addSketch("Second body circle");
@@ -341,11 +337,11 @@ int main() {
   auto& secondBody = booleanDocument.addBody();
   secondBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       secondProfile.id, 15.0, "Second Body"));
-  assert(booleanDocument.rebuild());
-  assert(booleanDocument.bodies().size() == 2);
-  assert(booleanDocument.activeBody() == &booleanDocument.bodies().back());
-  assert(booleanDocument.bodies()[0].resultShape());
-  assert(booleanDocument.bodies()[1].resultShape());
+  CHECK(booleanDocument.rebuild());
+  CHECK(booleanDocument.bodies().size() == 2);
+  CHECK(booleanDocument.activeBody() == &booleanDocument.bodies().back());
+  CHECK(booleanDocument.bodies()[0].resultShape());
+  CHECK(booleanDocument.bodies()[1].resultShape());
 
   solidar::Document noIntersection;
   auto& noIntersectionBase = noIntersection.addSketch("Base");
@@ -357,8 +353,8 @@ int main() {
   remote.geometry.addCircle({100.0, 100.0}, 5.0);
   noIntersectionBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       remote.id, 10.0, "Remote Join", solidar::ExtrudeOperation::Join));
-  assert(!noIntersection.rebuild());
-  assert(noIntersectionBody.activeFeature()->error().find("does not intersect") !=
+  CHECK(!noIntersection.rebuild());
+  CHECK(noIntersectionBody.activeFeature()->error().find("does not intersect") !=
          std::string::npos);
 
   // Automatic operation selection uses an OCCT common, face orientation and
@@ -369,21 +365,21 @@ int main() {
   auto& detectionBody = detectionDocument.addBody();
   detectionBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       detectionBase.id, 20.0));
-  assert(detectionDocument.rebuild());
+  CHECK(detectionDocument.rebuild());
   auto& faceProfile = detectionDocument.addSketch("Face profile");
   faceProfile.geometry.addRectangle({5.0, 5.0}, {15.0, 15.0});
-  assert(detectionDocument.attachSketchToFace(
+  CHECK(detectionDocument.attachSketchToFace(
       faceProfile.id,
       {detectionBody.id(), detectionBody.activeFeature()->id(),
        topFaceOf(*detectionBody.resultShape(), 20.0)}));
   const auto detectionShape = detectionBody.resultShape();
-  assert(solidar::detectExtrudeOperation(faceProfile, 5.0, false, nullptr,
+  CHECK(solidar::detectExtrudeOperation(faceProfile, 5.0, false, nullptr,
                                          true) ==
          solidar::ExtrudeOperation::NewBody);
-  assert(solidar::detectExtrudeOperation(faceProfile, 5.0, false,
+  CHECK(solidar::detectExtrudeOperation(faceProfile, 5.0, false,
                                          detectionShape.get(), true) ==
          solidar::ExtrudeOperation::Join);
-  assert(solidar::detectExtrudeOperation(faceProfile, 5.0, true,
+  CHECK(solidar::detectExtrudeOperation(faceProfile, 5.0, true,
                                          detectionShape.get(), true) ==
          solidar::ExtrudeOperation::Cut);
   auto multiRegionProfile = faceProfile;
@@ -397,12 +393,12 @@ int main() {
   auto remoteProfile = faceProfile;
   remoteProfile.support.type = solidar::SketchSupportType::BasePlane;
   remoteProfile.placement.origin.x = 100.0;
-  assert(solidar::detectExtrudeOperation(remoteProfile, 5.0, false,
+  CHECK(solidar::detectExtrudeOperation(remoteProfile, 5.0, false,
                                          detectionShape.get(), false) ==
          solidar::ExtrudeOperation::NewBody);
   const auto normalized = solidar::normalizeExtrusionInput(-20.0, false);
-  assert(near(normalized.distanceMm, 20.0));
-  assert(normalized.reversed);
+  CHECK(near(normalized.distanceMm, 20.0));
+  CHECK(normalized.reversed);
   // The signed field and the "Reverse direction" checkbox describe the same
   // direction. A negative value entered while the checkbox is already active
   // must stay reversed instead of cancelling the direction at Apply time.
@@ -460,13 +456,16 @@ int main() {
   CHECK(near(volumeOf(*multiRegionExtrudePtr->shape()),
              (20.0 * 10.0 + 10.0 * 10.0) * 8.0));
 
+  const auto multiRegionLastValid = multiRegionExtrudePtr->shape();
   multiRegionSketch.geometry.addCircle({19.0, 5.0}, 2.0);
   CHECK(multiRegionDocument.markSketchDirty(multiRegionSketchId));
   CHECK(!multiRegionDocument.rebuild());
   CHECK(multiRegionExtrudePtr->id() == multiRegionFeatureId);
   CHECK(multiRegionExtrudePtr->state() == solidar::FeatureState::Error);
-  CHECK(!multiRegionExtrudePtr->hasShape());
+  CHECK(!multiRegionExtrudePtr->shape());
+  CHECK(multiRegionExtrudePtr->lastValidShape() == multiRegionLastValid);
   CHECK(!multiRegionBody.resultShape());
+  CHECK(multiRegionBody.lastValidResultShape() == multiRegionLastValid);
   CHECK(!multiRegionExtrudePtr->error().empty());
 
   multiRegionSketch.geometry.removeCircle(0);
@@ -486,5 +485,5 @@ int main() {
   auto& invalidCircleBody = invalidCircleDocument.addBody();
   invalidCircleBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       invalidCircle.id, 10.0));
-  assert(!invalidCircleDocument.rebuild());
+  CHECK(!invalidCircleDocument.rebuild());
 }

@@ -10,21 +10,13 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 
 #include "ui/ModelRibbon.h"
 #include "ui/Viewport.h"
 #include "ui/ToolParametersPanel.h"
 #include "ui/PartDesignToolHelp.h"
 #include "ui/PartDesignHistory.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -35,7 +27,7 @@ int main(int argc, char** argv) {
   CHECK(ribbon.minimumSizeHint().width() <= 1920);
 
   const auto groups = ribbon.findChildren<QWidget*>("modelToolGroup");
-  assert(groups.size() == 3);
+  CHECK(groups.size() == 3);
 
   QWidget* creation = nullptr;
   QWidget* editing = nullptr;
@@ -45,53 +37,61 @@ int main(int argc, char** argv) {
     if (title == QString::fromUtf8("СОЗДАНИЕ")) creation = group;
     if (title == QString::fromUtf8("РЕДАКТИРОВАНИЕ")) editing = group;
     if (title == QString::fromUtf8("ОТОБРАЖЕНИЕ")) view = group;
-    assert(title != QString::fromUtf8("ВИД"));
+    CHECK(title != QString::fromUtf8("ВИД"));
     auto* menuButton = group->findChild<QToolButton*>("modelGroupMenuButton");
-    assert(menuButton);
-    assert(menuButton->menu());
+    CHECK(menuButton);
+    CHECK(menuButton->menu());
   }
-  assert(creation && editing && view);
+  CHECK(creation && editing && view);
 
-  assert(creation->findChild<QToolButton*>("createSketchCommand"));
-  assert(creation->findChild<QToolButton*>("extrudeCommand"));
-  assert(creation->findChild<QToolButton*>("revolveCommand"));
-  assert(editing->findChild<QToolButton*>("filletCommand"));
-  assert(editing->findChild<QToolButton*>("chamferCommand"));
-  assert(editing->findChild<QToolButton*>("joinBodiesCommand"));
-  assert(editing->findChild<QToolButton*>("moveCommand"));
-  assert(view->findChild<QToolButton*>("rulerCommand"));
-  assert(!creation->findChild<QToolButton*>("filletCommand"));
+  CHECK(creation->findChild<QToolButton*>("createSketchCommand"));
+  CHECK(creation->findChild<QToolButton*>("extrudeCommand"));
+  auto* pocketCommand = creation->findChild<QToolButton*>("pocketCommand");
+  CHECK(pocketCommand);
+  int pocketRequests = 0;
+  QObject::connect(&ribbon, &solidar::ModelRibbon::pocketRequested,
+                   [&pocketRequests] { ++pocketRequests; });
+  pocketCommand->click();
+  CHECK(pocketRequests == 1);
+  ribbon.clearActiveTool();
+  CHECK(creation->findChild<QToolButton*>("revolveCommand"));
+  CHECK(editing->findChild<QToolButton*>("filletCommand"));
+  CHECK(editing->findChild<QToolButton*>("chamferCommand"));
+  CHECK(editing->findChild<QToolButton*>("joinBodiesCommand"));
+  CHECK(editing->findChild<QToolButton*>("moveCommand"));
+  CHECK(view->findChild<QToolButton*>("rulerCommand"));
+  CHECK(!creation->findChild<QToolButton*>("filletCommand"));
 
   const auto commands = ribbon.findChildren<QToolButton*>();
   int documentedCommands = 0;
   std::vector<QRect> commandRects;
   for (const auto* command : commands) {
-    assert(command->text() != QStringLiteral("Top"));
-    assert(command->text() != QStringLiteral("Front"));
-    assert(command->text() != QStringLiteral("Right"));
-    assert(command->text() != QStringLiteral("Bottom"));
-    assert(command->text() != QStringLiteral("Back"));
-    assert(command->text() != QStringLiteral("Left"));
+    CHECK(command->text() != QStringLiteral("Top"));
+    CHECK(command->text() != QStringLiteral("Front"));
+    CHECK(command->text() != QStringLiteral("Right"));
+    CHECK(command->text() != QStringLiteral("Bottom"));
+    CHECK(command->text() != QStringLiteral("Back"));
+    CHECK(command->text() != QStringLiteral("Left"));
     if (!command->property("helpId").isValid()) continue;
     ++documentedCommands;
-    assert(!command->toolTip().isEmpty());
-    assert(!command->accessibleName().isEmpty());
-    assert(!command->accessibleDescription().isEmpty());
+    CHECK(!command->toolTip().isEmpty());
+    CHECK(!command->accessibleName().isEmpty());
+    CHECK(!command->accessibleDescription().isEmpty());
     CHECK(command->width() == 104);
     CHECK(!command->property("commandTitle").toString().contains(
         QLatin1Char('\n')));
     commandRects.push_back(
         QRect(command->mapTo(&ribbon, QPoint{}), command->size()));
   }
-  assert(documentedCommands == 13);
+  CHECK(documentedCommands == 14);
   for (std::size_t first = 0; first < commandRects.size(); ++first)
     for (std::size_t second = first + 1; second < commandRects.size(); ++second)
       CHECK(!commandRects[first].intersects(commandRects[second]));
   CHECK(editing->findChild<QToolButton*>("joinBodiesCommand")
             ->text()
             .contains(QLatin1Char('\n')));
-  assert(!ribbon.findChild<QToolButton*>("fitCommand"));
-  assert(!ribbon.findChild<QToolButton*>("isoCommand"));
+  CHECK(!ribbon.findChild<QToolButton*>("fitCommand"));
+  CHECK(!ribbon.findChild<QToolButton*>("isoCommand"));
   const std::initializer_list<solidar::PartDesignToolKind> historyKinds{
       solidar::PartDesignToolKind::Extrude,
       solidar::PartDesignToolKind::Pocket,
@@ -106,9 +106,9 @@ int main(int argc, char** argv) {
       solidar::PartDesignToolKind::Shell,
       solidar::PartDesignToolKind::Draft};
   for (const auto kind : historyKinds)
-    assert(!solidar::partDesignToolIcon(kind).isNull());
-  assert(!solidar::modelCommandIcon(QStringLiteral("createSketch")).isNull());
-  assert(!solidar::modelCommandIcon(QStringLiteral("ruler")).isNull());
+    CHECK(!solidar::partDesignToolIcon(kind).isNull());
+  CHECK(!solidar::modelCommandIcon(QStringLiteral("createSketch")).isNull());
+  CHECK(!solidar::modelCommandIcon(QStringLiteral("ruler")).isNull());
   solidar::HistoryStep compactStep;
   compactStep.title = QString::fromUtf8("Фаска 1");
   compactStep.tooltip = QString::fromUtf8("Фаска 1\nРазмер: 2 мм");
@@ -116,54 +116,54 @@ int main(int argc, char** argv) {
       solidar::PartDesignToolKind::Chamfer);
   QToolButton compactButton;
   solidar::configureHistoryButton(compactButton, compactStep, true);
-  assert(compactButton.text().isEmpty());
-  assert(compactButton.toolButtonStyle() == Qt::ToolButtonIconOnly);
-  assert(compactButton.width() <= 32 && compactButton.height() <= 32);
-  assert(compactButton.iconSize().width() >= 14);
-  assert(!compactButton.toolTip().isEmpty() && compactButton.isChecked());
+  CHECK(compactButton.text().isEmpty());
+  CHECK(compactButton.toolButtonStyle() == Qt::ToolButtonIconOnly);
+  CHECK(compactButton.width() <= 32 && compactButton.height() <= 32);
+  CHECK(compactButton.iconSize().width() >= 14);
+  CHECK(!compactButton.toolTip().isEmpty() && compactButton.isChecked());
 
-  assert(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
-  assert(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 9);
-  assert(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
+  CHECK(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 4);
+  CHECK(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 9);
+  CHECK(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
 
   solidar::ToolParametersPanel panel;
   const auto* shellHelp = solidar::partDesignToolHelp(
       solidar::PartDesignToolKind::Shell);
   panel.configure(*shellHelp, QString::fromUtf8("Грани"),
                   QString::fromUtf8("Толщина"), QStringLiteral(" mm"));
-  assert(panel.titleText() == shellHelp->title.toUpper());
-  assert(panel.descriptionText() == shellHelp->shortDescription);
+  CHECK(panel.titleText() == shellHelp->title.toUpper());
+  CHECK(panel.descriptionText() == shellHelp->shortDescription);
   panel.setStatus(QString::fromUtf8("Тестовая ошибка"), true);
-  assert(panel.descriptionText() == shellHelp->shortDescription);
+  CHECK(panel.descriptionText() == shellHelp->shortDescription);
   const auto* joinHelp = solidar::partDesignToolHelp(
       solidar::PartDesignToolKind::JoinBodies);
   panel.configureSelectionOnly(*joinHelp, QString::fromUtf8("Тела"));
   auto* parameterInput =
       panel.findChild<QDoubleSpinBox*>("toolParameterInput");
-  assert(parameterInput && parameterInput->isHidden());
+  CHECK(parameterInput && parameterInput->isHidden());
   const auto* chamferHelp = solidar::partDesignToolHelp(
       solidar::PartDesignToolKind::Chamfer);
   panel.configure(*chamferHelp, QString::fromUtf8("Рёбра"),
                   QString::fromUtf8("Размер"), QStringLiteral(" mm"));
-  assert(!parameterInput->isHidden());
+  CHECK(!parameterInput->isHidden());
 
   solidar::Viewport viewport;
   viewport.setSelectionFilter(solidar::SelectionFilter::Edge);
-  assert(viewport.selectionFilter() == solidar::SelectionFilter::Edge);
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Edge);
   viewport.setSelectionFilter(solidar::SelectionFilter::Face);
-  assert(viewport.selectionFilter() == solidar::SelectionFilter::Face);
+  CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Face);
   viewport.setSelectionFilter(solidar::SelectionFilter::Any);
 
   viewport.viewTop();
-  assert(viewport.cameraYawDegrees() == 0.0F);
-  assert(viewport.cameraPitchDegrees() == 0.0F);
+  CHECK(viewport.cameraYawDegrees() == 0.0F);
+  CHECK(viewport.cameraPitchDegrees() == 0.0F);
   viewport.viewFront();
-  assert(viewport.cameraPitchDegrees() == -90.0F);
+  CHECK(viewport.cameraPitchDegrees() == -90.0F);
   viewport.viewRight();
-  assert(viewport.cameraYawDegrees() == 90.0F);
-  assert(viewport.cameraPitchDegrees() == 90.0F);
+  CHECK(viewport.cameraYawDegrees() == 90.0F);
+  CHECK(viewport.cameraPitchDegrees() == 90.0F);
   viewport.viewIsometric();
-  assert(viewport.cameraYawDegrees() == -45.0F);
-  assert(viewport.cameraPitchDegrees() == 30.0F);
+  CHECK(viewport.cameraYawDegrees() == -45.0F);
+  CHECK(viewport.cameraPitchDegrees() == 30.0F);
   return 0;
 }

@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <TopExp_Explorer.hxx>
@@ -28,13 +30,6 @@ class TestFailure final : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
-
-#define CHECK(condition)                                                     \
-  do {                                                                       \
-    if (!(condition))                                                        \
-      throw TestFailure(std::string(__FILE__) + ":" +                        \
-                        std::to_string(__LINE__) + ": " #condition);         \
-  } while (false)
 
 using solidar::ExtrudeOperation;
 using solidar::test::near;
@@ -134,6 +129,8 @@ int main() {
       // Outward Cut on the top face does not intersect the body -> invalid.
       CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
       CHECK(!session.error().empty());
+      CHECK(session.errorCode() ==
+            solidar::OperationFailureCode::NoIntersection);
       CHECK(session.previewShape() == nullptr);
 
       // The signed state is KEPT, not restored to a previous value.
@@ -216,6 +213,8 @@ int main() {
       CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
       CHECK(!session.error().empty());
       CHECK(session.error().find("planar") != std::string::npos);
+      CHECK(session.errorCode() ==
+            solidar::OperationFailureCode::NonPlanarFace);
       CHECK(session.previewShape() == nullptr);
     }
 
@@ -285,6 +284,8 @@ int main() {
       CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
       CHECK(!session.reversed());
       CHECK(near(session.lengthMm(), 10.0));
+      CHECK(session.errorCode() ==
+            solidar::OperationFailureCode::NoIntersection);
 
       // Crossing zero: signed negative flips reversed and becomes a valid Cut.
       session.setSignedLength(-8.0);
@@ -374,6 +375,8 @@ int main() {
       CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
       CHECK(session.previewShape() != nullptr);
       CHECK(!session.error().empty());
+      CHECK(session.errorCode() ==
+            solidar::OperationFailureCode::NoIntersection);
 
       // Recover with a valid intersecting candidate.
       solidar::DocumentSketch intersecting;

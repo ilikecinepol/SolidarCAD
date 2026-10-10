@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QSettings>
@@ -7,14 +9,6 @@
 #include <iostream>
 
 #include "app/AppSettings.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 int main(int argc, char** argv) {
   QCoreApplication application(argc, argv);

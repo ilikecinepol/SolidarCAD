@@ -107,25 +107,30 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
 
   auto* createSketch = commandButton(QStringLiteral("createSketch"), this);
   auto* extrude = commandButton(QStringLiteral("extrude"), this);
+  auto* pocket = commandButton(QStringLiteral("pocket"), this);
   auto* revolve = commandButton(QStringLiteral("revolve"), this);
   createSketch->setObjectName("createSketchCommand");
   extrude->setObjectName("extrudeCommand");
+  pocket->setObjectName("pocketCommand");
   revolve->setObjectName("revolveCommand");
   createSketch->setCheckable(true);
   extrude->setCheckable(true);
+  pocket->setCheckable(true);
   revolve->setCheckable(true);
   toolGroup_ = new QButtonGroup(this);
   toolGroup_->setExclusive(true);
   toolGroup_->addButton(createSketch);
   toolGroup_->addButton(extrude);
+  toolGroup_->addButton(pocket);
   toolGroup_->addButton(revolve);
   auto* creation = new QHBoxLayout;
   creation->setSpacing(5);
   creation->addWidget(createSketch);
   creation->addWidget(extrude);
+  creation->addWidget(pocket);
   creation->addWidget(revolve);
   root->addWidget(group(QString::fromUtf8("СОЗДАНИЕ"), creation, this,
-                        {createSketch, extrude, revolve}));
+                        {createSketch, extrude, pocket, revolve}));
   root->addWidget(separator(this));
 
   auto* fillet = commandButton(QStringLiteral("fillet"), this);
@@ -237,6 +242,8 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::createSketchRequested);
   connect(extrude, &QToolButton::clicked, this,
           &ModelRibbon::extrudeRequested);
+  connect(pocket, &QToolButton::clicked, this,
+          &ModelRibbon::pocketRequested);
   connect(revolve, &QToolButton::clicked, this,
           &ModelRibbon::revolveRequested);
   connect(fillet, &QToolButton::clicked, this,

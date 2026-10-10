@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QApplication>
 #include <QDoubleSpinBox>
 #include <QKeyEvent>
@@ -15,16 +17,9 @@
 #include <vector>
 
 #include "model/PartDesignToolFramework.h"
+#include "model/PatternTypes.h"
 #include "ui/ThemeManager.h"
 #include "ui/tools/ToolParameterHud.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 
@@ -445,6 +440,44 @@ int main(int argc, char** argv) {
     CHECK(QApplication::focusWidget() == editor);
     hud.focusNextField(true);
     CHECK(QApplication::focusWidget() == editor);
+  }
+
+  // Test 14: the canonical CircularPattern angle descriptor preserves the
+  // domain minimum exactly in both programmatic and typed input paths.
+  {
+    const auto& definitions = solidar::standardPartDesignToolDefinitions();
+    const solidar::PartDesignToolDefinition* circular = nullptr;
+    for (const auto& definition : definitions) {
+      if (definition.kind == solidar::PartDesignToolKind::CircularPattern) {
+        circular = &definition;
+        break;
+      }
+    }
+    CHECK(circular != nullptr);
+
+    solidar::ToolParameterHud hud;
+    hud.setParameters(circular->parameters);
+    auto* angle = hud.findChild<QDoubleSpinBox*>("angle");
+    CHECK(angle != nullptr);
+    CHECK(angle->decimals() >= 2);
+    CHECK(nearly(angle->minimum(), solidar::kMinimumPatternParameter));
+
+    hud.setValue("angle", solidar::kMinimumPatternParameter);
+    CHECK(nearly(hud.value("angle"), solidar::kMinimumPatternParameter));
+
+    angle->setLocale(QLocale::c());
+    angle->setKeyboardTracking(false);
+    showAndFocus(hud, angle);
+    auto* line = spinLineEdit(angle);
+    CHECK(line != nullptr);
+    line->setText(QStringLiteral("0.01"));
+    pressKey(angle, Qt::Key_Return);
+    CHECK(nearly(angle->value(), solidar::kMinimumPatternParameter));
+
+    line->setText(QStringLiteral("0.009"));
+    pressKey(angle, Qt::Key_Return);
+    CHECK(angle->value() >= solidar::kMinimumPatternParameter);
+    CHECK(nearly(angle->value(), solidar::kMinimumPatternParameter));
   }
 
   return EXIT_SUCCESS;

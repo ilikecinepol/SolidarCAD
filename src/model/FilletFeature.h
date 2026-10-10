@@ -24,9 +24,13 @@ class FilletFeature final : public ShapeFeature {
   void setEdges(std::vector<EdgeReference> edges) noexcept;
   void setRadiusMm(double value) noexcept;
 
-  [[nodiscard]] std::string typeName() const override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::Fillet;
+  }
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   std::vector<EdgeReference> edges_;

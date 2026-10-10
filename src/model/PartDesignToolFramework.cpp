@@ -1,4 +1,5 @@
 #include "model/PartDesignToolFramework.h"
+#include "model/PatternTypes.h"
 
 #include <limits>
 
@@ -8,15 +9,19 @@ SelectionRequirement one(SelectionType type, const char* prompt) {
   return {type, prompt, 1, 1, false};
 }
 ToolParameterDescriptor distance(const char* id, const char* label) {
-  return {id, label, ToolParameterType::Distance, 10.0, 0.01, 100000.0,
-          0.1, "mm", true, ToolManipulatorType::Linear};
+  return {id, label, ToolParameterType::Distance, 10.0,
+          kMinimumPatternParameter, kMaximumPatternSpacingMm, 0.1, "mm",
+          true, ToolManipulatorType::Linear};
 }
 ToolParameterDescriptor angle() {
-  return {"angle", "Angle", ToolParameterType::Angle, 360.0, 0.01, 360.0,
-          1.0, "deg", true, ToolManipulatorType::Angular};
+  return {"angle", "Angle", ToolParameterType::Angle,
+          kMaximumPatternAngleDeg, kMinimumPatternParameter,
+          kMaximumPatternAngleDeg, 1.0, "deg", true,
+          ToolManipulatorType::Angular};
 }
 ToolParameterDescriptor count() {
-  return {"count", "Count", ToolParameterType::Integer, 2, 2.0, 100.0,
+  return {"count", "Count", ToolParameterType::Integer,
+          kMinimumPatternCount, kMinimumPatternCount, kMaximumPatternCount,
           1.0, {}, true, ToolManipulatorType::None};
 }
 }

@@ -12,7 +12,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -23,14 +23,6 @@
 #include "model/ShellToolSession.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 double volume(const TopoDS_Shape& shape) {
@@ -64,10 +56,10 @@ solidar::Document boxDocument(solidar::FeatureId* sourceId,
   auto& body = document.addBody();
   auto& source = body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       sketch.id, 20.0, "Box", solidar::ExtrudeOperation::NewBody));
-  assert(document.recompute());
+  CHECK(document.recompute());
   *sourceId = source.id();
   const auto index = topFace(*source.shape());
-  assert(index != static_cast<std::size_t>(-1));
+  CHECK(index != static_cast<std::size_t>(-1));
   *opening = solidar::makeFaceReference(*source.shape(), body.id(), source.id(), index);
   return document;
 }
@@ -79,39 +71,39 @@ int main(int argc, char** argv) {
   solidar::FaceReference opening;
   auto document = boxDocument(&sourceId, &opening);
   auto* body = document.activeBody();
-  assert(body);
+  CHECK(body);
   auto shell = std::make_unique<solidar::ShellFeature>(
       sourceId, std::vector{opening}, 2.0, false, "Shell 1");
   auto* shellPtr = shell.get();
   const auto shellId = shellPtr->id();
   body->addFeature(std::move(shell));
-  assert(document.recompute());
-  assert(shellPtr->isValid() && shellPtr->shape());
+  CHECK(document.recompute());
+  CHECK(shellPtr->isValid() && shellPtr->shape());
   const double inwardVolume = volume(*shellPtr->shape());
-  assert(inwardVolume > 0.0 && inwardVolume < 24000.0);
+  CHECK(inwardVolume > 0.0 && inwardVolume < 24000.0);
 
   shellPtr->setThicknessMm(4.0);
-  assert(document.recompute());
-  assert(volume(*shellPtr->shape()) > inwardVolume);
+  CHECK(document.recompute());
+  CHECK(volume(*shellPtr->shape()) > inwardVolume);
   shellPtr->setOutside(true);
-  assert(document.recompute());
-  assert(std::abs(volume(*shellPtr->shape()) - inwardVolume) > 1.0);
+  CHECK(document.recompute());
+  CHECK(std::abs(volume(*shellPtr->shape()) - inwardVolume) > 1.0);
 
   // Invalid parameters retain identity and recover without recreating history.
   shellPtr->setThicknessMm(1000.0);
-  assert(!document.recompute() && shellPtr->isFailed());
+  CHECK(!document.recompute() && shellPtr->isFailed());
   shellPtr->setThicknessMm(2.0);
   shellPtr->setOutside(false);
-  assert(document.recompute() && shellPtr->id() == shellId);
+  CHECK(document.recompute() && shellPtr->id() == shellId);
 
   solidar::ShellToolSession session;
   session.begin(body->id(), sourceId, body->features().front()->shape(),
                 {opening}, 2.0, false, shellId);
-  assert(session.previewShape() && session.manipulator());
+  CHECK(session.previewShape() && session.manipulator());
   session.setThicknessFromManipulator(3.0);
-  assert(session.thicknessMm() == 3.0 && session.previewShape());
+  CHECK(session.thicknessMm() == 3.0 && session.previewShape());
   session.setOutside(true);
-  assert(session.outside() && session.editingFeatureId() == shellId);
+  CHECK(session.outside() && session.editingFeatureId() == shellId);
 
   // An excessive interactive value keeps a valid preview and stops at the
   // last buildable wall thickness instead of replacing the model with an
@@ -123,27 +115,39 @@ int main(int argc, char** argv) {
   const auto shallowOpening = solidar::makeFaceReference(
       *shallowShape, 77, 88, shallowTop);
   solidar::ShellToolSession boundedSession;
-  boundedSession.begin(77, 88, shallowShape, {shallowOpening}, 4.0, false);
+  boundedSession.begin(77, 88, shallowShape, {shallowOpening}, 1.0, false);
   CHECK(boundedSession.previewShape());
+  CHECK(boundedSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  const auto buildsBeforeDrag = boundedSession.previewBuildAttemptCount();
+  boundedSession.setThicknessFromManipulator(4.0);
+  CHECK(boundedSession.previewBuildAttemptCount() == buildsBeforeDrag + 1);
+  CHECK(boundedSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!boundedSession.limitReached());
+  const auto buildsBeforeBoundary = boundedSession.previewBuildAttemptCount();
+  CHECK(boundedSession.refineThicknessToBoundary(
+      boundedSession.thicknessMm()));
   CHECK(boundedSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   CHECK(boundedSession.limitReached());
   CHECK(boundedSession.maximumValidThicknessMm());
   CHECK(boundedSession.thicknessMm() >= 0.01);
   CHECK(boundedSession.thicknessMm() < 3.0);
+  CHECK(boundedSession.previewBuildAttemptCount() > buildsBeforeBoundary);
+  CHECK(boundedSession.previewBuildAttemptCount() <=
+        buildsBeforeBoundary + 27);
 
   QTemporaryDir temporary(QDir::current().filePath(
       QStringLiteral("shell-feature-tests-XXXXXX")));
-  assert(temporary.isValid());
+  CHECK(temporary.isValid());
   const QString path = temporary.filePath("shell.solidar");
   QString error;
-  assert(solidar::project::ProjectFile::saveDocument(path, document, &error));
+  CHECK(solidar::project::ProjectFile::saveDocument(path, document, &error));
   solidar::Document loaded;
-  assert(solidar::project::ProjectFile::loadDocument(path, &loaded, &error));
-  assert(loaded.recompute());
+  CHECK(solidar::project::ProjectFile::loadDocument(path, &loaded, &error));
+  CHECK(loaded.recompute());
   const auto* loadedShell = dynamic_cast<const solidar::ShellFeature*>(
       loaded.activeBody()->activeFeature());
-  assert(loadedShell && loadedShell->id() == shellId);
-  assert(loadedShell->removedFaces().front().signature);
-  assert(std::abs(loadedShell->thicknessMm() - 2.0) < 1e-9);
+  CHECK(loadedShell && loadedShell->id() == shellId);
+  CHECK(loadedShell->removedFaces().front().signature);
+  CHECK(std::abs(loadedShell->thicknessMm() - 2.0) < 1e-9);
   return 0;
 }

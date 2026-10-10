@@ -3,7 +3,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 #include <limits>
 #include <initializer_list>
 #include <memory>
@@ -27,15 +27,15 @@ void verifyRectangle(const solidar::SketchPlacement& placement,
   auto feature = std::make_unique<solidar::ExtrudeFeature>(sketch.id, 50.0);
   auto* extrude = feature.get();
   body.addFeature(std::move(feature));
-  assert(document.rebuild());
-  assert(extrude->isValid() && extrude->hasShape());
-  assert(body.resultShape()->ShapeType() == TopAbs_SOLID);
-  assert(solidar::test::solidCount(*body.resultShape()) == 1);
+  CHECK(document.rebuild());
+  CHECK(extrude->isValid() && extrude->hasShape());
+  CHECK(body.resultShape()->ShapeType() == TopAbs_SOLID);
+  CHECK(solidar::test::solidCount(*body.resultShape()) == 1);
   const auto bounds = solidar::test::boundsOf(*body.resultShape());
-  assert(solidar::test::near(bounds.x(), expectedX));
-  assert(solidar::test::near(bounds.y(), expectedY));
-  assert(solidar::test::near(bounds.z(), expectedZ));
-  assert(solidar::test::near(solidar::test::volumeOf(*body.resultShape()),
+  CHECK(solidar::test::near(bounds.x(), expectedX));
+  CHECK(solidar::test::near(bounds.y(), expectedY));
+  CHECK(solidar::test::near(bounds.z(), expectedZ));
+  CHECK(solidar::test::near(solidar::test::volumeOf(*body.resultShape()),
                              140000.0, 1e-3));
 }
 
@@ -47,12 +47,12 @@ void verifyCircle(const solidar::SketchPlacement& placement,
   sketch.placement = placement;
   auto& body = document.addBody();
   body.addFeature(std::make_unique<solidar::ExtrudeFeature>(sketch.id, 50.0));
-  assert(document.rebuild());
+  CHECK(document.rebuild());
   const auto bounds = solidar::test::boundsOf(*body.resultShape());
-  assert(solidar::test::near(bounds.x(), expectedX, 1e-5));
-  assert(solidar::test::near(bounds.y(), expectedY, 1e-5));
-  assert(solidar::test::near(bounds.z(), expectedZ, 1e-5));
-  assert(solidar::test::near(solidar::test::volumeOf(*body.resultShape()),
+  CHECK(solidar::test::near(bounds.x(), expectedX, 1e-5));
+  CHECK(solidar::test::near(bounds.y(), expectedY, 1e-5));
+  CHECK(solidar::test::near(bounds.z(), expectedZ, 1e-5));
+  CHECK(solidar::test::near(solidar::test::volumeOf(*body.resultShape()),
                              std::numbers::pi * 100.0 * 50.0, 1e-3));
 }
 
@@ -65,10 +65,10 @@ void verifyPolygon(std::initializer_list<solidar::sketch::Point> points) {
                             vertices[(index + 1) % vertices.size()]);
   auto& body = document.addBody();
   body.addFeature(std::make_unique<solidar::ExtrudeFeature>(sketch.id, 25.0));
-  assert(document.rebuild());
-  assert(body.activeFeature()->isValid());
-  assert(solidar::test::solidCount(*body.resultShape()) == 1);
-  assert(solidar::test::volumeOf(*body.resultShape()) > 1.0);
+  CHECK(document.rebuild());
+  CHECK(body.activeFeature()->isValid());
+  CHECK(solidar::test::solidCount(*body.resultShape()) == 1);
+  CHECK(solidar::test::volumeOf(*body.resultShape()) > 1.0);
 }
 
 }  // namespace
@@ -96,12 +96,12 @@ int main() {
   auto& arbitraryBody = arbitrary.addBody();
   arbitraryBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
       arbitrarySketch.id, 50.0));
-  assert(arbitrary.rebuild());
-  assert(solidar::test::near(
+  CHECK(arbitrary.rebuild());
+  CHECK(solidar::test::near(
       solidar::test::volumeOf(*arbitraryBody.resultShape()), 140000.0, 1e-3));
   const auto arbitraryBounds = solidar::test::boundsOf(*arbitraryBody.resultShape());
-  assert(arbitraryBounds.x() > 90.0 && arbitraryBounds.y() > 90.0);
-  assert(solidar::test::near(arbitraryBounds.z(), 35.0));
+  CHECK(arbitraryBounds.x() > 90.0 && arbitraryBounds.y() > 90.0);
+  CHECK(solidar::test::near(arbitraryBounds.z(), 35.0));
 
   solidar::Document reverse;
   auto& reverseSketch = reverse.addSketch("Reverse rectangle");
@@ -111,36 +111,40 @@ int main() {
       reverseSketch.id, 50.0, "Extrude", solidar::ExtrudeOperation::NewBody);
   auto* reverseFeature = feature.get();
   reverseBody.addFeature(std::move(feature));
-  assert(reverse.rebuild());
+  CHECK(reverse.rebuild());
   auto bounds = solidar::test::boundsOf(*reverseBody.resultShape());
-  assert(solidar::test::near(bounds.minZ, 0.0));
-  assert(solidar::test::near(bounds.maxZ, 50.0));
+  CHECK(solidar::test::near(bounds.minZ, 0.0));
+  CHECK(solidar::test::near(bounds.maxZ, 50.0));
   reverseFeature->setReversed(true);
-  assert(reverseFeature->isDirty() && reverse.rebuild());
+  CHECK(reverseFeature->isDirty() && reverse.rebuild());
   bounds = solidar::test::boundsOf(*reverseBody.resultShape());
-  assert(solidar::test::near(bounds.minZ, -50.0));
-  assert(solidar::test::near(bounds.maxZ, 0.0));
+  CHECK(solidar::test::near(bounds.minZ, -50.0));
+  CHECK(solidar::test::near(bounds.maxZ, 0.0));
   reverseFeature->setReversed(false);
-  assert(reverse.rebuild());
-  assert(solidar::test::near(solidar::test::boundsOf(*reverseBody.resultShape()).maxZ,
+  CHECK(reverse.rebuild());
+  CHECK(solidar::test::near(solidar::test::boundsOf(*reverseBody.resultShape()).maxZ,
                              50.0));
 
   const auto normalized = solidar::normalizeExtrusionInput(-20.0, false);
-  assert(solidar::test::near(normalized.distanceMm, 20.0));
-  assert(normalized.reversed);
+  CHECK(solidar::test::near(normalized.distanceMm, 20.0));
+  CHECK(normalized.reversed);
 
+  const auto reverseLastValid = reverseFeature->shape();
   for (const double invalid : {0.0, std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::infinity(),
                                -std::numeric_limits<double>::infinity()}) {
     reverseFeature->setLengthMm(invalid);
-    assert(!reverse.rebuild());
-    assert(reverseFeature->state() == solidar::FeatureState::Error);
-    assert(!reverseFeature->hasShape() && !reverseBody.resultShape());
+    CHECK(!reverse.rebuild());
+    CHECK(reverseFeature->state() == solidar::FeatureState::Error);
+    CHECK(!reverseFeature->shape() &&
+           reverseFeature->lastValidShape() == reverseLastValid &&
+           !reverseBody.resultShape() &&
+           reverseBody.lastValidResultShape() == reverseLastValid);
   }
   reverseFeature->setLengthMm(60.0);
-  assert(reverse.rebuild());
-  assert(reverseFeature->isValid() && reverseFeature->hasShape());
-  assert(solidar::test::near(solidar::test::boundsOf(*reverseBody.resultShape()).z(),
+  CHECK(reverse.rebuild());
+  CHECK(reverseFeature->isValid() && reverseFeature->hasShape());
+  CHECK(solidar::test::near(solidar::test::boundsOf(*reverseBody.resultShape()).z(),
                              60.0));
 
   for (const double invalidRadius : {
@@ -151,8 +155,8 @@ int main() {
     sketch.geometry.addCircle({0.0, 0.0}, invalidRadius);
     auto& body = invalidCircle.addBody();
     body.addFeature(std::make_unique<solidar::ExtrudeFeature>(sketch.id, 10.0));
-    assert(!invalidCircle.rebuild());
-    assert(body.activeFeature()->state() == solidar::FeatureState::Error);
-    assert(!body.resultShape());
+    CHECK(!invalidCircle.rebuild());
+    CHECK(body.activeFeature()->state() == solidar::FeatureState::Error);
+    CHECK(!body.resultShape());
   }
 }

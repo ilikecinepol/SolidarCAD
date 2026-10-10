@@ -4,7 +4,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -14,14 +14,6 @@
 #include "model/Document.h"
 #include "model/RevolveFeature.h"
 #include "model/RevolveToolSession.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 std::unique_ptr<solidar::RevolveFeature> feature(
@@ -44,22 +36,22 @@ int main() {
   solidar::RevolveToolSession session;
   session.begin(sessionDocument, solidar::kInvalidBodyId,
                 solidar::kInvalidFeatureId);
-  assert(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
-  assert(session.selectionRequirement()->type == solidar::SelectionType::Sketch);
-  assert(!session.previewShape());
-  session.setProfile(sessionSketch.id);
-  assert(session.lifecycle() == solidar::ToolLifecycle::SelectingReference);
-  assert(session.selectionRequirement()->type == solidar::SelectionType::Axis);
-  session.setAxis({solidar::AxisReferenceType::SketchHorizontalAxis,
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
+  CHECK(session.selectionRequirement()->type == solidar::SelectionType::Sketch);
+  CHECK(!session.previewShape());
+  session.setProfile(sessionDocument, sessionSketch.id);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingReference);
+  CHECK(session.selectionRequirement()->type == solidar::SelectionType::Axis);
+  session.setAxis(sessionDocument, {solidar::AxisReferenceType::SketchHorizontalAxis,
                    sessionSketch.id, solidar::sketch::kInvalidGeometryId});
-  assert(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
-  assert(session.previewShape());
-  session.setAngleFromPanel(180.0);
-  assert(session.angleDeg() == 180.0 && session.previewShape());
-  session.setAngleFromManipulator(90.0);
-  assert(session.angleDeg() == 90.0 && session.manipulator());
-  assert(std::get<double>(session.parameters().front().value) == 90.0);
-  assert(sessionDocument.bodies().size() == featureCountBefore);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(session.previewShape());
+  session.setAngleFromPanel(sessionDocument, 180.0);
+  CHECK(session.angleDeg() == 180.0 && session.previewShape());
+  session.setAngleFromManipulator(sessionDocument, 90.0);
+  CHECK(session.angleDeg() == 90.0 && session.manipulator(sessionDocument));
+  CHECK(std::get<double>(session.parameters().front().value) == 90.0);
+  CHECK(sessionDocument.bodies().size() == featureCountBefore);
 
   // Ctrl-selected profile regions are kept as exact feature input rather than
   // expanding back to every contour in the owning sketch.
@@ -80,10 +72,10 @@ int main() {
     const auto requirement = multiSession.selectionRequirement();
     CHECK(requirement.has_value());
     CHECK(requirement->multiSelect);
-    multiSession.setProfile(multiSketch.id, pickedRegions);
+    multiSession.setProfile(multiDocument, multiSketch.id, pickedRegions);
     CHECK(multiSession.profileOverride().has_value());
     CHECK(multiSession.profileOverride()->lines().size() == 8);
-    multiSession.setAxis({solidar::AxisReferenceType::SketchHorizontalAxis,
+    multiSession.setAxis(multiDocument, {solidar::AxisReferenceType::SketchHorizontalAxis,
                           multiSketch.id,
                           solidar::sketch::kInvalidGeometryId});
     CHECK(multiSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
@@ -107,8 +99,8 @@ int main() {
     CHECK(solids == 2);
   }
   session.cancel();
-  assert(session.lifecycle() == solidar::ToolLifecycle::Inactive);
-  assert(sessionDocument.bodies().size() == featureCountBefore);
+  CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
+  CHECK(sessionDocument.bodies().size() == featureCountBefore);
 
   for (const double angle : {360.0, 180.0}) {
     solidar::Document document;
@@ -118,9 +110,9 @@ int main() {
     body.addFeature(feature(sketch.id,
                             solidar::AxisReferenceType::SketchHorizontalAxis,
                             angle));
-    assert(document.recompute());
-    assert(body.activeFeature()->isValid());
-    assert(body.resultShape() && !body.resultShape()->IsNull());
+    CHECK(document.recompute());
+    CHECK(body.activeFeature()->isValid());
+    CHECK(body.resultShape() && !body.resultShape()->IsNull());
   }
 
   solidar::Document editable;
@@ -131,23 +123,27 @@ int main() {
       solidar::AxisReferenceType::SketchHorizontalAxis, 270.0, true);
   auto* ptr = revolve.get();
   body.addFeature(std::move(revolve));
-  assert(editable.recompute());
+  CHECK(editable.recompute());
   ptr->setAngleDeg(180.0);
-  assert(ptr->isDirty() && editable.recompute() && ptr->isValid());
+  CHECK(ptr->isDirty() && editable.recompute() && ptr->isValid());
   auto changed = profile.geometry;
   changed.clear();
   changed.addRectangle({12.0, 5.0}, {35.0, 18.0});
-  assert(editable.replaceSketchGeometry(profile.id, std::move(changed)));
-  assert(ptr->isDirty() && editable.recompute());
+  CHECK(editable.replaceSketchGeometry(profile.id, std::move(changed)));
+  CHECK(ptr->isDirty() && editable.recompute());
 
+  const auto revolveLastValid = ptr->shape();
   for (const double bad : {0.0, -1.0, 361.0,
                            std::numeric_limits<double>::infinity()}) {
     ptr->setAngleDeg(bad);
-    assert(!editable.recompute());
-    assert(ptr->isFailed() && !ptr->hasShape());
+    CHECK(!editable.recompute());
+    CHECK(ptr->isFailed() && !ptr->shape());
+    CHECK(ptr->lastValidShape() == revolveLastValid);
+    CHECK(!body.resultShape());
+    CHECK(body.lastValidResultShape() == revolveLastValid);
   }
   ptr->setAngleDeg(360.0);
-  assert(editable.recompute());
+  CHECK(editable.recompute());
 
   solidar::Document vertical;
   auto& verticalProfile = vertical.addSketch();
@@ -155,7 +151,7 @@ int main() {
   auto& verticalBody = vertical.addBody();
   verticalBody.addFeature(feature(verticalProfile.id,
       solidar::AxisReferenceType::SketchVerticalAxis));
-  assert(vertical.recompute());
+  CHECK(vertical.recompute());
 
   solidar::Document lineAxis;
   auto& lineProfile = lineAxis.addSketch();
@@ -167,7 +163,7 @@ int main() {
   auto& lineBody = lineAxis.addBody();
   lineBody.addFeature(feature(lineProfile.id,
       solidar::AxisReferenceType::SketchLine, 360.0, false, axisLineId));
-  assert(lineAxis.recompute());
+  CHECK(lineAxis.recompute());
 
   // Any persistent straight Sketch line can replace the axis without losing
   // the other authoritative session parameters.
@@ -179,17 +175,17 @@ int main() {
   solidar::RevolveToolSession arbitraryAxisSession;
   arbitraryAxisSession.begin(lineAxis, lineBody.id(),
                              lineBody.activeFeature()->id());
-  arbitraryAxisSession.setProfile(lineProfile.id);
-  arbitraryAxisSession.setAxis({solidar::AxisReferenceType::SketchLine,
+  arbitraryAxisSession.setProfile(lineAxis, lineProfile.id);
+  arbitraryAxisSession.setAxis(lineAxis, {solidar::AxisReferenceType::SketchLine,
                                 lineProfile.id, axisLineId});
-  arbitraryAxisSession.setAngleFromPanel(135.0);
-  arbitraryAxisSession.setOperation(solidar::ExtrudeOperation::NewBody);
-  arbitraryAxisSession.setAxis({solidar::AxisReferenceType::SketchLine,
+  arbitraryAxisSession.setAngleFromPanel(lineAxis, 135.0);
+  arbitraryAxisSession.setOperation(lineAxis, solidar::ExtrudeOperation::NewBody);
+  arbitraryAxisSession.setAxis(lineAxis, {solidar::AxisReferenceType::SketchLine,
                                 lineProfile.id, secondAxisLineId});
-  assert(arbitraryAxisSession.axis()->lineId == secondAxisLineId);
-  assert(arbitraryAxisSession.profileSketchId() == lineProfile.id);
-  assert(arbitraryAxisSession.angleDeg() == 135.0);
-  assert(arbitraryAxisSession.operation() == solidar::ExtrudeOperation::NewBody);
+  CHECK(arbitraryAxisSession.axis()->lineId == secondAxisLineId);
+  CHECK(arbitraryAxisSession.profileSketchId() == lineProfile.id);
+  CHECK(arbitraryAxisSession.angleDeg() == 135.0);
+  CHECK(arbitraryAxisSession.operation() == solidar::ExtrudeOperation::NewBody);
 
   solidar::Document globalAxis;
   auto& globalProfile = globalAxis.addSketch();
@@ -197,7 +193,50 @@ int main() {
   auto& globalBody = globalAxis.addBody();
   globalBody.addFeature(feature(globalProfile.id,
                                 solidar::AxisReferenceType::GlobalX));
-  assert(globalAxis.recompute());
+  CHECK(globalAxis.recompute());
+
+  // A stale sketchId carried by a global datum axis is not a dependency.
+  // Editing or removing that unrelated Sketch must neither dirty nor cascade
+  // delete the Revolve; the profile Sketch remains the only declaration.
+  {
+    solidar::Document dependencyDocument;
+    auto& dependencyProfile = dependencyDocument.addSketch("Profile");
+    dependencyProfile.geometry.addRectangle({10.0, 5.0}, {30.0, 15.0});
+    const auto profileId = dependencyProfile.id;
+    auto& staleAxisSketch = dependencyDocument.addSketch("Stale axis owner");
+    staleAxisSketch.geometry.addLine({0.0, 0.0}, {5.0, 0.0});
+    const auto staleAxisSketchId = staleAxisSketch.id;
+    auto& dependencyBody = dependencyDocument.addBody();
+    auto globalDatum = std::make_unique<solidar::RevolveFeature>(
+        profileId,
+        solidar::AxisReference{solidar::AxisReferenceType::GlobalX,
+                               staleAxisSketchId,
+                               solidar::sketch::kInvalidGeometryId},
+        180.0, "Global datum", solidar::ExtrudeOperation::NewBody);
+    auto* globalDatumPtr = globalDatum.get();
+    const auto globalDatumId = globalDatumPtr->id();
+    dependencyBody.addFeature(std::move(globalDatum));
+    CHECK(dependencyDocument.recompute());
+    const auto revision = globalDatumPtr->shapeRevision();
+    solidar::sketch::Sketch replacementAxisSketch;
+    replacementAxisSketch.addLine({0.0, 0.0}, {15.0, 0.0});
+    CHECK(dependencyDocument.replaceSketchGeometry(staleAxisSketchId,
+                                                    replacementAxisSketch));
+    CHECK(!globalDatumPtr->isDirty());
+    CHECK(dependencyDocument.recompute());
+    CHECK(globalDatumPtr->shapeRevision() == revision);
+    const auto plan =
+        dependencyDocument.planSketchRemoval(staleAxisSketchId);
+    CHECK(plan.applicable);
+    CHECK(plan.featureIds.empty());
+    std::string removalError;
+    CHECK(dependencyDocument.applyRemovalPlan(plan, &removalError));
+    CHECK(removalError.empty());
+    const auto* retainedGlobalDatum =
+        dependencyDocument.findFeature(globalDatumId);
+    CHECK(retainedGlobalDatum);
+    CHECK(retainedGlobalDatum->shapeRevision() == revision);
+  }
 
   // Every global datum axis is selectable by the same session workflow.
   // Global Z is intentionally checked at the interaction level: revolving a
@@ -209,12 +248,12 @@ int main() {
     solidar::RevolveToolSession globalAxisSession;
     globalAxisSession.begin(globalAxis, globalBody.id(),
                             solidar::kInvalidFeatureId);
-    globalAxisSession.setProfile(globalProfile.id);
-    globalAxisSession.setAxis({axisType, solidar::kInvalidSketchId,
+    globalAxisSession.setProfile(globalAxis, globalProfile.id);
+    globalAxisSession.setAxis(globalAxis, {axisType, solidar::kInvalidSketchId,
                                solidar::sketch::kInvalidGeometryId});
-    assert(globalAxisSession.axis());
-    assert(globalAxisSession.axis()->type == axisType);
-    assert(globalAxisSession.manipulator());
+    CHECK(globalAxisSession.axis());
+    CHECK(globalAxisSession.axis()->type == axisType);
+    CHECK(globalAxisSession.manipulator(globalAxis));
   }
 
   // A directly selected Line-tool region may use one of its own boundary
@@ -237,9 +276,9 @@ int main() {
     solidar::RevolveToolSession triangleSession;
     triangleSession.begin(triangleDocument, solidar::kInvalidBodyId,
                           solidar::kInvalidFeatureId);
-    triangleSession.setProfile(triangle.id, selectedTriangle);
-    triangleSession.setAngleFromPanel(232.08);
-    triangleSession.setAxis({solidar::AxisReferenceType::SketchLine,
+    triangleSession.setProfile(triangleDocument, triangle.id, selectedTriangle);
+    triangleSession.setAngleFromPanel(triangleDocument, 232.08);
+    triangleSession.setAxis(triangleDocument, {solidar::AxisReferenceType::SketchLine,
                              triangle.id, boundaryAxis});
     if (triangleSession.lifecycle() != solidar::ToolLifecycle::PreviewValid)
       std::cerr << triangleSession.error() << '\n';
@@ -252,7 +291,25 @@ int main() {
   auto& invalidBody = invalid.addBody();
   invalidBody.addFeature(feature(9999,
       solidar::AxisReferenceType::SketchHorizontalAxis));
-  assert(!invalid.recompute());
+  CHECK(!invalid.recompute());
+
+  {
+    solidar::Document invalidTypeDocument;
+    auto& invalidTypeProfile = invalidTypeDocument.addSketch("Invalid axis");
+    invalidTypeProfile.geometry.addRectangle({10.0, 5.0}, {30.0, 15.0});
+    auto& invalidTypeBody = invalidTypeDocument.addBody();
+    auto invalidTypeFeature = std::make_unique<solidar::RevolveFeature>(
+        invalidTypeProfile.id,
+        solidar::AxisReference{
+            static_cast<solidar::AxisReferenceType>(999),
+            invalidTypeProfile.id, solidar::sketch::kInvalidGeometryId},
+        180.0, "Invalid axis type",
+        solidar::ExtrudeOperation::NewBody);
+    auto* invalidTypePtr = invalidTypeFeature.get();
+    invalidTypeBody.addFeature(std::move(invalidTypeFeature));
+    CHECK(!invalidTypeDocument.recompute());
+    CHECK(invalidTypePtr->error() == "Revolve axis type is unsupported");
+  }
 
   solidar::Document open;
   auto& openSketch = open.addSketch();
@@ -261,5 +318,5 @@ int main() {
   auto& openBody = open.addBody();
   openBody.addFeature(feature(openSketch.id,
       solidar::AxisReferenceType::SketchHorizontalAxis));
-  assert(!open.recompute());
+  CHECK(!open.recompute());
 }

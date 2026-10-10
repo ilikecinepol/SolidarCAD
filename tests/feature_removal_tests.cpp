@@ -1,15 +1,73 @@
+#include "TestAssertions.h"
+
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <string>
 
 #include "TestGeometryUtils.h"
+#include "model/CircularPatternFeature.h"
 #include "model/ChamferFeature.h"
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletFeature.h"
+#include "model/JoinBodiesFeature.h"
+#include "model/LinearPatternFeature.h"
 #include "model/ShellFeature.h"
 
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
+namespace {
+
+const solidar::BodyFeatureRemovalRange* findBodyRange(
+    const solidar::FeatureRemovalPlan& plan, solidar::BodyId bodyId) {
+  const auto found = std::find_if(
+      plan.bodyRanges.begin(), plan.bodyRanges.end(),
+      [bodyId](const solidar::BodyFeatureRemovalRange& range) {
+        return range.bodyId == bodyId;
+      });
+  return found == plan.bodyRanges.end() ? nullptr : &*found;
+}
+
+solidar::Document makeCyclicPatternDocument(bool reverseBodyOrder) {
+  constexpr solidar::BodyId kFirstBodyId = 71001;
+  constexpr solidar::BodyId kSecondBodyId = 71002;
+  constexpr solidar::FeatureId kFirstFeatureId = 72001;
+  constexpr solidar::FeatureId kSecondFeatureId = 72002;
+
+  solidar::Document document;
+  const auto addFirst = [&] {
+    document.addBody(kFirstBodyId, "Cycle body A")
+        .addFeature(std::make_unique<solidar::LinearPatternFeature>(
+            kFirstFeatureId, kSecondBodyId, kSecondFeatureId,
+            solidar::PrincipalAxis::X, 2, 10.0,
+            solidar::PatternOperation::NewBody, "Cycle feature A"));
+  };
+  const auto addSecond = [&] {
+    document.addBody(kSecondBodyId, "Cycle body B")
+        .addFeature(std::make_unique<solidar::LinearPatternFeature>(
+            kSecondFeatureId, kFirstBodyId, kFirstFeatureId,
+            solidar::PrincipalAxis::Y, 2, 10.0,
+            solidar::PatternOperation::NewBody, "Cycle feature B"));
+  };
+  if (reverseBodyOrder) {
+    addSecond();
+    addFirst();
+  } else {
+    addFirst();
+    addSecond();
+  }
+  return document;
+}
+
+bool mentionsDependencyCycle(const std::string& diagnostic) {
+  return diagnostic.find("cycle") != std::string::npos ||
+         diagnostic.find("Cycle") != std::string::npos ||
+         diagnostic.find("cyclic") != std::string::npos ||
+         diagnostic.find("Cyclic") != std::string::npos;
+}
+
+}  // namespace
 
 int main() {
   solidar::Document document;
@@ -155,5 +213,300 @@ int main() {
   CHECK(dependentDocument.findSketch(dependentSketchId) == nullptr);
   CHECK(dependentDocument.findBody(dependentBodyId));
   CHECK(dependentDocument.findBody(dependentBodyId)->features().empty());
+
+  // Removing a shared sketch is one atomic multi-Body operation. The plan
+  // retains a distinct, deterministic suffix for every consumer Body.
+  solidar::Document sharedSketchDocument;
+  auto& multiBodySketch = sharedSketchDocument.addSketch("Shared input");
+  const auto multiBodySketchId = multiBodySketch.id;
+  multiBodySketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+  auto& multiBodyFirst = sharedSketchDocument.addBody("Consumer A");
+  const auto multiBodyFirstId = multiBodyFirst.id();
+  auto& multiBodyFirstFeature = multiBodyFirst.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(multiBodySketchId, 4.0));
+  const auto multiBodyFirstFeatureId = multiBodyFirstFeature.id();
+  auto& multiBodySecond = sharedSketchDocument.addBody("Consumer B");
+  const auto multiBodySecondId = multiBodySecond.id();
+  auto& multiBodySecondFeature = multiBodySecond.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(multiBodySketchId, 8.0));
+  const auto multiBodySecondFeatureId = multiBodySecondFeature.id();
+  CHECK(sharedSketchDocument.recompute());
+
+  const auto sharedSketchPlan =
+      sharedSketchDocument.planSketchRemoval(multiBodySketchId);
+  CHECK(sharedSketchPlan.applicable);
+  CHECK(sharedSketchPlan.diagnostic.empty());
+  CHECK(sharedSketchPlan.bodyRanges.size() == 2);
+  CHECK(sharedSketchPlan.featureIds.size() == 2);
+  CHECK(sharedSketchPlan.sketchIds.size() == 1);
+  CHECK(sharedSketchPlan.sketchIds[0] == multiBodySketchId);
+  const auto* multiBodyFirstRange =
+      findBodyRange(sharedSketchPlan, multiBodyFirstId);
+  const auto* multiBodySecondRange =
+      findBodyRange(sharedSketchPlan, multiBodySecondId);
+  CHECK(multiBodyFirstRange);
+  CHECK(multiBodyFirstRange->firstFeatureIndex == 0);
+  CHECK(multiBodyFirstRange->featureIds.size() == 1);
+  CHECK(multiBodyFirstRange->featureIds[0] == multiBodyFirstFeatureId);
+  CHECK(multiBodySecondRange);
+  CHECK(multiBodySecondRange->firstFeatureIndex == 0);
+  CHECK(multiBodySecondRange->featureIds.size() == 1);
+  CHECK(multiBodySecondRange->featureIds[0] == multiBodySecondFeatureId);
+  std::string stage2Error;
+  CHECK(sharedSketchDocument.applyRemovalPlan(sharedSketchPlan, &stage2Error));
+  CHECK(stage2Error.empty());
+  CHECK(sharedSketchDocument.findSketch(multiBodySketchId) == nullptr);
+  CHECK(sharedSketchDocument.findBody(multiBodyFirstId));
+  CHECK(sharedSketchDocument.findBody(multiBodyFirstId)->features().empty());
+  CHECK(sharedSketchDocument.findBody(multiBodySecondId));
+  CHECK(sharedSketchDocument.findBody(multiBodySecondId)->features().empty());
+
+  // Dependencies are transitive across Bodies: A and B feed Join Bodies C,
+  // which feeds two NewBody patterns. Removing A preserves independent B but
+  // clears every feature that can no longer resolve its source.
+  solidar::Document crossBodyDocument;
+  auto& crossSketchA = crossBodyDocument.addSketch("Cross-body A");
+  const auto crossSketchAId = crossSketchA.id;
+  crossSketchA.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+  auto& crossBodyA = crossBodyDocument.addBody("Cross-body A");
+  const auto crossBodyAId = crossBodyA.id();
+  auto& crossFeatureA = crossBodyA.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(crossSketchAId, 10.0));
+  const auto crossFeatureAId = crossFeatureA.id();
+  auto& crossSketchB = crossBodyDocument.addSketch("Cross-body B");
+  const auto crossSketchBId = crossSketchB.id;
+  crossSketchB.geometry.addRectangle({10.0, 0.0}, {30.0, 20.0});
+  auto& crossBodyB = crossBodyDocument.addBody("Cross-body B");
+  const auto crossBodyBId = crossBodyB.id();
+  auto& crossFeatureB = crossBodyB.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(crossSketchBId, 10.0));
+  const auto crossFeatureBId = crossFeatureB.id();
+  auto& crossBodyC = crossBodyDocument.addBody("Join result");
+  const auto crossBodyCId = crossBodyC.id();
+  auto& crossJoin = crossBodyC.addFeature(
+      std::make_unique<solidar::JoinBodiesFeature>(
+          crossBodyAId, crossFeatureAId, crossBodyBId, crossFeatureBId,
+          "Join A and B"));
+  const auto crossJoinId = crossJoin.id();
+  auto& crossBodyD = crossBodyDocument.addBody("Linear result");
+  const auto crossBodyDId = crossBodyD.id();
+  auto& crossLinear = crossBodyD.addFeature(
+      std::make_unique<solidar::LinearPatternFeature>(
+          crossBodyCId, crossJoinId, solidar::PrincipalAxis::X, 2, 40.0,
+          solidar::PatternOperation::NewBody, "Linear from join"));
+  const auto crossLinearId = crossLinear.id();
+  auto& crossBodyE = crossBodyDocument.addBody("Circular result");
+  const auto crossBodyEId = crossBodyE.id();
+  auto& crossCircular = crossBodyE.addFeature(
+      std::make_unique<solidar::CircularPatternFeature>(
+          crossBodyDId, crossLinearId, solidar::PrincipalAxis::Z, 2, 180.0,
+          solidar::PatternOperation::NewBody, "Circular from linear"));
+  const auto crossCircularId = crossCircular.id();
+  CHECK(crossBodyDocument.recompute());
+  const solidar::Document crossBodySnapshot = crossBodyDocument;
+
+  const auto crossPlan =
+      crossBodyDocument.planFeatureRemoval(crossBodyAId, crossFeatureAId);
+  CHECK(crossPlan.applicable);
+  CHECK(crossPlan.bodyRanges.size() == 4);
+  CHECK(crossPlan.featureIds.size() == 4);
+  CHECK(findBodyRange(crossPlan, crossBodyAId));
+  CHECK(findBodyRange(crossPlan, crossBodyAId)->featureIds[0] ==
+        crossFeatureAId);
+  CHECK(findBodyRange(crossPlan, crossBodyBId) == nullptr);
+  CHECK(findBodyRange(crossPlan, crossBodyCId));
+  CHECK(findBodyRange(crossPlan, crossBodyCId)->featureIds[0] == crossJoinId);
+  CHECK(findBodyRange(crossPlan, crossBodyDId));
+  CHECK(findBodyRange(crossPlan, crossBodyDId)->featureIds[0] == crossLinearId);
+  CHECK(findBodyRange(crossPlan, crossBodyEId));
+  CHECK(findBodyRange(crossPlan, crossBodyEId)->featureIds[0] ==
+        crossCircularId);
+  CHECK(crossBodyDocument.removeFeatureCascade(
+      crossBodyAId, crossFeatureAId, &stage2Error));
+  CHECK(crossBodyDocument.findBody(crossBodyAId)->features().empty());
+  CHECK(crossBodyDocument.findBody(crossBodyBId)->features().size() == 1);
+  CHECK(crossBodyDocument.findBody(crossBodyBId)->features()[0]->id() ==
+        crossFeatureBId);
+  CHECK(crossBodyDocument.findBody(crossBodyCId)->features().empty());
+  CHECK(crossBodyDocument.findBody(crossBodyDId)->features().empty());
+  CHECK(crossBodyDocument.findBody(crossBodyEId)->features().empty());
+  CHECK(crossBodyDocument.findSketch(crossSketchAId));
+  CHECK(crossBodyDocument.findSketch(crossSketchBId));
+  CHECK(crossBodyDocument.recompute());
+  CHECK(crossBodyDocument.findBody(crossBodyBId)->resultShape());
+
+  // Body removal uses the same graph and per-Body ranges. The selected Body
+  // disappears, its reusable base-plane Sketch survives, and all transitive
+  // dependents are removed without touching the independent source Body.
+  solidar::Document crossBodyRemoval = crossBodySnapshot;
+  const auto bodyCascadePlan = crossBodyRemoval.planBodyRemoval(crossBodyAId);
+  CHECK(bodyCascadePlan.applicable);
+  CHECK(bodyCascadePlan.bodyIds.size() == 1);
+  CHECK(bodyCascadePlan.bodyIds[0] == crossBodyAId);
+  CHECK(findBodyRange(bodyCascadePlan, crossBodyBId) == nullptr);
+  CHECK(findBodyRange(bodyCascadePlan, crossBodyCId));
+  CHECK(findBodyRange(bodyCascadePlan, crossBodyDId));
+  CHECK(findBodyRange(bodyCascadePlan, crossBodyEId));
+  CHECK(crossBodyRemoval.applyRemovalPlan(bodyCascadePlan, &stage2Error));
+  CHECK(crossBodyRemoval.findBody(crossBodyAId) == nullptr);
+  CHECK(crossBodyRemoval.findSketch(crossSketchAId));
+  CHECK(crossBodyRemoval.findBody(crossBodyBId));
+  CHECK(crossBodyRemoval.findBody(crossBodyBId)->features().size() == 1);
+  CHECK(crossBodyRemoval.findBody(crossBodyCId)->features().empty());
+  CHECK(crossBodyRemoval.findBody(crossBodyDId)->features().empty());
+  CHECK(crossBodyRemoval.findBody(crossBodyEId)->features().empty());
+  CHECK(crossBodyRemoval.recompute());
+
+  // A face-supported Sketch is itself a dependency node. Removing its support
+  // Feature removes the Sketch, its cross-Body Extrude, and a downstream
+  // NewBody pattern in one closure.
+  solidar::Document faceCascadeDocument;
+  auto& faceCascadeBaseSketch =
+      faceCascadeDocument.addSketch("Face cascade base");
+  const auto faceCascadeBaseSketchId = faceCascadeBaseSketch.id;
+  faceCascadeBaseSketch.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+  auto& faceCascadeSupportBody =
+      faceCascadeDocument.addBody("Face support owner");
+  const auto faceCascadeSupportBodyId = faceCascadeSupportBody.id();
+  auto& faceCascadeSupportFeature = faceCascadeSupportBody.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(faceCascadeBaseSketchId,
+                                               12.0));
+  const auto faceCascadeSupportFeatureId = faceCascadeSupportFeature.id();
+  CHECK(faceCascadeDocument.recompute());
+  const auto faceCascadeTop = solidar::test::topPlanarFace(
+      *faceCascadeSupportBody.resultShape(), 12.0);
+  CHECK(faceCascadeTop);
+  auto& faceCascadeSketch =
+      faceCascadeDocument.addSketch("Face-supported dependency");
+  const auto faceCascadeSketchId = faceCascadeSketch.id;
+  faceCascadeSketch.geometry.addRectangle({2.0, 2.0}, {8.0, 8.0});
+  CHECK(faceCascadeDocument.attachSketchToFace(
+      faceCascadeSketchId,
+      {faceCascadeSupportBodyId, faceCascadeSupportFeatureId,
+       *faceCascadeTop}));
+  auto& faceCascadeConsumerBody =
+      faceCascadeDocument.addBody("Face sketch consumer");
+  const auto faceCascadeConsumerBodyId = faceCascadeConsumerBody.id();
+  auto& faceCascadeConsumer = faceCascadeConsumerBody.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(faceCascadeSketchId, 5.0));
+  const auto faceCascadeConsumerId = faceCascadeConsumer.id();
+  auto& faceCascadePatternBody =
+      faceCascadeDocument.addBody("Face cascade pattern");
+  const auto faceCascadePatternBodyId = faceCascadePatternBody.id();
+  auto& faceCascadePattern = faceCascadePatternBody.addFeature(
+      std::make_unique<solidar::LinearPatternFeature>(
+          faceCascadeConsumerBodyId, faceCascadeConsumerId,
+          solidar::PrincipalAxis::X, 2, 30.0,
+          solidar::PatternOperation::NewBody, "Pattern from face sketch"));
+  const auto faceCascadePatternId = faceCascadePattern.id();
+  CHECK(faceCascadeDocument.recompute());
+
+  // Dirty propagation follows the same support path. Moving the support face
+  // must rebuild both the cross-Body consumer and its downstream pattern in a
+  // single recompute, without relying on Body storage order.
+  const auto consumerShapeBefore = faceCascadeConsumer.shape();
+  const auto patternShapeBefore = faceCascadePattern.shape();
+  CHECK(consumerShapeBefore && patternShapeBefore);
+  const double consumerMinZBefore =
+      solidar::test::boundsOf(*consumerShapeBefore).minZ;
+  auto* faceSupportExtrude = dynamic_cast<solidar::ExtrudeFeature*>(
+      &faceCascadeSupportFeature);
+  CHECK(faceSupportExtrude);
+  faceSupportExtrude->setLengthMm(18.0);
+  CHECK(faceCascadeDocument.recompute());
+  CHECK(faceCascadeConsumer.shape() != consumerShapeBefore);
+  CHECK(faceCascadePattern.shape() != patternShapeBefore);
+  CHECK(std::abs(solidar::test::boundsOf(*faceCascadeConsumer.shape()).minZ -
+                 consumerMinZBefore) > 1.0e-4);
+
+  const auto faceCascadePlan = faceCascadeDocument.planFeatureRemoval(
+      faceCascadeSupportBodyId, faceCascadeSupportFeatureId);
+  CHECK(faceCascadePlan.applicable);
+  CHECK(faceCascadePlan.bodyRanges.size() == 3);
+  CHECK(faceCascadePlan.featureIds.size() == 3);
+  CHECK(faceCascadePlan.sketchIds.size() == 1);
+  CHECK(faceCascadePlan.sketchIds[0] == faceCascadeSketchId);
+  CHECK(findBodyRange(faceCascadePlan, faceCascadeSupportBodyId));
+  CHECK(findBodyRange(faceCascadePlan, faceCascadeSupportBodyId)
+            ->featureIds[0] == faceCascadeSupportFeatureId);
+  CHECK(findBodyRange(faceCascadePlan, faceCascadeConsumerBodyId));
+  CHECK(findBodyRange(faceCascadePlan, faceCascadeConsumerBodyId)
+            ->featureIds[0] == faceCascadeConsumerId);
+  CHECK(findBodyRange(faceCascadePlan, faceCascadePatternBodyId));
+  CHECK(findBodyRange(faceCascadePlan, faceCascadePatternBodyId)
+            ->featureIds[0] == faceCascadePatternId);
+  CHECK(faceCascadeDocument.removeFeatureCascade(
+      faceCascadeSupportBodyId, faceCascadeSupportFeatureId, &stage2Error));
+  CHECK(faceCascadeDocument.findSketch(faceCascadeBaseSketchId));
+  CHECK(faceCascadeDocument.findSketch(faceCascadeSketchId) == nullptr);
+  CHECK(faceCascadeDocument.findBody(faceCascadeSupportBodyId)
+            ->features()
+            .empty());
+  CHECK(faceCascadeDocument.findBody(faceCascadeConsumerBodyId)
+            ->features()
+            .empty());
+  CHECK(faceCascadeDocument.findBody(faceCascadePatternBodyId)
+            ->features()
+            .empty());
+  CHECK(faceCascadeDocument.recompute());
+
+  // Applying a previewed plan after the history changes must fail before any
+  // mutation. A freshly planned equivalent operation remains applicable.
+  solidar::Document stalePlanDocument;
+  auto& staleSketch = stalePlanDocument.addSketch("Stale plan sketch");
+  const auto staleSketchId = staleSketch.id;
+  staleSketch.geometry.addRectangle({0.0, 0.0}, {8.0, 8.0});
+  auto& staleBody = stalePlanDocument.addBody("Stale plan body");
+  const auto staleBodyId = staleBody.id();
+  auto& staleExtrude = staleBody.addFeature(
+      std::make_unique<solidar::ExtrudeFeature>(staleSketchId, 6.0));
+  const auto staleExtrudeId = staleExtrude.id();
+  const auto stalePlan =
+      stalePlanDocument.planFeatureRemoval(staleBodyId, staleExtrudeId);
+  CHECK(stalePlan.applicable);
+  CHECK(stalePlan.diagnostic.empty());
+  CHECK(stalePlan.bodyRanges.size() == 1);
+  CHECK(stalePlan.bodyRanges[0].featureIds.size() == 1);
+  auto& lateFeature = staleBody.addFeature(
+      std::make_unique<solidar::LinearPatternFeature>(
+          staleExtrudeId, solidar::PrincipalAxis::X, 2, 20.0,
+          "Added after planning"));
+  const auto lateFeatureId = lateFeature.id();
+  stage2Error.clear();
+  CHECK(!stalePlanDocument.applyRemovalPlan(stalePlan, &stage2Error));
+  CHECK(!stage2Error.empty());
+  CHECK(stalePlanDocument.findSketch(staleSketchId));
+  CHECK(stalePlanDocument.findBody(staleBodyId)->features().size() == 2);
+  CHECK(stalePlanDocument.findBody(staleBodyId)->features()[0]->id() ==
+        staleExtrudeId);
+  CHECK(stalePlanDocument.findBody(staleBodyId)->features()[1]->id() ==
+        lateFeatureId);
+  const auto refreshedPlan =
+      stalePlanDocument.planFeatureRemoval(staleBodyId, staleExtrudeId);
+  CHECK(refreshedPlan.applicable);
+  CHECK(refreshedPlan.bodyRanges.size() == 1);
+  CHECK(refreshedPlan.bodyRanges[0].featureIds.size() == 2);
+  CHECK(stalePlanDocument.applyRemovalPlan(refreshedPlan, &stage2Error));
+  CHECK(stalePlanDocument.findBody(staleBodyId)->features().empty());
+  const auto missingPlan = stalePlanDocument.planFeatureRemoval(
+      staleBodyId, static_cast<solidar::FeatureId>(999999999));
+  CHECK(!missingPlan.applicable);
+  CHECK(!missingPlan.diagnostic.empty());
+
+  // Cycle diagnostics are deterministic and identify every participating
+  // Feature, regardless of the storage order of their Bodies.
+  auto orderedCycle = makeCyclicPatternDocument(false);
+  CHECK(!orderedCycle.recompute());
+  const std::string orderedCycleError = orderedCycle.rebuildError();
+  CHECK(mentionsDependencyCycle(orderedCycleError));
+  CHECK(orderedCycleError.find("72001") != std::string::npos);
+  CHECK(orderedCycleError.find("72002") != std::string::npos);
+  auto reversedCycle = makeCyclicPatternDocument(true);
+  CHECK(!reversedCycle.recompute());
+  const std::string reversedCycleError = reversedCycle.rebuildError();
+  CHECK(mentionsDependencyCycle(reversedCycleError));
+  CHECK(reversedCycleError.find("72001") != std::string::npos);
+  CHECK(reversedCycleError.find("72002") != std::string::npos);
+  CHECK(reversedCycleError == orderedCycleError);
   return EXIT_SUCCESS;
 }

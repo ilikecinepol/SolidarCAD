@@ -1,5 +1,8 @@
 #include "model/Feature.h"
+#include "model/GeometryOperation.h"
+#include "model/IdGeneration.h"
 
+#include <algorithm>
 #include <atomic>
 #include <utility>
 
@@ -12,10 +15,15 @@ Feature::Feature(std::string name) : Feature(nextId(), std::move(name)) {}
 
 Feature::Feature(FeatureId id, std::string name)
     : id_(id == kInvalidFeatureId ? nextId() : id), name_(std::move(name)) {
+  if (!detail::explicitIdReservationEnabled()) return;
+  reserveId(id_);
+}
+
+void Feature::reserveId(FeatureId id) noexcept {
   FeatureId expected = g_nextFeatureId.load(std::memory_order_relaxed);
-  while (expected <= id_ &&
+  while (expected <= id &&
          !g_nextFeatureId.compare_exchange_weak(
-             expected, id_ + 1, std::memory_order_relaxed)) {
+             expected, id + 1, std::memory_order_relaxed)) {
   }
 }
 
@@ -28,8 +36,41 @@ bool Feature::isValid() const noexcept { return state_ == FeatureState::Valid; }
 bool Feature::isFailed() const noexcept { return state_ == FeatureState::Error; }
 const std::string& Feature::error() const noexcept { return error_; }
 
-bool Feature::dependsOnSketch(SketchId) const noexcept { return false; }
-bool Feature::dependsOnFeature(FeatureId) const noexcept { return false; }
+FeatureDependencies Feature::dependencies() const { return {}; }
+bool Feature::dependsOnSketch(SketchId sketchId) const {
+  const auto declared = dependencies();
+  return std::find(declared.sketchIds.begin(), declared.sketchIds.end(),
+                   sketchId) != declared.sketchIds.end();
+}
+bool Feature::dependsOnFeature(FeatureId featureId) const {
+  const auto declared = dependencies();
+  return std::find(declared.featureIds.begin(), declared.featureIds.end(),
+                   featureId) != declared.featureIds.end();
+}
+
+bool Feature::rebuild(const RebuildContext& context) noexcept {
+  bool rebuilt = false;
+  GeometryFailure failure;
+  const bool completed = runGeometryOperation(
+      [&] { rebuilt = rebuildAtBoundary(context); }, &failure);
+  if (completed) return rebuilt;
+
+  try {
+    switch (failure.kind) {
+      case GeometryFailureKind::OcctException:
+        markError("OpenCASCADE feature rebuild failed");
+        break;
+      case GeometryFailureKind::StandardException:
+        markError("Feature rebuild failed with a standard exception");
+        break;
+      default:
+        markError("Feature rebuild failed with an unknown exception");
+        break;
+    }
+  } catch (...) {
+  }
+  return false;
+}
 
 void Feature::setDirty(bool dirty) noexcept {
   if (dirty) {

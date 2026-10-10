@@ -1,17 +1,11 @@
+#include "TestAssertions.h"
+
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 
 #include "model/NumericParameterState.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 int main() {
   solidar::NumericParameterState value;

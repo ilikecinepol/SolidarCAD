@@ -8,6 +8,8 @@
 #include <cmath>
 #include <utility>
 
+#include "model/GeometryOperation.h"
+
 namespace solidar {
 namespace {
 
@@ -114,22 +116,26 @@ std::shared_ptr<const TopoDS_Shape> MoveToolSession::previewShape() const {
 const std::string& MoveToolSession::error() const noexcept { return error_; }
 
 std::optional<TranslationToolManipulator> MoveToolSession::manipulator() const {
-  if (!sourceShape_ || sourceShape_->IsNull()) return std::nullopt;
-  Bnd_Box bounds;
-  BRepBndLib::Add(*sourceShape_, bounds);
-  if (bounds.IsVoid()) return std::nullopt;
-  double minX = 0.0;
-  double minY = 0.0;
-  double minZ = 0.0;
-  double maxX = 0.0;
-  double maxY = 0.0;
-  double maxZ = 0.0;
-  bounds.Get(minX, minY, minZ, maxX, maxY, maxZ);
-  return TranslationToolManipulator{
-      {(minX + maxX) * 0.5 + offsetMm_.x,
-       (minY + maxY) * 0.5 + offsetMm_.y,
-       (minZ + maxZ) * 0.5 + offsetMm_.z},
-      offsetMm_, kMinimumMoveMm, kMaximumMoveMm};
+  std::optional<TranslationToolManipulator> result;
+  runGeometryOperation([&] {
+    if (!sourceShape_ || sourceShape_->IsNull()) return;
+    Bnd_Box bounds;
+    BRepBndLib::Add(*sourceShape_, bounds);
+    if (bounds.IsVoid()) return;
+    double minX = 0.0;
+    double minY = 0.0;
+    double minZ = 0.0;
+    double maxX = 0.0;
+    double maxY = 0.0;
+    double maxZ = 0.0;
+    bounds.Get(minX, minY, minZ, maxX, maxY, maxZ);
+    result = TranslationToolManipulator{
+        {(minX + maxX) * 0.5 + offsetMm_.x,
+         (minY + maxY) * 0.5 + offsetMm_.y,
+         (minZ + maxZ) * 0.5 + offsetMm_.z},
+        offsetMm_, kMinimumMoveMm, kMaximumMoveMm};
+  });
+  return result;
 }
 
 bool MoveToolSession::updatePreview() {

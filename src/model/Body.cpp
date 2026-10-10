@@ -1,5 +1,5 @@
 #include "model/Body.h"
-#include "model/Document.h"
+#include "model/IdGeneration.h"
 
 #include <atomic>
 #include <stdexcept>
@@ -15,10 +15,15 @@ Body::Body(std::string name) : Body(nextId(), std::move(name)) {}
 
 Body::Body(BodyId id, std::string name)
     : id_(id == kInvalidBodyId ? nextId() : id), name_(std::move(name)) {
+  if (!detail::explicitIdReservationEnabled()) return;
+  reserveId(id_);
+}
+
+void Body::reserveId(BodyId id) noexcept {
   BodyId expected = g_nextBodyId.load(std::memory_order_relaxed);
-  while (expected <= id_ &&
+  while (expected <= id &&
          !g_nextBodyId.compare_exchange_weak(
-             expected, id_ + 1, std::memory_order_relaxed)) {
+             expected, id + 1, std::memory_order_relaxed)) {
   }
 }
 
@@ -71,42 +76,12 @@ ShapeFeature::ShapePtr Body::resultShape() const noexcept {
   return active && active->isValid() ? active->shape() : ShapeFeature::ShapePtr{};
 }
 
-bool Body::rebuild(const RebuildContext& context) {
-  ShapeFeature::ShapePtr previousShape;
-  bool upstreamDirty = false;
-  const ShapeFeature* failedUpstream = nullptr;
-  for (std::size_t index = 0; index < features_.size(); ++index) {
-    auto& feature = features_[index];
-    if (failedUpstream) {
-      feature->discardResult();
-      feature->markBlocked("Blocked by invalid upstream feature '" +
-                           failedUpstream->name() + "' (#" +
-                           std::to_string(failedUpstream->id()) + ")");
-      continue;
-    }
-    // Retry failed features as well. Otherwise an Error feature restored
-    // without its diagnostic is rejected below before its builder can provide
-    // a useful current error.
-    upstreamDirty = upstreamDirty || feature->isDirty() || feature->isFailed();
-    if (upstreamDirty) feature->setDirty();
-    const RebuildContext featureContext{context.document, this,
-                                        previousShape.get()};
-    if (feature->isDirty() && !feature->rebuild(featureContext)) {
-      feature->discardResult();
-      failedUpstream = feature.get();
-      continue;
-    }
-    if (!feature->isValid()) {
-      feature->discardResult();
-      failedUpstream = feature.get();
-      continue;
-    }
-    previousShape = feature->shape();
-    // Attachments to this freshly rebuilt feature must move before the next
-    // feature consumes their sketches (Extrude -> face Sketch -> Pocket).
-    context.document.updateSketchPlacements();
+ShapeFeature::ShapePtr Body::lastValidResultShape() const noexcept {
+  for (auto feature = features_.rbegin(); feature != features_.rend();
+       ++feature) {
+    if ((*feature)->lastValidShape()) return (*feature)->lastValidShape();
   }
-  return failedUpstream == nullptr;
+  return {};
 }
 
 void Body::markDirtyFrom(std::size_t index) noexcept {

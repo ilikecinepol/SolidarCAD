@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace solidar::sketch {
@@ -12,6 +13,9 @@ inline constexpr GeometryId kInvalidGeometryId = 0;
 
 using ConstraintId = std::uint64_t;
 inline constexpr ConstraintId kInvalidConstraintId = 0;
+
+using DimensionId = std::uint64_t;
+inline constexpr DimensionId kInvalidDimensionId = 0;
 
 struct Point {
   double xMm{};
@@ -84,6 +88,9 @@ struct Dimension {
   double valueMm{};
   double offsetMm{4.0};
   double angleRad{};
+  // Persistent annotation identity. Kept last so historical aggregate
+  // initializers remain source-compatible.
+  DimensionId id{kInvalidDimensionId};
 };
 
 enum class ConstraintType {
@@ -120,9 +127,80 @@ struct Constraint {
   double value{};
 };
 
+enum class GeometryKind { Line, Circle, Arc };
+
+struct GeometryLocation {
+  GeometryKind kind{GeometryKind::Line};
+  std::size_t index{};
+  bool operator==(const GeometryLocation&) const = default;
+};
+
+struct ConstraintComponent {
+  std::vector<GeometryId> geometryIds;
+  std::vector<ConstraintId> constraintIds;
+};
+
+template <typename T>
+struct IndexedValueDelta {
+  // Indices belong to the complete state on their respective side of the
+  // transition.  Keeping both is essential when a single journal removes an
+  // earlier entity and edits a later one: the entity's index is then
+  // different while undoing the same delta.
+  std::size_t beforeIndex{};
+  std::size_t afterIndex{};
+  std::optional<T> before;
+  std::optional<T> after;
+};
+
+struct SketchDelta {
+  std::vector<IndexedValueDelta<Line>> lines;
+  std::vector<IndexedValueDelta<Circle>> circles;
+  std::vector<IndexedValueDelta<Arc>> arcs;
+  std::vector<IndexedValueDelta<GeometryId>> lineIds;
+  std::vector<IndexedValueDelta<GeometryId>> circleIds;
+  std::vector<IndexedValueDelta<GeometryId>> arcIds;
+  std::vector<IndexedValueDelta<Dimension>> dimensions;
+  std::vector<IndexedValueDelta<Constraint>> constraints;
+  std::vector<IndexedValueDelta<std::size_t>> centerNodeElementIds;
+  std::size_t beforeNextElementId{};
+  std::size_t afterNextElementId{};
+  GeometryId beforeNextGeometryId{};
+  GeometryId afterNextGeometryId{};
+  ConstraintId beforeNextConstraintId{};
+  ConstraintId afterNextConstraintId{};
+  DimensionId beforeNextDimensionId{};
+  DimensionId afterNextDimensionId{};
+  std::uint64_t beforeSemanticFingerprint{};
+  std::uint64_t afterSemanticFingerprint{};
+  std::vector<ConstraintId> beforeInvalidConstraintIds;
+  std::vector<ConstraintId> afterInvalidConstraintIds;
+  std::size_t retainedBytes{};
+  [[nodiscard]] bool empty() const noexcept;
+};
+
 class Sketch final {
  public:
   Sketch();
+  Sketch(const Sketch& other);
+  Sketch& operator=(const Sketch& other);
+  Sketch(Sketch&&) noexcept = default;
+  Sketch& operator=(Sketch&&) noexcept = default;
+
+  // Starts a mutation journal without copying the Sketch. Mutators append
+  // stable-ID/range before-images as they touch entities; finish materializes
+  // a reversible compact delta.
+  void beginDeltaJournal();
+  [[nodiscard]] SketchDelta finishDeltaJournal();
+  [[nodiscard]] SketchDelta cancelDeltaJournal();
+  [[nodiscard]] bool deltaJournalActive() const noexcept;
+  [[nodiscard]] std::size_t deltaJournalDepth() const noexcept;
+  [[nodiscard]] bool rollbackDeltaJournalsToDepth(
+      std::size_t depth) noexcept;
+  static void resetFullCopyCountForTesting() noexcept;
+  [[nodiscard]] static std::size_t fullCopyCountForTesting() noexcept;
+  static void resetDeltaJournalBeginCountForTesting() noexcept;
+  [[nodiscard]] static std::size_t deltaJournalBeginCountForTesting() noexcept;
+  static void failNextNestedConstraintJournalForTesting() noexcept;
 
   void clear();
   void setRectangle(double widthMm, double heightMm);
@@ -160,6 +238,7 @@ class Sketch final {
   void setCircleDashed(std::size_t index, bool dashed);
   void translateCircle(std::size_t index, double dxMm, double dyMm);
   void setCircleDashedById(GeometryId id, bool dashed);
+  void setArcDashedById(GeometryId id, bool dashed);
   void translateCircleById(GeometryId id, double dxMm, double dyMm);
   void translateArcById(GeometryId id, double dxMm, double dyMm);
   bool moveArcEndpointReshapeById(GeometryId id, bool start, Point target);
@@ -194,6 +273,26 @@ class Sketch final {
       GeometryId id) const noexcept;
   [[nodiscard]] std::optional<std::size_t> arcIndex(
       GeometryId id) const noexcept;
+  [[nodiscard]] std::optional<GeometryLocation> geometryLocation(
+      GeometryId id) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> constraintIndex(
+      ConstraintId id) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> dimensionIndex(
+      DimensionId id) const noexcept;
+  [[nodiscard]] ConstraintComponent connectedComponent(
+      const std::vector<GeometryId>& seeds) const;
+  [[nodiscard]] std::vector<ConstraintComponent> constraintComponents() const;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept;
+  [[nodiscard]] std::size_t ownedAllocationBlocks() const noexcept;
+  // Complete persisted identity.  Unlike solverFingerprint(), this includes
+  // presentation and persistence-only fields and must never be used as the
+  // solver cache key.
+  [[nodiscard]] std::uint64_t semanticFingerprint() const noexcept;
+  [[nodiscard]] bool semanticallyEqual(const Sketch& other) const noexcept;
+  [[nodiscard]] std::uint64_t solverFingerprint() const noexcept;
+  [[nodiscard]] static SketchDelta makeDelta(const Sketch& before,
+                                             const Sketch& after);
+  bool applyDelta(const SketchDelta& delta, bool forward);
 
   bool setLineLength(std::size_t index, double lengthMm);
   bool setPointDistance(PointReference first, PointReference second,
@@ -206,12 +305,16 @@ class Sketch final {
   // Kept for binary compatibility with partially rebuilt Qt Creator targets.
   void addDimension(Dimension dimension);
   void storeDimension(const Dimension& dimension);
+  bool removeDimension(std::size_t index);
   void clearDimensions();
   bool setDimensionPlacement(std::size_t index, double offsetMm,
                              double angleRad);
   bool setDimensionValue(std::size_t index, double valueMm);
 
   ConstraintId addConstraint(Constraint constraint);
+  // Persistence-only bulk restore: the caller validates the complete set,
+  // then the solver runs once after every constraint is present.
+  [[nodiscard]] bool restoreConstraints(std::vector<Constraint> constraints);
   bool setConstraintValue(ConstraintId id, double value);
   bool removeConstraint(ConstraintId id);
   void clearConstraints();
@@ -232,7 +335,75 @@ class Sketch final {
   [[nodiscard]] bool isClosed() const noexcept;
 
  private:
+  friend class BasicSketchSolver;
+  friend class SketchTestAccess;
+  void invalidateStructureIndexes() noexcept;
+  void rebuildIdentityIndexes() const;
+  void rebuildStructureIndexes() const;
   void updateBounds() noexcept;
+  void journalCaptureGeometry(GeometryId id);
+  void journalCapturePoint(PointReference reference);
+  void journalCaptureComponents(const std::vector<GeometryId>& seeds);
+  void journalCaptureConstraint(ConstraintId id);
+  void journalCaptureDimension(std::size_t index);
+  void journalCaptureAllDimensions();
+  void journalCaptureCenters();
+  void journalRecordAddedGeometry(GeometryId id, GeometryKind kind,
+                                  std::size_t index);
+  void journalRecordAddedConstraint(ConstraintId id, std::size_t index);
+  void journalRecordAddedDimension(std::size_t index);
+  [[nodiscard]] std::vector<ConstraintId>
+  invalidReferenceConstraintIds() const;
+  struct JournalLine {
+    GeometryId id{kInvalidGeometryId};
+    std::size_t index{};
+    std::optional<Line> before;
+  };
+  struct JournalCircle {
+    GeometryId id{kInvalidGeometryId};
+    std::size_t index{};
+    std::optional<Circle> before;
+  };
+  struct JournalArc {
+    GeometryId id{kInvalidGeometryId};
+    std::size_t index{};
+    std::optional<Arc> before;
+  };
+  struct JournalConstraint {
+    ConstraintId id{kInvalidConstraintId};
+    std::size_t index{};
+    std::optional<Constraint> before;
+  };
+  struct JournalDimension {
+    std::size_t token{};
+    std::optional<std::size_t> beforeIndex;
+    std::optional<Dimension> before;
+  };
+  struct DeltaJournalState {
+    std::vector<JournalLine> lines;
+    std::vector<JournalCircle> circles;
+    std::vector<JournalArc> arcs;
+    std::vector<JournalConstraint> constraints;
+    std::vector<JournalDimension> dimensions;
+    // Stable, allocation-only transaction origin metadata. Geometry and
+    // constraints already own persistent IDs; Dimensions receive journal-
+    // local tokens so current vector indices may shift arbitrarily.
+    std::vector<GeometryId> beforeLineIds;
+    std::vector<GeometryId> beforeCircleIds;
+    std::vector<GeometryId> beforeArcIds;
+    std::vector<ConstraintId> beforeConstraintIds;
+    std::vector<std::size_t> dimensionTokens;
+    std::vector<std::vector<std::size_t>> parentDimensionTokensBefore;
+    std::size_t nextDimensionToken{};
+    std::size_t beforeDimensionCount{};
+    std::optional<std::vector<std::size_t>> centersBefore;
+    std::size_t beforeNextElementId{};
+    GeometryId beforeNextGeometryId{};
+    ConstraintId beforeNextConstraintId{};
+    DimensionId beforeNextDimensionId{};
+    std::uint64_t beforeSemanticFingerprint{};
+    std::vector<ConstraintId> beforeInvalidConstraintIds;
+  };
   double widthMm_{60.0};
   double heightMm_{40.0};
   std::vector<Line> lines_;
@@ -250,6 +421,22 @@ class Sketch final {
   std::size_t nextElementId_{1};
   GeometryId nextGeometryId_{1};
   ConstraintId nextConstraintId_{1};
+  DimensionId nextDimensionId_{1};
+  mutable bool structureIndexesDirty_{true};
+  mutable bool connectivityDirty_{true};
+  mutable std::unordered_map<GeometryId, GeometryLocation> geometryIndex_;
+  mutable std::unordered_map<ConstraintId, std::size_t> constraintIndex_;
+  mutable std::unordered_map<GeometryId, std::vector<GeometryId>> connectivity_;
+  mutable std::unordered_map<GeometryId, std::vector<ConstraintId>>
+      geometryConstraints_;
+  mutable std::uint64_t lastSolvedFingerprint_{};
+  mutable bool hasLastSolvedFingerprint_{false};
+  mutable bool lastSolveConverged_{true};
+  mutable std::size_t lastSolveViolatedConstraints_{};
+  mutable double lastSolveMaxNormalizedResidual_{};
+  mutable std::size_t lastSolveUnsupported_{};
+  mutable std::size_t lastSolveInvalidReferences_{};
+  std::vector<DeltaJournalState> deltaJournals_;
 };
 
 }  // namespace solidar::sketch

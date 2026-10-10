@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -32,7 +34,9 @@
 #include "TestGeometryUtils.h"
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+#include "model/ExtrudeToolSession.h"
 #include "model/FaceExtrudeBuilder.h"
+#include "model/MoveFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
 
@@ -42,13 +46,6 @@ class TestFailure final : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
-
-#define CHECK(condition)                                                     \
-  do {                                                                       \
-    if (!(condition))                                                        \
-      throw TestFailure(std::string(__FILE__) + ":" +                        \
-                        std::to_string(__LINE__) + ": " #condition);         \
-  } while (false)
 
 using solidar::ExtrudeOperation;
 using solidar::test::near;
@@ -199,6 +196,29 @@ int main(int argc, char** argv) {
                                              ExtrudeOperation::Join, true,
                                              &inward, &geometry, &error));
 
+      // The prism exists before the Join is rejected.  No partially computed
+      // output may escape that failure boundary.
+      const TopoDS_Shape resultSentinel =
+          BRepPrimAPI_MakeBox(1.0, 2.0, 3.0).Shape();
+      const TopoDS_Shape toolSentinel =
+          BRepPrimAPI_MakeBox(4.0, 5.0, 6.0).Shape();
+      TopoDS_Shape atomicResult = resultSentinel;
+      TopoDS_Shape atomicTool = toolSentinel;
+      const auto sentinelFace = faceAt(box, 0);
+      CHECK(!sentinelFace.IsNull());
+      solidar::FaceExtrudeGeometry atomicGeometry{
+          sentinelFace, gp_Pnt(7.0, 8.0, 9.0), gp_Dir(1.0, 0.0, 0.0)};
+      CHECK(!solidar::buildExtrusionFromFace(
+          box, reference, 10.0, ExtrudeOperation::Join, true, &atomicResult,
+          &atomicGeometry, &error, &atomicTool));
+      CHECK(atomicResult.IsSame(resultSentinel));
+      CHECK(atomicTool.IsSame(toolSentinel));
+      CHECK(atomicGeometry.face.IsSame(sentinelFace));
+      CHECK(near(atomicGeometry.centroid.X(), 7.0));
+      CHECK(near(atomicGeometry.centroid.Y(), 8.0));
+      CHECK(near(atomicGeometry.centroid.Z(), 9.0));
+      CHECK(near(atomicGeometry.normal.X(), 1.0));
+
       // Reversed Cut removes the top slab: the void grows in -Z.
       TopoDS_Shape cutResult;
       CHECK(solidar::buildExtrusionFromFace(box, reference, 10.0,
@@ -293,10 +313,14 @@ int main(int argc, char** argv) {
       TopoDS_Shape result;
       solidar::FaceExtrudeGeometry geometry;
       std::string error;
+      solidar::OperationFailureCode code{
+          solidar::OperationFailureCode::None};
       CHECK(!solidar::buildExtrusionFromFace(cylinder, reference, 10.0,
                                              ExtrudeOperation::Join, false,
-                                             &result, &geometry, &error));
+                                             &result, &geometry, &error,
+                                             nullptr, &code));
       CHECK(error.find("planar") != std::string::npos);
+      CHECK(code == solidar::OperationFailureCode::NonPlanarFace);
     }
 
     // L. Same-domain unification after Join removes the coplanar side seam at
@@ -435,6 +459,77 @@ int main(int argc, char** argv) {
       // Saved after J: base length 30 + face length 10.
       CHECK(near(volumeOf(*loadedBody->resultShape()), 40.0 * 30.0 * 40.0,
                  1e-2));
+    }
+
+    // A face source belongs to the immediate previous Feature, not merely to
+    // the same Body. A zero-offset intermediate Feature makes the geometry
+    // identical and proves owner validation cannot be replaced by shape fit.
+    {
+      solidar::Document ownerDocument;
+      auto& profile = ownerDocument.addSketch("Owner base");
+      profile.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+      auto& ownerBody = ownerDocument.addBody("Owner body");
+      auto base = std::make_unique<solidar::ExtrudeFeature>(
+          profile.id, 10.0, "Base", ExtrudeOperation::NewBody);
+      auto* basePtr = base.get();
+      ownerBody.addFeature(std::move(base));
+      CHECK(ownerDocument.recompute());
+      const auto top =
+          solidar::test::topPlanarFace(*basePtr->shape(), 10.0);
+      CHECK(top);
+      const auto baseReference = solidar::makeFaceReference(
+          *basePtr->shape(), ownerBody.id(), basePtr->id(), *top);
+      CHECK(baseReference.signature);
+
+      auto move = std::make_unique<solidar::MoveFeature>(
+          basePtr->id(), solidar::Vector3d{}, "Identity move");
+      auto* movePtr = move.get();
+      ownerBody.addFeature(std::move(move));
+      CHECK(ownerDocument.recompute());
+
+      auto foreignFeatureExtrude = std::make_unique<solidar::ExtrudeFeature>(
+          baseReference, 2.0, "Wrong owner", ExtrudeOperation::Join, false);
+      auto* foreignFeaturePtr = foreignFeatureExtrude.get();
+      ownerBody.addFeature(std::move(foreignFeatureExtrude));
+      CHECK(!ownerDocument.recompute());
+      CHECK(foreignFeaturePtr->error().find("immediate source Feature") !=
+            std::string::npos);
+
+      const auto movedTop =
+          solidar::test::topPlanarFace(*movePtr->lastValidShape(), 10.0);
+      CHECK(movedTop);
+      const auto movedReference = solidar::makeFaceReference(
+          *movePtr->lastValidShape(), ownerBody.id(), movePtr->id(),
+          *movedTop);
+      CHECK(movedReference.signature);
+      const auto cachedIndex = movePtr->lastValidTopologyIndex();
+      CHECK(cachedIndex);
+      const auto beforeSessionBuilds =
+          solidar::TopologyIndex::buildAttemptCount();
+      solidar::ExtrudeToolSession cachedSession;
+      cachedSession.begin(ownerBody.id(), movePtr->id(),
+                          movePtr->lastValidShape(), movedReference, 2.0,
+                          ExtrudeOperation::Join, false, std::nullopt,
+                          cachedIndex);
+      CHECK(cachedSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(solidar::TopologyIndex::buildAttemptCount() ==
+            beforeSessionBuilds);
+      cachedSession.setLengthFromPanel(3.0);
+      CHECK(cachedSession.manipulator());
+      CHECK(solidar::TopologyIndex::buildAttemptCount() ==
+            beforeSessionBuilds);
+
+      solidar::ExtrudeToolSession rejectedSession;
+      rejectedSession.begin(ownerBody.id(), movePtr->id(),
+                            movePtr->lastValidShape(), baseReference, 2.0,
+                            ExtrudeOperation::Join, false, std::nullopt,
+                            cachedIndex);
+      CHECK(rejectedSession.lifecycle() ==
+            solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(rejectedSession.error().find("source Feature") !=
+            std::string::npos);
+      CHECK(rejectedSession.errorCode() ==
+            solidar::OperationFailureCode::TopologyReferenceMismatch);
     }
   } catch (const std::exception& error) {
     std::cerr << "face extrude regression failure: " << error.what() << '\n';

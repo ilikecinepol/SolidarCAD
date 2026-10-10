@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
@@ -15,14 +17,6 @@
 
 #include "ui/ToolParametersPanel.h"
 #include "ui/tools/PartDesignToolController.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 class Session final : public solidar::ToolSession {
@@ -49,10 +43,8 @@ int main(int argc, char** argv) {
   {
     solidar::PartDesignToolController controller;
     Session extrude, revolve, mirror, circular;
-    int presentationClears = 0;
     const auto add = [&](solidar::PartDesignToolKind kind, Session& session) {
-      controller.registerTool(kind, {&session, [&session] { session.cancel(); },
-                                     [&] { ++presentationClears; }});
+      controller.registerTool(kind, {&session});
     };
     add(solidar::PartDesignToolKind::Extrude, extrude);
     add(solidar::PartDesignToolKind::Revolve, revolve);
@@ -78,7 +70,6 @@ int main(int argc, char** argv) {
     CHECK(revolve.cancels == 20);
     CHECK(mirror.cancels == 20);
     CHECK(circular.cancels == 20);
-    CHECK(presentationClears == 80);
   }
 
   // Test 8: panel + accept shortcut — Return on the focused spinbox produces

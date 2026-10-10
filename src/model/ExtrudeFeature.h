@@ -49,10 +49,15 @@ class ExtrudeFeature final : public ShapeFeature {
   [[nodiscard]] bool reversed() const noexcept;
   void setReversed(bool value) noexcept;
 
-  [[nodiscard]] std::string typeName() const override;
-  [[nodiscard]] bool dependsOnSketch(SketchId sketchId) const noexcept override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::Extrude;
+  }
+  [[nodiscard]] FeatureDependencies dependencies() const override;
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+  void prepareForHistory() override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   struct ProfileSelectionIds {

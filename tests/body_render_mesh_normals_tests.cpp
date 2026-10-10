@@ -8,7 +8,7 @@
 #include <gp_Pln.hxx>
 
 #include <algorithm>
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -52,14 +52,14 @@ int main() {
 
   BodyRenderMesh box;
   box.rebuild(BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape());
-  assert(box.vertices().size() > 6);
-  assert(box.triangleIndices().size() == box.triangles().size() * 3);
+  CHECK(box.vertices().size() > 6);
+  CHECK(box.triangleIndices().size() == box.triangles().size() * 3);
 
   // Normals within every planar topological face are constant.
   std::map<std::uint32_t, solidar::Vector3d> planarNormals;
   for (const auto& vertex : box.vertices()) {
     const auto [it, inserted] = planarNormals.emplace(vertex.faceIndex, vertex.normal);
-    if (!inserted) assert(dot(it->second, vertex.normal) > 0.9999);
+    if (!inserted) CHECK(dot(it->second, vertex.normal) > 0.9999);
   }
 
   // Coincident vertices on different box faces keep the sharp discontinuity.
@@ -72,29 +72,29 @@ int main() {
         foundSharpBoundary = true;
     }
   }
-  assert(foundSharpBoundary);
+  CHECK(foundSharpBoundary);
 
   BodyRenderMesh normalCylinder;
   BodyRenderMesh highCylinder;
   const auto cylinder = BRepPrimAPI_MakeCylinder(35.0, 80.0).Shape();
   normalCylinder.rebuild(cylinder, ViewportMeshQuality::Normal);
   highCylinder.rebuild(cylinder, ViewportMeshQuality::High);
-  assert(highCylinder.triangles().size() > normalCylinder.triangles().size());
-  assert(highCylinder.edgeSampleCount() >= normalCylinder.edgeSampleCount());
-  assert(highCylinder.linearDeflection() < normalCylinder.linearDeflection());
-  assert(highCylinder.angularDeflection() < normalCylinder.angularDeflection());
+  CHECK(highCylinder.triangles().size() > normalCylinder.triangles().size());
+  CHECK(highCylinder.edgeSampleCount() >= normalCylinder.edgeSampleCount());
+  CHECK(highCylinder.linearDeflection() < normalCylinder.linearDeflection());
+  CHECK(highCylinder.angularDeflection() < normalCylinder.angularDeflection());
   const double normalCircleError = circlePolylineError(normalCylinder, 35.0);
   const double highCircleError = circlePolylineError(highCylinder, 35.0);
-  assert(normalCircleError > 0.0);
-  assert(highCircleError > 0.0);
-  assert(highCircleError < normalCircleError);
+  CHECK(normalCircleError > 0.0);
+  CHECK(highCircleError > 0.0);
+  CHECK(highCircleError < normalCircleError);
 
   const auto referenceBefore = solidar::makeEdgeReference(cylinder, 7, 11, 0);
   BodyRenderMesh qualitySwitch;
   qualitySwitch.rebuild(cylinder, ViewportMeshQuality::Normal);
   qualitySwitch.rebuild(cylinder, ViewportMeshQuality::High);
   const auto referenceAfter = solidar::makeEdgeReference(cylinder, 7, 11, 0);
-  assert(referenceBefore == referenceAfter);
+  CHECK(referenceBefore == referenceAfter);
 
   std::cout << "cylinder Normal: vertices=" << normalCylinder.vertices().size()
             << " triangles=" << normalCylinder.triangles().size()
@@ -119,7 +119,7 @@ int main() {
       if (d > -0.2 && d < 0.98) foundSmoothFace = true;
     }
   }
-  assert(foundSmoothFace);
+  CHECK(foundSmoothFace);
 
   const TopoDS_Face plane = BRepBuilderAPI_MakeFace(
       gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), -10.0, 10.0, -10.0, 10.0);
@@ -127,7 +127,7 @@ int main() {
   BodyRenderMesh reversed;
   forward.rebuild(plane);
   reversed.rebuild(plane.Reversed());
-  assert(!forward.vertices().empty() && !reversed.vertices().empty());
-  assert(dot(forward.vertices().front().normal,
+  CHECK(!forward.vertices().empty() && !reversed.vertices().empty());
+  CHECK(dot(forward.vertices().front().normal,
              reversed.vertices().front().normal) < -0.999);
 }

@@ -1,24 +1,20 @@
+#include "TestAssertions.h"
+
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QThread>
 
 #include <cstdlib>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <vector>
 
 #include "ui/Viewport.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 // Targeted regression for Viewport::resetScene. The scene is populated through
 // the public API, reset, and the observable state is verified clean. The
@@ -29,15 +25,23 @@ int main(int argc, char** argv) {
 
   solidar::Viewport viewport;
   viewport.resize(800, 600);
+  std::vector<solidar::ViewportCancelReason> cancelReasons;
+  std::vector<QString> selectionDescriptions;
+  QObject::connect(&viewport, &solidar::Viewport::interactionCancelled,
+                   &viewport,
+                   [&](solidar::ViewportCancelReason reason) {
+                     cancelReasons.push_back(reason);
+                   });
+  QObject::connect(&viewport, &solidar::Viewport::selectionChanged, &viewport,
+                   [&](const QString& text) {
+                     selectionDescriptions.push_back(text);
+                   });
 
   const auto box = std::make_shared<TopoDS_Shape>(
       BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape());
   const solidar::BodyId bodyId = 1;
   const solidar::FeatureId featureId = 2;
   viewport.setBodyShape(box, bodyId, featureId);
-
-  solidar::sketch::Sketch sketch;
-  sketch.addRectangle({0.0, 0.0}, {40.0, 20.0});
 
   // Populate transient interaction state through the public API. The face
   // selection is set after the Edge filter because switching the selection
@@ -49,7 +53,6 @@ int main(int argc, char** argv) {
   viewport.setSelectedBodyFaces({solidar::FaceReference{bodyId, featureId, 0}});
   viewport.setToolManipulator(solidar::LinearToolManipulator{});
   viewport.setAngularToolManipulator(solidar::AngularToolManipulator{});
-  viewport.commitAdditiveExtrusion(sketch, QStringLiteral("XY"), 0.0, 10.0);
 
   // Sanity: state is actually populated before the reset.
   CHECK(viewport.selectedBodyFaces().size() == 1);
@@ -58,7 +61,6 @@ int main(int argc, char** argv) {
   CHECK(viewport.edgeMultiSelectionMode());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Edge);
   CHECK(viewport.angularToolManipulator().has_value());
-  CHECK(!viewport.solidFeatures().empty());
 
   // Populate the whole-body selection last (it clears the face/edge selection
   // cross-type), then confirm resetScene clears it.
@@ -84,6 +86,13 @@ int main(int argc, char** argv) {
   CHECK(viewport.basePlaneVisible(2));
   QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
   QApplication::sendEvent(&viewport, &escape);
+  CHECK(cancelReasons.size() == 1);
+  CHECK(cancelReasons.back() ==
+        solidar::ViewportCancelReason::SketchPlaneSelection);
+  CHECK(std::none_of(selectionDescriptions.begin(),
+                     selectionDescriptions.end(), [](const QString& text) {
+                       return text.startsWith(QStringLiteral("__"));
+                     }));
   CHECK(!viewport.sketchPlaneSelectionActive());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
   CHECK(!viewport.basePlaneVisible(0));
@@ -96,7 +105,6 @@ int main(int argc, char** argv) {
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
   CHECK(!viewport.basePlaneVisible(0));
   CHECK(!viewport.angularToolManipulator().has_value());
-  CHECK(viewport.solidFeatures().empty());
 
   // Mirror owns two explicit viewport pick modes. Body selection persists
   // while choosing a Plane; reset/cancel removes both the mode and the forced
@@ -106,6 +114,11 @@ int main(int argc, char** argv) {
   viewport.beginMirrorBodySelection();
   CHECK(viewport.mirrorBodySelectionActive());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Face);
+  QApplication::sendEvent(&viewport, &escape);
+  CHECK(cancelReasons.size() == 2);
+  CHECK(cancelReasons.back() ==
+        solidar::ViewportCancelReason::NestedReselection);
+  viewport.beginMirrorBodySelection();
   viewport.setSelectedBodies({bodyId});
   viewport.beginMirrorPlaneSelection();
   CHECK(viewport.mirrorPlaneSelectionActive());
@@ -191,6 +204,22 @@ int main(int argc, char** argv) {
   viewport.resetScene();
   CHECK(viewport.selectedBodyEdges().empty());
   CHECK(viewport.selectionFilter() == solidar::SelectionFilter::Any);
+
+  // A queued hover belongs to the scene generation that scheduled it. Scene
+  // replacement must stop the timer so it cannot republish old geometry.
+  solidar::sketch::Sketch hoverProfile;
+  hoverProfile.addRectangle({-10.0, -10.0}, {10.0, 10.0});
+  viewport.addSketch(77, hoverProfile, QStringLiteral("display only"),
+                     solidar::SketchPlacement::xy());
+  viewport.beginExtrusionSurfaceSelection();
+  QMouseEvent pendingMove(QEvent::MouseMove, QPointF{400.0, 312.0},
+                          QPointF{400.0, 312.0}, Qt::NoButton, Qt::NoButton,
+                          Qt::NoModifier);
+  QApplication::sendEvent(&viewport, &pendingMove);
+  viewport.resetScene();
+  QThread::msleep(25);
+  QApplication::processEvents();
+  CHECK(viewport.extrusionHoverBounds().isEmpty());
 
   // resetScene clears the transient marquee and leaves the viewport reusable.
   {

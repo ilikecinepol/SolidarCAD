@@ -4,9 +4,14 @@
 #include <QRectF>
 
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
+
+#include "ui/BodyRenderMesh.h"
+#include "ui/ViewportCamera.h"
 
 namespace solidar {
 
@@ -26,6 +31,7 @@ struct ProjectedTriangle {
   ProjectedPoint b;
   ProjectedPoint c;
   std::size_t faceIndex{};
+  double depthEpsilon{};
 };
 
 // A mesh edge polyline projected into logical screen coordinates, tagged with
@@ -33,6 +39,92 @@ struct ProjectedTriangle {
 struct ProjectedEdge {
   std::vector<ProjectedPoint> points;
   std::size_t edgeIndex{};
+};
+
+struct PickingQueryCounters {
+  std::uint64_t buildCount{};
+  std::uint64_t buildFailures{};
+  std::uint64_t pointQueries{};
+  std::uint64_t rectangleQueries{};
+  std::uint64_t triangleCandidates{};
+  std::uint64_t segmentCandidates{};
+  std::uint64_t nodeVisits{};
+  std::uint64_t occluderTests{};
+  std::uint64_t intervalTests{};
+  std::uint64_t subdivisions{};
+  std::uint64_t uncertainVisible{};
+  std::uint64_t vertexCandidates{};
+  std::uint64_t vertexVisibilityQueries{};
+};
+
+struct PickingMeshInput {
+  const BodyRenderMesh* mesh{};
+  std::size_t faceOffset{};
+  std::size_t edgeOffset{};
+  // Full structural identity; hash collisions can never alias two bodies.
+  BodyMeshKey identity;
+};
+
+struct PickingFaceHit {
+  std::size_t faceIndex{static_cast<std::size_t>(-1)};
+  double depth{};
+  double depthEpsilon{};
+};
+
+struct PickingEdgeHit {
+  std::size_t edgeIndex{static_cast<std::size_t>(-1)};
+  double depth{};
+  double distance{};
+  Point3d world{};
+  QPointF screen{};
+};
+
+// Interactive hover is deliberately work-bounded. Exact is used only at
+// interaction boundaries (click/release/Apply) and completes the indexed
+// visibility query before accepting a candidate.
+enum class PickingQueryPrecision { Interactive, Exact };
+
+enum class PickingSnapKind { Surface, Edge, Vertex };
+
+struct PickingPointHit {
+  Point3d world{};
+  QPointF screen{};
+  double depth{};
+  PickingSnapKind kind{PickingSnapKind::Surface};
+};
+
+// Camera-revisioned projected scene shared by hover, click, marquee and ruler.
+// It stores one projected value per indexed vertex/edge sample and two compact
+// 2D BVHs; world-space positions remain owned only by BodyRenderMesh.
+class ProjectedPickingScene final {
+ public:
+  [[nodiscard]] bool ensure(const std::vector<PickingMeshInput>& meshes,
+                            const ViewportCameraState& camera);
+  void invalidate() noexcept;
+  [[nodiscard]] bool empty() const noexcept;
+  [[nodiscard]] std::optional<PickingFaceHit> faceAt(QPointF point) const;
+  [[nodiscard]] std::optional<PickingEdgeHit> edgeAt(
+      QPointF point, double radiusPx = kEdgeHitRadiusPx,
+      PickingQueryPrecision precision = PickingQueryPrecision::Interactive) const;
+  [[nodiscard]] std::vector<std::size_t> facesInRect(const QRectF& rect) const;
+  [[nodiscard]] std::vector<std::size_t> edgesInRect(const QRectF& rect) const;
+  [[nodiscard]] std::optional<std::size_t> frontmostFace(
+      const std::vector<std::size_t>& faces) const;
+  [[nodiscard]] std::optional<std::size_t> frontmostEdge(
+      const std::vector<std::size_t>& edges) const;
+  [[nodiscard]] std::optional<PickingPointHit> snapAt(
+      QPointF point, double radiusPx = 11.0,
+      PickingQueryPrecision precision = PickingQueryPrecision::Interactive) const;
+  [[nodiscard]] std::vector<ProjectedTriangle> trianglesForFace(
+      std::size_t faceIndex) const;
+  [[nodiscard]] double depthEpsilon() const noexcept;
+  [[nodiscard]] const PickingQueryCounters& counters() const noexcept;
+  void resetQueryCounters() const noexcept;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept;
+
+ private:
+  struct Impl;
+  std::shared_ptr<Impl> impl_;
 };
 
 struct SegmentHit {
@@ -114,13 +206,13 @@ clipSegmentToRect(const ProjectedPoint& a, const ProjectedPoint& b,
 // heuristic, since the renderer disables back-face culling).
 [[nodiscard]] std::vector<std::size_t> collectFacesInRect(
     const std::vector<ProjectedTriangle>& triangles, const QRectF& rect,
-    double depthEpsilon);
+    double depthEpsilon, PickingQueryCounters* counters = nullptr);
 // Edges whose any projected segment intersects rect AND passes occlusion
 // (edge depth + depthEpsilon >= surfaceDepth at the segment contact point),
 // reusing the projected triangles for surfaceDepth.
 [[nodiscard]] std::vector<std::size_t> collectEdgesInRect(
     const std::vector<ProjectedTriangle>& triangles,
     const std::vector<ProjectedEdge>& edges, const QRectF& rect,
-    double depthEpsilon);
+    double depthEpsilon, PickingQueryCounters* counters = nullptr);
 
 }  // namespace solidar

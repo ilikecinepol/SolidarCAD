@@ -1,6 +1,7 @@
 #include "model/CircularPatternFeature.h"
 
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
@@ -10,6 +11,7 @@
 #include <numbers>
 #include "model/Body.h"
 #include "model/Document.h"
+#include "model/GeometryOperation.h"
 
 namespace solidar {
 namespace {
@@ -52,38 +54,63 @@ ShapeFeature::ShapePtr buildCircularPatternShape(const TopoDS_Shape& source,
                                                  int count, double angleDeg,
                                                  std::string* error,
                                                  bool includeSource) {
-  if (count < 2) {
-    if (error) *error = "Circular Pattern count must be at least 2";
+  if (!validPatternCount(count)) {
+    if (error) *error = "Circular Pattern count must be in [2, 100]";
     return {};
   }
-  if (!std::isfinite(angleDeg) || angleDeg <= 0.0 || angleDeg > 360.0) {
-    if (error) *error = "Circular Pattern angle must be in (0, 360]";
+  if (!validPatternAngle(angleDeg)) {
+    if (error) *error = "Circular Pattern angle must be in [0.01, 360]";
+    return {};
+  }
+  if (!validPrincipalAxis(axis)) {
+    if (error) *error = "Circular Pattern axis is invalid";
     return {};
   }
   if (source.IsNull()) {
     if (error) *error = "Circular Pattern base shape is missing";
     return {};
   }
-  const bool full = std::abs(angleDeg - 360.0) < 1e-9;
-  const double step = angleDeg / static_cast<double>(full ? count : count - 1);
-  BRep_Builder builder;
-  TopoDS_Compound compound;
-  builder.MakeCompound(compound);
-  if (includeSource) builder.Add(compound, source);
-  for (int index = 1; index < count; ++index) {
-    gp_Trsf transform;
-    transform.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), axisDirection(axis)),
-                          step * static_cast<double>(index) *
-                              std::numbers::pi / 180.0);
-    BRepBuilderAPI_Transform copy(source, transform, true);
-    if (!copy.IsDone() || copy.Shape().IsNull()) {
-      if (error) *error = "Circular Pattern transformation failed";
-      return {};
-    }
-    builder.Add(compound, copy.Shape());
+  ShapeFeature::ShapePtr result;
+  GeometryFailure failure;
+  const bool completed = runGeometryOperation(
+      [&]() -> bool {
+        const bool full =
+            std::abs(angleDeg - kMaximumPatternAngleDeg) < 1e-9;
+        const double step =
+            angleDeg / static_cast<double>(full ? count : count - 1);
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        if (includeSource) builder.Add(compound, source);
+        for (int index = 1; index < count; ++index) {
+          gp_Trsf transform;
+          transform.SetRotation(
+              gp_Ax1(gp_Pnt(0, 0, 0), axisDirection(axis)),
+              step * static_cast<double>(index) * std::numbers::pi / 180.0);
+          BRepBuilderAPI_Transform copy(source, transform, true);
+          if (!copy.IsDone() || copy.Shape().IsNull()) {
+            if (error) *error = "Circular Pattern transformation failed";
+            return false;
+          }
+          builder.Add(compound, copy.Shape());
+        }
+        if (!BRepCheck_Analyzer(compound).IsValid()) {
+          if (error) *error = "Circular Pattern produced an invalid B-Rep shape";
+          return false;
+        }
+        result = std::make_shared<TopoDS_Shape>(compound);
+        return true;
+      },
+      &failure);
+  if (!completed) {
+    if (failure.kind != GeometryFailureKind::None && error)
+      *error = failure.kind == GeometryFailureKind::OcctException
+                   ? "Circular Pattern OpenCASCADE operation failed"
+                   : "Circular Pattern geometry operation failed";
+    return {};
   }
   if (error) error->clear();
-  return std::make_shared<TopoDS_Shape>(compound);
+  return result;
 }
 
 CircularPatternFeature::CircularPatternFeature(FeatureId source, PrincipalAxis axis,
@@ -120,13 +147,19 @@ PatternOperation CircularPatternFeature::operation() const noexcept {
 void CircularPatternFeature::setAxis(PrincipalAxis value) noexcept { if (axis_ != value) { axis_ = value; setDirty(); } }
 void CircularPatternFeature::setCount(int value) noexcept { if (count_ != value) { count_ = value; setDirty(); } }
 void CircularPatternFeature::setAngleDeg(double value) noexcept { if (angleDeg_ != value) { angleDeg_ = value; setDirty(); } }
-bool CircularPatternFeature::dependsOnFeature(FeatureId featureId) const noexcept {
-  return operation_ == PatternOperation::NewBody &&
-         sourceFeatureId_ == featureId;
+FeatureDependencies CircularPatternFeature::dependencies() const {
+  FeatureDependencies result;
+  if (operation_ == PatternOperation::NewBody &&
+      sourceFeatureId_ != kInvalidFeatureId)
+    result.featureIds.push_back(sourceFeatureId_);
+  return result;
 }
-std::string CircularPatternFeature::typeName() const { return "CircularPattern"; }
-bool CircularPatternFeature::rebuild(const RebuildContext& context) {
+bool CircularPatternFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
+  if (!validPatternOperation(operation_)) {
+    markError("Circular Pattern operation is invalid");
+    return false;
+  }
   const TopoDS_Shape* source = resolvedSource(
       this, context, sourceBodyId_, sourceFeatureId_, operation_);
   if (!source || source->IsNull()) {

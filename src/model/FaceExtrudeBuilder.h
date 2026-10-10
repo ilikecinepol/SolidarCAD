@@ -7,6 +7,7 @@
 #include <gp_Pnt.hxx>
 
 #include "model/SketchPlacement.h"
+#include "model/OperationFailure.h"
 
 class TopoDS_Shape;
 class gp_Pln;
@@ -14,6 +15,7 @@ class gp_Pln;
 namespace solidar {
 
 enum class ExtrudeOperation;
+class TopologyIndex;
 
 // Resolved geometry of the planar face an extrusion is built from. The normal
 // is oriented outward from the solid (matching the TopAbs_REVERSED convention
@@ -29,7 +31,8 @@ struct FaceExtrudeGeometry {
 // when the face is not planar (the UI layer maps this to a user-facing string).
 [[nodiscard]] bool resolveFacePlaneAndNormal(const TopoDS_Face& face,
                                              gp_Pln* plane, gp_Dir* normal,
-                                             std::string* error);
+                                             std::string* error,
+                                             OperationFailureCode* code = nullptr);
 
 // Builds a native face extrusion.
 //
@@ -42,6 +45,17 @@ struct FaceExtrudeGeometry {
     const TopoDS_Shape& baseShape, const FaceReference& source,
     double lengthMm, ExtrudeOperation operation, bool reversed,
     TopoDS_Shape* result, FaceExtrudeGeometry* geometry, std::string* error,
-    TopoDS_Shape* sweptTool = nullptr);
+    TopoDS_Shape* sweptTool = nullptr,
+    OperationFailureCode* code = nullptr);
+
+// Indexed overload for document/tool-session callers that already own the
+// immutable topology snapshot for `baseShape`.
+[[nodiscard]] bool buildExtrusionFromFace(
+    const TopoDS_Shape& baseShape, const TopologyIndex& topology,
+    const FaceReference& source, double lengthMm,
+    ExtrudeOperation operation, bool reversed, TopoDS_Shape* result,
+    FaceExtrudeGeometry* geometry, std::string* error,
+    TopoDS_Shape* sweptTool = nullptr,
+    OperationFailureCode* code = nullptr);
 
 }  // namespace solidar

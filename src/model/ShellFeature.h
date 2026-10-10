@@ -24,9 +24,13 @@ class ShellFeature final : public ShapeFeature {
   void setThicknessMm(double value) noexcept;
   void setOutside(bool value) noexcept;
 
-  [[nodiscard]] std::string typeName() const override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::Shell;
+  }
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   FeatureId sourceFeatureId_{kInvalidFeatureId};

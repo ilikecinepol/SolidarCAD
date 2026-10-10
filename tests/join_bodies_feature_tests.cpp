@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QTemporaryDir>
@@ -24,14 +26,6 @@
 #include "project/ProjectFile.h"
 
 namespace {
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 double volumeOf(const TopoDS_Shape& shape) {
   GProp_GProps properties;
@@ -65,6 +59,8 @@ int main(int argc, char** argv) {
   CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
   CHECK(!session.previewShape());
   CHECK(!session.error().empty());
+  CHECK(session.errorCode() ==
+        solidar::OperationFailureCode::BodiesDoNotTouch);
   session.cancel();
   CHECK(session.lifecycle() == solidar::ToolLifecycle::Inactive);
 

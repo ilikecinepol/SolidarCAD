@@ -24,6 +24,10 @@ namespace solidar {
 namespace {
 bool resolveAxis(const Document& document, const AxisReference& reference,
                  gp_Ax1* result, std::string* error) {
+  if (!isKnownAxisReferenceType(reference.type)) {
+    *error = "Revolve axis type is unsupported";
+    return false;
+  }
   if (reference.type == AxisReferenceType::GlobalX ||
       reference.type == AxisReferenceType::GlobalY ||
       reference.type == AxisReferenceType::GlobalZ) {
@@ -108,12 +112,18 @@ void RevolveFeature::setAxis(AxisReference value) noexcept { if (axis_ != value)
 void RevolveFeature::setAngleDeg(double value) noexcept { if (angleDeg_ != value) { angleDeg_ = value; setDirty(); } }
 void RevolveFeature::setOperation(ExtrudeOperation value) noexcept { if (operation_ != value) { operation_ = value; setDirty(); } }
 void RevolveFeature::setReversed(bool value) noexcept { if (reversed_ != value) { reversed_ = value; setDirty(); } }
-std::string RevolveFeature::typeName() const { return "Revolve"; }
-bool RevolveFeature::dependsOnSketch(SketchId id) const noexcept {
-  return profileSketchId_ == id || axis_.sketchId == id;
+FeatureDependencies RevolveFeature::dependencies() const {
+  FeatureDependencies result;
+  if (profileSketchId_ != kInvalidSketchId)
+    result.sketchIds.push_back(profileSketchId_);
+  if (isSketchAxisReferenceType(axis_.type) &&
+      axis_.sketchId != kInvalidSketchId &&
+      axis_.sketchId != profileSketchId_)
+    result.sketchIds.push_back(axis_.sketchId);
+  return result;
 }
 
-bool RevolveFeature::rebuild(const RebuildContext& context) {
+bool RevolveFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(angleDeg_) || angleDeg_ <= 0.0 || angleDeg_ > 360.0) {
     markError("Revolve angle must be finite and in the range (0, 360]");

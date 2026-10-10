@@ -3,8 +3,6 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
 #include <Standard_Failure.hxx>
-#include <TopExp_Explorer.hxx>
-#include <TopoDS.hxx>
 
 #include <cmath>
 #include <numbers>
@@ -22,11 +20,11 @@ std::shared_ptr<TopoDS_Shape> buildDraftShape(
     if (error) *error = std::move(message);
     return std::shared_ptr<TopoDS_Shape>{};
   };
-  if (baseShape.IsNull()) return fail("Draft base shape is missing");
   if (!std::isfinite(angleDeg) || angleDeg < 0.0 || angleDeg >= 90.0)
     return fail("Draft angle must be finite and in the range [0, 90)");
   if (faceIndices.empty()) return fail("Draft requires at least one face");
   try {
+    if (baseShape.IsNull()) return fail("Draft base shape is missing");
     std::string mappingError;
     auto selection = mapFacesToOwningSolids(baseShape, faceIndices, &mappingError);
     if (!selection) return fail("Draft " + mappingError);
@@ -39,23 +37,13 @@ std::shared_ptr<TopoDS_Shape> buildDraftShape(
                            (reversed ? -1.0 : 1.0);
     for (std::size_t solidIndex = 0; solidIndex < selection->solids.size();
          ++solidIndex) {
-      const auto& indices = selection->localFaceIndices[solidIndex];
-      if (indices.empty()) continue;
+      const auto& selectedFaces = selection->localFaces[solidIndex];
+      if (selectedFaces.empty()) continue;
       BRepOffsetAPI_DraftAngle maker(selection->solids[solidIndex]);
-      for (const auto wanted : indices) {
-        std::size_t current = 0;
-        bool found = false;
-        for (TopExp_Explorer faces(selection->solids[solidIndex], TopAbs_FACE);
-             faces.More(); faces.Next(), ++current) {
-          if (current != wanted) continue;
-          maker.Add(TopoDS::Face(faces.Current()), pullDirection, radians,
-                    neutralPlane);
-          if (!maker.AddDone())
-            return fail("Draft rejected a selected face for this plane and direction");
-          found = true;
-          break;
-        }
-        if (!found) return fail("Draft face could not be resolved in owning solid");
+      for (const auto& face : selectedFaces) {
+        maker.Add(face, pullDirection, radians, neutralPlane);
+        if (!maker.AddDone())
+          return fail("Draft rejected a selected face for this plane and direction");
       }
       maker.Build();
       if (!maker.IsDone() || maker.Shape().IsNull())

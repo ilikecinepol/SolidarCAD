@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepCheck_Analyzer.hxx>
 #include <TopoDS_Shape.hxx>
 
@@ -13,14 +15,6 @@
 #include "model/ExtrudeFeature.h"
 #include "model/SketchExtrudeBuilder.h"
 
-#define CHECK(x)                                                    \
-  do {                                                              \
-    if (!(x)) {                                                     \
-      std::cerr << __LINE__ << ": " #x "\n";                        \
-      return EXIT_FAILURE;                                          \
-    }                                                               \
-  } while (false)
-
 namespace {
 
 solidar::DocumentSketch profileWith(solidar::SketchId id) {
@@ -33,6 +27,42 @@ solidar::DocumentSketch profileWith(solidar::SketchId id) {
 
 int main() {
   using namespace solidar;
+
+  // Every public validation/build failure carries a stable non-None code.
+  // Malformed geometry is contained by the validation firewall and never
+  // escapes as an OCCT/std/unknown exception.
+  {
+    auto open = profileWith(9001);
+    open.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    std::string detail;
+    OperationFailureCode code{OperationFailureCode::None};
+    CHECK(!isSupportedSketchProfile(open, &detail, &code));
+    CHECK(code != OperationFailureCode::None);
+
+    auto valid = profileWith(9002);
+    valid.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    TopoDS_Shape output;
+    code = OperationFailureCode::None;
+    CHECK(!buildExtrusionFromSketch(valid, nullptr, 5.0,
+                                    ExtrudeOperation::Join, false, &output,
+                                    nullptr, &detail, &code));
+    CHECK(code == OperationFailureCode::MissingSource);
+
+    code = OperationFailureCode::None;
+    CHECK(!buildExtrusionFromSketch(
+        valid, nullptr, 5.0, static_cast<ExtrudeOperation>(999), false,
+        &output, nullptr, &detail, &code));
+    CHECK(code == OperationFailureCode::InvalidInput);
+
+    auto malformed = profileWith(9003);
+    malformed.geometry.addLine({0.0, 0.0}, {10.0, 10.0});
+    malformed.geometry.addLine({10.0, 10.0}, {0.0, 10.0});
+    malformed.geometry.addLine({0.0, 10.0}, {10.0, 0.0});
+    malformed.geometry.addLine({10.0, 0.0}, {0.0, 0.0});
+    code = OperationFailureCode::None;
+    CHECK(!isSupportedSketchProfile(malformed, &detail, &code));
+    CHECK(code != OperationFailureCode::None);
+  }
 
   // One closed line wire is supported.
   {
@@ -177,16 +207,19 @@ int main() {
     crossing.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
     crossing.geometry.addCircle({39.0, 15.0}, 3.0);
     std::string error;
-    CHECK(!isSupportedSketchProfile(crossing, &error));
+    OperationFailureCode code{OperationFailureCode::None};
+    CHECK(!isSupportedSketchProfile(crossing, &error, &code));
     CHECK(!error.empty());
+    CHECK(code == OperationFailureCode::InvalidProfileOverlap);
 
     auto touching = profileWith(35);
     touching.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
     touching.geometry.addCircle({35.0, 15.0}, 5.0);
     error.clear();
-    CHECK(!isSupportedSketchProfile(touching, &error));
+    CHECK(!isSupportedSketchProfile(touching, &error, &code));
     CHECK(error.find("touch") != std::string::npos ||
           error.find("intersect") != std::string::npos);
+    CHECK(code == OperationFailureCode::InvalidProfileOverlap);
   }
 
   // An open would-be inner contour is a controlled validation error.
@@ -196,8 +229,10 @@ int main() {
     profile.geometry.addLine({10.0, 10.0}, {20.0, 10.0});
     profile.geometry.addLine({20.0, 10.0}, {20.0, 20.0});
     std::string error;
-    CHECK(!isSupportedSketchProfile(profile, &error));
+    OperationFailureCode code{OperationFailureCode::None};
+    CHECK(!isSupportedSketchProfile(profile, &error, &code));
     CHECK(!error.empty());
+    CHECK(code == OperationFailureCode::InvalidProfileOpen);
   }
 
   // Simple polygons are independent of insertion order and edge direction;
@@ -415,8 +450,10 @@ int main() {
     profile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
     profile.geometry.addRectangle({10.0, 0.0}, {20.0, 10.0});
     std::string error;
-    CHECK(!isSupportedSketchProfile(profile, &error));
+    OperationFailureCode code{OperationFailureCode::None};
+    CHECK(!isSupportedSketchProfile(profile, &error, &code));
     CHECK(error == "Profile regions touch each other");
+    CHECK(code == OperationFailureCode::InvalidProfileOverlap);
   }
 
   // A closed but self-intersecting bow-tie is not a valid region.

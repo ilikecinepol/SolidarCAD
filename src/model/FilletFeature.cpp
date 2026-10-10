@@ -57,9 +57,8 @@ void FilletFeature::setRadiusMm(double value) noexcept {
   setDirty();
 }
 
-std::string FilletFeature::typeName() const { return "Fillet"; }
 
-bool FilletFeature::rebuild(const RebuildContext& context) {
+bool FilletFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
   if (!std::isfinite(radiusMm_) || radiusMm_ <= 0.0) {
     markError("Fillet radius must be a finite positive value");
@@ -102,13 +101,25 @@ bool FilletFeature::rebuild(const RebuildContext& context) {
     return false;
   }
 
+  std::string topologyError;
+  const auto topology = context.previousFeature
+                            ? context.previousFeature->topologyIndex(&topologyError)
+                            : TopologyIndex::build(*context.previousShape,
+                                                   kInvalidShapeRevision,
+                                                   &topologyError);
+  if (!topology) {
+    markError("Fillet topology could not be indexed: " + topologyError);
+    return false;
+  }
+  std::vector<TopologyReference> references;
+  references.reserve(edges_.size());
+  for (const auto& edge : edges_) references.push_back(edge.topology());
+  const auto resolutions = topology->resolveEdges(references);
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
-  for (const auto& edge : edges_) {
-    const auto resolved =
-        resolveEdgeReference(*context.previousShape, edge.topology());
+  for (const auto& resolved : resolutions) {
     if (!resolved) {
-      markError("Fillet edge could not be resolved");
+      markError("Fillet edge could not be resolved: " + resolved.error);
       return false;
     }
     indices.push_back(resolved.index);

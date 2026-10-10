@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
@@ -22,8 +24,6 @@
 #include "model/FilletBuilder.h"
 #include "model/ShellBuilder.h"
 #include "model/TopologyReferenceResolver.h"
-
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return EXIT_FAILURE; } } while(false)
 
 namespace {
 

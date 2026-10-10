@@ -41,11 +41,9 @@ void ToolParameterHud::setParameters(
       continue;
     auto* editor = new QDoubleSpinBox(this);
     editor->setObjectName(QString::fromStdString(parameter.id));
+    editor->setDecimals(parameter.type == ToolParameterType::Integer ? 0 : 2);
     editor->setRange(parameter.minimum, parameter.maximum);
     editor->setSingleStep(parameter.step);
-    editor->setDecimals(parameter.type == ToolParameterType::Integer
-                            ? 0
-                            : parameter.type == ToolParameterType::Angle ? 1 : 2);
     editor->setSuffix(parameter.unit.empty()
                           ? QString{}
                           : QStringLiteral(" ") + QString::fromStdString(parameter.unit));

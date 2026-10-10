@@ -1,3 +1,5 @@
+#include "TestAssertions.h"
+
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopoDS_Shape.hxx>
 #include <BRepBndLib.hxx>
@@ -20,14 +22,6 @@
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
 #include "project/ProjectFile.h"
-
-#define CHECK(condition)                                                   \
-  do {                                                                     \
-    if (!(condition)) {                                                    \
-      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition << '\n'; \
-      return EXIT_FAILURE;                                                 \
-    }                                                                      \
-  } while (false)
 
 namespace {
 

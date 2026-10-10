@@ -1,7 +1,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
+#include "TestAssertions.h"
 #include <cmath>
 
 #include "model/macro/MacroExecutor.h"
@@ -46,21 +46,21 @@ int main() {
   const auto anchorA = addAnchor(profile, {10.0, 10.0});
   const auto anchorB = addAnchor(profile, {50.0, 30.0});
   auto first = executor.execute(definition, document, {{1, anchorA}});
-  assert(first.success);
-  assert(first.instance.macroId == definition.id);
-  assert(first.instance.createdObjects.size() == 2);
+  CHECK(first.success);
+  CHECK(first.instance.macroId == definition.id);
+  CHECK(first.instance.createdObjects.size() == 2);
   auto second = executor.execute(definition, document, {{1, anchorB}});
-  assert(second.success);
+  CHECK(second.success);
   const auto* applied = document.findSketch(profileId);
-  assert(applied);
-  assert(applied->geometry.circles().size() == 2);
+  CHECK(applied);
+  CHECK(applied->geometry.circles().size() == 2);
   const auto& circleA = applied->geometry.circles()[0];
   const auto& circleB = applied->geometry.circles()[1];
-  assert(near(circleA.center.xMm, 12.0));
-  assert(near(circleA.center.yMm, 6.0));
-  assert(near(circleB.center.xMm, 52.0));
-  assert(near(circleB.center.yMm, 26.0));
-  assert(near(circleA.radiusMm, circleB.radiusMm));
+  CHECK(near(circleA.center.xMm, 12.0));
+  CHECK(near(circleA.center.yMm, 6.0));
+  CHECK(near(circleB.center.xMm, 52.0));
+  CHECK(near(circleB.center.yMm, 26.0));
+  CHECK(near(circleA.radiusMm, circleB.radiusMm));
 
   // Identical local expressions work for every SketchPlacement. Macro core
   // never converts them to world XYZ.
@@ -74,46 +74,46 @@ int main() {
     const auto reference = addAnchor(placed, {4.0, 5.0});
     const SketchId id = placed.id;
     const auto result = executor.execute(definition, document, {{1, reference}});
-    assert(result.success);
+    CHECK(result.success);
     const auto* resolved = document.findSketch(id);
-    assert(resolved && resolved->geometry.circles().size() == 1);
-    assert(near(resolved->geometry.circles()[0].center.xMm, 6.0));
-    assert(near(resolved->geometry.circles()[0].center.yMm, 1.0));
+    CHECK(resolved && resolved->geometry.circles().size() == 1);
+    CHECK(near(resolved->geometry.circles()[0].center.xMm, 6.0));
+    CHECK(near(resolved->geometry.circles()[0].center.yMm, 1.0));
     const auto world = resolved->placement.toWorld(6.0, 1.0);
     const auto local = resolved->placement.toLocal(world);
-    assert(near(local.x, 6.0));
-    assert(near(local.y, 1.0));
+    CHECK(near(local.x, 6.0));
+    CHECK(near(local.y, 1.0));
   }
 
   // Failure after a successful action restores the complete Document.
   MacroDefinition failing = definition;
   failing.actions[1] = MacroCreateCircleAction{2, 2, {1, 0.0, 0.0}, -1.0};
   auto* rollbackProfile = document.findSketch(profileId);
-  assert(rollbackProfile);
+  CHECK(rollbackProfile);
   const auto lineCount = rollbackProfile->geometry.lines().size();
   const auto circleCount = rollbackProfile->geometry.circles().size();
   const auto failed = executor.execute(failing, document, {{1, anchorA}});
-  assert(!failed.success);
+  CHECK(!failed.success);
   rollbackProfile = document.findSketch(profileId);
-  assert(rollbackProfile);
-  assert(rollbackProfile->geometry.lines().size() == lineCount);
-  assert(rollbackProfile->geometry.circles().size() == circleCount);
+  CHECK(rollbackProfile);
+  CHECK(rollbackProfile->geometry.lines().size() == lineCount);
+  CHECK(rollbackProfile->geometry.circles().size() == circleCount);
 
   // Missing and stale semantic point references fail without mutation.
   const auto beforeInvalid = rollbackProfile->geometry.circles().size();
   const auto missing = executor.execute(definition, document, {});
-  assert(!missing.success);
+  CHECK(!missing.success);
   const SketchPointReference stale{profileId, 999999,
                                    SketchPointKind::LineEnd};
   const auto invalid = executor.execute(definition, document, {{1, stale}});
-  assert(!invalid.success);
-  assert(document.findSketch(profileId)->geometry.circles().size() ==
+  CHECK(!invalid.success);
+  CHECK(document.findSketch(profileId)->geometry.circles().size() ==
          beforeInvalid);
 
   // Parameter binding is typed and overrides the serializable default.
   auto parameterized = executor.execute(
       definition, document, {{1, anchorA}}, {{1, MacroValue{5.5}}});
-  assert(parameterized.success);
-  assert(near(document.findSketch(profileId)->geometry.circles().back().radiusMm,
+  CHECK(parameterized.success);
+  CHECK(near(document.findSketch(profileId)->geometry.circles().back().radiusMm,
               5.5));
 }

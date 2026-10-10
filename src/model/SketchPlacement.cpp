@@ -68,27 +68,7 @@ ResolvedFacePlacement resolveFacePlacement(const TopoDS_Shape& shape,
     for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More();
          explorer.Next(), ++index) {
       if (index != faceIndex) continue;
-      const TopoDS_Face face = TopoDS::Face(explorer.Current());
-      BRepAdaptor_Surface surface(face, true);
-      if (surface.GetType() != GeomAbs_Plane) {
-        ResolvedFacePlacement result;
-        result.resolved = true;
-        result.planar = false;
-        return result;
-      }
-
-      const gp_Ax3 axes = surface.Plane().Position();
-      const gp_Pnt location = axes.Location();
-      gp_Dir x = axes.XDirection();
-      gp_Dir y = axes.YDirection();
-      if (face.Orientation() == TopAbs_REVERSED) y.Reverse();
-      ResolvedFacePlacement result;
-      result.placement = {{location.X(), location.Y(), location.Z()},
-                          {x.X(), x.Y(), x.Z()},
-                          {y.X(), y.Y(), y.Z()}};
-      result.planar = true;
-      result.resolved = true;
-      return result;
+      return resolveFacePlacement(TopoDS::Face(explorer.Current()));
     }
   } catch (const Standard_Failure& failure) {
     ResolvedFacePlacement result;
@@ -107,6 +87,43 @@ ResolvedFacePlacement resolveFacePlacement(const TopoDS_Shape& shape,
   return result;
 }
 
+ResolvedFacePlacement resolveFacePlacement(const TopoDS_Face& face) {
+  try {
+    if (face.IsNull()) {
+      ResolvedFacePlacement result;
+      result.error = "Resolved face is null";
+      return result;
+    }
+    BRepAdaptor_Surface surface(face, true);
+    if (surface.GetType() != GeomAbs_Plane) {
+      ResolvedFacePlacement result;
+      result.resolved = true;
+      return result;
+    }
+
+    const gp_Ax3 axes = surface.Plane().Position();
+    const gp_Pnt location = axes.Location();
+    gp_Dir x = axes.XDirection();
+    gp_Dir y = axes.YDirection();
+    if (face.Orientation() == TopAbs_REVERSED) y.Reverse();
+    ResolvedFacePlacement result;
+    result.placement = {{location.X(), location.Y(), location.Z()},
+                        {x.X(), x.Y(), x.Z()},
+                        {y.X(), y.Y(), y.Z()}};
+    result.planar = true;
+    result.resolved = true;
+    return result;
+  } catch (const Standard_Failure& failure) {
+    ResolvedFacePlacement result;
+    result.error = failure.GetMessageString();
+    return result;
+  } catch (...) {
+    ResolvedFacePlacement result;
+    result.error = "Unexpected failure while resolving face placement";
+    return result;
+  }
+}
+
 ResolvedFacePlacement resolveFacePlacement(
     const TopoDS_Shape& shape, const TopologyReference& reference) {
   const auto resolved = resolveFaceReference(shape, reference);
@@ -116,7 +133,7 @@ ResolvedFacePlacement resolveFacePlacement(
     result.error = resolved.error;
     return result;
   }
-  return resolveFacePlacement(shape, resolved.index);
+  return resolveFacePlacement(*resolved.subshape);
 }
 
 }  // namespace solidar

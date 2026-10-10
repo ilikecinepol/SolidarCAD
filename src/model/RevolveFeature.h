@@ -17,6 +17,27 @@ enum class AxisReferenceType {
   GlobalZ = 5
 };
 
+[[nodiscard]] constexpr bool isSketchAxisReferenceType(
+    AxisReferenceType type) noexcept {
+  return type == AxisReferenceType::SketchHorizontalAxis ||
+         type == AxisReferenceType::SketchVerticalAxis ||
+         type == AxisReferenceType::SketchLine;
+}
+
+[[nodiscard]] constexpr bool isKnownAxisReferenceType(
+    AxisReferenceType type) noexcept {
+  switch (type) {
+    case AxisReferenceType::SketchHorizontalAxis:
+    case AxisReferenceType::SketchVerticalAxis:
+    case AxisReferenceType::SketchLine:
+    case AxisReferenceType::GlobalX:
+    case AxisReferenceType::GlobalY:
+    case AxisReferenceType::GlobalZ:
+      return true;
+  }
+  return false;
+}
+
 struct AxisReference {
   AxisReferenceType type{AxisReferenceType::SketchHorizontalAxis};
   SketchId sketchId{kInvalidSketchId};
@@ -49,10 +70,14 @@ class RevolveFeature final : public ShapeFeature {
   void setOperation(ExtrudeOperation value) noexcept;
   void setReversed(bool value) noexcept;
 
-  [[nodiscard]] std::string typeName() const override;
-  [[nodiscard]] bool dependsOnSketch(SketchId id) const noexcept override;
-  bool rebuild(const RebuildContext& context) override;
+  [[nodiscard]] FeatureKind kind() const noexcept override {
+    return FeatureKind::Revolve;
+  }
+  [[nodiscard]] FeatureDependencies dependencies() const override;
   [[nodiscard]] std::unique_ptr<Feature> clone() const override;
+
+ protected:
+  bool rebuildImpl(const RebuildContext& context) override;
 
  private:
   SketchId profileSketchId_{kInvalidSketchId};

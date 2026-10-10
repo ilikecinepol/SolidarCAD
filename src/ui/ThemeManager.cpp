@@ -110,7 +110,7 @@ void ThemeManager::applyPalette(const ThemeColors& c) {
   palette.setColor(QPalette::Midlight, c.surface);
   palette.setColor(QPalette::Mid, c.borderStrong);
   palette.setColor(QPalette::Dark, c.borderStrong);
-  palette.setColor(QPalette::Shadow, Qt::black);
+  palette.setColor(QPalette::Shadow, c.shadow);
   palette.setColor(QPalette::Disabled, QPalette::Text, c.textDisabled);
   palette.setColor(QPalette::Disabled, QPalette::ButtonText, c.textDisabled);
   palette.setColor(QPalette::Disabled, QPalette::WindowText, c.textDisabled);
@@ -209,7 +209,7 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     /* Home screen */
     QWidget#root, QWidget#content { background: $window; }
     QFrame#sidebar { background: $surface; border-right: 1px solid $border; }
-    QPushButton#navActive { background: $accent; color: #ffffff; border: none;
+    QPushButton#navActive { background: $accent; color: $onAccent; border: none;
       border-radius: 10px; text-align: left; padding-left: 22px; font-size: 15px; }
     QPushButton#navButton { background: transparent; color: $textPrimary; border: none;
       border-radius: 10px; text-align: left; padding-left: 22px; font-size: 15px; }
@@ -224,7 +224,7 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
       font-size: 30px; }
     QLabel#cardTitle { color: $textPrimary; font-size: 22px; font-weight: 700; }
     QLabel#cardDescription { color: $textSecondary; font-size: 14px; }
-    QPushButton#primaryButton { background: $accent; color: #ffffff; border: none;
+    QPushButton#primaryButton { background: $accent; color: $onAccent; border: none;
       border-radius: 9px; font-size: 15px; font-weight: 600; }
     QPushButton#primaryButton:hover { background: $accentHover; }
     QPushButton#secondaryButton { background: $surface; color: $accent;
@@ -254,7 +254,7 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     QFrame#modelSeparator, QFrame#separator { color: $border; margin: 4px 7px; }
     QLabel#constraintReady { color: $accent; font-size: 13px; }
     QLabel#constraintMuted { color: $textSecondary; font-size: 12px; }
-    QPushButton#finishButton { background: $accent; color: #ffffff; border: none;
+    QPushButton#finishButton { background: $accent; color: $onAccent; border: none;
       border-radius: 9px; font-size: 14px; font-weight: 600; padding: 0 18px; }
     QPushButton#finishButton:hover { background: $accentHover; }
   )"), c);

@@ -126,9 +126,43 @@ bool ViewportRuler::active() const noexcept { return active_; }
 bool ViewportRuler::updateHover(const BodyRenderMesh& mesh,
                                 const ViewportCameraState& camera,
                                 QPointF cursor) {
+  std::vector<RenderTriangle> triangles;
+  triangles.reserve(mesh.triangleCount());
+  for (const auto triangle : mesh.triangles()) triangles.push_back(triangle);
   const auto previous = hover_;
-  hover_ = active_ ? pickPoint(mesh.triangles(), mesh.edges(), camera, cursor)
+  hover_ = active_ ? pickPoint(triangles, mesh.edges(), camera, cursor)
                    : std::nullopt;
+  if (previous.has_value() != hover_.has_value()) return true;
+  if (!previous) return false;
+  return QLineF(previous->screen, hover_->screen).length() > 0.01 ||
+         pointDistance(previous->world, hover_->world) > 1e-9 ||
+         previous->snap != hover_->snap;
+}
+
+bool ViewportRuler::updateHover(const ProjectedPickingScene& scene,
+                                QPointF cursor, bool exact) {
+  const auto previous = hover_;
+  if (!active_) {
+    hover_.reset();
+  } else {
+    const std::uint64_t uncertaintyBefore = scene.counters().uncertainVisible;
+    const auto hit = scene.snapAt(
+        cursor, kRulerSnapRadiusPx,
+        exact ? PickingQueryPrecision::Exact
+              : PickingQueryPrecision::Interactive);
+    if (!exact && scene.counters().uncertainVisible != uncertaintyBefore)
+      return false;
+    if (hit) {
+      const auto snap = hit->kind == PickingSnapKind::Vertex
+                            ? RulerSnapKind::Vertex
+                            : hit->kind == PickingSnapKind::Edge
+                                  ? RulerSnapKind::Edge
+                                  : RulerSnapKind::Surface;
+      hover_ = RulerHit{hit->world, hit->screen, hit->depth, snap};
+    } else {
+      hover_.reset();
+    }
+  }
   if (previous.has_value() != hover_.has_value()) return true;
   if (!previous) return false;
   return QLineF(previous->screen, hover_->screen).length() > 0.01 ||
