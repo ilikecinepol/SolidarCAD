@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <optional>
@@ -41,6 +42,12 @@ struct TranslationToolManipulator {
   Vector3d offsetMm{};
   double minimumMm{-100000.0};
   double maximumMm{100000.0};
+  // Move uses the global XYZ basis. Plane-bound overlays such as reference
+  // images override it with their local placement basis so the arrows and
+  // drag mapping stay attached to the selected plane.
+  std::array<Vector3d, 3> axes{{{1.0, 0.0, 0.0},
+                                 {0.0, 1.0, 0.0},
+                                 {0.0, 0.0, 1.0}}};
 };
 
 struct AngularToolManipulator {

@@ -18,6 +18,7 @@ enum class SketchInteractionTool {
   Rectangle,
   Circle,
   Arc,
+  Bezier,
   Projection,
   AutoDimension,
   LockConstraint,
@@ -36,6 +37,7 @@ enum class SketchGeometryOperandKind {
   Rectangle,
   Circle,
   Arc,
+  Bezier,
   Point,
   XAxis,
   YAxis
@@ -61,10 +63,14 @@ struct SketchCircleCenterDrag {
 struct SketchElementCenterDrag {
   std::size_t elementId{};
 };
+struct SketchBezierPointDrag {
+  sketch::GeometryId bezierId{sketch::kInvalidGeometryId};
+  std::uint8_t pointIndex{};
+};
 using SketchPointDragTarget =
     std::variant<std::monostate, SketchLineEndpointDrag,
                  SketchArcEndpointDrag, SketchCircleCenterDrag,
-                 SketchElementCenterDrag>;
+                 SketchElementCenterDrag, SketchBezierPointDrag>;
 
 enum class SketchAutoDimensionTarget {
   None,
@@ -136,10 +142,11 @@ struct SketchCreationGestureState {
   std::vector<sketch::Point> rectanglePoints;
   std::vector<sketch::Point> circlePoints;
   std::vector<sketch::Point> arcPoints;
+  std::vector<sketch::Point> bezierPoints;
   std::vector<sketch::GeometryId> circleGuideIds;
 };
 
-enum class SketchMirrorGeometryKind { Line, Circle, Arc };
+enum class SketchMirrorGeometryKind { Line, Circle, Arc, Bezier };
 struct SketchMirrorGeometryRef {
   SketchMirrorGeometryKind kind{SketchMirrorGeometryKind::Line};
   sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
@@ -148,7 +155,7 @@ struct SketchMirrorInteractionState {
   std::vector<SketchMirrorGeometryRef> source;
 };
 
-enum class SketchTrimGeometryKind { Line, Circle, Arc };
+enum class SketchTrimGeometryKind { Line, Circle, Arc, Bezier };
 struct SketchTrimPreview {
   SketchTrimGeometryKind kind{SketchTrimGeometryKind::Line};
   sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
@@ -235,6 +242,8 @@ class SketchInteractionController final {
   void clearCirclePoints() noexcept;
   void appendArcPoint(sketch::Point point);
   void clearArcPoints() noexcept;
+  void appendBezierPoint(sketch::Point point);
+  void clearBezierPoints() noexcept;
   void appendCircleGuide(sketch::GeometryId lineId);
   void clearCircleGuides() noexcept;
   void updateLineCreation(SketchLineCreationState creation) noexcept;

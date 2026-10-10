@@ -42,6 +42,7 @@ struct Layout {
   std::unordered_map<GeometryId, std::size_t> lineBase;
   std::unordered_map<GeometryId, std::size_t> circleBase;
   std::unordered_map<GeometryId, std::size_t> arcBase;
+  std::unordered_map<GeometryId, std::size_t> bezierBase;
   std::vector<EndpointLink> implicitEndpointLinks;
   std::vector<LineRelation> implicitLineRelations;
 };
@@ -64,7 +65,8 @@ Layout makeLayout(
   Layout result;
   result.variables.reserve(sketch.lines().size() * 4 +
                            sketch.circles().size() * 3 +
-                           sketch.arcs().size() * 5);
+                           sketch.arcs().size() * 5 +
+                           sketch.beziers().size() * 8);
 
   const auto included = [includedGeometry](GeometryId id) {
     return !includedGeometry || includedGeometry->contains(id);
@@ -96,6 +98,16 @@ Layout makeLayout(
     result.variables.insert(result.variables.end(),
                             {arc.center.xMm, arc.center.yMm, arc.radiusMm,
                              arc.startAngleRad, arc.sweepAngleRad});
+  }
+  for (std::size_t i = 0; i < sketch.beziers().size(); ++i) {
+    const auto id = sketch.bezierId(i);
+    if (id == kInvalidGeometryId || !included(id)) continue;
+    result.bezierBase[id] = result.variables.size();
+    const auto& bezier = sketch.beziers()[i];
+    for (const auto& point : bezier.points) {
+      result.variables.push_back(point.xMm);
+      result.variables.push_back(point.yMm);
+    }
   }
 
   // Preserve implicit topology of composite elements (notably rectangles).
@@ -242,6 +254,14 @@ std::optional<Point> pointOf(const Sketch& sketch,
     const auto arc = arcOf(layout, variables, reference.arcId);
     if (!arc) return std::nullopt;
     return reference.start ? arcStartPoint(*arc) : arcEndPoint(*arc);
+  }
+  if (reference.bezierId != kInvalidGeometryId) {
+    const auto found = layout.bezierBase.find(reference.bezierId);
+    if (found == layout.bezierBase.end() || reference.bezierPoint >= 4 ||
+        found->second + reference.bezierPoint * 2 + 1 >= variables.size())
+      return std::nullopt;
+    const auto base = found->second + reference.bezierPoint * 2;
+    return Point{variables[base], variables[base + 1]};
   }
 
   const auto line = lineOf(layout, variables, reference.lineId);
@@ -654,6 +674,24 @@ std::vector<Equation> evaluate(const Sketch& sketch,
               kAngularTolerance, constraint);
           add(current->sweepAngleRad - baseline.sweepAngleRad,
               kAngularTolerance, constraint);
+          break;
+        }
+
+        if (const auto baselineIndex =
+                sketch.bezierIndex(constraint.firstGeometry)) {
+          const auto found = layout.bezierBase.find(constraint.firstGeometry);
+          if (found == layout.bezierBase.end()) {
+            invalidEquation(constraint);
+            break;
+          }
+          const auto& baseline = sketch.beziers()[*baselineIndex];
+          for (std::size_t point = 0; point < baseline.points.size(); ++point) {
+            const auto base = found->second + point * 2;
+            add(variables[base] - baseline.points[point].xMm,
+                kLengthTolerance, constraint);
+            add(variables[base + 1] - baseline.points[point].yMm,
+                kLengthTolerance, constraint);
+          }
           break;
         }
 

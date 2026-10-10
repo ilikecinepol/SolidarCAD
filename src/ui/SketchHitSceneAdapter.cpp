@@ -22,7 +22,8 @@ bool isDefaultPointReference(const sketch::PointReference& point) noexcept {
   return point.lineId == sketch::kInvalidGeometryId && point.start &&
       point.circleId == sketch::kInvalidGeometryId &&
       point.elementCenterId == 0 &&
-      point.arcId == sketch::kInvalidGeometryId && !point.origin;
+      point.arcId == sketch::kInvalidGeometryId &&
+      point.bezierId == sketch::kInvalidGeometryId && !point.origin;
 }
 
 // Keep this exhaustive predicate in parity with ProjectFile's Lock semantic
@@ -63,6 +64,19 @@ void appendCurveSegments(std::vector<SketchScreenSegment>& segments,
     const auto current = projector(
         {center.xMm + radius * std::cos(angle),
          center.yMm + radius * std::sin(angle)});
+    segments.push_back({previous, current});
+    previous = current;
+  }
+}
+
+void appendBezierSegments(std::vector<SketchScreenSegment>& segments,
+                          const sketch::Bezier& bezier, int samples,
+                          const SketchHitSceneAdapter::Projector& projector) {
+  const int count = std::clamp(samples, 8, 512);
+  auto previous = projector(sketch::bezierPointAt(bezier, 0.0));
+  for (int sample = 1; sample <= count; ++sample) {
+    const auto current = projector(sketch::bezierPointAt(
+        bezier, static_cast<double>(sample) / count));
     segments.push_back({previous, current});
     previous = current;
   }
@@ -192,6 +206,41 @@ SketchHitScene SketchHitSceneAdapter::build(
                               point, id, 0},
            {}, projector(point), options.tolerance.endpointPx, 0, order++,
            visible, true});
+    }
+  }
+
+  for (std::size_t index = 0; index < sketch.beziers().size(); ++index) {
+    const auto id = sketch.bezierId(index);
+    if (id == sketch::kInvalidGeometryId) continue;
+    const auto& bezier = sketch.beziers()[index];
+    const bool visible = !contains(options.hiddenGeometry, id);
+    const bool projected = isProjectedGeometry(sketch, id, bezier.dashed);
+    const bool construction = bezier.dashed && !projected;
+    SketchPickCandidate candidate;
+    candidate.target = SketchPickEntityRef{
+        SketchPickEntityKind::Bezier, id, 0, bezier.dashed, construction,
+        projected};
+    appendBezierSegments(candidate.segments, bezier, options.curveSamples,
+                         projector);
+    candidate.boxHitPolicy = SketchBoxHitPolicy::CurveBoundsOrCenter;
+    candidate.selectionBounds = curveBounds(candidate.segments);
+    candidate.tolerancePx = options.tolerance.entityPx;
+    candidate.priority = 20;
+    candidate.stableOrder = order++;
+    candidate.visible = visible;
+    scene.candidates.push_back(std::move(candidate));
+    for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      sketch::PointReference reference;
+      reference.bezierId = id;
+      reference.bezierPoint = pointIndex;
+      scene.candidates.push_back(
+          {SketchPickPointRef{SketchPickPointKind::BezierControlPoint,
+                              reference, bezier.points[pointIndex], id, 0},
+           {}, projector(bezier.points[pointIndex]),
+           options.tolerance.endpointPx, pointIndex == 0 || pointIndex == 3
+                                            ? 0
+                                            : 2,
+           order++, visible, true});
     }
   }
 

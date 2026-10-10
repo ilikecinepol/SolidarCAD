@@ -85,6 +85,32 @@ std::vector<std::unique_ptr<solidar::ShapeFeature>> allFeatureKinds() {
 int main() {
   using namespace solidar;
 
+  // Reference images participate in the same transactional history as model
+  // geometry, including creation, placement edits and visibility.
+  {
+    Document before;
+    Document current = before;
+    auto& image = current.addReferenceImage(
+        "Tracing", "C:/missing/tracing.png", "XY", SketchPlacement::xy(),
+        800, 600);
+    const auto imageId = image.id;
+    image.offsetXMm = 15.0;
+    image.scale = 0.5;
+    image.visible = false;
+    CHECK(ModelCommandHistory::inspectDelta(before, current).sliceCount == 1);
+    ModelCommandHistory history;
+    CHECK(history.recordTransition(current, std::move(before), {}, {}).status ==
+          HistoryCommitStatus::Accepted);
+    CHECK(history.undo(current, {}).changed);
+    CHECK(current.referenceImages().empty());
+    CHECK(history.redo(current, {}).changed);
+    const auto* restored = current.findReferenceImage(imageId);
+    CHECK(restored);
+    CHECK(restored->offsetXMm == 15.0);
+    CHECK(restored->scale == 0.5);
+    CHECK(!restored->visible);
+  }
+
   // The service owns the complete symmetric command lifecycle and returns
   // plain stable state without touching any QObject or QWidget.
   {

@@ -70,6 +70,13 @@ void drawTool(QPainter& p, ToolIconKind kind) {
       p.drawLine(34, 8, 40, 8);
       p.drawLine(40, 8, 40, 14);
       break;
+    case ToolIconKind::ReferenceImage:
+      p.drawRoundedRect(QRectF(6, 7, 36, 30), 2, 2);
+      p.drawEllipse(QPointF(33, 15), 3, 3);
+      p.drawPolyline(QPolygonF{{QPointF(9, 33), QPointF(19, 22),
+                                QPointF(26, 29), QPointF(32, 23),
+                                QPointF(39, 33)}});
+      break;
     case ToolIconKind::Extrude:
       p.drawRect(QRectF(7, 25, 23, 15));
       p.drawPolygon(QPolygonF{{7, 25}, {17, 18}, {40, 18}, {30, 25}});
@@ -187,6 +194,20 @@ void drawTool(QPainter& p, ToolIconKind kind) {
       point(p, {12, 34});
       point(p, {26, 8});
       break;
+    case ToolIconKind::Bezier: {
+      QPainterPath curve;
+      curve.moveTo(7, 35);
+      curve.cubicTo(13, 5, 35, 43, 41, 13);
+      p.drawPath(curve);
+      p.setPen(QPen(p.pen().color(), 1.0, Qt::DashLine));
+      p.drawLine(7, 35, 13, 5);
+      p.drawLine(35, 43, 41, 13);
+      point(p, {7, 35});
+      point(p, {13, 5}, 1.7);
+      point(p, {35, 43}, 1.7);
+      point(p, {41, 13});
+      break;
+    }
     case ToolIconKind::Projection:
       p.drawLine(8, 12, 40, 12);
       p.drawLine(8, 36, 40, 36);

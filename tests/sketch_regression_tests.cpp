@@ -1001,6 +1001,68 @@ void lengthUsesRemainingAxisDegreeOfFreedomAfterTangency() {
          "reversed tangent/perpendicular/length system must remain satisfied");
 }
 
+void bezierPointsParticipateInSketchMechanics() {
+  Sketch sketch;
+  sketch.clear();
+  sketch.beginDeltaJournal();
+  sketch.addBezier({0.0, 0.0}, {2.0, -4.0}, {8.0, -4.0}, {10.0, 0.0});
+  const auto bezierId = sketch.bezierId(0);
+  expect(bezierId != kInvalidGeometryId, "Bezier must receive a stable ID");
+  const auto creation = sketch.finishDeltaJournal();
+  expect(sketch.applyDelta(creation, false) &&
+             sketch.beziers().empty() && sketch.applyDelta(creation, true) &&
+             sketch.bezierId(0) == bezierId,
+         "Bezier creation must round-trip through the undo journal");
+
+  PointReference handle;
+  handle.bezierId = bezierId;
+  handle.bezierPoint = 1;
+  expect(sketch.translatePoint(handle, 1.0, 2.0),
+         "Bezier control point must be movable");
+  expect(near(sketch.beziers()[0].points[1].xMm, 3.0) &&
+             near(sketch.beziers()[0].points[1].yMm, -2.0),
+         "moving one control point must update that point");
+
+  PointReference endpoint;
+  endpoint.bezierId = bezierId;
+  endpoint.bezierPoint = 3;
+  sketch.addLine({10.0, 0.0}, {10.0, 10.0});
+  const auto lineId = sketch.lineId(0);
+  Constraint coincident;
+  coincident.type = ConstraintType::Coincident;
+  coincident.firstPoint = endpoint;
+  coincident.secondPoint = {lineId, true};
+  expect(sketch.addConstraint(coincident) != kInvalidConstraintId,
+         "Bezier endpoint must accept coincidence constraints");
+
+  Dimension dimension;
+  dimension.kind = DimensionKind::PointDistance;
+  dimension.firstPoint = handle;
+  dimension.secondPoint = endpoint;
+  dimension.valueMm = 8.0;
+  sketch.storeDimension(dimension);
+  expect(sketch.dimensions().size() == 1 &&
+             sketch.dimensions()[0].id != kInvalidDimensionId,
+         "Bezier points must accept point dimensions");
+
+  sketch.addLine({10.0, 10.0}, {0.0, 10.0});
+  sketch.addLine({0.0, 10.0}, {0.0, 0.0});
+  expect(sketch.isClosed(),
+         "Bezier endpoints must close a mixed curve/line contour");
+
+  const auto bezierIndex = sketch.bezierIndex(bezierId);
+  expect(bezierIndex.has_value(), "Bezier ID must remain resolvable");
+  sketch.removeBezier(*bezierIndex);
+  expect(!sketch.bezierIndex(bezierId) && sketch.dimensions().empty() &&
+             std::none_of(sketch.constraints().begin(),
+                          sketch.constraints().end(),
+                          [bezierId](const Constraint& item) {
+                            return item.firstPoint.bezierId == bezierId ||
+                                   item.secondPoint.bezierId == bezierId;
+                          }),
+         "deleting a Bezier must remove dependent references");
+}
+
 }  // namespace
 
 int main() {
@@ -1022,5 +1084,6 @@ int main() {
   tangentPerpendicularLengthAreOrderIndependent();
   tangencyFollowsDraggedLineWhenCircleCenterIsAxisConstrained();
   lengthUsesRemainingAxisDegreeOfFreedomAfterTangency();
+  bezierPointsParticipateInSketchMechanics();
   return EXIT_SUCCESS;
 }

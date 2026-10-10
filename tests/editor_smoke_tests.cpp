@@ -25,6 +25,7 @@
 #include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QVariantAnimation>
 
 #ifdef NDEBUG
@@ -1491,7 +1492,14 @@ int main(int argc, char** argv) {
         QStringLiteral("themeDarkAction"));
     CHECK(sketchSettingsDock != nullptr);
     CHECK(modelTreeDock != nullptr);
+    auto* modelTree = modelTreeDock->findChild<QTreeWidget*>();
+    CHECK(modelTree != nullptr);
+    CHECK(modelTree->findItems(QString::fromUtf8("Изображения"),
+                               Qt::MatchExactly | Qt::MatchRecursive)
+              .size() == 1);
     CHECK(historyDock != nullptr);
+    CHECK(editor->findChild<QDockWidget*>(
+              QStringLiteral("imagePropertiesDock")) == nullptr);
     CHECK(toggleModelTree != nullptr);
     CHECK(toggleHistory != nullptr);
     CHECK(systemTheme != nullptr);

@@ -4,6 +4,7 @@
 #include <QLineF>
 #include <QPolygonF>
 #include <QRectF>
+#include <QTransform>
 
 #include <algorithm>
 #include <cmath>
@@ -40,15 +41,19 @@ std::optional<SketchRenderGeometry> captureRenderGeometry(
   result.linePrimitives = source.lines();
   result.circlePrimitives = source.circles();
   result.arcPrimitives = source.arcs();
+  result.bezierPrimitives = source.beziers();
   result.lineIds.reserve(result.linePrimitives.size());
   result.circleIds.reserve(result.circlePrimitives.size());
   result.arcIds.reserve(result.arcPrimitives.size());
+  result.bezierIds.reserve(result.bezierPrimitives.size());
   for (std::size_t index = 0; index < result.linePrimitives.size(); ++index)
     result.lineIds.push_back(source.lineId(index));
   for (std::size_t index = 0; index < result.circlePrimitives.size(); ++index)
     result.circleIds.push_back(source.circleId(index));
   for (std::size_t index = 0; index < result.arcPrimitives.size(); ++index)
     result.arcIds.push_back(source.arcId(index));
+  for (std::size_t index = 0; index < result.bezierPrimitives.size(); ++index)
+    result.bezierIds.push_back(source.bezierId(index));
   result.dimensionPrimitives = source.dimensions();
   result.constraintPrimitives = source.constraints();
   result.centerNodeElementIdsData = source.centerNodeElementIds();
@@ -60,7 +65,8 @@ bool isDefaultPointReference(const sketch::PointReference& point) noexcept {
   return point.lineId == sketch::kInvalidGeometryId && point.start &&
          point.circleId == sketch::kInvalidGeometryId &&
          point.elementCenterId == 0 &&
-         point.arcId == sketch::kInvalidGeometryId && !point.origin;
+         point.arcId == sketch::kInvalidGeometryId &&
+         point.bezierId == sketch::kInvalidGeometryId && !point.origin;
 }
 
 bool isCanonicalProjectedLock(const sketch::Constraint& constraint,
@@ -98,6 +104,13 @@ std::optional<std::size_t> SketchRenderGeometry::arcIndex(
                                       : std::optional{found->second};
 }
 
+std::optional<std::size_t> SketchRenderGeometry::bezierIndex(
+    sketch::GeometryId id) const noexcept {
+  const auto found = bezierIndexById_.find(id);
+  return found == bezierIndexById_.end() ? std::nullopt
+                                         : std::optional{found->second};
+}
+
 std::optional<std::size_t> SketchRenderGeometry::dimensionIndex(
     sketch::DimensionId id) const noexcept {
   const auto found = dimensionIndexById_.find(id);
@@ -123,6 +136,12 @@ sketch::GeometryId SketchRenderGeometry::arcId(
                                : sketch::kInvalidGeometryId;
 }
 
+sketch::GeometryId SketchRenderGeometry::bezierId(
+    std::size_t index) const noexcept {
+  return index < bezierIds.size() ? bezierIds[index]
+                                  : sketch::kInvalidGeometryId;
+}
+
 bool SketchRenderGeometry::isGeometryLocked(
     sketch::GeometryId id) const noexcept {
   const auto metadata = style(id);
@@ -140,20 +159,23 @@ bool SketchRenderGeometry::buildIndexesAndMetadata() noexcept {
   lineIndexById_.clear();
   circleIndexById_.clear();
   arcIndexById_.clear();
+  bezierIndexById_.clear();
   dimensionIndexById_.clear();
   styleById_.clear();
   elementCenterById_.clear();
   indexStats_ = {};
   if (linePrimitives.size() != lineIds.size() ||
       circlePrimitives.size() != circleIds.size() ||
-      arcPrimitives.size() != arcIds.size())
+      arcPrimitives.size() != arcIds.size() ||
+      bezierPrimitives.size() != bezierIds.size())
     return false;
 
   const auto geometryCount =
-      lineIds.size() + circleIds.size() + arcIds.size();
+      lineIds.size() + circleIds.size() + arcIds.size() + bezierIds.size();
   lineIndexById_.reserve(lineIds.size());
   circleIndexById_.reserve(circleIds.size());
   arcIndexById_.reserve(arcIds.size());
+  bezierIndexById_.reserve(bezierIds.size());
   dimensionIndexById_.reserve(dimensionPrimitives.size());
   styleById_.reserve(geometryCount);
   std::unordered_set<sketch::GeometryId> allIds;
@@ -171,10 +193,12 @@ bool SketchRenderGeometry::buildIndexesAndMetadata() noexcept {
   };
   if (!indexIds(lineIds, lineIndexById_) ||
       !indexIds(circleIds, circleIndexById_) ||
-      !indexIds(arcIds, arcIndexById_)) {
+      !indexIds(arcIds, arcIndexById_) ||
+      !indexIds(bezierIds, bezierIndexById_)) {
     lineIndexById_.clear();
     circleIndexById_.clear();
     arcIndexById_.clear();
+    bezierIndexById_.clear();
     return false;
   }
 
@@ -185,6 +209,7 @@ bool SketchRenderGeometry::buildIndexesAndMetadata() noexcept {
       lineIndexById_.clear();
       circleIndexById_.clear();
       arcIndexById_.clear();
+      bezierIndexById_.clear();
       dimensionIndexById_.clear();
       return false;
     }
@@ -265,6 +290,14 @@ bool SketchRenderGeometry::buildIndexesAndMetadata() noexcept {
         id, Style{lockedExact.contains(id), projected,
                   arcPrimitives[slot].dashed && !projected});
   }
+  for (std::size_t slot = 0; slot < bezierIds.size(); ++slot) {
+    const auto id = bezierIds[slot];
+    const bool projected = bezierPrimitives[slot].dashed &&
+                           projectedExact.contains(id);
+    styleById_.emplace(
+        id, Style{lockedExact.contains(id), projected,
+                  bezierPrimitives[slot].dashed && !projected});
+  }
   indexStats_.indexedGeometry = geometryCount;
   return true;
 }
@@ -275,10 +308,12 @@ const SketchRenderGeometry::IndexStats& SketchRenderGeometry::indexStats()
 }
 
 bool SketchRenderGeometry::hasCompleteIndexInvariant() const noexcept {
-  const auto geometryCount = lineIds.size() + circleIds.size() + arcIds.size();
+  const auto geometryCount = lineIds.size() + circleIds.size() + arcIds.size() +
+                             bezierIds.size();
   return lineIndexById_.size() == lineIds.size() &&
          circleIndexById_.size() == circleIds.size() &&
          arcIndexById_.size() == arcIds.size() &&
+         bezierIndexById_.size() == bezierIds.size() &&
          dimensionIndexById_.size() == dimensionPrimitives.size() &&
          styleById_.size() == geometryCount &&
          indexStats_.indexedGeometry == geometryCount &&
@@ -308,6 +343,11 @@ std::optional<sketch::Point> SketchRenderGeometry::referencedPoint(
     return reference.start ? sketch::arcStartPoint(arcPrimitives[*index])
                            : sketch::arcEndPoint(arcPrimitives[*index]);
   }
+  if (reference.bezierId != sketch::kInvalidGeometryId) {
+    const auto index = bezierIndex(reference.bezierId);
+    if (!index || reference.bezierPoint >= 4) return std::nullopt;
+    return bezierPrimitives[*index].points[reference.bezierPoint];
+  }
   const auto index = lineIndex(reference.lineId);
   if (!index) return std::nullopt;
   return reference.start ? linePrimitives[*index].start
@@ -324,7 +364,8 @@ std::shared_ptr<const SketchRenderScene> SketchRenderSceneCache::resolve(
     const SketchPlacement& referencePlacement,
     double referenceWidthMm, double referenceDepthMm,
     double referenceHeightMm, bool referenceBodyVisible,
-    bool realReferenceBodyVisible, bool referenceProfileVisible) {
+    bool realReferenceBodyVisible, bool referenceProfileVisible,
+    std::span<const SketchSceneImageReference> sceneImages) {
   if (cached_ && cached_->sourceRevision == sourceRevision) return cached_;
 
   auto committed = captureRenderGeometry(sketch);
@@ -357,6 +398,7 @@ std::shared_ptr<const SketchRenderScene> SketchRenderSceneCache::resolve(
   scene->sketch = std::move(*committed);
   scene->referenceProfile = std::move(*profile);
   scene->sceneSketches = std::move(capturedReferences);
+  scene->sceneImages.assign(sceneImages.begin(), sceneImages.end());
   scene->valid = true;
   scene->referenceBodyMesh = std::move(referenceBodyMesh);
   scene->referenceFaceMesh = std::move(referenceFaceMesh);
@@ -1075,10 +1117,13 @@ class SketchFrameRecorder final {
                            source.selectedCircleIds.end()),
         selectedArcIds_(source.selectedArcIds.begin(),
                         source.selectedArcIds.end()),
+        selectedBezierIds_(source.selectedBezierIds.begin(),
+                           source.selectedBezierIds.end()),
         selectionKind_(source.selectionKind),
         selectionLineId_(source.selectionLineId),
         selectionCircleId_(source.selectionCircleId),
         selectionArcId_(source.selectionArcId),
+        selectionBezierId_(source.selectionBezierId),
         constructionHover_(source.constructionHover),
         hoveredProjectionEdge_(source.hoveredProjectionEdge),
         hoverPoint_(source.hoverPoint),
@@ -1099,6 +1144,7 @@ class SketchFrameRecorder final {
         referenceProfile_(scene_.referenceProfile),
         sceneBodyMeshes_(scene_.sceneBodyMeshes),
         sceneSketches_(scene_.sceneSketches),
+        sceneImages_(scene_.sceneImages),
         referenceBodyMesh_(scene_.referenceBodyMesh
                                ? *scene_.referenceBodyMesh
                                : emptyMesh_),
@@ -1239,6 +1285,16 @@ class SketchFrameRecorder final {
     }
     return result;
   }
+  [[nodiscard]] QPolygonF bezierPolyline(
+      const sketch::Bezier& bezier, int segmentCount = 48) const {
+    QPolygonF result;
+    segmentCount = std::max(8, segmentCount);
+    result.reserve(segmentCount + 1);
+    for (int segment = 0; segment <= segmentCount; ++segment)
+      result << mapPoint(sketch::bezierPointAt(
+          bezier, static_cast<double>(segment) / segmentCount));
+    return result;
+  }
   [[nodiscard]] bool lineSelected(sketch::GeometryId id) const {
     return selectedLineIds_.contains(id);
   }
@@ -1250,6 +1306,9 @@ class SketchFrameRecorder final {
   }
   [[nodiscard]] bool arcSelected(sketch::GeometryId id) const {
     return selectedArcIds_.contains(id);
+  }
+  [[nodiscard]] bool bezierSelected(sketch::GeometryId id) const {
+    return selectedBezierIds_.contains(id);
   }
   [[nodiscard]] std::optional<std::size_t> resolveDimensionIndex(
       const SketchDimensionReference& reference) const {
@@ -1379,6 +1438,59 @@ class SketchFrameRecorder final {
   const auto projectScenePoint = [&](Point3d point) {
     return mapWorldPoint(point);
   };
+  QColor imageBorder = palette().sceneEdge;
+  imageBorder.setAlpha(72);
+  for (const auto& image : sceneImages_) {
+    if (image.pixelWidth <= 0 || image.pixelHeight <= 0 ||
+        !std::isfinite(image.scale) || image.scale <= 0.0)
+      continue;
+    const double widthMm = image.pixelWidth * 0.1 * image.scale;
+    const double heightMm = image.pixelHeight * 0.1 * image.scale;
+    const std::array<sketch::Point, 4> local{{
+        {image.offsetXMm - widthMm * 0.5,
+         image.offsetYMm + heightMm * 0.5},
+        {image.offsetXMm + widthMm * 0.5,
+         image.offsetYMm + heightMm * 0.5},
+        {image.offsetXMm + widthMm * 0.5,
+         image.offsetYMm - heightMm * 0.5},
+        {image.offsetXMm - widthMm * 0.5,
+         image.offsetYMm - heightMm * 0.5}}};
+    QPolygonF destination;
+    const Vector3d normal = image.placement.normal();
+    for (const auto& point : local) {
+      Point3d world = image.placement.toWorld(point.xMm, point.yMm);
+      world.x += normal.x * image.offsetZMm;
+      world.y += normal.y * image.offsetZMm;
+      world.z += normal.z * image.offsetZMm;
+      destination << projectScenePoint(world);
+    }
+    if (image.pixels.isNull()) {
+      QColor placeholder = palette().sceneFill;
+      placeholder.setAlpha(28);
+      painter.setBrush(placeholder);
+      painter.setPen(QPen(imageBorder, 1.0, Qt::DashLine));
+      painter.drawPolygon(destination);
+      painter.drawText(destination.boundingRect(), Qt::AlignCenter,
+                       image.name);
+      continue;
+    }
+    QPolygonF source;
+    source << QPointF(0.0, 0.0)
+           << QPointF(image.pixels.width(), 0.0)
+           << QPointF(image.pixels.width(), image.pixels.height())
+           << QPointF(0.0, image.pixels.height());
+    QTransform transform;
+    if (!QTransform::quadToQuad(source, destination, transform)) continue;
+    painter.save();
+    painter.setOpacity(0.32);
+    painter.setWorldTransform(transform, true);
+    painter.drawImage(QPointF(0.0, 0.0), image.pixels);
+    painter.restore();
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(imageBorder, 1.0));
+    painter.drawPolygon(destination);
+  }
+
   std::size_t sceneBodySlot = 0;
   QColor sceneFill = palette().sceneFill;
   sceneFill.setAlpha(38);
@@ -1455,6 +1567,15 @@ class SketchFrameRecorder final {
             {arc.center.xMm + arc.radiusMm * std::cos(angle),
              arc.center.yMm + arc.radiusMm * std::sin(angle)});
       }
+      painter.drawPolyline(curve);
+    }
+    for (const auto& bezier : reference.geometry.beziers()) {
+      painter.setPen(QPen(sceneSketch, 1.2,
+                          bezier.dashed ? Qt::DashLine : Qt::SolidLine));
+      QPolygonF curve;
+      for (int step = 0; step <= 48; ++step)
+        curve << projectSketchPoint(sketch::bezierPointAt(
+            bezier, static_cast<double>(step) / 48.0));
       painter.drawPolyline(curve);
     }
   }
@@ -1574,6 +1695,11 @@ class SketchFrameRecorder final {
                           circle.dashed ? Qt::DashLine : Qt::SolidLine));
       painter.drawPolyline(circlePolyline(circle.center, circle.radiusMm));
     }
+    for (const auto& bezier : referenceProfile_.beziers()) {
+      painter.setPen(QPen(palette().referenceEdge, 1.6,
+                          bezier.dashed ? Qt::DashLine : Qt::SolidLine));
+      painter.drawPolyline(bezierPolyline(bezier));
+    }
   }
   }
 
@@ -1690,6 +1816,40 @@ class SketchFrameRecorder final {
     painter.drawEllipse(mapPoint(sketch::arcStartPoint(arc)), 3.5, 3.5);
     painter.drawEllipse(mapPoint(sketch::arcEndPoint(arc)), 3.5, 3.5);
   }
+  for (std::size_t index = 0; index < sketch_.beziers().size(); ++index) {
+    const auto& bezier = sketch_.beziers()[index];
+    const auto bezierId = sketch_.bezierId(index);
+    const bool locked = sketch_.isGeometryLocked(bezierId);
+    const bool selected =
+        bezierSelected(bezierId) ||
+        (selectedBezierIds_.empty() &&
+         selectionKind_ == SelectionKind::Bezier &&
+         selectionBezierId_ == bezierId);
+    painter.setPen(QPen(selected ? (locked ? palette().selectedLocked
+                                          : palette().selected)
+                                 : locked ? palette().committedLocked
+                                          : palette().committed,
+                        selected ? 3.0 : 2.0,
+                        bezier.dashed ? Qt::DashLine : Qt::SolidLine,
+                        Qt::RoundCap));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPolyline(bezierPolyline(bezier));
+    if (selected) {
+      painter.setPen(QPen(withAlpha(palette().selected, 140), 1.0,
+                          Qt::DashLine));
+      painter.drawLine(mapPoint(bezier.points[0]), mapPoint(bezier.points[1]));
+      painter.drawLine(mapPoint(bezier.points[2]), mapPoint(bezier.points[3]));
+    }
+    for (std::size_t point = 0; point < bezier.points.size(); ++point) {
+      painter.setBrush(point == 1 || point == 2
+                           ? withAlpha(palette().selected, 170)
+                           : locked ? palette().selectedLocked
+                                    : palette().endpointFill);
+      painter.drawEllipse(mapPoint(bezier.points[point]),
+                          point == 1 || point == 2 ? 3.0 : 3.5,
+                          point == 1 || point == 2 ? 3.0 : 3.5);
+    }
+  }
   }
 
   void recordTransientUnderlay(QPainter& painter) const {
@@ -1738,7 +1898,7 @@ class SketchFrameRecorder final {
           drawSketchArc(interval);
         }
       }
-    } else {
+    } else if (preview.kind == TrimGeometryKind::Arc) {
       const auto index = sketch_.arcIndex(preview.geometryId);
       if (index) {
         const auto& source = sketch_.arcs()[*index];
@@ -1750,6 +1910,21 @@ class SketchFrameRecorder final {
             source.sweepAngleRad *
             (preview.secondParameter - preview.firstParameter);
         drawSketchArc(interval);
+      }
+    } else {
+      const auto index = sketch_.bezierIndex(preview.geometryId);
+      if (index) {
+        const auto& source = sketch_.beziers()[*index];
+        QPolygonF interval;
+        constexpr int samples = 48;
+        for (int step = 0; step <= samples; ++step) {
+          const double parameter =
+              preview.firstParameter +
+              (preview.secondParameter - preview.firstParameter) *
+                  static_cast<double>(step) / samples;
+          interval << mapPoint(sketch::bezierPointAt(source, parameter));
+        }
+        painter.drawPolyline(interval);
       }
     }
     painter.restore();
@@ -1797,6 +1972,35 @@ class SketchFrameRecorder final {
     painter.setBrush(withAlpha(palette().transient, 80));
     for (const auto& point : interactionState().creation.arcPoints)
       painter.drawEllipse(mapPoint(point), 4.0, 4.0);
+    painter.restore();
+  }
+
+  if (tool() == Tool::Bezier &&
+      !interactionState().creation.bezierPoints.empty()) {
+    painter.save();
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(withAlpha(palette().transient, 190), 1.8,
+                        Qt::DashLine, Qt::RoundCap));
+    const auto& points = interactionState().creation.bezierPoints;
+    if (points.size() == 1) {
+      painter.drawLine(mapPoint(points[0]), mapPoint(hoverPoint_));
+    } else {
+      sketch::Bezier preview;
+      preview.points[0] = points[0];
+      preview.points[1] = points[1];
+      preview.points[2] = points.size() >= 3 ? points[2] : hoverPoint_;
+      preview.points[3] = hoverPoint_;
+      painter.drawPolyline(bezierPolyline(preview));
+      painter.setPen(QPen(withAlpha(palette().transient, 110), 1.0,
+                          Qt::DashLine));
+      painter.drawLine(mapPoint(preview.points[0]),
+                       mapPoint(preview.points[1]));
+      painter.drawLine(mapPoint(preview.points[2]),
+                       mapPoint(preview.points[3]));
+    }
+    painter.setBrush(palette().transientSurface);
+    for (const auto point : points)
+      painter.drawEllipse(mapPoint(point), 3.5, 3.5);
     painter.restore();
   }
 
@@ -2772,10 +2976,12 @@ class SketchFrameRecorder final {
   std::unordered_set<std::size_t> selectedElementIds_;
   std::unordered_set<sketch::GeometryId> selectedCircleIds_;
   std::unordered_set<sketch::GeometryId> selectedArcIds_;
+  std::unordered_set<sketch::GeometryId> selectedBezierIds_;
   SketchRenderSelectionKind selectionKind_;
   sketch::GeometryId selectionLineId_;
   sketch::GeometryId selectionCircleId_;
   sketch::GeometryId selectionArcId_;
+  sketch::GeometryId selectionBezierId_;
   const std::optional<SketchRenderSnap>& constructionHover_;
   const std::optional<SketchProjectionEdgeToken>& hoveredProjectionEdge_;
   sketch::Point hoverPoint_;
@@ -2796,6 +3002,7 @@ class SketchFrameRecorder final {
   const SketchRenderGeometry& referenceProfile_;
   const std::vector<std::shared_ptr<const BodyRenderMesh>>& sceneBodyMeshes_;
   const std::vector<SketchRenderSceneReference>& sceneSketches_;
+  const std::vector<SketchSceneImageReference>& sceneImages_;
   BodyRenderMesh emptyMesh_;
   const BodyRenderMesh& referenceBodyMesh_;
   const BodyRenderMesh& referenceFaceMesh_;

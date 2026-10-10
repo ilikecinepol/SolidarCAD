@@ -190,6 +190,42 @@ int main(int argc, char** argv) {
   darkTransientControl.palette.transient = lightTransientRole;
   CHECK(render(renderer, darkTransientControl) != darkImage);
 
+  // Visible reference images belong to the immutable sketch scene and render
+  // as a dimmed, non-interactive backdrop. Their original pixels are retained
+  // independently of the mutable Document/model object.
+  QImage referencePixels(8, 8, QImage::Format_ARGB32_Premultiplied);
+  referencePixels.fill(QColor(7, 231, 149));
+  std::vector<SketchSceneImageReference> sceneImages{{
+      QStringLiteral("Reference"), referencePixels, SketchPlacement::xy(),
+      8.0, 6.0, 0.0, 1.0, 100, 80}};
+  sketch::Sketch imageSketch;
+  sketch::Sketch imageProfile;
+  std::vector<SketchSceneReference> imageSketches;
+  std::vector<std::shared_ptr<const BodyRenderMesh>> imageMeshes;
+  auto imageEmptyMesh = std::make_shared<BodyRenderMesh>();
+  SketchRenderSceneCache imageCache;
+  auto imageScene = imageCache.resolve(
+      1, imageSketch, imageProfile, imageSketches, imageEmptyMesh,
+      imageEmptyMesh, imageMeshes, SketchPlacement::xy(), 0.0, 0.0, 0.0,
+      false, false, false, sceneImages);
+  CHECK(imageScene->sceneImages.size() == 1);
+  CHECK(imageScene->sceneImages.front().pixels == referencePixels);
+  SketchRenderSnapshot imageSnapshot;
+  imageSnapshot.viewportSize = QSize(260, 220);
+  imageSnapshot.palette = sketchRenderPalette(lightTheme,
+                                               widgetPalette(lightTheme));
+  imageSnapshot.scene = imageScene;
+  imageSnapshot.pixelsPerMm = 4.0;
+  imageSnapshot.snapStepMm = 5.0;
+  imageSnapshot.gridVisible = false;
+  const auto imageBackdrop = render(renderer, imageSnapshot);
+  SketchRenderSceneCache noImageCache;
+  imageSnapshot.scene = noImageCache.resolve(
+      1, imageSketch, imageProfile, imageSketches, imageEmptyMesh,
+      imageEmptyMesh, imageMeshes, SketchPlacement::xy(), 0.0, 0.0, 0.0,
+      false, false, false);
+  CHECK(render(renderer, imageSnapshot) != imageBackdrop);
+
   auto trim = representativeSnapshot(lightTheme);
   trim.palette.trim = lightTrimRole;
   trim.interaction.tool = SketchInteractionTool::Trim;

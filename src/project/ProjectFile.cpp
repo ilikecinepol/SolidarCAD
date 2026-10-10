@@ -290,7 +290,17 @@ QJsonObject savedExtrudeProfileGeometry(const sketch::Sketch& geometry) {
                             {"startAngle", arc.startAngleRad},
                             {"sweepAngle", arc.sweepAngleRad}});
   }
-  return QJsonObject{{"lines", lines}, {"circles", circles}, {"arcs", arcs}};
+  QJsonArray beziers;
+  for (const auto& bezier : geometry.beziers()) {
+    if (bezier.dashed) continue;
+    beziers.append(QJsonObject{
+        {"x0", bezier.points[0].xMm}, {"y0", bezier.points[0].yMm},
+        {"x1", bezier.points[1].xMm}, {"y1", bezier.points[1].yMm},
+        {"x2", bezier.points[2].xMm}, {"y2", bezier.points[2].yMm},
+        {"x3", bezier.points[3].xMm}, {"y3", bezier.points[3].yMm}});
+  }
+  return QJsonObject{{"lines", lines}, {"circles", circles}, {"arcs", arcs},
+                     {"beziers", beziers}};
 }
 
 sketch::Sketch loadedExtrudeProfileGeometry(const QJsonValue& value) {
@@ -318,6 +328,17 @@ sketch::Sketch loadedExtrudeProfileGeometry(const QJsonValue& value) {
         arc.value("radius").toDouble(),
         arc.value("startAngle").toDouble(),
         arc.value("sweepAngle").toDouble());
+  }
+  for (const auto bezierValue : saved.value("beziers").toArray()) {
+    const auto bezier = bezierValue.toObject();
+    geometry.addBezier({bezier.value("x0").toDouble(),
+                        bezier.value("y0").toDouble()},
+                       {bezier.value("x1").toDouble(),
+                        bezier.value("y1").toDouble()},
+                       {bezier.value("x2").toDouble(),
+                        bezier.value("y2").toDouble()},
+                       {bezier.value("x3").toDouble(),
+                        bezier.value("y3").toDouble()});
   }
   return geometry;
 }
@@ -655,7 +676,7 @@ bool requiredIndex(const QJsonObject& object, const char* name,
   return true;
 }
 
-enum class SavedGeometryKind { None, Line, Circle, Arc };
+enum class SavedGeometryKind { None, Line, Circle, Arc, Bezier };
 enum class LegacySketchSchema {
   ProfileGeometry,
   EarlyV1,
@@ -672,7 +693,7 @@ bool validateLegacySketch(
   if (!boundedString(saved.value("support"), QStringLiteral("support"), error,
                      false))
     return false;
-  QJsonArray lines, circles, arcs, dimensions, constraints, centers;
+  QJsonArray lines, circles, arcs, beziers, dimensions, constraints, centers;
   const bool profileGeometry = schema == LegacySketchSchema::ProfileGeometry;
   const bool strictConstraintCollections =
       schema != LegacySketchSchema::ProfileGeometry &&
@@ -681,6 +702,7 @@ bool validateLegacySketch(
       !arrayField(saved, "circles", &circles, error) ||
       !arrayField(saved, "arcs", &arcs, error,
                   schema == LegacySketchSchema::StableNameV1) ||
+      !arrayField(saved, "beziers", &beziers, error, false) ||
       !arrayField(saved, "dimensions", &dimensions, error,
                   !profileGeometry) ||
       !arrayField(saved, "constraints", &constraints, error,
@@ -688,7 +710,8 @@ bool validateLegacySketch(
       !arrayField(saved, "centerNodeElementIds", &centers, error,
                   strictConstraintCollections))
     return false;
-  const qsizetype geometryCount = lines.size() + circles.size() + arcs.size();
+  const qsizetype geometryCount =
+      lines.size() + circles.size() + arcs.size() + beziers.size();
   if (geometryCount > ProjectFile::kMaximumSketchGeometryItems)
     return invalid(error, QString::fromUtf8("эскиз содержит слишком много геометрии."));
   if (constraints.size() > ProjectFile::kMaximumSketchConstraintItems)
@@ -767,6 +790,29 @@ bool validateLegacySketch(
         sweepAngle >= kTwoPi - kMinimumGeometryLengthMm)
       return invalid(error, QString::fromUtf8("дуга имеет недопустимый угол."));
   }
+  for (const auto value : beziers) {
+    if (!value.isObject())
+      return invalid(error, QString::fromUtf8("кривая Безье должна быть объектом."));
+    const auto bezier = value.toObject();
+    for (const char* key : {"x0", "y0", "x1", "y1", "x2", "y2", "x3", "y3"})
+      if (!finiteNumber(bezier.value(QLatin1String(key)),
+                        QString::fromLatin1(key),
+                        -kMaximumCoordinateMagnitude,
+                        kMaximumCoordinateMagnitude, error))
+        return false;
+    if (!booleanField(bezier, "dashed", error, !profileGeometry)) return false;
+    if (std::hypot(bezier.value("x3").toDouble() -
+                       bezier.value("x0").toDouble(),
+                   bezier.value("y3").toDouble() -
+                       bezier.value("y0").toDouble()) <=
+            kMinimumGeometryLengthMm &&
+        std::hypot(bezier.value("x2").toDouble() -
+                       bezier.value("x1").toDouble(),
+                   bezier.value("y2").toDouble() -
+                       bezier.value("y1").toDouble()) <=
+            kMinimumGeometryLengthMm)
+      return invalid(error, QString::fromUtf8("кривая Безье вырождена."));
+  }
   std::unordered_set<std::size_t> centersSet;
   for (const auto value : centers) {
     qint64 id = 0;
@@ -839,6 +885,17 @@ bool validateLegacySketch(
         if (!optionalIndex(dimension, key, circles.size(), error)) return false;
       for (const char* key : {"firstArc", "secondArc"})
         if (!optionalIndex(dimension, key, arcs.size(), error)) return false;
+      for (const char* key : {"firstBezier", "secondBezier"})
+        if (!optionalIndex(dimension, key, beziers.size(), error)) return false;
+      for (const char* key : {"firstBezierPoint", "secondBezierPoint"}) {
+        const auto pointValue = dimension.value(QLatin1String(key));
+        if (!pointValue.isUndefined()) {
+          qint64 pointIndex = 0;
+          if (!integerNumber(pointValue, QString::fromLatin1(key), 0, 3,
+                             &pointIndex, error))
+            return false;
+        }
+      }
     }
     qint64 kind = 0;
     if (!integerNumber(dimension.value("kind"), QStringLiteral("kind"), 0, 6,
@@ -869,7 +926,8 @@ bool validateLegacySketch(
                       : 0;
       for (const QString& suffix : {QStringLiteral("Line"),
                                     QStringLiteral("Circle"),
-                                    QStringLiteral("Arc")})
+                                    QStringLiteral("Arc"),
+                                    QStringLiteral("Bezier")})
         if (dimension.value(prefix + suffix).toInteger(-1) >= 0) ++count;
       if (dimension.value(prefix + QStringLiteral("ElementCenter"))
               .toInteger(0) > 0)
@@ -906,6 +964,8 @@ bool validateLegacySketch(
           dimension.value("secondCircle").toInteger(-1) < 0 &&
           dimension.value("firstArc").toInteger(-1) < 0 &&
           dimension.value("secondArc").toInteger(-1) < 0 &&
+          dimension.value("firstBezier").toInteger(-1) < 0 &&
+          dimension.value("secondBezier").toInteger(-1) < 0 &&
           dimension.value("firstElementCenter").toInteger(0) == 0 &&
           dimension.value("secondElementCenter").toInteger(0) == 0;
       if (!earlyV1IgnoredPointDefaults &&
@@ -949,7 +1009,9 @@ bool validateLegacySketch(
           !optionalIndex(dimension, "firstCircle", circles.size(), error) ||
           !optionalIndex(dimension, "secondCircle", circles.size(), error) ||
           !optionalIndex(dimension, "firstArc", arcs.size(), error) ||
-          !optionalIndex(dimension, "secondArc", arcs.size(), error))
+          !optionalIndex(dimension, "secondArc", arcs.size(), error) ||
+          !optionalIndex(dimension, "firstBezier", beziers.size(), error) ||
+          !optionalIndex(dimension, "secondBezier", beziers.size(), error))
         return false;
       std::array<qint64, 2> elementCenters{0, 0};
       for (std::size_t pointIndex = 0; pointIndex < 2; ++pointIndex) {
@@ -986,7 +1048,8 @@ bool validateLegacySketch(
                           : 0;
         for (const QString& suffix : {QStringLiteral("Line"),
                                       QStringLiteral("Circle"),
-                                      QStringLiteral("Arc")})
+                                      QStringLiteral("Arc"),
+                                      QStringLiteral("Bezier")})
           if (dimension.value(prefix + suffix).toInteger(-1) >= 0) ++sources;
         if (elementCenters[pointIndex] > 0) ++sources;
         if (sources != 1)
@@ -1047,7 +1110,8 @@ bool validateLegacySketch(
       if (!constraint.value(kindKey).isString() ||
           (kindName != QStringLiteral("line") &&
            kindName != QStringLiteral("circle") &&
-           kindName != QStringLiteral("arc") && !kindName.isEmpty()))
+           kindName != QStringLiteral("arc") &&
+           kindName != QStringLiteral("bezier") && !kindName.isEmpty()))
         return invalid(error, QString::fromUtf8("неизвестный вид геометрии ограничения."));
       if ((position < 0) != kindName.isEmpty())
         return invalid(error, QString::fromUtf8("несогласованная ссылка ограничения."));
@@ -1057,9 +1121,12 @@ bool validateLegacySketch(
         geometryKinds[referenceIndex] = SavedGeometryKind::Circle;
       else if (kindName == QStringLiteral("arc"))
         geometryKinds[referenceIndex] = SavedGeometryKind::Arc;
+      else if (kindName == QStringLiteral("bezier"))
+        geometryKinds[referenceIndex] = SavedGeometryKind::Bezier;
       const qsizetype count = kindName == QStringLiteral("line") ? lines.size()
                                 : kindName == QStringLiteral("circle") ? circles.size()
-                                                                       : arcs.size();
+                                : kindName == QStringLiteral("arc") ? arcs.size()
+                                                                      : beziers.size();
       if (position >= count)
         return invalid(error, QString::fromUtf8("ссылка ограничения выходит за границы геометрии."));
     }
@@ -1090,6 +1157,18 @@ bool validateLegacySketch(
                            .arg(QString::fromLatin1(key)));
       if (!optionalIndex(constraint, key, arcs.size(), error)) return false;
     }
+    for (const char* key : {"firstPointBezier", "secondPointBezier"})
+      if (!optionalIndex(constraint, key, beziers.size(), error)) return false;
+    for (const char* key : {"firstPointBezierPoint",
+                            "secondPointBezierPoint"}) {
+      const auto pointValue = constraint.value(QLatin1String(key));
+      if (!pointValue.isUndefined()) {
+        qint64 pointIndex = 0;
+        if (!integerNumber(pointValue, QString::fromLatin1(key), 0, 3,
+                           &pointIndex, error))
+          return false;
+      }
+    }
     for (const char* key : {"firstPointStart", "secondPointStart"})
       if (!booleanField(constraint, key, error)) return false;
     for (const char* key : {"firstPointOrigin", "secondPointOrigin"})
@@ -1112,7 +1191,8 @@ bool validateLegacySketch(
                       : 0;
       for (const QString suffix : {QStringLiteral("PointLine"),
                                    QStringLiteral("PointCircle"),
-                                   QStringLiteral("PointArc")})
+                                   QStringLiteral("PointArc"),
+                                   QStringLiteral("PointBezier")})
         if (constraint.value(base + suffix).toInteger(-1) >= 0) ++count;
       if (constraint.value(base + QStringLiteral("PointElementCenter"))
               .toInteger(0) > 0)
@@ -1304,7 +1384,8 @@ bool validateLegacyRoot(
     const auto sketch = value.toObject();
     const qsizetype geometryCount = sketch.value("lines").toArray().size() +
                                     sketch.value("circles").toArray().size() +
-                                    sketch.value("arcs").toArray().size();
+                                    sketch.value("arcs").toArray().size() +
+                                    sketch.value("beziers").toArray().size();
     const qsizetype constraintCount =
         sketch.value("constraints").toArray().size();
     totalGeometryCount += geometryCount;
@@ -2349,9 +2430,10 @@ bool validateV2Root(const QJsonObject& root, const ProjectData& legacy,
       QLatin1String(kStableConstraintTypeEncoding);
   QJsonObject model;
   if (!objectField(root, "model", &model, error)) return false;
-  QJsonArray sketches, bodies;
+  QJsonArray sketches, bodies, referenceImages;
   if (!arrayField(model, "sketches", &sketches, error) ||
-      !arrayField(model, "bodies", &bodies, error))
+      !arrayField(model, "bodies", &bodies, error) ||
+      !arrayField(model, "referenceImages", &referenceImages, error, false))
     return false;
   if (sketches.size() > ProjectFile::kMaximumDocumentSketches ||
       bodies.size() > ProjectFile::kMaximumDocumentBodies)
@@ -2431,6 +2513,54 @@ bool validateV2Root(const QJsonObject& root, const ProjectData& legacy,
     return invalid(error,
                    QString::fromUtf8(
                        "набор ID геометрии и метаданных эскизов различается."));
+
+  if (referenceImages.size() > ProjectFile::kMaximumCollectionItems)
+    return invalid(error,
+                   QString::fromUtf8("документ содержит слишком много изображений."));
+  std::unordered_set<ReferenceImageId> referenceImageIds;
+  for (const auto value : referenceImages) {
+    if (!value.isObject())
+      return invalid(error,
+                     QString::fromUtf8("изображение должно быть объектом."));
+    const auto image = value.toObject();
+    qint64 id = 0, pixelWidth = 0, pixelHeight = 0;
+    if (!integerNumber(image.value("id"), QStringLiteral("image.id"), 1,
+                       ProjectFile::kMaximumPersistedId, &id, error) ||
+        !referenceImageIds.insert(static_cast<ReferenceImageId>(id)).second)
+      return invalid(error,
+                     QString::fromUtf8("ID изображения равен нулю или повторяется."));
+    if (!boundedString(image.value("name"), QStringLiteral("image.name"), error) ||
+        !boundedString(image.value("sourcePath"),
+                       QStringLiteral("image.sourcePath"), error, false) ||
+        !boundedString(image.value("supportName"),
+                       QStringLiteral("image.supportName"), error) ||
+        !vector3Field(image.value("origin"), QStringLiteral("origin"), error) ||
+        !vector3Field(image.value("xDirection"), QStringLiteral("xDirection"), error) ||
+        !vector3Field(image.value("yDirection"), QStringLiteral("yDirection"), error) ||
+        !placementBasisFields(image.value("xDirection"),
+                              image.value("yDirection"), error) ||
+        !finiteNumber(image.value("offsetX"), QStringLiteral("offsetX"),
+                      -kMaximumCoordinateMagnitude,
+                      kMaximumCoordinateMagnitude, error) ||
+        !finiteNumber(image.value("offsetY"), QStringLiteral("offsetY"),
+                      -kMaximumCoordinateMagnitude,
+                      kMaximumCoordinateMagnitude, error) ||
+        (image.contains("offsetZ") &&
+         !finiteNumber(image.value("offsetZ"), QStringLiteral("offsetZ"),
+                       -kMaximumCoordinateMagnitude,
+                       kMaximumCoordinateMagnitude, error)) ||
+        !finiteNumber(image.value("scale"), QStringLiteral("scale"), 0.0,
+                      10000.0, error) || image.value("scale").toDouble() == 0.0 ||
+        !integerNumber(image.value("pixelWidth"),
+                       QStringLiteral("pixelWidth"), 1, 16384,
+                       &pixelWidth, error) ||
+        !integerNumber(image.value("pixelHeight"),
+                       QStringLiteral("pixelHeight"), 1, 16384,
+                       &pixelHeight, error) ||
+        !booleanField(image, "visible", error, true) ||
+        pixelWidth * pixelHeight > 100000000LL)
+      return false;
+  }
 
   FeatureSets featureSets;
   std::unordered_set<BodyId> bodyIds;
@@ -2701,6 +2831,14 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
                               {"startAngle", arc.startAngleRad},
                               {"sweepAngle", arc.sweepAngleRad},
                               {"dashed", arc.dashed}});
+    QJsonArray beziers;
+    for (const auto& bezier : saved.geometry.beziers())
+      beziers.append(QJsonObject{
+          {"x0", bezier.points[0].xMm}, {"y0", bezier.points[0].yMm},
+          {"x1", bezier.points[1].xMm}, {"y1", bezier.points[1].yMm},
+          {"x2", bezier.points[2].xMm}, {"y2", bezier.points[2].yMm},
+          {"x3", bezier.points[3].xMm}, {"y3", bezier.points[3].yMm},
+          {"dashed", bezier.dashed}});
     QJsonArray dimensions;
     for (const auto& dimension : saved.geometry.dimensions()) {
       const auto failDimension = [&] {
@@ -2739,6 +2877,8 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
       qint64 secondCircle = -1;
       qint64 firstArc = -1;
       qint64 secondArc = -1;
+      qint64 firstBezier = -1;
+      qint64 secondBezier = -1;
       qint64 firstElementCenter = 0;
       qint64 secondElementCenter = 0;
       if (dimension.kind == sketch::DimensionKind::PointDistance ||
@@ -2756,11 +2896,16 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
             saved.geometry.arcIndex(dimension.firstPoint.arcId);
         const auto secondArcIndex =
             saved.geometry.arcIndex(dimension.secondPoint.arcId);
+        const auto firstBezierIndex =
+            saved.geometry.bezierIndex(dimension.firstPoint.bezierId);
+        const auto secondBezierIndex =
+            saved.geometry.bezierIndex(dimension.secondPoint.bezierId);
         const auto sourceCount = [](const sketch::PointReference& point) {
           return static_cast<int>(point.origin) +
                  static_cast<int>(point.lineId != sketch::kInvalidGeometryId) +
                  static_cast<int>(point.circleId != sketch::kInvalidGeometryId) +
                  static_cast<int>(point.arcId != sketch::kInvalidGeometryId) +
+                 static_cast<int>(point.bezierId != sketch::kInvalidGeometryId) +
                  static_cast<int>(point.elementCenterId != 0);
         };
         if (sourceCount(dimension.firstPoint) != 1 ||
@@ -2784,6 +2929,12 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
         if (dimension.secondPoint.arcId != sketch::kInvalidGeometryId &&
             !secondArcIndex)
           return failDimension();
+        if (dimension.firstPoint.bezierId != sketch::kInvalidGeometryId &&
+            !firstBezierIndex)
+          return failDimension();
+        if (dimension.secondPoint.bezierId != sketch::kInvalidGeometryId &&
+            !secondBezierIndex)
+          return failDimension();
         if (firstLineIndex) firstLine = static_cast<qint64>(*firstLineIndex);
         if (secondLineIndex) secondLine = static_cast<qint64>(*secondLineIndex);
         if (firstCircleIndex)
@@ -2792,6 +2943,10 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
           secondCircle = static_cast<qint64>(*secondCircleIndex);
         if (firstArcIndex) firstArc = static_cast<qint64>(*firstArcIndex);
         if (secondArcIndex) secondArc = static_cast<qint64>(*secondArcIndex);
+        if (firstBezierIndex)
+          firstBezier = static_cast<qint64>(*firstBezierIndex);
+        if (secondBezierIndex)
+          secondBezier = static_cast<qint64>(*secondBezierIndex);
         firstElementCenter =
             static_cast<qint64>(dimension.firstPoint.elementCenterId);
         secondElementCenter =
@@ -2806,12 +2961,16 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
           {"firstLine", firstLine},
           {"firstCircle", firstCircle},
           {"firstArc", firstArc},
+          {"firstBezier", firstBezier},
+          {"firstBezierPoint", dimension.firstPoint.bezierPoint},
           {"firstElementCenter", firstElementCenter},
           {"firstStart", dimension.firstPoint.start},
           {"firstOrigin", dimension.firstPoint.origin},
           {"secondLine", secondLine},
           {"secondCircle", secondCircle},
           {"secondArc", secondArc},
+          {"secondBezier", secondBezier},
+          {"secondBezierPoint", dimension.secondPoint.bezierPoint},
           {"secondElementCenter", secondElementCenter},
           {"secondStart", dimension.secondPoint.start},
           {"secondOrigin", dimension.secondPoint.origin},
@@ -2829,6 +2988,8 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
       qint64 secondPointCircle = -1;
       qint64 firstPointArc = -1;
       qint64 secondPointArc = -1;
+      qint64 firstPointBezier = -1;
+      qint64 secondPointBezier = -1;
 
       auto linePosition = [&saved](sketch::GeometryId id) -> qint64 {
         const auto index = saved.geometry.lineIndex(id);
@@ -2840,6 +3001,10 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
       };
       auto arcPosition = [&saved](sketch::GeometryId id) -> qint64 {
         const auto index = saved.geometry.arcIndex(id);
+        return index ? static_cast<qint64>(*index) : -1;
+      };
+      auto bezierPosition = [&saved](sketch::GeometryId id) -> qint64 {
+        const auto index = saved.geometry.bezierIndex(id);
         return index ? static_cast<qint64>(*index) : -1;
       };
 
@@ -2856,7 +3021,12 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
             firstKind = QStringLiteral("circle");
           } else {
             firstGeometry = arcPosition(constraint.firstGeometry);
-            if (firstGeometry >= 0) firstKind = QStringLiteral("arc");
+            if (firstGeometry >= 0) {
+              firstKind = QStringLiteral("arc");
+            } else {
+              firstGeometry = bezierPosition(constraint.firstGeometry);
+              if (firstGeometry >= 0) firstKind = QStringLiteral("bezier");
+            }
           }
         }
       }
@@ -2870,7 +3040,12 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
             secondKind = QStringLiteral("circle");
           } else {
             secondGeometry = arcPosition(constraint.secondGeometry);
-            if (secondGeometry >= 0) secondKind = QStringLiteral("arc");
+            if (secondGeometry >= 0) {
+              secondKind = QStringLiteral("arc");
+            } else {
+              secondGeometry = bezierPosition(constraint.secondGeometry);
+              if (secondGeometry >= 0) secondKind = QStringLiteral("bezier");
+            }
           }
         }
       }
@@ -2887,6 +3062,10 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
         firstPointArc = arcPosition(constraint.firstPoint.arcId);
       if (constraint.secondPoint.arcId != sketch::kInvalidGeometryId)
         secondPointArc = arcPosition(constraint.secondPoint.arcId);
+      if (constraint.firstPoint.bezierId != sketch::kInvalidGeometryId)
+        firstPointBezier = bezierPosition(constraint.firstPoint.bezierId);
+      if (constraint.secondPoint.bezierId != sketch::kInvalidGeometryId)
+        secondPointBezier = bezierPosition(constraint.secondPoint.bezierId);
 
       constraints.append(QJsonObject{
           {"id", static_cast<qint64>(constraint.id)},
@@ -2900,6 +3079,8 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
           {"firstPointStart", constraint.firstPoint.start},
           {"firstPointCircle", firstPointCircle},
           {"firstPointArc", firstPointArc},
+          {"firstPointBezier", firstPointBezier},
+          {"firstPointBezierPoint", constraint.firstPoint.bezierPoint},
           {"firstPointElementCenter",
            static_cast<qint64>(constraint.firstPoint.elementCenterId)},
           {"firstPointOrigin", constraint.firstPoint.origin},
@@ -2907,6 +3088,8 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
           {"secondPointStart", constraint.secondPoint.start},
           {"secondPointCircle", secondPointCircle},
           {"secondPointArc", secondPointArc},
+          {"secondPointBezier", secondPointBezier},
+          {"secondPointBezierPoint", constraint.secondPoint.bezierPoint},
           {"secondPointElementCenter",
            static_cast<qint64>(constraint.secondPoint.elementCenterId)},
           {"secondPointOrigin", constraint.secondPoint.origin},
@@ -2924,6 +3107,7 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
                                 {"lines", lines},
                                 {"circles", circles},
                                 {"arcs", arcs},
+                                {"beziers", beziers},
                                 {"dimensions", dimensions},
                                 {"constraints", constraints},
                                 {"centerNodeElementIds",
@@ -3066,7 +3250,34 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
                                 {"visible", body.visible()},
                                 {"features", features}});
     }
-    root["model"] = QJsonObject{{"sketches", sketches}, {"bodies", bodies}};
+    QJsonArray referenceImages;
+    for (const auto& image : document.referenceImages()) {
+      referenceImages.append(QJsonObject{
+          {"id", static_cast<qint64>(image.id)},
+          {"name", QString::fromStdString(image.name)},
+          {"sourcePath", QString::fromStdString(image.sourcePath)},
+          {"supportName", QString::fromStdString(image.supportName)},
+          {"origin", vector3(image.placement.origin.x, image.placement.origin.y,
+                              image.placement.origin.z)},
+          {"xDirection",
+           vector3(image.placement.xDirection.x,
+                   image.placement.xDirection.y,
+                   image.placement.xDirection.z)},
+          {"yDirection",
+           vector3(image.placement.yDirection.x,
+                   image.placement.yDirection.y,
+                   image.placement.yDirection.z)},
+          {"offsetX", image.offsetXMm},
+          {"offsetY", image.offsetYMm},
+          {"offsetZ", image.offsetZMm},
+          {"scale", image.scale},
+          {"pixelWidth", image.pixelWidth},
+          {"pixelHeight", image.pixelHeight},
+          {"visible", image.visible}});
+    }
+    root["model"] = QJsonObject{{"sketches", sketches},
+                                 {"bodies", bodies},
+                                 {"referenceImages", referenceImages}};
 
     if (!validateV2Root(root, legacy, error))
       return false;
@@ -3179,6 +3390,56 @@ static bool loadDocumentRoot(const QJsonObject& root,
       sketch.support.face.persistentTag =
           support.value("persistentTag").toString().toStdString();
       sketch.support.face.signature = readFaceSignature(support.value("signature"));
+    }
+  }
+
+  for (const auto imageValue : model.value("referenceImages").toArray()) {
+    if (!imageValue.isObject()) {
+      setError(error, QString::fromUtf8("Метаданные изображения повреждены."));
+      return false;
+    }
+    const auto saved = imageValue.toObject();
+    ReferenceImage image;
+    image.id = static_cast<ReferenceImageId>(saved.value("id").toInteger());
+    image.name = saved.value("name").toString().toStdString();
+    image.sourcePath = saved.value("sourcePath").toString().toStdString();
+    image.supportName = saved.value("supportName").toString().toStdString();
+    image.placement.origin = readPoint3(saved.value("origin"), {});
+    image.placement.xDirection =
+        readVector3(saved.value("xDirection"), {1.0, 0.0, 0.0});
+    image.placement.yDirection =
+        readVector3(saved.value("yDirection"), {0.0, 1.0, 0.0});
+    image.offsetXMm = saved.value("offsetX").toDouble();
+    image.offsetYMm = saved.value("offsetY").toDouble();
+    image.offsetZMm = saved.value("offsetZ").toDouble();
+    image.scale = saved.value("scale").toDouble(1.0);
+    image.pixelWidth = saved.value("pixelWidth").toInt();
+    image.pixelHeight = saved.value("pixelHeight").toInt();
+    image.visible = saved.value("visible").toBool(true);
+    const auto finiteVector = [](const auto& value) {
+      return std::isfinite(value.x) && std::isfinite(value.y) &&
+             std::isfinite(value.z);
+    };
+    if (image.id == kInvalidReferenceImageId || image.sourcePath.empty() ||
+        image.pixelWidth <= 0 || image.pixelHeight <= 0 ||
+        image.pixelWidth > 16384 || image.pixelHeight > 16384 ||
+        static_cast<std::int64_t>(image.pixelWidth) * image.pixelHeight >
+            100000000LL ||
+        !std::isfinite(image.offsetXMm) ||
+        !std::isfinite(image.offsetYMm) || !std::isfinite(image.offsetZMm) ||
+        !std::isfinite(image.scale) ||
+        image.scale <= 0.0 || image.scale > 10000.0 ||
+        !finiteVector(image.placement.origin) ||
+        !finiteVector(image.placement.xDirection) ||
+        !finiteVector(image.placement.yDirection)) {
+      setError(error, QString::fromUtf8("Параметры изображения повреждены."));
+      return false;
+    }
+    try {
+      loaded.addReferenceImage(std::move(image));
+    } catch (const std::exception&) {
+      setError(error, QString::fromUtf8("Метаданные изображения повреждены."));
+      return false;
     }
   }
 
@@ -3339,6 +3600,15 @@ static bool loadLegacyRoot(const QJsonObject& root,
                             arc.value("sweepAngle").toDouble(),
                             arc.value("dashed").toBool());
     }
+    for (const auto bezierValue : savedObject.value("beziers").toArray()) {
+      const auto bezier = bezierValue.toObject();
+      saved.geometry.addBezier(
+          {bezier.value("x0").toDouble(), bezier.value("y0").toDouble()},
+          {bezier.value("x1").toDouble(), bezier.value("y1").toDouble()},
+          {bezier.value("x2").toDouble(), bezier.value("y2").toDouble()},
+          {bezier.value("x3").toDouble(), bezier.value("y3").toDouble()},
+          bezier.value("dashed").toBool());
+    }
     // CRASH-FREE 05: RESTORE VIRTUAL CENTER OWNERSHIP
     //
     // elementId grouping is restored with line geometry. Re-register only
@@ -3429,6 +3699,17 @@ static bool loadLegacyRoot(const QJsonObject& root,
             point->arcId = saved.geometry.arcId(static_cast<std::size_t>(arc));
             return point->arcId != sketch::kInvalidGeometryId;
           }
+          const qint64 bezier =
+              object.value(prefix + QStringLiteral("Bezier")).toInteger(-1);
+          if (bezier >= 0) {
+            point->bezierId =
+                saved.geometry.bezierId(static_cast<std::size_t>(bezier));
+            point->bezierPoint = static_cast<std::uint8_t>(
+                object.value(prefix + QStringLiteral("BezierPoint"))
+                    .toInteger(0));
+            return point->bezierId != sketch::kInvalidGeometryId &&
+                   point->bezierPoint < 4;
+          }
           const qint64 center =
               object.value(prefix + QStringLiteral("ElementCenter"))
                   .toInteger(0);
@@ -3472,6 +3753,8 @@ static bool loadLegacyRoot(const QJsonObject& root,
           return saved.geometry.circleId(index);
         if (kind == QStringLiteral("arc"))
           return saved.geometry.arcId(index);
+        if (kind == QStringLiteral("bezier"))
+          return saved.geometry.bezierId(index);
         return sketch::kInvalidGeometryId;
       };
 
@@ -3533,6 +3816,24 @@ static bool loadLegacyRoot(const QJsonObject& root,
                 static_cast<std::size_t>(secondPointArc));
         constraint.secondPoint.start =
             object.value("secondPointStart").toBool(true);
+      }
+
+      const qint64 firstPointBezier =
+          object.value("firstPointBezier").toInteger(-1);
+      if (firstPointBezier >= 0) {
+        constraint.firstPoint.bezierId = saved.geometry.bezierId(
+            static_cast<std::size_t>(firstPointBezier));
+        constraint.firstPoint.bezierPoint = static_cast<std::uint8_t>(
+            object.value("firstPointBezierPoint").toInteger(0));
+      }
+
+      const qint64 secondPointBezier =
+          object.value("secondPointBezier").toInteger(-1);
+      if (secondPointBezier >= 0) {
+        constraint.secondPoint.bezierId = saved.geometry.bezierId(
+            static_cast<std::size_t>(secondPointBezier));
+        constraint.secondPoint.bezierPoint = static_cast<std::uint8_t>(
+            object.value("secondPointBezierPoint").toInteger(0));
       }
 
       const qint64 firstPointElementCenter =

@@ -596,5 +596,25 @@ int main() {
     CHECK(test::near(test::volumeOf(result), expectedArea * 10.0, 1e-2));
   }
 
+  // A cubic Bezier and its chord form an exact two-edge closed wire.
+  {
+    auto profile = profileWith(23);
+    profile.geometry.addBezier({0.0, 0.0}, {0.0, 10.0},
+                               {20.0, 10.0}, {20.0, 0.0});
+    profile.geometry.addLine({20.0, 0.0}, {0.0, 0.0});
+    CHECK(profile.geometry.isClosed());
+    CHECK(isSupportedSingleSketchProfile(profile));
+
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(buildExtrusionFromSketch(profile, nullptr, 5.0,
+                                   ExtrudeOperation::NewBody, false, &result,
+                                   nullptr, &error));
+    CHECK(test::solidCount(result) == 1);
+    BRepCheck_Analyzer analyzer(result);
+    CHECK(analyzer.IsValid());
+    CHECK(test::volumeOf(result) > 1.0);
+  }
+
   return EXIT_SUCCESS;
 }

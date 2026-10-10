@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QRectF>
+#include <QSize>
 #include <optional>
 #include <functional>
 #include <memory>
@@ -77,6 +78,12 @@ class MainWindow final : public QMainWindow {
   void saveProject();
   [[nodiscard]] bool confirmProjectReplacement();
   void importStep();
+  void importReferenceImage();
+  void finishReferenceImageImport(const SketchPlanePick& pick);
+  void updateReferenceImageParameter(int parameterIndex, double value);
+  void commitReferenceImageEdit();
+  void showSelectedReferenceImageManipulator();
+  void removeReferenceImage(ReferenceImageId id);
   void applyImportedDocument(Document staged, const QString& importedName);
   void commitDocumentReplacement(StagedApplicationDocument staged,
                                  DocumentReplacementOrigin origin,
@@ -204,6 +211,11 @@ class MainWindow final : public QMainWindow {
   QDockWidget* modelTreeDock_{nullptr};
   QDockWidget* historyDock_{nullptr};
   QTreeWidget* featureTree_{nullptr};
+  ReferenceImageId selectedReferenceImageId_{kInvalidReferenceImageId};
+  QString pendingReferenceImagePath_;
+  QSize pendingReferenceImagePixelSize_;
+  std::optional<Document> referenceImageEditBefore_;
+  std::optional<HistorySelectionState> referenceImageEditSelectionBefore_;
   // UI-only compatibility presentation for a loaded v1 extrusion. Presence
   // of this stable source ID is the entire state; it is consumed once a modern
   // Body is committed and can never disagree with a separate active flag.

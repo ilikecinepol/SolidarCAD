@@ -323,6 +323,23 @@ std::size_t documentSketchOwnedBytes(const DocumentSketch& item) {
          item.geometry.ownedBytes() + item.support.face.persistentTag.capacity();
 }
 
+bool sameReferenceImage(const ReferenceImage& left,
+                        const ReferenceImage& right) {
+  return left.id == right.id && left.name == right.name &&
+         left.sourcePath == right.sourcePath &&
+         left.supportName == right.supportName &&
+         samePlacement(left.placement, right.placement) &&
+         left.offsetXMm == right.offsetXMm &&
+         left.offsetYMm == right.offsetYMm && left.scale == right.scale &&
+         left.pixelWidth == right.pixelWidth &&
+         left.pixelHeight == right.pixelHeight && left.visible == right.visible;
+}
+
+std::size_t referenceImageOwnedBytes(const ReferenceImage& image) {
+  return sizeof(ReferenceImage) + image.name.capacity() +
+         image.sourcePath.capacity() + image.supportName.capacity();
+}
+
 std::size_t editorStateOwnedBytes(const EditorCommittedState& state) {
   std::size_t bytes = sizeof(EditorCommittedState) +
                       state.presentation.sketchVisibilities.capacity() *
@@ -386,18 +403,27 @@ struct SketchDeltaSlice {
   std::optional<DocumentSketch> afterSketch;
 };
 
+struct ReferenceImageDeltaSlice {
+  std::size_t beforeIndex{};
+  std::size_t afterIndex{};
+  std::optional<ReferenceImage> beforeImage;
+  std::optional<ReferenceImage> afterImage;
+};
+
 struct DocumentDelta {
   std::vector<BodyDeltaSlice> bodies;
   std::vector<BodyStateDelta> bodyStates;
   std::vector<FeatureDeltaSlice> features;
   std::vector<SketchDeltaSlice> sketches;
+  std::vector<ReferenceImageDeltaSlice> referenceImages;
   BoxParameters beforeBox;
   BoxParameters afterBox;
   std::size_t retainedBytes{};
 
   [[nodiscard]] bool empty() const noexcept {
     return bodies.empty() && bodyStates.empty() && features.empty() &&
-           sketches.empty() && beforeBox.widthMm == afterBox.widthMm &&
+           sketches.empty() && referenceImages.empty() &&
+           beforeBox.widthMm == afterBox.widthMm &&
            beforeBox.depthMm == afterBox.depthMm &&
            beforeBox.heightMm == afterBox.heightMm;
   }
@@ -521,11 +547,42 @@ DocumentDelta makeDocumentDelta(const Document& before,
     delta.retainedBytes += documentSketchOwnedBytes(sketch);
     delta.sketches.push_back(std::move(slice));
   }
+  for (std::size_t index = 0; index < before.referenceImages().size(); ++index) {
+    const auto& old = before.referenceImages()[index];
+    const auto* current = after.findReferenceImage(old.id);
+    if (current && sameReferenceImage(old, *current)) continue;
+    ReferenceImageDeltaSlice slice;
+    slice.beforeIndex = index;
+    slice.beforeImage = old;
+    if (current) {
+      slice.afterIndex = static_cast<std::size_t>(
+          current - after.referenceImages().data());
+      slice.afterImage = *current;
+    } else {
+      slice.afterIndex = after.referenceImages().size();
+    }
+    delta.retainedBytes += referenceImageOwnedBytes(old);
+    if (slice.afterImage)
+      delta.retainedBytes += referenceImageOwnedBytes(*slice.afterImage);
+    delta.referenceImages.push_back(std::move(slice));
+  }
+  for (std::size_t index = 0; index < after.referenceImages().size(); ++index) {
+    const auto& image = after.referenceImages()[index];
+    if (before.findReferenceImage(image.id)) continue;
+    ReferenceImageDeltaSlice slice;
+    slice.beforeIndex = before.referenceImages().size();
+    slice.afterIndex = index;
+    slice.afterImage = image;
+    delta.retainedBytes += referenceImageOwnedBytes(image);
+    delta.referenceImages.push_back(std::move(slice));
+  }
   delta.retainedBytes += delta.bodies.capacity() * sizeof(BodyDeltaSlice) +
                          delta.bodyStates.capacity() * sizeof(BodyStateDelta) +
                          delta.features.capacity() *
                              sizeof(FeatureDeltaSlice) +
-                         delta.sketches.capacity() * sizeof(SketchDeltaSlice);
+                         delta.sketches.capacity() * sizeof(SketchDeltaSlice) +
+                         delta.referenceImages.capacity() *
+                             sizeof(ReferenceImageDeltaSlice);
   return delta;
 }
 
@@ -632,6 +689,30 @@ void applyDocumentDelta(Document& document, const DocumentDelta& delta,
             currentIndex.value_or(std::min(target, document.sketches().size())),
             *desired))
       throw std::runtime_error("history sketch apply failed");
+  }
+  for (const auto& slice : delta.referenceImages) {
+    const auto& source = forward ? slice.beforeImage : slice.afterImage;
+    const auto& desired = forward ? slice.afterImage : slice.beforeImage;
+    if (!source || desired) continue;
+    for (std::size_t index = document.referenceImages().size(); index-- > 0;)
+      if (document.referenceImages()[index].id == source->id &&
+          !document.applyReferenceImageSlice(index, std::nullopt))
+        throw std::runtime_error("history reference image removal failed");
+  }
+  for (const auto& slice : delta.referenceImages) {
+    const auto& desired = forward ? slice.afterImage : slice.beforeImage;
+    if (!desired) continue;
+    std::optional<std::size_t> currentIndex;
+    for (std::size_t index = 0; index < document.referenceImages().size();
+         ++index)
+      if (document.referenceImages()[index].id == desired->id)
+        currentIndex = index;
+    const std::size_t target = forward ? slice.afterIndex : slice.beforeIndex;
+    if (!document.applyReferenceImageSlice(
+            currentIndex.value_or(
+                std::min(target, document.referenceImages().size())),
+            *desired))
+      throw std::runtime_error("history reference image apply failed");
   }
   document.setBox(forward ? delta.afterBox : delta.beforeBox);
   if (!document.recompute())
@@ -892,7 +973,8 @@ DocumentDeltaMetrics ModelCommandHistory::inspectDelta(
     const Document& before, const Document& after) {
   const auto delta = makeDocumentDelta(before, after);
   return {delta.bodies.size() + delta.bodyStates.size() +
-              delta.features.size() + delta.sketches.size(),
+              delta.features.size() + delta.sketches.size() +
+              delta.referenceImages.size(),
           delta.retainedBytes};
 }
 

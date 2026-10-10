@@ -68,6 +68,89 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // Reference images are metadata-only external references: their placement,
+  // scale and visibility round-trip even when the source file is unavailable.
+  {
+    solidar::Document source;
+    solidar::SketchPlacement placement = solidar::SketchPlacement::xz();
+    placement.origin = {1.0, 2.0, 3.0};
+    auto& image = source.addReferenceImage(
+        "Blueprint", directory.filePath("missing-blueprint.png").toStdString(),
+        "Базовая плоскость XZ", placement, 1024, 768);
+    image.offsetXMm = 25.5;
+    image.offsetYMm = -14.25;
+    image.offsetZMm = 6.75;
+    image.scale = 0.75;
+    image.visible = false;
+    const auto imageId = image.id;
+    const QString path = directory.filePath("reference-image.solidar");
+    QString imageError;
+    CHECK(solidar::project::ProjectFile::saveDocument(path, source,
+                                                       &imageError));
+    solidar::Document restored;
+    CHECK(solidar::project::ProjectFile::loadDocument(path, &restored,
+                                                       &imageError));
+    const auto* loaded = restored.findReferenceImage(imageId);
+    CHECK(loaded);
+    CHECK(loaded->name == "Blueprint");
+    CHECK(loaded->pixelWidth == 1024 && loaded->pixelHeight == 768);
+    CHECK(loaded->offsetXMm == 25.5 && loaded->offsetYMm == -14.25);
+    CHECK(loaded->offsetZMm == 6.75);
+    CHECK(loaded->scale == 0.75);
+    CHECK(!loaded->visible);
+    CHECK(loaded->placement.origin.z == 3.0);
+    CHECK(loaded->supportName == "Базовая плоскость XZ");
+  }
+
+  // Cubic Bezier poles and point references survive the stable v1 boundary.
+  {
+    solidar::project::ProjectData data;
+    solidar::project::SavedSketch saved;
+    saved.geometry.addBezier({0.0, 0.0}, {2.0, 5.0},
+                             {8.0, 5.0}, {10.0, 0.0});
+    saved.geometry.addLine({10.0, 0.0}, {0.0, 0.0});
+    const auto bezierId = saved.geometry.bezierId(0);
+    const auto lineId = saved.geometry.lineId(0);
+    solidar::sketch::PointReference first;
+    first.bezierId = bezierId;
+    first.bezierPoint = 1;
+    auto second = first;
+    second.bezierPoint = 2;
+    solidar::sketch::Dimension dimension;
+    dimension.kind = solidar::sketch::DimensionKind::PointDistance;
+    dimension.firstPoint = first;
+    dimension.secondPoint = second;
+    dimension.valueMm = 6.0;
+    saved.geometry.storeDimension(dimension);
+    CHECK(saved.geometry.dimensions().size() == 1);
+    solidar::sketch::Constraint coincidence;
+    coincidence.id = 77;
+    coincidence.type = solidar::sketch::ConstraintType::Coincident;
+    coincidence.firstPoint.bezierId = bezierId;
+    coincidence.firstPoint.bezierPoint = 3;
+    coincidence.secondPoint = {lineId, true};
+    CHECK(saved.geometry.restoreConstraints({coincidence}));
+    data.sketches.push_back(saved);
+    const QString path = directory.filePath("bezier-v1.solidar");
+    QString bezierError;
+    const bool savedBezierProject =
+        solidar::project::ProjectFile::save(path, data, &bezierError);
+    if (!savedBezierProject)
+      std::fprintf(stderr, "Bezier persistence save failed: %s\n",
+                   bezierError.toUtf8().constData());
+    CHECK(savedBezierProject);
+    const auto loaded = solidar::project::ProjectFile::stageLoad(path);
+    CHECK(loaded.kind == solidar::project::ProjectLoadKind::ValidV1);
+    CHECK(loaded.legacy.sketches.size() == 1);
+    const auto& geometry = loaded.legacy.sketches[0].geometry;
+    CHECK(geometry.beziers().size() == 1);
+    CHECK(geometry.beziers()[0].points[1].xMm == 2.0);
+    CHECK(geometry.dimensions().size() == 1);
+    CHECK(geometry.dimensions()[0].firstPoint.bezierPoint == 1);
+    CHECK(geometry.constraints().size() == 1);
+    CHECK(geometry.constraints()[0].firstPoint.bezierPoint == 3);
+  }
+
   // FeatureKind is a stable Qt-free model identity. The project registry is
   // the single bidirectional kind/token mapping used by validation, encoding
   // and decoding; every persisted concrete feature must preserve it on clone.

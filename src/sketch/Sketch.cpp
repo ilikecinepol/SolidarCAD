@@ -28,7 +28,8 @@ int pointReferenceSourceCount(PointReference reference) noexcept {
          (reference.elementCenterId != 0 ? 1 : 0) +
          (reference.lineId != kInvalidGeometryId ? 1 : 0) +
          (reference.circleId != kInvalidGeometryId ? 1 : 0) +
-         (reference.arcId != kInvalidGeometryId ? 1 : 0);
+         (reference.arcId != kInvalidGeometryId ? 1 : 0) +
+         (reference.bezierId != kInvalidGeometryId ? 1 : 0);
 }
 
 bool emptyPointReference(PointReference reference) noexcept {
@@ -45,7 +46,9 @@ bool samePointReference(PointReference first, PointReference second) noexcept {
   return first.lineId == second.lineId && first.start == second.start &&
          first.circleId == second.circleId &&
          first.elementCenterId == second.elementCenterId &&
-         first.arcId == second.arcId && first.origin == second.origin;
+         first.arcId == second.arcId && first.origin == second.origin &&
+         first.bezierId == second.bezierId &&
+         first.bezierPoint == second.bezierPoint;
 }
 
 bool equivalentConstraint(const Constraint& first,
@@ -168,6 +171,7 @@ std::vector<GeometryId> referencedGeometryIds(const Sketch& sketch,
     add(point.lineId);
     add(point.circleId);
     add(point.arcId);
+    add(point.bezierId);
     if (point.elementCenterId != 0) {
       for (std::size_t i = 0; i < sketch.lines().size(); ++i)
         if (sketch.lines()[i].elementId == point.elementCenterId)
@@ -209,6 +213,19 @@ Point arcEndPoint(const Arc& arc) noexcept {
   const double angle = arc.startAngleRad + arc.sweepAngleRad;
   return {arc.center.xMm + arc.radiusMm * std::cos(angle),
           arc.center.yMm + arc.radiusMm * std::sin(angle)};
+}
+
+Point bezierPointAt(const Bezier& bezier, double t) noexcept {
+  t = std::clamp(t, 0.0, 1.0);
+  const double u = 1.0 - t;
+  const double w0 = u * u * u;
+  const double w1 = 3.0 * u * u * t;
+  const double w2 = 3.0 * u * t * t;
+  const double w3 = t * t * t;
+  return {w0 * bezier.points[0].xMm + w1 * bezier.points[1].xMm +
+              w2 * bezier.points[2].xMm + w3 * bezier.points[3].xMm,
+          w0 * bezier.points[0].yMm + w1 * bezier.points[1].yMm +
+              w2 * bezier.points[2].yMm + w3 * bezier.points[3].yMm};
 }
 
 namespace {
@@ -296,8 +313,10 @@ Sketch::Sketch(const Sketch& other)
     : widthMm_(other.widthMm_),
       heightMm_(other.heightMm_),
       lines_(other.lines_), circles_(other.circles_), arcs_(other.arcs_),
+      beziers_(other.beziers_),
       lineIds_(other.lineIds_), circleIds_(other.circleIds_),
-      arcIds_(other.arcIds_), dimensions_(other.dimensions_),
+      arcIds_(other.arcIds_), bezierIds_(other.bezierIds_),
+      dimensions_(other.dimensions_),
       constraints_(other.constraints_),
       centerNodeElementIds_(other.centerNodeElementIds_),
       nextElementId_(other.nextElementId_),
@@ -325,8 +344,10 @@ Sketch& Sketch::operator=(const Sketch& other) {
   ++fullSketchCopyCount;
   widthMm_ = other.widthMm_; heightMm_ = other.heightMm_;
   lines_ = other.lines_; circles_ = other.circles_; arcs_ = other.arcs_;
+  beziers_ = other.beziers_;
   lineIds_ = other.lineIds_; circleIds_ = other.circleIds_;
-  arcIds_ = other.arcIds_; dimensions_ = other.dimensions_;
+  arcIds_ = other.arcIds_; bezierIds_ = other.bezierIds_;
+  dimensions_ = other.dimensions_;
   constraints_ = other.constraints_;
   centerNodeElementIds_ = other.centerNodeElementIds_;
   nextElementId_ = other.nextElementId_;
@@ -395,15 +416,18 @@ bool Sketch::rollbackDeltaJournalsToDepth(std::size_t depth) noexcept {
 
 std::vector<ConstraintId> Sketch::invalidReferenceConstraintIds() const {
   std::unordered_map<GeometryId, GeometryKind> geometry;
-  geometry.reserve(lineIds_.size() + circleIds_.size() + arcIds_.size());
+  geometry.reserve(lineIds_.size() + circleIds_.size() + arcIds_.size() +
+                   bezierIds_.size());
   for (const auto id : lineIds_) geometry.emplace(id, GeometryKind::Line);
   for (const auto id : circleIds_) geometry.emplace(id, GeometryKind::Circle);
   for (const auto id : arcIds_) geometry.emplace(id, GeometryKind::Arc);
+  for (const auto id : bezierIds_) geometry.emplace(id, GeometryKind::Bezier);
   const auto validPoint = [this, &geometry](const PointReference& point) {
     const unsigned sourceCount = static_cast<unsigned>(point.origin) +
         static_cast<unsigned>(point.lineId != kInvalidGeometryId) +
         static_cast<unsigned>(point.circleId != kInvalidGeometryId) +
         static_cast<unsigned>(point.arcId != kInvalidGeometryId) +
+        static_cast<unsigned>(point.bezierId != kInvalidGeometryId) +
         static_cast<unsigned>(point.elementCenterId != 0);
     if (sourceCount > 1) return false;
     const auto hasKind = [&geometry](GeometryId id, GeometryKind kind) {
@@ -416,6 +440,9 @@ std::vector<ConstraintId> Sketch::invalidReferenceConstraintIds() const {
             hasKind(point.circleId, GeometryKind::Circle)) &&
            (point.arcId == kInvalidGeometryId ||
             hasKind(point.arcId, GeometryKind::Arc)) &&
+           (point.bezierId == kInvalidGeometryId ||
+            (point.bezierPoint < 4 &&
+             hasKind(point.bezierId, GeometryKind::Bezier))) &&
            (point.elementCenterId == 0 ||
             std::find(centerNodeElementIds_.begin(),
                       centerNodeElementIds_.end(), point.elementCenterId) !=
@@ -446,6 +473,7 @@ void Sketch::beginDeltaJournal() {
   journal.beforeLineIds = lineIds_;
   journal.beforeCircleIds = circleIds_;
   journal.beforeArcIds = arcIds_;
+  journal.beforeBezierIds = bezierIds_;
   journal.beforeConstraintIds.reserve(constraints_.size());
   for (const auto& constraint : constraints_)
     journal.beforeConstraintIds.push_back(constraint.id);
@@ -467,6 +495,7 @@ void Sketch::clear() {
     for (const auto id : lineIds_) journalCaptureGeometry(id);
     for (const auto id : circleIds_) journalCaptureGeometry(id);
     for (const auto id : arcIds_) journalCaptureGeometry(id);
+    for (const auto id : bezierIds_) journalCaptureGeometry(id);
     for (const auto& item : constraints_) journalCaptureConstraint(item.id);
     journalCaptureAllDimensions();
     journalCaptureCenters();
@@ -476,9 +505,11 @@ void Sketch::clear() {
   lines_.clear();
   circles_.clear();
   arcs_.clear();
+  beziers_.clear();
   lineIds_.clear();
   circleIds_.clear();
   arcIds_.clear();
+  bezierIds_.clear();
   dimensions_.clear();
   for (auto& journal : deltaJournals_) journal.dimensionTokens.clear();
   constraints_.clear();
@@ -749,6 +780,27 @@ void Sketch::addArc(Point center, double radiusMm, double startAngleRad,
   updateBounds();
 }
 
+void Sketch::addBezier(Point start, Point control1, Point control2, Point end,
+                       bool dashed) {
+  const auto finitePoint = [](Point point) {
+    return std::isfinite(point.xMm) && std::isfinite(point.yMm);
+  };
+  if (!finitePoint(start) || !finitePoint(control1) ||
+      !finitePoint(control2) || !finitePoint(end) ||
+      (std::hypot(end.xMm - start.xMm, end.yMm - start.yMm) <= 1e-12 &&
+       std::hypot(control1.xMm - start.xMm,
+                  control1.yMm - start.yMm) <= 1e-12 &&
+       std::hypot(control2.xMm - start.xMm,
+                  control2.yMm - start.yMm) <= 1e-12))
+    return;
+  beziers_.push_back({{start, control1, control2, end}, dashed});
+  bezierIds_.push_back(nextGeometryId_++);
+  journalRecordAddedGeometry(bezierIds_.back(), GeometryKind::Bezier,
+                             beziers_.size() - 1);
+  invalidateStructureIndexes();
+  updateBounds();
+}
+
 void Sketch::removeLine(std::size_t index) {
   // LOCK CONSTRAINT: locked geometry cannot be deleted.
   if (index < lineIds_.size() &&
@@ -900,6 +952,35 @@ void Sketch::removeArc(std::size_t index) {
            constraint.secondPoint.arcId == removedId;
   });
 
+  invalidateStructureIndexes();
+  updateBounds();
+}
+
+void Sketch::removeBezier(std::size_t index) {
+  if (index < bezierIds_.size() && isGeometryLocked(bezierIds_[index])) return;
+  if (index >= beziers_.size()) return;
+  const GeometryId removedId = bezierIds_[index];
+  journalCaptureComponents({removedId});
+  journalCaptureAllDimensions();
+  beziers_.erase(beziers_.begin() + index);
+  bezierIds_.erase(bezierIds_.begin() + index);
+  std::vector<std::size_t> dimensionsToRemove;
+  for (std::size_t slot = 0; slot < dimensions_.size(); ++slot) {
+    const auto& dimension = dimensions_[slot];
+    if (dimension.geometryId == removedId ||
+        dimension.firstPoint.bezierId == removedId ||
+        dimension.secondPoint.bezierId == removedId)
+      dimensionsToRemove.push_back(slot);
+  }
+  for (auto it = dimensionsToRemove.rbegin(); it != dimensionsToRemove.rend();
+       ++it)
+    static_cast<void>(removeDimension(*it));
+  std::erase_if(constraints_, [removedId](const Constraint& constraint) {
+    return constraint.firstGeometry == removedId ||
+           constraint.secondGeometry == removedId ||
+           constraint.firstPoint.bezierId == removedId ||
+           constraint.secondPoint.bezierId == removedId;
+  });
   invalidateStructureIndexes();
   updateBounds();
 }
@@ -1195,6 +1276,7 @@ void Sketch::translateSelection(
     const std::vector<std::size_t>& elementIds,
     const std::vector<GeometryId>& circleIds,
     const std::vector<GeometryId>& arcIds,
+    const std::vector<GeometryId>& bezierIds,
     double dxMm, double dyMm) {
   // LOCK CONSTRAINT: mixed selections do not partially move.
   for (std::size_t index = 0; index < lines_.size(); ++index) {
@@ -1211,10 +1293,15 @@ void Sketch::translateSelection(
     if (isGeometryLocked(id))
       return;
   }
+  for (const auto id : bezierIds)
+    if (isGeometryLocked(id)) return;
   if (dxMm == 0.0 && dyMm == 0.0) return;
-  if (elementIds.empty() && circleIds.empty() && arcIds.empty()) return;
+  if (elementIds.empty() && circleIds.empty() && arcIds.empty() &&
+      bezierIds.empty())
+    return;
   std::vector<GeometryId> journalSeeds = circleIds;
   journalSeeds.insert(journalSeeds.end(), arcIds.begin(), arcIds.end());
+  journalSeeds.insert(journalSeeds.end(), bezierIds.begin(), bezierIds.end());
   for (std::size_t index = 0; index < lines_.size(); ++index)
     if (std::find(elementIds.begin(), elementIds.end(),
                   lines_[index].elementId) != elementIds.end())
@@ -1244,6 +1331,11 @@ void Sketch::translateSelection(
         return std::find(arcIds.begin(), arcIds.end(), id) != arcIds.end();
       };
 
+  const auto bezierSelected = [&bezierIds](GeometryId id) {
+    return std::find(bezierIds.begin(), bezierIds.end(), id) !=
+           bezierIds.end();
+  };
+
   // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY IN GROUP DRAG
   const auto sameReference =
       [](PointReference first,
@@ -1270,6 +1362,13 @@ void Sketch::translateSelection(
                  first.arcId == second.arcId &&
                  first.start == second.start;
         }
+
+        if (first.bezierId != kInvalidGeometryId ||
+            second.bezierId != kInvalidGeometryId)
+          return first.bezierId != kInvalidGeometryId &&
+                 second.bezierId != kInvalidGeometryId &&
+                 first.bezierId == second.bezierId &&
+                 first.bezierPoint == second.bezierPoint;
 
         if (first.lineId == kInvalidGeometryId ||
             second.lineId == kInvalidGeometryId)
@@ -1348,6 +1447,16 @@ void Sketch::translateSelection(
     addReference(endpoint);
     endpoint.start = false;
     addReference(endpoint);
+  }
+  for (std::size_t index = 0; index < beziers_.size(); ++index) {
+    const GeometryId id = bezierIds_[index];
+    if (!bezierSelected(id)) continue;
+    for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      PointReference reference;
+      reference.bezierId = id;
+      reference.bezierPoint = pointIndex;
+      addReference(reference);
+    }
   }
 
   bool expanded = true;
@@ -1529,11 +1638,31 @@ void Sketch::translateSelection(
     }
   }
 
+  for (std::size_t index = 0; index < beziers_.size(); ++index) {
+    const GeometryId id = bezierIds_[index];
+    if (bezierSelected(id)) {
+      for (auto& point : beziers_[index].points) {
+        point.xMm += dxMm;
+        point.yMm += dyMm;
+      }
+      continue;
+    }
+    for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      PointReference reference;
+      reference.bezierId = id;
+      reference.bezierPoint = pointIndex;
+      if (!referenceMoves(reference)) continue;
+      beziers_[index].points[pointIndex].xMm += dxMm;
+      beziers_[index].points[pointIndex].yMm += dyMm;
+    }
+  }
+
   std::vector<GeometryId> dirtyIds;
   for (std::size_t index = 0; index < lines_.size(); ++index)
     if (elementSelected(lines_[index].elementId)) dirtyIds.push_back(lineIds_[index]);
   dirtyIds.insert(dirtyIds.end(), circleIds.begin(), circleIds.end());
   dirtyIds.insert(dirtyIds.end(), arcIds.begin(), arcIds.end());
+  dirtyIds.insert(dirtyIds.end(), bezierIds.begin(), bezierIds.end());
   (void)BasicSketchSolver::solveStableComponent(*this, dirtyIds);
   updateBounds();
 }
@@ -1613,6 +1742,13 @@ void Sketch::setArcDashedById(GeometryId id, bool dashed) {
   arcs_[*index].dashed = dashed;
 }
 
+void Sketch::setBezierDashedById(GeometryId id, bool dashed) {
+  const auto index = bezierIndex(id);
+  if (!index || isGeometryLocked(id)) return;
+  journalCaptureGeometry(id);
+  beziers_[*index].dashed = dashed;
+}
+
 void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
   if (id == kInvalidGeometryId || !circleIndex(id)) return;
 
@@ -1630,6 +1766,18 @@ void Sketch::translateArcById(GeometryId id, double dxMm, double dyMm) {
   journalCaptureComponents({id});
   arcs_[*index].center.xMm += dxMm;
   arcs_[*index].center.yMm += dyMm;
+  (void)BasicSketchSolver::solveStableComponent(*this, {id});
+  updateBounds();
+}
+
+void Sketch::translateBezierById(GeometryId id, double dxMm, double dyMm) {
+  const auto index = bezierIndex(id);
+  if (!index || isGeometryLocked(id) || (dxMm == 0.0 && dyMm == 0.0)) return;
+  journalCaptureComponents({id});
+  for (auto& point : beziers_[*index].points) {
+    point.xMm += dxMm;
+    point.yMm += dyMm;
+  }
   (void)BasicSketchSolver::solveStableComponent(*this, {id});
   updateBounds();
 }
@@ -2489,6 +2637,10 @@ GeometryId Sketch::arcId(std::size_t index) const noexcept {
   return index < arcIds_.size() ? arcIds_[index] : kInvalidGeometryId;
 }
 
+GeometryId Sketch::bezierId(std::size_t index) const noexcept {
+  return index < bezierIds_.size() ? bezierIds_[index] : kInvalidGeometryId;
+}
+
 std::optional<std::size_t> Sketch::lineIndex(GeometryId id) const noexcept {
   if (id == kInvalidGeometryId) return std::nullopt;
   try {
@@ -2533,6 +2685,22 @@ std::optional<std::size_t> Sketch::arcIndex(GeometryId id) const noexcept {
     const auto found = std::find(arcIds_.begin(), arcIds_.end(), id);
     if (found != arcIds_.end())
       return static_cast<std::size_t>(std::distance(arcIds_.begin(), found));
+  }
+  return std::nullopt;
+}
+
+std::optional<std::size_t> Sketch::bezierIndex(GeometryId id) const noexcept {
+  if (id == kInvalidGeometryId) return std::nullopt;
+  try {
+    rebuildIdentityIndexes();
+    const auto found = geometryIndex_.find(id);
+    if (found != geometryIndex_.end() &&
+        found->second.kind == GeometryKind::Bezier)
+      return found->second.index;
+  } catch (...) {
+    const auto found = std::find(bezierIds_.begin(), bezierIds_.end(), id);
+    if (found != bezierIds_.end())
+      return static_cast<std::size_t>(std::distance(bezierIds_.begin(), found));
   }
   return std::nullopt;
 }
@@ -2585,7 +2753,7 @@ void Sketch::rebuildIdentityIndexes() const {
   geometryIndex_.clear();
   constraintIndex_.clear();
   const std::size_t geometryCount =
-      lineIds_.size() + circleIds_.size() + arcIds_.size();
+      lineIds_.size() + circleIds_.size() + arcIds_.size() + bezierIds_.size();
   geometryIndex_.reserve(geometryCount);
   constraintIndex_.reserve(constraints_.size());
 
@@ -2600,6 +2768,8 @@ void Sketch::rebuildIdentityIndexes() const {
     addGeometry(circleIds_[i], GeometryKind::Circle, i);
   for (std::size_t i = 0; i < arcIds_.size(); ++i)
     addGeometry(arcIds_[i], GeometryKind::Arc, i);
+  for (std::size_t i = 0; i < bezierIds_.size(); ++i)
+    addGeometry(bezierIds_[i], GeometryKind::Bezier, i);
   for (std::size_t index = 0; index < constraints_.size(); ++index)
     constraintIndex_.insert_or_assign(constraints_[index].id, index);
   structureIndexesDirty_ = false;
@@ -2647,13 +2817,16 @@ void Sketch::rebuildStructureIndexes() const {
     GeometryId id{kInvalidGeometryId};
   };
   std::vector<PointOwner> points;
-  points.reserve(lines_.size() * 2 + circles_.size());
+  points.reserve(lines_.size() * 2 + circles_.size() + beziers_.size() * 4);
   for (std::size_t i = 0; i < lines_.size() && i < lineIds_.size(); ++i) {
     points.push_back({lines_[i].start, lineIds_[i]});
     points.push_back({lines_[i].end, lineIds_[i]});
   }
   for (std::size_t i = 0; i < circles_.size() && i < circleIds_.size(); ++i)
     points.push_back({circles_[i].center, circleIds_[i]});
+  for (std::size_t i = 0; i < beziers_.size() && i < bezierIds_.size(); ++i)
+    for (const auto point : beziers_[i].points)
+      points.push_back({point, bezierIds_[i]});
   std::sort(points.begin(), points.end(), [](const auto& first,
                                              const auto& second) {
     if (first.point.xMm != second.point.xMm)
@@ -2680,6 +2853,8 @@ void Sketch::rebuildStructureIndexes() const {
     if (reference.lineId != kInvalidGeometryId) ids.push_back(reference.lineId);
     if (reference.circleId != kInvalidGeometryId) ids.push_back(reference.circleId);
     if (reference.arcId != kInvalidGeometryId) ids.push_back(reference.arcId);
+    if (reference.bezierId != kInvalidGeometryId)
+      ids.push_back(reference.bezierId);
     if (reference.elementCenterId != 0) {
       const auto found = elementMembers.find(reference.elementCenterId);
       if (found != elementMembers.end())
@@ -2778,9 +2953,11 @@ std::size_t Sketch::ownedBytes() const noexcept {
   std::size_t bytes = lines_.capacity() * sizeof(Line) +
          circles_.capacity() * sizeof(Circle) +
          arcs_.capacity() * sizeof(Arc) +
+         beziers_.capacity() * sizeof(Bezier) +
          lineIds_.capacity() * sizeof(GeometryId) +
          circleIds_.capacity() * sizeof(GeometryId) +
          arcIds_.capacity() * sizeof(GeometryId) +
+         bezierIds_.capacity() * sizeof(GeometryId) +
          dimensions_.capacity() * sizeof(Dimension) +
          constraints_.capacity() * sizeof(Constraint) +
          centerNodeElementIds_.capacity() * sizeof(std::size_t);
@@ -2808,7 +2985,9 @@ std::size_t Sketch::ownedAllocationBlocks() const noexcept {
     if (values.capacity() != 0) ++blocks;
   };
   vectorBlock(lines_); vectorBlock(circles_); vectorBlock(arcs_);
+  vectorBlock(beziers_);
   vectorBlock(lineIds_); vectorBlock(circleIds_); vectorBlock(arcIds_);
+  vectorBlock(bezierIds_);
   vectorBlock(dimensions_); vectorBlock(constraints_);
   vectorBlock(centerNodeElementIds_);
   const auto mapBlocks = [&blocks](const auto& map) {
@@ -2836,7 +3015,7 @@ void Sketch::journalCaptureGeometry(GeometryId id) {
   if (!location) return;
   for (auto& journal : deltaJournals_) {
     if (already(journal.lines) || already(journal.circles) ||
-        already(journal.arcs)) continue;
+        already(journal.arcs) || already(journal.beziers)) continue;
     switch (location->kind) {
       case GeometryKind::Line:
         journal.lines.push_back({id, location->index, lines_[location->index]});
@@ -2848,6 +3027,10 @@ void Sketch::journalCaptureGeometry(GeometryId id) {
       case GeometryKind::Arc:
         journal.arcs.push_back({id, location->index, arcs_[location->index]});
         break;
+      case GeometryKind::Bezier:
+        journal.beziers.push_back(
+            {id, location->index, beziers_[location->index]});
+        break;
     }
   }
 }
@@ -2858,6 +3041,8 @@ void Sketch::journalCapturePoint(PointReference reference) {
   if (reference.circleId != kInvalidGeometryId)
     seeds.push_back(reference.circleId);
   if (reference.arcId != kInvalidGeometryId) seeds.push_back(reference.arcId);
+  if (reference.bezierId != kInvalidGeometryId)
+    seeds.push_back(reference.bezierId);
   if (reference.elementCenterId != 0)
     for (std::size_t index = 0; index < lines_.size(); ++index)
       if (lines_[index].elementId == reference.elementCenterId)
@@ -2931,6 +3116,8 @@ void Sketch::journalRecordAddedGeometry(GeometryId id, GeometryKind kind,
         journal.circles.push_back({id, index, std::nullopt}); break;
       case GeometryKind::Arc:
         journal.arcs.push_back({id, index, std::nullopt}); break;
+      case GeometryKind::Bezier:
+        journal.beziers.push_back({id, index, std::nullopt}); break;
     }
   }
 }
@@ -2970,6 +3157,9 @@ SketchDelta Sketch::finishDeltaJournal() {
     return a.center.xMm == b.center.xMm && a.center.yMm == b.center.yMm &&
            a.radiusMm == b.radiusMm && a.startAngleRad == b.startAngleRad &&
            a.sweepAngleRad == b.sweepAngleRad && a.dashed == b.dashed;
+  };
+  const auto bezierEqual = [](const Bezier& a, const Bezier& b) {
+    return a.points == b.points && a.dashed == b.dashed;
   };
   for (const auto& item : journal.lines) {
     const auto afterIndex = lineIndex(item.id);
@@ -3034,6 +3224,27 @@ SketchDelta Sketch::finishDeltaJournal() {
                             after ? std::optional<GeometryId>{item.id}
                                   : std::nullopt});
   }
+  for (const auto& item : journal.beziers) {
+    const auto afterIndex = bezierIndex(item.id);
+    const auto beforeFound = std::find(journal.beforeBezierIds.begin(),
+                                       journal.beforeBezierIds.end(), item.id);
+    const auto beforeIndex = beforeFound == journal.beforeBezierIds.end()
+        ? std::optional<std::size_t>{}
+        : std::optional<std::size_t>{static_cast<std::size_t>(
+              std::distance(journal.beforeBezierIds.begin(), beforeFound))};
+    std::optional<Bezier> after;
+    if (afterIndex) after = beziers_[*afterIndex];
+    if (!item.before && !after) continue;
+    if (item.before && after && bezierEqual(*item.before, *after)) continue;
+    const auto oldIndex = beforeIndex.value_or(afterIndex.value_or(0));
+    const auto finalIndex = afterIndex.value_or(oldIndex);
+    delta.beziers.push_back({oldIndex, finalIndex, item.before, after});
+    delta.bezierIds.push_back({oldIndex, finalIndex,
+                               item.before ? std::optional<GeometryId>{item.id}
+                                           : std::nullopt,
+                               after ? std::optional<GeometryId>{item.id}
+                                     : std::nullopt});
+  }
   for (const auto& item : journal.constraints) {
     const auto afterIndex = constraintIndex(item.id);
     const auto beforeFound = std::find(journal.beforeConstraintIds.begin(),
@@ -3050,7 +3261,8 @@ SketchDelta Sketch::finishDeltaJournal() {
       return a.lineId == b.lineId && a.start == b.start &&
              a.circleId == b.circleId &&
              a.elementCenterId == b.elementCenterId && a.arcId == b.arcId &&
-             a.origin == b.origin;
+             a.origin == b.origin && a.bezierId == b.bezierId &&
+             a.bezierPoint == b.bezierPoint;
     };
     if (item.before && after && item.before->id == after->id &&
         item.before->type == after->type &&
@@ -3081,7 +3293,8 @@ SketchDelta Sketch::finishDeltaJournal() {
       return a.lineId == b.lineId && a.start == b.start &&
              a.circleId == b.circleId &&
              a.elementCenterId == b.elementCenterId && a.arcId == b.arcId &&
-             a.origin == b.origin;
+             a.origin == b.origin && a.bezierId == b.bezierId &&
+             a.bezierPoint == b.bezierPoint;
     };
     if (item.before && after && item.before->id == after->id &&
         item.before->kind == after->kind &&
@@ -3132,8 +3345,10 @@ SketchDelta Sketch::finishDeltaJournal() {
     return values.capacity() * sizeof(Value);
   };
   delta.retainedBytes = vectorBytes(delta.lines) + vectorBytes(delta.circles) +
-      vectorBytes(delta.arcs) + vectorBytes(delta.lineIds) +
+      vectorBytes(delta.arcs) + vectorBytes(delta.beziers) +
+      vectorBytes(delta.lineIds) +
       vectorBytes(delta.circleIds) + vectorBytes(delta.arcIds) +
+      vectorBytes(delta.bezierIds) +
       vectorBytes(delta.dimensions) + vectorBytes(delta.constraints) +
       vectorBytes(delta.centerNodeElementIds) +
       vectorBytes(delta.beforeInvalidConstraintIds) +
@@ -3156,8 +3371,9 @@ SketchDelta Sketch::cancelDeltaJournal() {
 }
 
 bool SketchDelta::empty() const noexcept {
-  return lines.empty() && circles.empty() && arcs.empty() && lineIds.empty() &&
-         circleIds.empty() && arcIds.empty() && dimensions.empty() &&
+  return lines.empty() && circles.empty() && arcs.empty() && beziers.empty() &&
+         lineIds.empty() && circleIds.empty() && arcIds.empty() &&
+         bezierIds.empty() && dimensions.empty() &&
          constraints.empty() && centerNodeElementIds.empty() &&
          beforeNextElementId == afterNextElementId &&
          beforeNextGeometryId == afterNextGeometryId &&
@@ -3170,7 +3386,9 @@ SketchDelta Sketch::makeDelta(const Sketch& before, const Sketch& after) {
   const auto pointEqual = [](PointReference a, PointReference b) {
     return a.lineId == b.lineId && a.start == b.start &&
            a.circleId == b.circleId && a.elementCenterId == b.elementCenterId &&
-           a.arcId == b.arcId && a.origin == b.origin;
+           a.arcId == b.arcId && a.origin == b.origin &&
+           a.bezierId == b.bezierId &&
+           a.bezierPoint == b.bezierPoint;
   };
   const auto append = [&delta]<typename T>(
       const std::vector<T>& oldValues, const std::vector<T>& newValues,
@@ -3203,10 +3421,15 @@ SketchDelta Sketch::makeDelta(const Sketch& before, const Sketch& after) {
            a.radiusMm == b.radiusMm && a.startAngleRad == b.startAngleRad &&
            a.sweepAngleRad == b.sweepAngleRad && a.dashed == b.dashed;
   });
+  append(before.beziers_, after.beziers_, delta.beziers,
+         [](const Bezier& a, const Bezier& b) {
+           return a.points == b.points && a.dashed == b.dashed;
+         });
   const auto sameId = [](auto a, auto b) { return a == b; };
   append(before.lineIds_, after.lineIds_, delta.lineIds, sameId);
   append(before.circleIds_, after.circleIds_, delta.circleIds, sameId);
   append(before.arcIds_, after.arcIds_, delta.arcIds, sameId);
+  append(before.bezierIds_, after.bezierIds_, delta.bezierIds, sameId);
   append(before.centerNodeElementIds_, after.centerNodeElementIds_,
          delta.centerNodeElementIds, sameId);
   append(before.dimensions_, after.dimensions_, delta.dimensions,
@@ -3245,9 +3468,11 @@ SketchDelta Sketch::makeDelta(const Sketch& before, const Sketch& after) {
   delta.retainedBytes = vectorBytes(delta.lines) +
                         vectorBytes(delta.circles) +
                         vectorBytes(delta.arcs) +
+                        vectorBytes(delta.beziers) +
                         vectorBytes(delta.lineIds) +
                         vectorBytes(delta.circleIds) +
                         vectorBytes(delta.arcIds) +
+                        vectorBytes(delta.bezierIds) +
                         vectorBytes(delta.dimensions) +
                         vectorBytes(delta.constraints) +
                         vectorBytes(delta.centerNodeElementIds) +
@@ -3384,7 +3609,8 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     return a.lineId == b.lineId && a.start == b.start &&
            a.circleId == b.circleId &&
            a.elementCenterId == b.elementCenterId && a.arcId == b.arcId &&
-           a.origin == b.origin;
+           a.origin == b.origin && a.bezierId == b.bezierId &&
+           a.bezierPoint == b.bezierPoint;
   };
   const auto lineEqual = [](const Line& a, const Line& b) {
     return a.start.xMm == b.start.xMm && a.start.yMm == b.start.yMm &&
@@ -3399,6 +3625,9 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     return a.center.xMm == b.center.xMm && a.center.yMm == b.center.yMm &&
            a.radiusMm == b.radiusMm && a.startAngleRad == b.startAngleRad &&
            a.sweepAngleRad == b.sweepAngleRad && a.dashed == b.dashed;
+  };
+  const auto bezierEqual = [](const Bezier& a, const Bezier& b) {
+    return a.points == b.points && a.dashed == b.dashed;
   };
   const auto dimensionEqual = [&pointEqual](const Dimension& a,
                                              const Dimension& b) {
@@ -3422,9 +3651,11 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
   std::optional<std::vector<Line>> lines;
   std::optional<std::vector<Circle>> circles;
   std::optional<std::vector<Arc>> arcs;
+  std::optional<std::vector<Bezier>> beziers;
   std::optional<std::vector<GeometryId>> lineIds;
   std::optional<std::vector<GeometryId>> circleIds;
   std::optional<std::vector<GeometryId>> arcIds;
+  std::optional<std::vector<GeometryId>> bezierIds;
   std::optional<std::vector<Dimension>> dimensions;
   std::optional<std::vector<Constraint>> constraints;
   std::optional<std::vector<std::size_t>> centers;
@@ -3432,9 +3663,11 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     if (!plan(lines_, delta.lines, lineEqual, lines) ||
         !plan(circles_, delta.circles, circleEqual, circles) ||
         !plan(arcs_, delta.arcs, arcEqual, arcs) ||
+        !plan(beziers_, delta.beziers, bezierEqual, beziers) ||
         !plan(lineIds_, delta.lineIds, scalarEqual, lineIds) ||
         !plan(circleIds_, delta.circleIds, scalarEqual, circleIds) ||
         !plan(arcIds_, delta.arcIds, scalarEqual, arcIds) ||
+        !plan(bezierIds_, delta.bezierIds, scalarEqual, bezierIds) ||
         !plan(dimensions_, delta.dimensions, dimensionEqual, dimensions) ||
         !plan(constraints_, delta.constraints, constraintEqual, constraints) ||
         !plan(centerNodeElementIds_, delta.centerNodeElementIds, scalarEqual,
@@ -3444,20 +3677,23 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     const auto& finalLines = lines ? *lines : lines_;
     const auto& finalCircles = circles ? *circles : circles_;
     const auto& finalArcs = arcs ? *arcs : arcs_;
+    const auto& finalBeziers = beziers ? *beziers : beziers_;
     const auto& finalLineIds = lineIds ? *lineIds : lineIds_;
     const auto& finalCircleIds = circleIds ? *circleIds : circleIds_;
     const auto& finalArcIds = arcIds ? *arcIds : arcIds_;
+    const auto& finalBezierIds = bezierIds ? *bezierIds : bezierIds_;
     const auto& finalDimensions = dimensions ? *dimensions : dimensions_;
     const auto& finalConstraints = constraints ? *constraints : constraints_;
     const auto& finalCenters = centers ? *centers : centerNodeElementIds_;
     if (finalLines.size() != finalLineIds.size() ||
         finalCircles.size() != finalCircleIds.size() ||
-        finalArcs.size() != finalArcIds.size())
+        finalArcs.size() != finalArcIds.size() ||
+        finalBeziers.size() != finalBezierIds.size())
       return false;
 
     std::unordered_map<GeometryId, GeometryKind> geometry;
     geometry.reserve(finalLineIds.size() + finalCircleIds.size() +
-                     finalArcIds.size());
+                     finalArcIds.size() + finalBezierIds.size());
     const auto addIds = [&geometry](const auto& ids, GeometryKind kind) {
       for (const auto id : ids)
         if (id == kInvalidGeometryId || !geometry.emplace(id, kind).second)
@@ -3466,7 +3702,8 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     };
     if (!addIds(finalLineIds, GeometryKind::Line) ||
         !addIds(finalCircleIds, GeometryKind::Circle) ||
-        !addIds(finalArcIds, GeometryKind::Arc))
+        !addIds(finalArcIds, GeometryKind::Arc) ||
+        !addIds(finalBezierIds, GeometryKind::Bezier))
       return false;
     std::vector<std::size_t> elementIds;
     elementIds.reserve(finalLines.size());
@@ -3494,6 +3731,10 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
           arc.sweepAngleRad <= 1e-9 ||
           arc.sweepAngleRad >= kTwoPi - 1e-9)
         return false;
+    for (const auto& bezier : finalBeziers)
+      for (const auto point : bezier.points)
+        if (!std::isfinite(point.xMm) || !std::isfinite(point.yMm))
+          return false;
     const auto hasElement = [&elementIds](std::size_t id) {
       return id != 0 &&
              std::find(elementIds.begin(), elementIds.end(), id) !=
@@ -3515,6 +3756,7 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
           static_cast<unsigned>(p.lineId != kInvalidGeometryId) +
           static_cast<unsigned>(p.circleId != kInvalidGeometryId) +
           static_cast<unsigned>(p.arcId != kInvalidGeometryId) +
+          static_cast<unsigned>(p.bezierId != kInvalidGeometryId) +
           static_cast<unsigned>(p.elementCenterId != 0);
       if (sourceCount > 1) return false;
       if (p.lineId != kInvalidGeometryId) {
@@ -3530,6 +3772,12 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
       if (p.arcId != kInvalidGeometryId) {
         const auto found = geometry.find(p.arcId);
         if (found == geometry.end() || found->second != GeometryKind::Arc)
+          return false;
+      }
+      if (p.bezierId != kInvalidGeometryId) {
+        const auto found = geometry.find(p.bezierId);
+        if (found == geometry.end() || found->second != GeometryKind::Bezier ||
+            p.bezierPoint >= 4)
           return false;
       }
       return p.elementCenterId == 0 ||
@@ -3624,7 +3872,10 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
                                                               finalCircleIds.end()),
                     finalArcIds.empty() ? GeometryId{0}
                                        : *std::max_element(finalArcIds.begin(),
-                                                           finalArcIds.end())});
+                                                           finalArcIds.end()),
+                    finalBezierIds.empty() ? GeometryId{0}
+                                          : *std::max_element(finalBezierIds.begin(),
+                                                              finalBezierIds.end())});
     const auto maxConstraint = constraintIds.empty()
         ? ConstraintId{0}
         : constraintIds.back();
@@ -3652,6 +3903,7 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
         mix(point.lineId); mix(point.start ? 1U : 0U); mix(point.circleId);
         mix(point.elementCenterId); mix(point.arcId);
         mix(point.origin ? 1U : 0U);
+        mix(point.bezierId); mix(point.bezierPoint);
       };
       mix(finalLines.size());
       for (std::size_t index = 0; index < finalLines.size(); ++index) {
@@ -3675,6 +3927,14 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
         mixDouble(arc.center.xMm); mixDouble(arc.center.yMm);
         mixDouble(arc.radiusMm); mixDouble(arc.startAngleRad);
         mixDouble(arc.sweepAngleRad); mix(arc.dashed ? 1U : 0U);
+      }
+      mix(finalBeziers.size());
+      for (std::size_t index = 0; index < finalBeziers.size(); ++index) {
+        mix(finalBezierIds[index]);
+        for (const auto point : finalBeziers[index].points) {
+          mixDouble(point.xMm); mixDouble(point.yMm);
+        }
+        mix(finalBeziers[index].dashed ? 1U : 0U);
       }
       mix(finalCenters.size());
       for (const auto id : finalCenters) mix(id);
@@ -3705,9 +3965,11 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     if (lines) lines_.swap(*lines);
     if (circles) circles_.swap(*circles);
     if (arcs) arcs_.swap(*arcs);
+    if (beziers) beziers_.swap(*beziers);
     if (lineIds) lineIds_.swap(*lineIds);
     if (circleIds) circleIds_.swap(*circleIds);
     if (arcIds) arcIds_.swap(*arcIds);
+    if (bezierIds) bezierIds_.swap(*bezierIds);
     if (dimensions) dimensions_.swap(*dimensions);
     if (constraints) constraints_.swap(*constraints);
     if (centers) centerNodeElementIds_.swap(*centers);
@@ -3729,7 +3991,8 @@ bool Sketch::semanticallyEqual(const Sketch& other) const noexcept {
     return a.lineId == b.lineId && a.start == b.start &&
            a.circleId == b.circleId &&
            a.elementCenterId == b.elementCenterId && a.arcId == b.arcId &&
-           a.origin == b.origin;
+           a.origin == b.origin && a.bezierId == b.bezierId &&
+           a.bezierPoint == b.bezierPoint;
   };
   const auto lineEqual = [](const Line& a, const Line& b) {
     return a.start.xMm == b.start.xMm && a.start.yMm == b.start.yMm &&
@@ -3744,6 +4007,9 @@ bool Sketch::semanticallyEqual(const Sketch& other) const noexcept {
     return a.center.xMm == b.center.xMm && a.center.yMm == b.center.yMm &&
            a.radiusMm == b.radiusMm && a.startAngleRad == b.startAngleRad &&
            a.sweepAngleRad == b.sweepAngleRad && a.dashed == b.dashed;
+  };
+  const auto bezierEqual = [](const Bezier& a, const Bezier& b) {
+    return a.points == b.points && a.dashed == b.dashed;
   };
   const auto dimensionEqual = [&pointEqual](const Dimension& a,
                                              const Dimension& b) {
@@ -3771,8 +4037,11 @@ bool Sketch::semanticallyEqual(const Sketch& other) const noexcept {
          arcs_.size() == other.arcs_.size() &&
          std::equal(arcs_.begin(), arcs_.end(), other.arcs_.begin(),
                     arcEqual) &&
+         beziers_.size() == other.beziers_.size() &&
+         std::equal(beziers_.begin(), beziers_.end(), other.beziers_.begin(),
+                    bezierEqual) &&
          lineIds_ == other.lineIds_ && circleIds_ == other.circleIds_ &&
-         arcIds_ == other.arcIds_ &&
+         arcIds_ == other.arcIds_ && bezierIds_ == other.bezierIds_ &&
          dimensions_.size() == other.dimensions_.size() &&
          std::equal(dimensions_.begin(), dimensions_.end(),
                     other.dimensions_.begin(), dimensionEqual) &&
@@ -3803,6 +4072,8 @@ std::uint64_t Sketch::semanticFingerprint() const noexcept {
     mix(point.elementCenterId);
     mix(point.arcId);
     mix(point.origin ? 1U : 0U);
+    mix(point.bezierId);
+    mix(point.bezierPoint);
   };
   mix(lines_.size());
   for (std::size_t index = 0; index < lines_.size(); ++index) {
@@ -3834,6 +4105,15 @@ std::uint64_t Sketch::semanticFingerprint() const noexcept {
     mixDouble(arc.startAngleRad);
     mixDouble(arc.sweepAngleRad);
     mix(arc.dashed ? 1U : 0U);
+  }
+  mix(beziers_.size());
+  for (std::size_t index = 0; index < beziers_.size(); ++index) {
+    mix(bezierIds_[index]);
+    for (const auto point : beziers_[index].points) {
+      mixDouble(point.xMm);
+      mixDouble(point.yMm);
+    }
+    mix(beziers_[index].dashed ? 1U : 0U);
   }
   mix(centerNodeElementIds_.size());
   for (const auto id : centerNodeElementIds_) mix(id);
@@ -3893,6 +4173,13 @@ std::uint64_t Sketch::solverFingerprint() const noexcept {
     mix(std::bit_cast<std::uint64_t>(arcs_[i].startAngleRad));
     mix(std::bit_cast<std::uint64_t>(arcs_[i].sweepAngleRad));
   }
+  for (std::size_t i = 0; i < beziers_.size(); ++i) {
+    mix(bezierIds_[i]);
+    for (const auto point : beziers_[i].points) {
+      mix(std::bit_cast<std::uint64_t>(point.xMm));
+      mix(std::bit_cast<std::uint64_t>(point.yMm));
+    }
+  }
   for (const auto elementId : centerNodeElementIds_) mix(elementId);
   const auto mixPoint = [&mix](const PointReference& point) {
     mix(point.lineId);
@@ -3901,6 +4188,8 @@ std::uint64_t Sketch::solverFingerprint() const noexcept {
     mix(point.elementCenterId);
     mix(point.arcId);
     mix(point.origin ? 1U : 0U);
+    mix(point.bezierId);
+    mix(point.bezierPoint);
   };
   for (const auto& constraint : constraints_) {
     mix(constraint.id);
@@ -3932,7 +4221,7 @@ bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
     return false;
   }
 
-  if (circleIndex(id) || arcIndex(id)) {
+  if (circleIndex(id) || arcIndex(id) || bezierIndex(id)) {
     return std::any_of(
         constraints_.begin(), constraints_.end(),
         [id](const Constraint& constraint) {
@@ -3962,6 +4251,8 @@ bool Sketch::isPointReferenceLocked(
     return isGeometryLocked(reference.circleId);
   if (reference.arcId != kInvalidGeometryId)
     return isGeometryLocked(reference.arcId);
+  if (reference.bezierId != kInvalidGeometryId)
+    return isGeometryLocked(reference.bezierId);
   return isGeometryLocked(reference.lineId);
 }
 
@@ -4005,6 +4296,12 @@ void Sketch::restoreLockedGeometryFrom(const Sketch& baseline) {
       if (!source) continue;
 
       arcs_[*lockedArc] = baseline.arcs_[*source];
+      continue;
+    }
+
+    if (const auto lockedBezier = bezierIndex(constraint.firstGeometry)) {
+      const auto source = baseline.bezierIndex(constraint.firstGeometry);
+      if (source) beziers_[*lockedBezier] = baseline.beziers_[*source];
     }
   }
 
@@ -4028,6 +4325,12 @@ std::optional<Point> Sketch::referencedPoint(
     if (!index) return std::nullopt;
     return reference.start ? arcStartPoint(arcs_[*index])
                            : arcEndPoint(arcs_[*index]);
+  }
+
+  if (reference.bezierId != kInvalidGeometryId) {
+    const auto index = bezierIndex(reference.bezierId);
+    if (!index || reference.bezierPoint >= 4) return std::nullopt;
+    return beziers_[*index].points[reference.bezierPoint];
   }
 
   const auto index = lineIndex(reference.lineId);
@@ -4073,6 +4376,13 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
           return a.arcId != kInvalidGeometryId &&
                  b.arcId != kInvalidGeometryId &&
                  a.arcId == b.arcId && a.start == b.start;
+
+        if (a.bezierId != kInvalidGeometryId ||
+            b.bezierId != kInvalidGeometryId)
+          return a.bezierId != kInvalidGeometryId &&
+                 b.bezierId != kInvalidGeometryId &&
+                 a.bezierId == b.bezierId &&
+                 a.bezierPoint == b.bezierPoint;
 
         return a.lineId == b.lineId &&
                a.start == b.start;
@@ -4133,6 +4443,10 @@ bool Sketch::setPointsCoincident(PointReference firstReference,
     if (!moveArcEndpointForConstraint(arcs_[*index], secondReference.start,
                                       target))
       return false;
+  } else if (secondReference.bezierId != kInvalidGeometryId) {
+    const auto index = bezierIndex(secondReference.bezierId);
+    if (!index || secondReference.bezierPoint >= 4) return false;
+    beziers_[*index].points[secondReference.bezierPoint] = target;
   } else {
     const auto same = [](Point a, Point b) {
       return std::hypot(a.xMm - b.xMm,
@@ -4213,6 +4527,10 @@ bool Sketch::setPointOnLine(GeometryId lineIdValue,
     const auto arc = arcIndex(pointReference.arcId);
     if (!arc) return false;
     if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target)) return false;
+  } else if (pointReference.bezierId != kInvalidGeometryId) {
+    const auto bezier = bezierIndex(pointReference.bezierId);
+    if (!bezier || pointReference.bezierPoint >= 4) return false;
+    beziers_[*bezier].points[pointReference.bezierPoint] = target;
   } else {
     const auto same = [](Point first, Point second) {
       return std::hypot(first.xMm - second.xMm,
@@ -4277,6 +4595,10 @@ bool Sketch::setPointToMidpoint(GeometryId lineIdValue,
     if (!arc) return false;
     if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target))
       return false;
+  } else if (pointReference.bezierId != kInvalidGeometryId) {
+    const auto bezier = bezierIndex(pointReference.bezierId);
+    if (!bezier || pointReference.bezierPoint >= 4) return false;
+    beziers_[*bezier].points[pointReference.bezierPoint] = target;
   } else {
     const auto same = [](Point first, Point second) {
       return std::hypot(first.xMm - second.xMm,
@@ -4376,6 +4698,10 @@ bool Sketch::setPointOnCircle(GeometryId circleIdValue,
     const auto movingArc = arcIndex(pointReference.arcId);
     if (!movingArc) return false;
     if (!moveArcEndpointRigid(arcs_[*movingArc], pointReference.start, target)) return false;
+  } else if (pointReference.bezierId != kInvalidGeometryId) {
+    const auto movingBezier = bezierIndex(pointReference.bezierId);
+    if (!movingBezier || pointReference.bezierPoint >= 4) return false;
+    beziers_[*movingBezier].points[pointReference.bezierPoint] = target;
   } else {
     const auto same = [](Point first, Point second) {
       return std::hypot(first.xMm - second.xMm,
@@ -4492,6 +4818,10 @@ bool Sketch::setPointOnArc(GeometryId arcIdValue,
     if (!movingArc) return false;
     arcs_[*movingArc].center.xMm += moveX;
     arcs_[*movingArc].center.yMm += moveY;
+  } else if (pointReference.bezierId != kInvalidGeometryId) {
+    const auto movingBezier = bezierIndex(pointReference.bezierId);
+    if (!movingBezier || pointReference.bezierPoint >= 4) return false;
+    beziers_[*movingBezier].points[pointReference.bezierPoint] = target;
   } else {
     const auto same = [](Point first, Point second) {
       return std::hypot(first.xMm - second.xMm,
@@ -4998,6 +5328,14 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
                  first.start == second.start;
         }
 
+        if (first.bezierId != kInvalidGeometryId ||
+            second.bezierId != kInvalidGeometryId) {
+          return first.bezierId != kInvalidGeometryId &&
+                 second.bezierId != kInvalidGeometryId &&
+                 first.bezierId == second.bezierId &&
+                 first.bezierPoint == second.bezierPoint;
+        }
+
         if (first.lineId == kInvalidGeometryId ||
             second.lineId == kInvalidGeometryId)
           return false;
@@ -5101,6 +5439,16 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       candidate.circleId = circleIds_[circleIndexValue];
       appendRawJunction(candidate);
     }
+    for (std::size_t bezierIndexValue = 0;
+         bezierIndexValue < beziers_.size(); ++bezierIndexValue) {
+      for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+        if (!coincides(beziers_[bezierIndexValue].points[pointIndex])) continue;
+        PointReference candidate;
+        candidate.bezierId = bezierIds_[bezierIndexValue];
+        candidate.bezierPoint = pointIndex;
+        appendRawJunction(candidate);
+      }
+    }
   }
 
   // LOCK CONSTRAINT: connected point cluster contains a lock.
@@ -5172,6 +5520,15 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       const Point target{current->xMm + dxMm,
                          current->yMm + dyMm};
       (void)moveArcEndpointRigid(arcs_[*index], pointReference.start, target);
+      continue;
+    }
+
+    if (pointReference.bezierId != kInvalidGeometryId) {
+      const auto index = bezierIndex(pointReference.bezierId);
+      if (!index || pointReference.bezierPoint >= 4) continue;
+      auto& point = beziers_[*index].points[pointReference.bezierPoint];
+      point.xMm += dxMm;
+      point.yMm += dyMm;
       continue;
     }
 
@@ -5414,6 +5771,8 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       dirtyIds.push_back(pointReference.circleId);
     if (pointReference.arcId != kInvalidGeometryId)
       dirtyIds.push_back(pointReference.arcId);
+    if (pointReference.bezierId != kInvalidGeometryId)
+      dirtyIds.push_back(pointReference.bezierId);
     if (pointReference.elementCenterId != 0) {
       for (std::size_t index = 0; index < lines_.size(); ++index)
         if (lines_[index].elementId == pointReference.elementCenterId)
@@ -7689,6 +8048,7 @@ double Sketch::heightMm() const noexcept { return heightMm_; }
 const std::vector<Line>& Sketch::lines() const noexcept { return lines_; }
 const std::vector<Circle>& Sketch::circles() const noexcept { return circles_; }
 const std::vector<Arc>& Sketch::arcs() const noexcept { return arcs_; }
+const std::vector<Bezier>& Sketch::beziers() const noexcept { return beziers_; }
 const std::vector<Dimension>& Sketch::dimensions() const {
   return dimensions_;
 }
@@ -7696,7 +8056,7 @@ const std::vector<Dimension>& Sketch::dimensions() const {
 void Sketch::updateBounds() noexcept {
   hasLastSolvedFingerprint_ = false;
   connectivityDirty_ = true;
-  if (lines_.empty() && circles_.empty() && arcs_.empty()) {
+  if (lines_.empty() && circles_.empty() && arcs_.empty() && beziers_.empty()) {
     widthMm_ = 0.0;
     heightMm_ = 0.0;
     return;
@@ -7744,6 +8104,10 @@ void Sketch::updateBounds() noexcept {
                arc.center.yMm + arc.radiusMm * std::sin(angle)});
     }
   }
+  // The convex hull of a cubic Bezier's four control points contains the
+  // complete curve, so it is a safe and deterministic sketch bound.
+  for (const auto& bezier : beziers_)
+    for (const auto point : bezier.points) include(point);
   widthMm_ = maxX - minX;
   heightMm_ = maxY - minY;
 }
@@ -7763,6 +8127,10 @@ bool Sketch::isClosed() const noexcept {
   }
   for (const auto& arc : arcs_) {
     if (!arc.dashed) edges.push_back({arcStartPoint(arc), arcEndPoint(arc)});
+  }
+  for (const auto& bezier : beziers_) {
+    if (!bezier.dashed)
+      edges.push_back({bezier.points.front(), bezier.points.back()});
   }
 
   const std::size_t solidCircles = static_cast<std::size_t>(std::count_if(

@@ -38,7 +38,7 @@ bool samePoint(sketch::Point a, sketch::Point b) {
 std::vector<DocumentSketch> closedProfileComponents(
     const DocumentSketch& profile) {
   struct Primitive {
-    bool arc{};
+    enum class Kind { Line, Arc, Bezier } kind{Kind::Line};
     std::size_t index{};
     sketch::Point start;
     sketch::Point end;
@@ -47,13 +47,21 @@ std::vector<DocumentSketch> closedProfileComponents(
   for (std::size_t index = 0; index < profile.geometry.lines().size(); ++index) {
     const auto& line = profile.geometry.lines()[index];
     if (!line.dashed)
-      primitives.push_back({false, index, line.start, line.end});
+      primitives.push_back({Primitive::Kind::Line, index, line.start, line.end});
   }
   for (std::size_t index = 0; index < profile.geometry.arcs().size(); ++index) {
     const auto& arc = profile.geometry.arcs()[index];
     if (!arc.dashed)
       primitives.push_back(
-          {true, index, sketch::arcStartPoint(arc), sketch::arcEndPoint(arc)});
+          {Primitive::Kind::Arc, index, sketch::arcStartPoint(arc),
+           sketch::arcEndPoint(arc)});
+  }
+  for (std::size_t index = 0; index < profile.geometry.beziers().size();
+       ++index) {
+    const auto& bezier = profile.geometry.beziers()[index];
+    if (!bezier.dashed)
+      primitives.push_back({Primitive::Kind::Bezier, index,
+                            bezier.points[0], bezier.points[3]});
   }
 
   std::vector<DocumentSketch> result;
@@ -82,13 +90,17 @@ std::vector<DocumentSketch> closedProfileComponents(
     part.geometry.clear();
     for (const auto primitiveIndex : component) {
       const auto& primitive = primitives[primitiveIndex];
-      if (primitive.arc) {
+      if (primitive.kind == Primitive::Kind::Arc) {
         const auto& arc = profile.geometry.arcs()[primitive.index];
         part.geometry.addArc(arc.center, arc.radiusMm, arc.startAngleRad,
                              arc.sweepAngleRad);
-      } else {
+      } else if (primitive.kind == Primitive::Kind::Line) {
         const auto& line = profile.geometry.lines()[primitive.index];
         part.geometry.addLine(line.start, line.end);
+      } else {
+        const auto& bezier = profile.geometry.beziers()[primitive.index];
+        part.geometry.addBezier(bezier.points[0], bezier.points[1],
+                                bezier.points[2], bezier.points[3]);
       }
     }
     result.push_back(std::move(part));
@@ -339,16 +351,31 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
                   "Profile arc must be finite and positive");
     arcs.push_back(&arc);
   }
-  if ((!lines.empty() || !arcs.empty()) && !circles.empty())
+  std::vector<const sketch::Bezier*> beziers;
+  for (const auto& bezier : profile.geometry.beziers()) {
+    if (bezier.dashed) continue;
+    if (std::any_of(bezier.points.begin(), bezier.points.end(),
+                    [](const sketch::Point& point) {
+                      return !std::isfinite(point.xMm) ||
+                             !std::isfinite(point.yMm);
+                    }))
+      return fail(OperationFailureCode::InvalidProfile,
+                  "Profile Bezier control points must be finite");
+    beziers.push_back(&bezier);
+  }
+  if ((!lines.empty() || !arcs.empty() || !beziers.empty()) &&
+      !circles.empty())
     return fail(OperationFailureCode::InvalidProfile,
                 "Extrude 2.0 supports one profile at a time");
-  if (circles.size() == 1 && lines.empty() && arcs.empty()) return true;
+  if (circles.size() == 1 && lines.empty() && arcs.empty() && beziers.empty())
+    return true;
   if (!circles.empty())
     return fail(OperationFailureCode::InvalidProfile,
                 "Profile contains multiple circles");
   // A closed wire may legitimately consist of only two edges, for example a
   // semicircular arc and its diameter or two arcs with common endpoints.
-  if (lines.size() + arcs.size() < 2 || !profile.geometry.isClosed())
+  if (lines.size() + arcs.size() + beziers.size() < 2 ||
+      !profile.geometry.isClosed())
     return fail(OperationFailureCode::InvalidProfileOpen,
                 "Profile is not one closed wire");
 
@@ -359,11 +386,13 @@ bool isSupportedSingleSketchProfile(const DocumentSketch& profile,
     sketch::Point end;
   };
   std::vector<Edge> edges;
-  edges.reserve(lines.size() + arcs.size());
+  edges.reserve(lines.size() + arcs.size() + beziers.size());
   for (const auto* line : lines)
     edges.push_back({line->start, line->end});
   for (const auto* arc : arcs)
     edges.push_back({sketch::arcStartPoint(*arc), sketch::arcEndPoint(*arc)});
+  for (const auto* bezier : beziers)
+    edges.push_back({bezier->points[0], bezier->points[3]});
 
   std::vector<bool> reached(edges.size(), false);
   reached[0] = true;
@@ -423,6 +452,11 @@ bool isSupportedSketchProfile(const DocumentSketch& profile,
     if (arc.dashed) continue;
     endpoints.push_back(sketch::arcStartPoint(arc));
     endpoints.push_back(sketch::arcEndPoint(arc));
+  }
+  for (const auto& bezier : profile.geometry.beziers()) {
+    if (bezier.dashed) continue;
+    endpoints.push_back(bezier.points[0]);
+    endpoints.push_back(bezier.points[3]);
   }
   for (std::size_t index = 0; index < endpoints.size(); ++index) {
     std::size_t degree = 0;

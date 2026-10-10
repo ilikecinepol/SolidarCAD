@@ -83,6 +83,13 @@ struct AddArcCommand {
   double sweepAngleRad{};
   bool dashed{};
 };
+struct AddBezierCommand {
+  sketch::Point start;
+  sketch::Point control1;
+  sketch::Point control2;
+  sketch::Point end;
+  bool dashed{};
+};
 struct ProjectedLineSegment {
   sketch::Point first;
   sketch::Point second;
@@ -105,7 +112,7 @@ struct ProjectGeometryCommand {
 };
 using SketchPrimitiveCommand =
     std::variant<AddLineCommand, AddRectangleCommand, AddCircleCommand,
-                 AddArcCommand>;
+                 AddArcCommand, AddBezierCommand>;
 struct AddPrimitiveBatchCommand {
   std::vector<SketchPrimitiveCommand> primitives;
 };
@@ -187,6 +194,10 @@ struct SetArcDashedCommand {
   sketch::GeometryId id{sketch::kInvalidGeometryId};
   bool dashed{};
 };
+struct SetBezierDashedCommand {
+  sketch::GeometryId id{sketch::kInvalidGeometryId};
+  bool dashed{};
+};
 struct SetElementDashedCommand {
   std::size_t elementId{};
   bool dashed{};
@@ -197,6 +208,7 @@ struct SetSelectionDashedCommand {
   std::vector<sketch::GeometryId> circleIds;
   std::vector<sketch::GeometryId> arcIds;
   bool dashed{};
+  std::vector<sketch::GeometryId> bezierIds;
 };
 struct TranslatePointCommand {
   sketch::PointReference point;
@@ -219,6 +231,7 @@ struct TranslateSelectionCommand {
   std::vector<sketch::GeometryId> arcIds;
   double dxMm{};
   double dyMm{};
+  std::vector<sketch::GeometryId> bezierIds;
 };
 struct TranslateCircleCommand {
   sketch::GeometryId id{sketch::kInvalidGeometryId};
@@ -226,6 +239,11 @@ struct TranslateCircleCommand {
   double dyMm{};
 };
 struct TranslateArcCommand {
+  sketch::GeometryId id{sketch::kInvalidGeometryId};
+  double dxMm{};
+  double dyMm{};
+};
+struct TranslateBezierCommand {
   sketch::GeometryId id{sketch::kInvalidGeometryId};
   double dxMm{};
   double dyMm{};
@@ -249,11 +267,11 @@ using SketchLiveCommand =
     std::variant<SetDimensionPlacementCommand, TranslatePointCommand,
                  MoveArcEndpointCommand, TranslateLinesCommand,
                  TranslateSelectionCommand, TranslateCircleCommand,
-                 TranslateArcCommand>;
+                 TranslateArcCommand, TranslateBezierCommand>;
 
 using SketchCommand = std::variant<
     SetSketchRectangleCommand, ClearSketchCommand, AddLineCommand,
-    AddRectangleCommand, AddCircleCommand, AddArcCommand,
+    AddRectangleCommand, AddCircleCommand, AddArcCommand, AddBezierCommand,
     ProjectGeometryCommand, AddPrimitiveBatchCommand,
     RemoveGeometryCommand, RemoveElementCommand, DeleteSelectionCommand,
     AddConstraintCommand, BindPointCommand, AutoConstrainNewGeometryCommand,
@@ -262,10 +280,12 @@ using SketchCommand = std::variant<
     RemoveDimensionCommand, SetDimensionValueCommand,
     SetDimensionPlacementCommand, SetDimensionDrivingCommand,
     SetLineDashedCommand,
-    SetCircleDashedCommand, SetArcDashedCommand, SetElementDashedCommand,
+    SetCircleDashedCommand, SetArcDashedCommand, SetBezierDashedCommand,
+    SetElementDashedCommand,
     TranslatePointCommand, SetSelectionDashedCommand,
     MoveArcEndpointCommand, TranslateLinesCommand, TranslateSelectionCommand,
-    TranslateCircleCommand, TranslateArcCommand, ApplySketchDeltaCommand,
+    TranslateCircleCommand, TranslateArcCommand, TranslateBezierCommand,
+    ApplySketchDeltaCommand,
     MirrorGeometryCommand, TrimGeometryCommand>;
 
 class SketchCommandController final {

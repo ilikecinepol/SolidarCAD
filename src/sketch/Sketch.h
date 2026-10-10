@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -21,6 +22,7 @@ inline constexpr DimensionId kInvalidDimensionId = 0;
 struct Point {
   double xMm{};
   double yMm{};
+  bool operator==(const Point&) const = default;
 };
 
 struct Line {
@@ -43,6 +45,15 @@ struct Arc {
   double sweepAngleRad{};
   bool dashed{false};
 };
+
+// Cubic Bezier primitive. The endpoint/control-point order is stable and is
+// also used by PointReference::bezierPoint.
+struct Bezier {
+  std::array<Point, 4> points{};
+  bool dashed{false};
+};
+
+[[nodiscard]] Point bezierPointAt(const Bezier& bezier, double t) noexcept;
 
 [[nodiscard]] Point arcStartPoint(const Arc& arc) noexcept;
 [[nodiscard]] Point arcEndPoint(const Arc& arc) noexcept;
@@ -69,6 +80,11 @@ struct PointReference {
   // (0, 0) rather than model geometry. Axis dimensions use the origin with a
   // DistanceX/DistanceY constraint, so they participate in the normal solver.
   bool origin{false};
+
+  // Optional cubic Bezier control-point reference. Values 0 and 3 are the
+  // curve endpoints; 1 and 2 are the two editable handles.
+  GeometryId bezierId{kInvalidGeometryId};
+  std::uint8_t bezierPoint{0};
 };
 
 enum class DimensionKind {
@@ -150,7 +166,7 @@ struct ConstraintApplyResult {
   }
 };
 
-enum class GeometryKind { Line, Circle, Arc };
+enum class GeometryKind { Line, Circle, Arc, Bezier };
 
 struct GeometryLocation {
   GeometryKind kind{GeometryKind::Line};
@@ -179,9 +195,11 @@ struct SketchDelta {
   std::vector<IndexedValueDelta<Line>> lines;
   std::vector<IndexedValueDelta<Circle>> circles;
   std::vector<IndexedValueDelta<Arc>> arcs;
+  std::vector<IndexedValueDelta<Bezier>> beziers;
   std::vector<IndexedValueDelta<GeometryId>> lineIds;
   std::vector<IndexedValueDelta<GeometryId>> circleIds;
   std::vector<IndexedValueDelta<GeometryId>> arcIds;
+  std::vector<IndexedValueDelta<GeometryId>> bezierIds;
   std::vector<IndexedValueDelta<Dimension>> dimensions;
   std::vector<IndexedValueDelta<Constraint>> constraints;
   std::vector<IndexedValueDelta<std::size_t>> centerNodeElementIds;
@@ -234,9 +252,12 @@ class Sketch final {
   void addCircle(Point center, double radiusMm);
   void addArc(Point center, double radiusMm, double startAngleRad,
               double sweepAngleRad, bool dashed = false);
+  void addBezier(Point start, Point control1, Point control2, Point end,
+                 bool dashed = false);
   void removeLine(std::size_t index);
   void removeCircle(std::size_t index);
   void removeArc(std::size_t index);
+  void removeBezier(std::size_t index);
   void removeElement(std::size_t elementId);
   void translateElement(std::size_t elementId, double dxMm, double dyMm);
 
@@ -253,7 +274,14 @@ class Sketch final {
   void translateSelection(const std::vector<std::size_t>& elementIds,
                           const std::vector<GeometryId>& circleIds,
                           const std::vector<GeometryId>& arcIds,
+                          const std::vector<GeometryId>& bezierIds,
                           double dxMm, double dyMm);
+  void translateSelection(const std::vector<std::size_t>& elementIds,
+                          const std::vector<GeometryId>& circleIds,
+                          const std::vector<GeometryId>& arcIds,
+                          double dxMm, double dyMm) {
+    translateSelection(elementIds, circleIds, arcIds, {}, dxMm, dyMm);
+  }
   void translateLinesByIds(const std::vector<GeometryId>& lineIds,
                            double dxMm, double dyMm);
   void setElementDashed(std::size_t elementId, bool dashed);
@@ -262,8 +290,10 @@ class Sketch final {
   void translateCircle(std::size_t index, double dxMm, double dyMm);
   void setCircleDashedById(GeometryId id, bool dashed);
   void setArcDashedById(GeometryId id, bool dashed);
+  void setBezierDashedById(GeometryId id, bool dashed);
   void translateCircleById(GeometryId id, double dxMm, double dyMm);
   void translateArcById(GeometryId id, double dxMm, double dyMm);
+  void translateBezierById(GeometryId id, double dxMm, double dyMm);
   bool moveArcEndpointReshapeById(GeometryId id, bool start, Point target);
   bool setLineLengthById(GeometryId id, double lengthMm);
   bool setCircleDiameterById(GeometryId id, double diameterMm);
@@ -290,11 +320,14 @@ class Sketch final {
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId circleId(std::size_t index) const noexcept;
   [[nodiscard]] GeometryId arcId(std::size_t index) const noexcept;
+  [[nodiscard]] GeometryId bezierId(std::size_t index) const noexcept;
   [[nodiscard]] std::optional<std::size_t> lineIndex(
       GeometryId id) const noexcept;
   [[nodiscard]] std::optional<std::size_t> circleIndex(
       GeometryId id) const noexcept;
   [[nodiscard]] std::optional<std::size_t> arcIndex(
+      GeometryId id) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> bezierIndex(
       GeometryId id) const noexcept;
   [[nodiscard]] std::optional<GeometryLocation> geometryLocation(
       GeometryId id) const noexcept;
@@ -356,6 +389,7 @@ class Sketch final {
   [[nodiscard]] const std::vector<Line>& lines() const noexcept;
   [[nodiscard]] const std::vector<Circle>& circles() const noexcept;
   [[nodiscard]] const std::vector<Arc>& arcs() const noexcept;
+  [[nodiscard]] const std::vector<Bezier>& beziers() const noexcept;
   [[nodiscard]] const std::vector<Dimension>& dimensions() const;
   [[nodiscard]] std::optional<Point> referencedPoint(
       PointReference reference) const noexcept;
@@ -396,6 +430,11 @@ class Sketch final {
     std::size_t index{};
     std::optional<Arc> before;
   };
+  struct JournalBezier {
+    GeometryId id{kInvalidGeometryId};
+    std::size_t index{};
+    std::optional<Bezier> before;
+  };
   struct JournalConstraint {
     ConstraintId id{kInvalidConstraintId};
     std::size_t index{};
@@ -410,6 +449,7 @@ class Sketch final {
     std::vector<JournalLine> lines;
     std::vector<JournalCircle> circles;
     std::vector<JournalArc> arcs;
+    std::vector<JournalBezier> beziers;
     std::vector<JournalConstraint> constraints;
     std::vector<JournalDimension> dimensions;
     // Stable, allocation-only transaction origin metadata. Geometry and
@@ -418,6 +458,7 @@ class Sketch final {
     std::vector<GeometryId> beforeLineIds;
     std::vector<GeometryId> beforeCircleIds;
     std::vector<GeometryId> beforeArcIds;
+    std::vector<GeometryId> beforeBezierIds;
     std::vector<ConstraintId> beforeConstraintIds;
     std::vector<std::size_t> dimensionTokens;
     std::vector<std::vector<std::size_t>> parentDimensionTokensBefore;
@@ -436,9 +477,11 @@ class Sketch final {
   std::vector<Line> lines_;
   std::vector<Circle> circles_;
   std::vector<Arc> arcs_;
+  std::vector<Bezier> beziers_;
   std::vector<GeometryId> lineIds_;
   std::vector<GeometryId> circleIds_;
   std::vector<GeometryId> arcIds_;
+  std::vector<GeometryId> bezierIds_;
   std::vector<Dimension> dimensions_;
   std::vector<Constraint> constraints_;
 

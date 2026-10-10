@@ -12,6 +12,7 @@ namespace solidar {
 enum class ViewportCancelReason {
   ActiveTool,
   SketchPlaneSelection,
+  ImagePlaneSelection,
   NestedReselection
 };
 

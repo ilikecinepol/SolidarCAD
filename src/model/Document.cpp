@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <sstream>
@@ -16,6 +17,7 @@
 namespace solidar {
 namespace {
 std::atomic<SketchId> g_nextSketchId{1};
+std::atomic<ReferenceImageId> g_nextReferenceImageId{1};
 
 template <typename Id>
 void advancePast(std::atomic<Id>& next, Id used) noexcept {
@@ -450,6 +452,68 @@ bool Document::markSketchDirty(SketchId id) {
     }
   }
   return affected;
+}
+
+ReferenceImage& Document::addReferenceImage(
+    std::string name, std::string sourcePath, std::string supportName,
+    SketchPlacement placement, int pixelWidth, int pixelHeight) {
+  ReferenceImage image;
+  image.name = std::move(name);
+  image.sourcePath = std::move(sourcePath);
+  image.supportName = std::move(supportName);
+  image.placement = placement;
+  image.pixelWidth = pixelWidth;
+  image.pixelHeight = pixelHeight;
+  return addReferenceImage(std::move(image));
+}
+
+ReferenceImage& Document::addReferenceImage(ReferenceImage image) {
+  if (image.id == kInvalidReferenceImageId)
+    image.id = nextReferenceImageId();
+  if (findReferenceImage(image.id))
+    throw std::invalid_argument("Duplicate ReferenceImageId");
+  if (image.sourcePath.empty() || image.pixelWidth <= 0 ||
+      image.pixelHeight <= 0 || image.pixelWidth > 16384 ||
+      image.pixelHeight > 16384 ||
+      static_cast<std::int64_t>(image.pixelWidth) * image.pixelHeight >
+          100000000LL || !std::isfinite(image.offsetXMm) ||
+      !std::isfinite(image.offsetYMm) || !std::isfinite(image.scale) ||
+      image.scale <= 0.0)
+    throw std::invalid_argument("Invalid reference image");
+  if (detail::explicitIdReservationEnabled())
+    advancePast(g_nextReferenceImageId, image.id);
+  if (image.name.empty())
+    image.name = "Image " + std::to_string(referenceImages_.size() + 1);
+  referenceImages_.push_back(std::move(image));
+  return referenceImages_.back();
+}
+
+const std::vector<ReferenceImage>& Document::referenceImages() const noexcept {
+  return referenceImages_;
+}
+
+ReferenceImage* Document::findReferenceImage(ReferenceImageId id) noexcept {
+  const auto found = std::find_if(
+      referenceImages_.begin(), referenceImages_.end(),
+      [id](const ReferenceImage& image) { return image.id == id; });
+  return found == referenceImages_.end() ? nullptr : &*found;
+}
+
+const ReferenceImage* Document::findReferenceImage(
+    ReferenceImageId id) const noexcept {
+  const auto found = std::find_if(
+      referenceImages_.begin(), referenceImages_.end(),
+      [id](const ReferenceImage& image) { return image.id == id; });
+  return found == referenceImages_.end() ? nullptr : &*found;
+}
+
+bool Document::removeReferenceImage(ReferenceImageId id) {
+  const auto found = std::find_if(
+      referenceImages_.begin(), referenceImages_.end(),
+      [id](const ReferenceImage& image) { return image.id == id; });
+  if (found == referenceImages_.end()) return false;
+  referenceImages_.erase(found);
+  return true;
 }
 
 Body& Document::addBody(std::string name) {
@@ -934,6 +998,10 @@ SketchId Document::nextSketchId() noexcept {
   return g_nextSketchId.fetch_add(1, std::memory_order_relaxed);
 }
 
+ReferenceImageId Document::nextReferenceImageId() noexcept {
+  return g_nextReferenceImageId.fetch_add(1, std::memory_order_relaxed);
+}
+
 const BoxParameters& Document::box() const noexcept { return box_; }
 
 void Document::setBox(BoxParameters parameters) {
@@ -946,6 +1014,8 @@ void Document::setBox(BoxParameters parameters) {
 
 void Document::reserveIdsForEditing() const noexcept {
   for (const auto& sketch : sketches_) advancePast(g_nextSketchId, sketch.id);
+  for (const auto& image : referenceImages_)
+    advancePast(g_nextReferenceImageId, image.id);
   for (const auto& body : bodies_) {
     Body::reserveId(body.id());
     for (const auto& feature : body.features())
@@ -1010,6 +1080,27 @@ bool Document::applySketchSlice(std::size_t index,
   } else {
     if (index >= sketches_.size()) return false;
     sketches_.erase(sketches_.begin() + static_cast<std::ptrdiff_t>(index));
+  }
+  reserveIdsForEditing();
+  return true;
+}
+
+bool Document::applyReferenceImageSlice(
+    std::size_t index, std::optional<ReferenceImage> image) {
+  if (image) {
+    if (index > referenceImages_.size()) return false;
+    if (index == referenceImages_.size())
+      referenceImages_.push_back(std::move(*image));
+    else if (referenceImages_[index].id == image->id)
+      referenceImages_[index] = std::move(*image);
+    else
+      referenceImages_.insert(
+          referenceImages_.begin() + static_cast<std::ptrdiff_t>(index),
+          std::move(*image));
+  } else {
+    if (index >= referenceImages_.size()) return false;
+    referenceImages_.erase(
+        referenceImages_.begin() + static_cast<std::ptrdiff_t>(index));
   }
   reserveIdsForEditing();
   return true;

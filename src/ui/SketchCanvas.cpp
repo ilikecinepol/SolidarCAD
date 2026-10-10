@@ -9,6 +9,7 @@
 #include <QKeyEvent>
 #include <QDoubleSpinBox>
 #include <QEvent>
+#include <QImageReader>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
@@ -48,6 +49,7 @@ SketchInteractionTool interactionTool(SketchCanvas::Tool tool) noexcept {
     case CanvasTool::Rectangle: return SketchInteractionTool::Rectangle;
     case CanvasTool::Circle: return SketchInteractionTool::Circle;
     case CanvasTool::Arc: return SketchInteractionTool::Arc;
+    case CanvasTool::Bezier: return SketchInteractionTool::Bezier;
     case CanvasTool::Projection: return SketchInteractionTool::Projection;
     case CanvasTool::AutoDimension:
       return SketchInteractionTool::AutoDimension;
@@ -79,6 +81,7 @@ SketchCanvas::Tool canvasTool(SketchInteractionTool tool) noexcept {
     case SketchInteractionTool::Rectangle: return CanvasTool::Rectangle;
     case SketchInteractionTool::Circle: return CanvasTool::Circle;
     case SketchInteractionTool::Arc: return CanvasTool::Arc;
+    case SketchInteractionTool::Bezier: return CanvasTool::Bezier;
     case SketchInteractionTool::Projection: return CanvasTool::Projection;
     case SketchInteractionTool::AutoDimension: return CanvasTool::AutoDimension;
     case SketchInteractionTool::LockConstraint: return CanvasTool::LockConstraint;
@@ -1240,6 +1243,8 @@ SketchCanvas::selectedConstraintPanelEntries() const {
     selectedId = selectionCircleId_;
   else if (selectionKind_ == SelectionKind::Arc)
     selectedId = selectionArcId_;
+  else if (selectionKind_ == SelectionKind::Bezier)
+    selectedId = selectionBezierId_;
 
   if (selectedId == sketch::kInvalidGeometryId) return {};
 
@@ -1307,6 +1312,17 @@ SketchCanvas::selectedConstraintPanelEntries() const {
              second.circleId != sketch::kInvalidGeometryId &&
              first.circleId == second.circleId;
     }
+    if (first.arcId != sketch::kInvalidGeometryId ||
+        second.arcId != sketch::kInvalidGeometryId)
+      return first.arcId != sketch::kInvalidGeometryId &&
+             second.arcId != sketch::kInvalidGeometryId &&
+             first.arcId == second.arcId && first.start == second.start;
+    if (first.bezierId != sketch::kInvalidGeometryId ||
+        second.bezierId != sketch::kInvalidGeometryId)
+      return first.bezierId != sketch::kInvalidGeometryId &&
+             second.bezierId != sketch::kInvalidGeometryId &&
+             first.bezierId == second.bezierId &&
+             first.bezierPoint == second.bezierPoint;
 
     if (first.lineId == sketch::kInvalidGeometryId ||
         second.lineId == sketch::kInvalidGeometryId)
@@ -1380,7 +1396,11 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         return dimension.firstPoint.lineId == selectedId ||
                dimension.secondPoint.lineId == selectedId ||
                dimension.firstPoint.circleId == selectedId ||
-               dimension.secondPoint.circleId == selectedId;
+               dimension.secondPoint.circleId == selectedId ||
+               dimension.firstPoint.arcId == selectedId ||
+               dimension.secondPoint.arcId == selectedId ||
+               dimension.firstPoint.bezierId == selectedId ||
+               dimension.secondPoint.bezierId == selectedId;
       };
 
   const auto currentDimensionValue =
@@ -1500,7 +1520,11 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         constraint.firstPoint.lineId == selectedId ||
         constraint.secondPoint.lineId == selectedId ||
         constraint.firstPoint.circleId == selectedId ||
-        constraint.secondPoint.circleId == selectedId;
+        constraint.secondPoint.circleId == selectedId ||
+        constraint.firstPoint.arcId == selectedId ||
+        constraint.secondPoint.arcId == selectedId ||
+        constraint.firstPoint.bezierId == selectedId ||
+        constraint.secondPoint.bezierId == selectedId;
     if (!referencesSelected) continue;
 
     QString text = typeName(constraint.type);
@@ -1626,7 +1650,8 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
 void SketchCanvas::setSceneReferences(
     SketchPlacement activePlacement,
     const std::vector<ShapeFeature::ShapePtr>& bodyShapes,
-    std::vector<SketchSceneReference> sketches) {
+    std::vector<SketchSceneReference> sketches,
+    const std::vector<ReferenceImage>& images) {
   referencePlacement_ = activePlacement;
   initialViewRotationDeg_ =
       initialViewRotation(referencePlacement_, preferredViewUp_);
@@ -1644,9 +1669,33 @@ void SketchCanvas::setSceneReferences(
           std::make_shared<BodyRenderMesh>(std::move(mesh)));
   }
   sceneSketches_ = std::move(sketches);
+  updateSceneImages(images);
   hoveredProjectionEdge_.reset();
   markCommittedRenderSceneDirty();
   fitReferenceGeometry();
+  update();
+}
+
+void SketchCanvas::updateSceneImages(
+    const std::vector<ReferenceImage>& images) {
+  sceneImages_.clear();
+  sceneImages_.reserve(images.size());
+  for (const auto& image : images) {
+    if (!image.visible) continue;
+    QImage pixels;
+    QImageReader reader(QString::fromStdString(image.sourcePath));
+    const QSize dimensions = reader.size();
+    if (dimensions.isValid() && dimensions.width() <= 16384 &&
+        dimensions.height() <= 16384 &&
+        static_cast<qint64>(dimensions.width()) * dimensions.height() <=
+            100000000LL)
+      pixels = reader.read();
+    sceneImages_.push_back(
+        {QString::fromStdString(image.name), std::move(pixels),
+         image.placement, image.offsetXMm, image.offsetYMm, image.offsetZMm,
+         image.scale, image.pixelWidth, image.pixelHeight});
+  }
+  markCommittedRenderSceneDirty();
   update();
 }
 
@@ -1705,6 +1754,34 @@ void SketchCanvas::fitReferenceGeometry() {
              arc.center.yMm + arc.radiusMm * std::sin(angle)});
       }
     }
+    for (const auto& bezier : reference.geometry.beziers())
+      for (int step = 0; step <= 24; ++step)
+        includeSketchPoint(sketch::bezierPointAt(
+            bezier, static_cast<double>(step) / 24.0));
+  }
+  for (const auto& image : sceneImages_) {
+    if (image.pixelWidth <= 0 || image.pixelHeight <= 0 ||
+        !std::isfinite(image.scale) || image.scale <= 0.0)
+      continue;
+    const double widthMm = image.pixelWidth * 0.1 * image.scale;
+    const double heightMm = image.pixelHeight * 0.1 * image.scale;
+    const std::array<sketch::Point, 4> corners{{
+        {image.offsetXMm - widthMm * 0.5,
+         image.offsetYMm + heightMm * 0.5},
+        {image.offsetXMm + widthMm * 0.5,
+         image.offsetYMm + heightMm * 0.5},
+        {image.offsetXMm + widthMm * 0.5,
+         image.offsetYMm - heightMm * 0.5},
+        {image.offsetXMm - widthMm * 0.5,
+         image.offsetYMm - heightMm * 0.5}}};
+    const Vector3d normal = image.placement.normal();
+    for (const auto& corner : corners) {
+      Point3d world = image.placement.toWorld(corner.xMm, corner.yMm);
+      world.x += normal.x * image.offsetZMm;
+      world.y += normal.y * image.offsetZMm;
+      world.z += normal.z * image.offsetZMm;
+      includePoint(world);
+    }
   }
   if (minU <= maxU && minV <= maxV) {
     const double spanU = std::max(1.0, maxU - minU);
@@ -1728,6 +1805,7 @@ void SketchCanvas::clearSketchEditContext() {
   referenceFaceMesh_ = std::make_shared<BodyRenderMesh>();
   sceneBodyMeshes_.clear();
   sceneSketches_.clear();
+  sceneImages_.clear();
   realReferenceBodyVisible_ = false;
   hoveredProjectionEdge_.reset();
   initialViewRotationDeg_ = 0.0;
@@ -1749,7 +1827,7 @@ void SketchCanvas::setReferenceProfile(const sketch::Sketch& profile,
 
 void SketchCanvas::clearSketch() {
   if (sketch_.lines().empty() && sketch_.circles().empty() &&
-      sketch_.arcs().empty()) {
+      sketch_.arcs().empty() && sketch_.beziers().empty()) {
     interaction_.cancelGesture();
     hideDimensionEditor();
     return;
@@ -1927,6 +2005,8 @@ void SketchCanvas::deleteSelection() {
                              selectedCircleIds_.begin(), selectedCircleIds_.end());
   command.geometryIds.insert(command.geometryIds.end(),
                              selectedArcIds_.begin(), selectedArcIds_.end());
+  command.geometryIds.insert(command.geometryIds.end(),
+                             selectedBezierIds_.begin(), selectedBezierIds_.end());
   command.elementIds = selectedElementIds_;
   if (command.geometryIds.empty() && command.elementIds.empty()) {
     if (selectionKind_ == SelectionKind::Line)
@@ -1935,6 +2015,8 @@ void SketchCanvas::deleteSelection() {
       command.geometryIds.push_back(selectionCircleId_);
     else if (selectionKind_ == SelectionKind::Arc)
       command.geometryIds.push_back(selectionArcId_);
+    else if (selectionKind_ == SelectionKind::Bezier)
+      command.geometryIds.push_back(selectionBezierId_);
   }
   if (command.geometryIds.empty() && command.elementIds.empty()) return;
 
@@ -2534,6 +2616,9 @@ std::optional<SketchPickEntityRef> SketchCanvas::geometryAt(
     case SketchPickEntityKind::Arc:
       if (!sketch_.arcIndex(reference.geometryId)) return std::nullopt;
       break;
+    case SketchPickEntityKind::Bezier:
+      if (!sketch_.bezierIndex(reference.geometryId)) return std::nullopt;
+      break;
   }
   return reference;
 }
@@ -2648,6 +2733,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       tool() == Tool::Line ||
       tool() == Tool::Rectangle ||
       tool() == Tool::Arc ||
+      tool() == Tool::Bezier ||
       pointDrag ||
       tangentCircleMode ||
       (tool() == Tool::Circle &&
@@ -2658,6 +2744,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       tool() == Tool::Line ||
       tool() == Tool::Rectangle ||
       tool() == Tool::Arc ||
+      tool() == Tool::Bezier ||
       pointDrag ||
       (tool() == Tool::Circle &&
        circleMode_ == CircleMode::CenterRadius &&
@@ -2668,6 +2755,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       tool() == Tool::Rectangle ||
       tool() == Tool::Circle ||
       tool() == Tool::Arc ||
+      tool() == Tool::Bezier ||
       pointDrag;
 
   SketchHitTolerancePolicy tolerance;
@@ -2697,6 +2785,9 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
   filter.lines = allowLineBody;
   filter.circles = allowCircleBody;
   filter.arcs = allowArcBody;
+  // Bézier control points are valid snap targets. A curve-body relation is
+  // not yet a model constraint, so do not advertise an unpersistable snap.
+  filter.beziers = false;
   filter.lineMidpoints = !tangentCircleMode;
   const auto hit = SketchHitTester::pick(scene, hitPoint(position), filter);
   if (!hit) return result;
@@ -2709,6 +2800,7 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
     switch (point->kind) {
       case SketchPickPointKind::LineEndpoint:
       case SketchPickPointKind::ArcEndpoint:
+      case SketchPickPointKind::BezierControlPoint:
         result.kind = ConstructionSnapKind::LinePoint;
         break;
       case SketchPickPointKind::CircleCenter:
@@ -2838,7 +2930,7 @@ SketchRenderSnapshot SketchCanvas::renderSnapshot() const {
       referenceBodyMesh_, referenceFaceMesh_, sceneBodyMeshes_,
       referencePlacement_, referenceBox_.widthMm, referenceBox_.depthMm,
       referenceBox_.heightMm, referenceBodyVisible_, realReferenceBodyVisible_,
-      referenceProfileVisible_);
+      referenceProfileVisible_, sceneImages_);
   const auto& interaction = interactionState();
   snapshot.interaction.tool = interaction.tool;
   snapshot.interaction.dimension = interaction.dimension;
@@ -2863,15 +2955,20 @@ SketchRenderSnapshot SketchCanvas::renderSnapshot() const {
     case SelectionKind::Arc:
       snapshot.selectionKind = SketchRenderSelectionKind::Arc;
       break;
+    case SelectionKind::Bezier:
+      snapshot.selectionKind = SketchRenderSelectionKind::Bezier;
+      break;
   }
   snapshot.selectionCircleId = selectionCircleId_;
   snapshot.selectionLineId = selectionLineId_;
   snapshot.selectionArcId = selectionArcId_;
+  snapshot.selectionBezierId = selectionBezierId_;
   snapshot.selectionElementId = selectionElementId_;
   snapshot.selectedLineIds = selectedLineIds_;
   snapshot.selectedElementIds = selectedElementIds_;
   snapshot.selectedCircleIds = selectedCircleIds_;
   snapshot.selectedArcIds = selectedArcIds_;
+  snapshot.selectedBezierIds = selectedBezierIds_;
   snapshot.hoverPoint = hoverPoint_;
   if (constructionHover_) {
     SketchRenderSnap renderSnap;
@@ -3224,6 +3321,9 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     sketch::GeometryId endpointCircleId = sketch::kInvalidGeometryId;
     bool endpointIsElementCenter = false;
     std::size_t endpointCenterElementId = 0;
+    bool endpointIsBezier = false;
+    sketch::GeometryId endpointBezierId = sketch::kInvalidGeometryId;
+    std::uint8_t endpointBezierPoint = 0;
 
     if (const auto hit = pointAt(event->position(), endpointTolerance)) {
       endpointElementId = hit->elementId;
@@ -3235,6 +3335,8 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
           endpointDashed = sketch_.circles()[*circle].dashed;
         else if (const auto arc = sketch_.arcIndex(hit->carrierId))
           endpointDashed = sketch_.arcs()[*arc].dashed;
+        else if (const auto bezier = sketch_.bezierIndex(hit->carrierId))
+          endpointDashed = sketch_.beziers()[*bezier].dashed;
       }
       switch (hit->kind) {
         case SketchPickPointKind::LineEndpoint:
@@ -3249,6 +3351,12 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
           endpointArcId = hit->carrierId;
           endpointArcStart = hit->reference.start;
           break;
+        case SketchPickPointKind::BezierControlPoint:
+          endpointIsBezier = true;
+          endpointBezierId = hit->carrierId;
+          endpointBezierPoint = hit->reference.bezierPoint;
+          endpoint = hit->reference;
+          break;
         case SketchPickPointKind::ElementCenter:
           endpointIsElementCenter = true;
           endpointCenterElementId = hit->elementId;
@@ -3261,13 +3369,15 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     const bool hasSeveralSelected =
         selectedLineIds_.size() + selectedElementIds_.size() +
             selectedCircleIds_.size() +
-            selectedArcIds_.size() > 1;
+            selectedArcIds_.size() + selectedBezierIds_.size() > 1;
 
     // Once several objects are selected, clicking any selected object means
     // "move the selection". Endpoint editing still works normally for a
     // single object.
     const bool endpointSelected =
-        endpointIsArc
+        endpointIsBezier
+            ? bezierSelected(endpointBezierId)
+            : endpointIsArc
             ? arcSelected(endpointArcId)
             : endpointIsCircleCenter
                   ? circleSelected(endpointCircleId)
@@ -3276,11 +3386,22 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
                         : endpoint && lineSelected(endpoint->lineId);
 
     if ((endpoint || endpointIsArc || endpointIsCircleCenter ||
+         endpointIsBezier ||
          endpointIsElementCenter) &&
         !(hasSeveralSelected &&
           endpointSelected)) {
       clearGeometrySelection();
-      if (endpointIsArc) {
+      if (endpointIsBezier) {
+        selectedBezierIds_.push_back(endpointBezierId);
+        selectionKind_ = SelectionKind::Bezier;
+        selectionBezierId_ = endpointBezierId;
+        selectionLineId_ = sketch::kInvalidGeometryId;
+        selectionCircleId_ = sketch::kInvalidGeometryId;
+        selectionArcId_ = sketch::kInvalidGeometryId;
+        selectionElementId_ = 0;
+        interaction_.beginPointDrag(
+            SketchBezierPointDrag{endpointBezierId, endpointBezierPoint});
+      } else if (endpointIsArc) {
         selectedArcIds_.push_back(endpointArcId);
         selectionKind_ = SelectionKind::Arc;
         selectionArcId_ = endpointArcId;
@@ -3333,7 +3454,9 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
 
       emit lineStyleSelectionChanged(true, endpointDashed);
       emit selectionChanged(
-          endpointIsArc
+          endpointIsBezier
+              ? QString::fromUtf8("Выбрана опорная точка Безье")
+              : endpointIsArc
               ? QString::fromUtf8("Выбрана точка дуги")
               : endpointIsCircleCenter
                     ? QString::fromUtf8("Выбран центр окружности")
@@ -3709,6 +3832,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     filter.lines = lineAllowed;
     filter.circles = circleAllowed;
     filter.arcs = arcAllowed;
+    filter.beziers = false;
     filter.points = tool() == Tool::CoincidentConstraint ||
                     tool() == Tool::AutoDimension;
     filter.lineMidpoints = false;
@@ -4364,15 +4488,24 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
                                              lineTarget->start};
       moved = executeLiveCommand(TranslatePointCommand{reference, dx, dy})
                   .accepted;
+    } else if (const auto* bezierTarget =
+                   std::get_if<SketchBezierPointDrag>(
+                       &interactionState().pointDrag)) {
+      sketch::PointReference reference;
+      reference.bezierId = bezierTarget->bezierId;
+      reference.bezierPoint = bezierTarget->pointIndex;
+      moved = executeLiveCommand(TranslatePointCommand{reference, dx, dy})
+                  .accepted;
     } else if (!selectedLineIds_.empty()) {
       moved = executeLiveCommand(
           TranslateLinesCommand{selectedLineIds_, dx, dy}).accepted;
     } else if (!selectedElementIds_.empty() ||
                !selectedCircleIds_.empty() ||
-               !selectedArcIds_.empty()) {
-      moved = executeLiveCommand(TranslateSelectionCommand{
-          selectedElementIds_, selectedCircleIds_, selectedArcIds_, dx, dy})
-                  .accepted;
+               !selectedArcIds_.empty() || !selectedBezierIds_.empty()) {
+      TranslateSelectionCommand command{
+          selectedElementIds_, selectedCircleIds_, selectedArcIds_, dx, dy};
+      command.bezierIds = selectedBezierIds_;
+      moved = executeLiveCommand(command).accepted;
     } else if (selectionKind_ == SelectionKind::Line) {
       moved = executeLiveCommand(
           TranslateLinesCommand{{selectionLineId_}, dx, dy}).accepted;
@@ -4382,6 +4515,9 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     } else if (selectionKind_ == SelectionKind::Arc) {
       moved = executeLiveCommand(
           TranslateArcCommand{selectionArcId_, dx, dy}).accepted;
+    } else if (selectionKind_ == SelectionKind::Bezier) {
+      moved = executeLiveCommand(
+          TranslateBezierCommand{selectionBezierId_, dx, dy}).accepted;
     }
 
     if (!moved) {
@@ -4542,6 +4678,13 @@ void SketchCanvas::mouseReleaseEvent(QMouseEvent* event) {
       sketch::PointReference center;
       center.elementCenterId = centerTarget->elementId;
       draggedPoint = center;
+    } else if (const auto* bezierTarget =
+                   std::get_if<SketchBezierPointDrag>(
+                       &interactionState().pointDrag)) {
+      sketch::PointReference point;
+      point.bezierId = bezierTarget->bezierId;
+      point.bezierPoint = bezierTarget->pointIndex;
+      draggedPoint = point;
     }
 
     // Resolve the release position again. Windows can deliver the final mouse
@@ -4788,6 +4931,12 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
         selectedArcIds_.push_back(id);
     }
 
+    for (std::size_t index = 0; index < sketch_.beziers().size(); ++index) {
+      const auto id = sketch_.bezierId(index);
+      if (id != sketch::kInvalidGeometryId)
+        selectedBezierIds_.push_back(id);
+    }
+
     if (!selectedElementIds_.empty()) {
       const auto elementId = selectedElementIds_.back();
 
@@ -4819,6 +4968,14 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
       selectionArcId_ = selectedArcIds_.back();
       selectionLineId_ = sketch::kInvalidGeometryId;
       selectionCircleId_ = sketch::kInvalidGeometryId;
+      selectionElementId_ = 0;
+      emit lineStyleSelectionChanged(false, false);
+    } else if (!selectedBezierIds_.empty()) {
+      selectionKind_ = SelectionKind::Bezier;
+      selectionBezierId_ = selectedBezierIds_.back();
+      selectionLineId_ = sketch::kInvalidGeometryId;
+      selectionCircleId_ = sketch::kInvalidGeometryId;
+      selectionArcId_ = sketch::kInvalidGeometryId;
       selectionElementId_ = 0;
       emit lineStyleSelectionChanged(false, false);
     } else {
@@ -6062,6 +6219,7 @@ void SketchCanvas::handleTangentConstraintClick(QPointF position) {
   HitKind hitKind = HitKind::None;
   sketch::GeometryId hitId = sketch::kInvalidGeometryId;
   SketchPickFilter tangentFilter;
+  tangentFilter.beziers = false;
   if (const auto first = interactionState().constraint.tangentFirst) {
     const bool firstIsLine =
         first->kind == SketchGeometryOperandKind::Line;
@@ -6225,6 +6383,7 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
   std::size_t hitElementId = 0;
   SketchPickFilter equalFilter;
   equalFilter.arcs = false;
+  equalFilter.beziers = false;
   if (const auto hit = geometryAt(position, hitTolerance, equalFilter)) {
     hitId = hit->geometryId;
     hitElementId = hit->elementId;
@@ -7233,14 +7392,9 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
       update();
       return;
     }
-    sketch::PointReference first{
-        static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).lineId),
-        interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).start,
-        static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).elementCenterId)};
+    const sketch::PointReference first =
+        interactionState().autoDimension.firstPoint.value_or(
+            sketch::PointReference{});
     const auto firstPoint = sketch_.referencedPoint(first);
     const auto secondPoint = sketch_.referencedPoint(*clickedPoint);
     if (!firstPoint || !secondPoint) return;
@@ -7296,6 +7450,7 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
 
   SketchPickFilter dimensionFilter;
   dimensionFilter.arcs = false;
+  dimensionFilter.beziers = false;
   const auto geometry = geometryAt(position, 9.0, dimensionFilter);
   if (!geometry) return;
   const auto lineIndex = geometry->kind == SketchPickEntityKind::Line
@@ -7508,15 +7663,22 @@ bool SketchCanvas::arcSelected(sketch::GeometryId id) const {
                    id) != selectedArcIds_.end();
 }
 
+bool SketchCanvas::bezierSelected(sketch::GeometryId id) const {
+  return std::find(selectedBezierIds_.begin(), selectedBezierIds_.end(), id) !=
+         selectedBezierIds_.end();
+}
+
 void SketchCanvas::clearGeometrySelection() {
   selectedLineIds_.clear();
   selectedElementIds_.clear();
   selectedCircleIds_.clear();
   selectedArcIds_.clear();
+  selectedBezierIds_.clear();
   selectionKind_ = SelectionKind::None;
   selectionLineId_ = sketch::kInvalidGeometryId;
   selectionCircleId_ = sketch::kInvalidGeometryId;
   selectionArcId_ = sketch::kInvalidGeometryId;
+  selectionBezierId_ = sketch::kInvalidGeometryId;
   selectionElementId_ = 0;
 }
 
@@ -7525,6 +7687,7 @@ std::optional<sketch::GeometryId> SketchCanvas::lineAt(
   SketchPickFilter filter;
   filter.circles = false;
   filter.arcs = false;
+  filter.beziers = false;
   const auto hit = geometryAt(position, tolerancePx, filter);
   return hit ? std::optional{hit->geometryId} : std::nullopt;
 }
@@ -7591,6 +7754,8 @@ SketchCanvas::mirrorGeometryAt(QPointF position,
       return MirrorGeometryRef{MirrorGeometryKind::Circle, hit->geometryId};
     case SketchPickEntityKind::Arc:
       return MirrorGeometryRef{MirrorGeometryKind::Arc, hit->geometryId};
+    case SketchPickEntityKind::Bezier:
+      return MirrorGeometryRef{MirrorGeometryKind::Bezier, hit->geometryId};
   }
   return std::nullopt;
 }
@@ -7608,7 +7773,8 @@ SketchCanvas::closedMirrorContour(MirrorGeometryRef seed) const {
     sketch::Point end;
   };
   std::vector<OpenGeometry> geometry;
-  geometry.reserve(sketch_.lines().size() + sketch_.arcs().size());
+  geometry.reserve(sketch_.lines().size() + sketch_.arcs().size() +
+                   sketch_.beziers().size());
   for (std::size_t index = 0; index < sketch_.lines().size(); ++index) {
     const auto& line = sketch_.lines()[index];
     geometry.push_back({{MirrorGeometryKind::Line, sketch_.lineId(index)},
@@ -7619,6 +7785,11 @@ SketchCanvas::closedMirrorContour(MirrorGeometryRef seed) const {
     geometry.push_back({{MirrorGeometryKind::Arc, sketch_.arcId(index)},
                         sketch::arcStartPoint(arc),
                         sketch::arcEndPoint(arc)});
+  }
+  for (std::size_t index = 0; index < sketch_.beziers().size(); ++index) {
+    const auto& bezier = sketch_.beziers()[index];
+    geometry.push_back({{MirrorGeometryKind::Bezier, sketch_.bezierId(index)},
+                        bezier.points[0], bezier.points[3]});
   }
 
   const auto sameReference = [](MirrorGeometryRef first,
@@ -7702,6 +7873,11 @@ void SketchCanvas::setMirrorSourceSelection(
         selectionKind_ = SelectionKind::Arc;
         selectionArcId_ = item.geometryId;
         break;
+      case MirrorGeometryKind::Bezier:
+        selectedBezierIds_.push_back(item.geometryId);
+        selectionKind_ = SelectionKind::Bezier;
+        selectionBezierId_ = item.geometryId;
+        break;
     }
   }
   update();
@@ -7735,6 +7911,9 @@ bool SketchCanvas::mirrorContourAboutLine(sketch::GeometryId axisId) {
         break;
       case sketch::GeometryKind::Arc:
         created.push_back({MirrorGeometryKind::Arc, id});
+        break;
+      case sketch::GeometryKind::Bezier:
+        created.push_back({MirrorGeometryKind::Bezier, id});
         break;
     }
   }
@@ -7778,6 +7957,10 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
       result = {TrimGeometryKind::Arc, reference.geometryId, 0.0, 1.0,
                 false};
       break;
+    case SketchPickEntityKind::Bezier:
+      result = {TrimGeometryKind::Bezier, reference.geometryId, 0.0, 1.0,
+                false};
+      break;
   }
 
   const auto cross = [](sketch::Point a, sketch::Point b) {
@@ -7811,6 +7994,7 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
   const sketch::Line* targetLine = nullptr;
   const sketch::Circle* targetCircle = nullptr;
   const sketch::Arc* targetArc = nullptr;
+  const sketch::Bezier* targetBezier = nullptr;
   if (result.kind == TrimGeometryKind::Line) {
     const auto index = sketch_.lineIndex(result.geometryId);
     if (!index) return std::nullopt;
@@ -7820,10 +8004,15 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
     const auto index = sketch_.circleIndex(result.geometryId);
     if (!index) return std::nullopt;
     targetCircle = &sketch_.circles()[*index];
-  } else {
+  } else if (result.kind == TrimGeometryKind::Arc) {
     const auto index = sketch_.arcIndex(result.geometryId);
     if (!index) return std::nullopt;
     targetArc = &sketch_.arcs()[*index];
+    cuts = {0.0, 1.0};
+  } else {
+    const auto index = sketch_.bezierIndex(result.geometryId);
+    if (!index) return std::nullopt;
+    targetBezier = &sketch_.beziers()[*index];
     cuts = {0.0, 1.0};
   }
 
@@ -7850,6 +8039,19 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
                     kTrimTwoPi;
     } else if (targetArc) {
       parameter = arcParameterAtPoint(*targetArc, point);
+    } else if (targetBezier) {
+      double bestDistance = std::numeric_limits<double>::max();
+      constexpr int samples = 128;
+      for (int sample = 0; sample <= samples; ++sample) {
+        const double value = static_cast<double>(sample) / samples;
+        const auto candidate = sketch::bezierPointAt(*targetBezier, value);
+        const double distance = std::hypot(candidate.xMm - point.xMm,
+                                           candidate.yMm - point.yMm);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          parameter = value;
+        }
+      }
     }
     if (parameter) cuts.push_back(*parameter);
   };
@@ -7869,7 +8071,7 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
       for (const auto point : segmentCircleIntersections(
                *targetLine, arc.center, arc.radiusMm))
         if (arcParameterAtPoint(arc, point)) addTargetPoint(point);
-  } else {
+  } else if (!targetBezier) {
     const sketch::Point center =
         targetCircle ? targetCircle->center : targetArc->center;
     const double radius =
@@ -7900,6 +8102,27 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
                center, radius, other.center, other.radiusMm))
         if (arcParameterAtPoint(other, point)) addTargetPoint(point);
     }
+  } else {
+    constexpr int samples = 96;
+    for (int sample = 0; sample < samples; ++sample) {
+      const double firstParameter = static_cast<double>(sample) / samples;
+      const double secondParameter = static_cast<double>(sample + 1) / samples;
+      const sketch::Line segment{sketch::bezierPointAt(*targetBezier,
+                                                       firstParameter),
+                                 sketch::bezierPointAt(*targetBezier,
+                                                       secondParameter)};
+      for (const auto& line : sketch_.lines())
+        if (const auto point = segmentIntersection(segment, line))
+          addTargetPoint(*point);
+      for (const auto& circle : sketch_.circles())
+        for (const auto point : segmentCircleIntersections(
+                 segment, circle.center, circle.radiusMm))
+          addTargetPoint(point);
+      for (const auto& arc : sketch_.arcs())
+        for (const auto point : segmentCircleIntersections(
+                 segment, arc.center, arc.radiusMm))
+          if (arcParameterAtPoint(arc, point)) addTargetPoint(point);
+    }
   }
 
   std::sort(cuts.begin(), cuts.end());
@@ -7922,9 +8145,22 @@ std::optional<SketchCanvas::TrimPreview> SketchCanvas::trimPreviewAt(
                           cursor.yMm - targetCircle->center.yMm,
                           cursor.xMm - targetCircle->center.xMm)) /
                       kTrimTwoPi;
-  } else {
+  } else if (targetArc) {
     cursorParameter = arcParameterAtPoint(*targetArc, cursor, 2.0 / pixelsPerMm_)
                           .value_or(0.0);
+  } else {
+    double bestDistance = std::numeric_limits<double>::max();
+    constexpr int samples = 192;
+    for (int sample = 0; sample <= samples; ++sample) {
+      const double parameter = static_cast<double>(sample) / samples;
+      const auto point = sketch::bezierPointAt(*targetBezier, parameter);
+      const double distance =
+          std::hypot(point.xMm - cursor.xMm, point.yMm - cursor.yMm);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        cursorParameter = parameter;
+      }
+    }
   }
 
   if (targetCircle) {
@@ -7991,6 +8227,10 @@ bool SketchCanvas::trimAt(QPointF position) {
       selectedArcIds_.push_back(id);
       selectionKind_ = SelectionKind::Arc;
       selectionArcId_ = id;
+    } else if (location->kind == sketch::GeometryKind::Bezier) {
+      selectedBezierIds_.push_back(id);
+      selectionKind_ = SelectionKind::Bezier;
+      selectionBezierId_ = id;
     }
   }
   notifyGeometryChanged();
@@ -8006,6 +8246,7 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
   sketch::GeometryId hitLineId = sketch::kInvalidGeometryId;
   sketch::GeometryId hitCircleId = sketch::kInvalidGeometryId;
   sketch::GeometryId hitArcId = sketch::kInvalidGeometryId;
+  sketch::GeometryId hitBezierId = sketch::kInvalidGeometryId;
   bool hitDashed = false;
 
   if (const auto hit = geometryAt(position)) {
@@ -8024,6 +8265,10 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
         hitKind = SelectionKind::Arc;
         hitArcId = hit->geometryId;
         break;
+      case SketchPickEntityKind::Bezier:
+        hitKind = SelectionKind::Bezier;
+        hitBezierId = hit->geometryId;
+        break;
     }
   }
 
@@ -8040,7 +8285,8 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
           ? lineSelected(hitLineId)
           : hitKind == SelectionKind::Circle
                 ? circleSelected(hitCircleId)
-                : arcSelected(hitArcId);
+                : hitKind == SelectionKind::Arc ? arcSelected(hitArcId)
+                                                : bezierSelected(hitBezierId);
 
   if (additive) {
     if (hitKind == SelectionKind::Line) {
@@ -8059,7 +8305,7 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
         selectedCircleIds_.erase(found);
       else
         selectedCircleIds_.push_back(hitCircleId);
-    } else {
+    } else if (hitKind == SelectionKind::Arc) {
       const auto found =
           std::find(selectedArcIds_.begin(), selectedArcIds_.end(),
                     hitArcId);
@@ -8067,12 +8313,20 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
         selectedArcIds_.erase(found);
       else
         selectedArcIds_.push_back(hitArcId);
+    } else {
+      const auto found =
+          std::find(selectedBezierIds_.begin(), selectedBezierIds_.end(),
+                    hitBezierId);
+      if (found != selectedBezierIds_.end())
+        selectedBezierIds_.erase(found);
+      else
+        selectedBezierIds_.push_back(hitBezierId);
     }
 
     if (alreadySelected) {
       if (selectedLineIds_.empty() && selectedElementIds_.empty() &&
           selectedCircleIds_.empty() &&
-          selectedArcIds_.empty()) {
+          selectedArcIds_.empty() && selectedBezierIds_.empty()) {
         clearGeometrySelection();
         emit lineStyleSelectionChanged(false, false);
         emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
@@ -8116,13 +8370,21 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
         selectionArcId_ = sketch::kInvalidGeometryId;
         const auto index = sketch_.circleIndex(selectionCircleId_);
         hitDashed = index && sketch_.circles()[*index].dashed;
-      } else {
+      } else if (!selectedArcIds_.empty()) {
         selectionKind_ = SelectionKind::Arc;
         selectionArcId_ = selectedArcIds_.back();
         selectionLineId_ = sketch::kInvalidGeometryId;
         selectionCircleId_ = sketch::kInvalidGeometryId;
         const auto index = sketch_.arcIndex(selectionArcId_);
         hitDashed = index && sketch_.arcs()[*index].dashed;
+      } else {
+        selectionKind_ = SelectionKind::Bezier;
+        selectionBezierId_ = selectedBezierIds_.back();
+        selectionLineId_ = sketch::kInvalidGeometryId;
+        selectionCircleId_ = sketch::kInvalidGeometryId;
+        selectionArcId_ = sketch::kInvalidGeometryId;
+        const auto index = sketch_.bezierIndex(selectionBezierId_);
+        hitDashed = index && sketch_.beziers()[*index].dashed;
       }
     } else {
       selectionKind_ = hitKind;
@@ -8130,6 +8392,7 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
       selectionLineId_ = hitLineId;
       selectionCircleId_ = hitCircleId;
       selectionArcId_ = hitArcId;
+      selectionBezierId_ = hitBezierId;
     }
   } else {
     if (!(preserveExistingIfHit && alreadySelected)) {
@@ -8139,8 +8402,10 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
         selectedLineIds_.push_back(hitLineId);
       else if (hitKind == SelectionKind::Circle)
         selectedCircleIds_.push_back(hitCircleId);
-      else
+      else if (hitKind == SelectionKind::Arc)
         selectedArcIds_.push_back(hitArcId);
+      else
+        selectedBezierIds_.push_back(hitBezierId);
     }
 
     selectionKind_ = hitKind;
@@ -8148,12 +8413,13 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
     selectionLineId_ = hitLineId;
     selectionCircleId_ = hitCircleId;
     selectionArcId_ = hitArcId;
+    selectionBezierId_ = hitBezierId;
   }
 
   const std::size_t selectedCount =
       selectedLineIds_.size() + selectedElementIds_.size() +
       selectedCircleIds_.size() +
-      selectedArcIds_.size();
+      selectedArcIds_.size() + selectedBezierIds_.size();
 
   emit selectionChanged(
       selectedCount > 1
@@ -8162,7 +8428,9 @@ void SketchCanvas::selectAt(QPointF position, bool additive,
                 ? QString::fromUtf8("Объект: линия")
                 : hitKind == SelectionKind::Circle
                       ? QString::fromUtf8("Объект: окружность")
-                      : QString::fromUtf8("Объект: дуга"));
+                      : hitKind == SelectionKind::Arc
+                            ? QString::fromUtf8("Объект: дуга")
+                            : QString::fromUtf8("Объект: кривая Безье"));
 
   emit lineStyleSelectionChanged(selectedCount > 0, hitDashed);
   update();
@@ -8201,13 +8469,18 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
             !arcSelected(hit->geometryId))
           selectedArcIds_.push_back(hit->geometryId);
         break;
+      case SketchPickEntityKind::Bezier:
+        if (sketch_.bezierIndex(hit->geometryId) &&
+            !bezierSelected(hit->geometryId))
+          selectedBezierIds_.push_back(hit->geometryId);
+        break;
     }
   }
 
   const std::size_t selectedCount =
       selectedLineIds_.size() + selectedElementIds_.size() +
       selectedCircleIds_.size() +
-      selectedArcIds_.size();
+      selectedArcIds_.size() + selectedBezierIds_.size();
 
   if (!selectedLineIds_.empty()) {
     const auto lineId = selectedLineIds_.back();
@@ -8250,6 +8523,12 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
     const auto index = sketch_.arcIndex(selectionArcId_);
     emit lineStyleSelectionChanged(
         true, index && sketch_.arcs()[*index].dashed);
+  } else if (!selectedBezierIds_.empty()) {
+    selectionKind_ = SelectionKind::Bezier;
+    selectionBezierId_ = selectedBezierIds_.back();
+    const auto index = sketch_.bezierIndex(selectionBezierId_);
+    emit lineStyleSelectionChanged(
+        true, index && sketch_.beziers()[*index].dashed);
   } else {
     clearGeometrySelection();
     emit lineStyleSelectionChanged(false, false);
@@ -8273,6 +8552,38 @@ void SketchCanvas::commitPoint(sketch::Point point) {
   }
   if (tool() == Tool::Arc) {
     commitArcPoint(point);
+    return;
+  }
+  if (tool() == Tool::Bezier) {
+    auto points = interactionState().creation.bezierPoints;
+    points.push_back(point);
+    if (points.size() < 4) {
+      interaction_.appendBezierPoint(point);
+      hoverPoint_ = point;
+      emit selectionChanged(
+          QString::fromUtf8("Безье: точка %1 из 4").arg(points.size()));
+      update();
+      return;
+    }
+    pushUndoState();
+    const auto creation = executeCommand(AddBezierCommand{
+        points[0], points[1], points[2], points[3], false});
+    if (!creation.accepted) {
+      cancelPendingUndo();
+      return;
+    }
+    if (!executeCommand(AutoConstrainNewGeometryCommand{
+             creation.changedGeometryIds,
+             8.0 / std::max(0.001, pixelsPerMm_)})
+             .accepted) {
+      cancelPendingUndo();
+      return;
+    }
+    interaction_.clearBezierPoints();
+    interaction_.completeCreation();
+    notifyGeometryChanged();
+    emit selectionChanged(QString::fromUtf8("Кривая Безье создана"));
+    update();
     return;
   }
   if (!interactionState().creation.anchor) {
@@ -9779,18 +10090,23 @@ void SketchCanvas::setSelectedDashed(bool dashed) {
   command.elementIds = selectedElementIds_;
   command.circleIds = selectedCircleIds_;
   command.arcIds = selectedArcIds_;
+  command.bezierIds = selectedBezierIds_;
   command.dashed = dashed;
   if (command.lineIds.empty() && command.elementIds.empty() &&
-      command.circleIds.empty() && command.arcIds.empty()) {
+      command.circleIds.empty() && command.arcIds.empty() &&
+      command.bezierIds.empty()) {
     if (selectionKind_ == SelectionKind::Line)
       command.lineIds.push_back(selectionLineId_);
     else if (selectionKind_ == SelectionKind::Circle)
       command.circleIds.push_back(selectionCircleId_);
     else if (selectionKind_ == SelectionKind::Arc)
       command.arcIds.push_back(selectionArcId_);
+    else if (selectionKind_ == SelectionKind::Bezier)
+      command.bezierIds.push_back(selectionBezierId_);
   }
   if (command.lineIds.empty() && command.elementIds.empty() &&
-      command.circleIds.empty() && command.arcIds.empty())
+      command.circleIds.empty() && command.arcIds.empty() &&
+      command.bezierIds.empty())
     return;
   pushUndoState();
   const auto result = executeCommand(command);
@@ -10076,7 +10392,7 @@ void SketchCanvas::runConstraintDiagnostics() {
   QString constraintText;
 
   if (sketch_.lines().empty() && sketch_.circles().empty() &&
-      sketch_.arcs().empty()) {
+      sketch_.arcs().empty() && sketch_.beziers().empty()) {
     constraintText =
         QString::fromUtf8("Эскиз пуст");
   } else if (constraintState.conflicting) {

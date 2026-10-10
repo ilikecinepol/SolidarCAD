@@ -5,6 +5,7 @@
 #include <QPolygonF>
 #include <QString>
 #include <QOpenGLWidget>
+#include <QImage>
 #include <array>
 #include <vector>
 #include <optional>
@@ -93,6 +94,7 @@ class Viewport final : public QOpenGLWidget {
   void removeSketch(std::size_t index);
   void replaceSketchPresentations(
       std::vector<SketchPresentationSnapshot> sketches);
+  void setReferenceImages(const std::vector<ReferenceImage>& images);
   void setSketchVisible(std::size_t index, bool visible);
   void setOriginVisible(bool visible);
   void setBasePlaneVisible(int plane, bool visible);
@@ -103,6 +105,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool sketchPlaneSelectionActive() const noexcept;
   void resetScene();
   void beginSketchPlaneSelection();
+  void beginImagePlaneSelection();
   void beginMirrorBodySelection();
   void beginMirrorPlaneSelection();
   void showMirrorPlaneSelection(int planeIndex);
@@ -189,6 +192,10 @@ class Viewport final : public QOpenGLWidget {
   linearToolManipulator() const noexcept { return toolManipulator_; }
   void setTranslationToolManipulator(
       const TranslationToolManipulator& manipulator);
+  void setReferenceImageManipulator(const ReferenceImage& image);
+  [[nodiscard]] bool referenceImageManipulatorActive() const noexcept {
+    return referenceImageManipulatorActive_;
+  }
   [[nodiscard]] const std::optional<TranslationToolManipulator>&
   translationToolManipulator() const noexcept {
     return translationToolManipulator_;
@@ -238,6 +245,7 @@ class Viewport final : public QOpenGLWidget {
   void selectionChanged(const QString& description);
   void interactionCancelled(ViewportCancelReason reason);
   void sketchPlanePicked(const SketchPlanePick& pick);
+  void imagePlanePicked(const SketchPlanePick& pick);
   void mirrorBodyPicked(BodyId bodyId);
   void mirrorPlanePicked(int planeIndex);
   void moveBodyPicked(BodyId bodyId);
@@ -257,6 +265,10 @@ class Viewport final : public QOpenGLWidget {
   void bodiesSelected(const std::vector<BodyId>& ids);
   void toolManipulatorValueChanged(double valueMm);
   void translationToolManipulatorValueChanged(int axisIndex, double valueMm);
+  // parameterIndex: 0/1/2 = local X/Y/Z offset in millimetres, 3 = scale in
+  // percent. Continuous drag/editor updates are committed by MainWindow when
+  // the gesture or HUD edit finishes.
+  void referenceImageParameterChanged(int parameterIndex, double value);
   void angularToolManipulatorValueChanged(double angleDeg);
   void toolManipulatorDragFinished();
   void extrusionManipulatorDragFinished();
@@ -353,6 +365,7 @@ class Viewport final : public QOpenGLWidget {
   enum class PickMode {
     None,
     SketchPlane,
+    ImagePlane,
     ExtrusionSurface,
     RevolveAxis,
     MirrorBody,
@@ -436,6 +449,11 @@ class Viewport final : public QOpenGLWidget {
     bool visible{true};
   };
   std::vector<DisplaySketch> displaySketches_;
+  struct DisplayReferenceImage {
+    ReferenceImage model;
+    QImage pixels;
+  };
+  std::vector<DisplayReferenceImage> referenceImages_;
   bool originVisible_{true};
   bool basePlanesVisible_[3]{false, false, false};
   PickMode pickMode_{PickMode::None};
@@ -493,6 +511,7 @@ class Viewport final : public QOpenGLWidget {
   bool draggingExtrusionHandle_{false};
   std::optional<LinearToolManipulator> toolManipulator_;
   std::optional<TranslationToolManipulator> translationToolManipulator_;
+  bool referenceImageManipulatorActive_{false};
   std::optional<AngularToolManipulator> angularToolManipulator_;
   ManipulatorStyle manipulatorStyle_;
   bool draggingToolManipulator_{false};

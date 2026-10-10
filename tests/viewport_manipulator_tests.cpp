@@ -4,6 +4,7 @@
 #include <TopoDS_Shape.hxx>
 
 #include <QApplication>
+#include <QDoubleSpinBox>
 #include <QLineF>
 #include <QMouseEvent>
 #include <array>
@@ -57,9 +58,6 @@ QPointF linearHandle(const solidar::Viewport& view,
 QPointF translationHandle(
     const solidar::Viewport& view,
     const solidar::TranslationToolManipulator& manipulator, int axisIndex) {
-  const std::array<solidar::Vector3d, 3> axes{{{1.0, 0.0, 0.0},
-                                               {0.0, 1.0, 0.0},
-                                               {0.0, 0.0, 1.0}}};
   const std::array<QPointF, 3> fallbacks{{{1.0, 0.0},
                                           {-0.7, 0.7},
                                           {0.0, -1.0}}};
@@ -67,7 +65,7 @@ QPointF translationHandle(
       view.cameraYawDegrees(), view.cameraPitchDegrees(), 1.0F, {}, view.size(),
       1.0F, manipulator.origin, 1.0};
   const QPointF anchor = camera.worldToScreen(manipulator.origin);
-  const auto axis = axes[axisIndex];
+  const auto axis = manipulator.axes[axisIndex];
   const solidar::Point3d endpoint{manipulator.origin.x + axis.x,
                                    manipulator.origin.y + axis.y,
                                    manipulator.origin.z + axis.z};
@@ -240,6 +238,67 @@ int main(int argc, char** argv) {
           Qt::NoButton);
     moveView.clearToolManipulator();
     CHECK(!moveView.translationToolManipulator().has_value());
+  }
+
+  // A selected reference image uses the same triad interaction as Move, but
+  // its axes follow the image plane. The adjacent HUD exposes local X/Y/Z and
+  // a fourth scale field.
+  {
+    solidar::ReferenceImage image;
+    image.id = 91;
+    image.placement = solidar::SketchPlacement::xz();
+    image.offsetXMm = 4.0;
+    image.offsetYMm = -6.0;
+    image.offsetZMm = 2.0;
+    image.scale = 1.25;
+    image.pixelWidth = 640;
+    image.pixelHeight = 480;
+    image.visible = true;
+
+    solidar::Viewport imageView;
+    imageView.resize(800, 600);
+    imageView.setReferenceImageManipulator(image);
+    CHECK(imageView.referenceImageManipulatorActive());
+    CHECK(imageView.translationToolManipulator().has_value());
+    const auto manipulator = *imageView.translationToolManipulator();
+    CHECK(manipulator.axes[0].x == image.placement.xDirection.x);
+    CHECK(manipulator.axes[1].z == image.placement.yDirection.z);
+    CHECK(manipulator.offsetMm.z == image.offsetZMm);
+    CHECK(imageView.findChild<QDoubleSpinBox*>("image_offset_x"));
+    CHECK(imageView.findChild<QDoubleSpinBox*>("image_offset_y"));
+    CHECK(imageView.findChild<QDoubleSpinBox*>("image_offset_z"));
+    auto* scale = imageView.findChild<QDoubleSpinBox*>("image_scale");
+    CHECK(scale);
+    CHECK(std::abs(scale->value() - 125.0) < 1e-9);
+
+    int parameterIndex = -1;
+    double parameterValue = 0.0;
+    QObject::connect(
+        &imageView, &solidar::Viewport::referenceImageParameterChanged,
+        &imageView, [&](int index, double value) {
+          parameterIndex = index;
+          parameterValue = value;
+        });
+    scale->setValue(140.0);
+    CHECK(parameterIndex == 3);
+    CHECK(std::abs(parameterValue - 140.0) < 1e-9);
+
+    const QPointF handle = translationHandle(imageView, manipulator, 1);
+    const QPointF anchor = solidar::ViewportCameraState{
+                               imageView.cameraYawDegrees(),
+                               imageView.cameraPitchDegrees(), 1.0F, {},
+                               imageView.size(), 1.0F, manipulator.origin, 1.0}
+                               .worldToScreen(manipulator.origin);
+    const QPointF direction =
+        (handle - anchor) / QLineF(anchor, handle).length();
+    mouse(imageView, QEvent::MouseButtonPress, handle, Qt::LeftButton,
+          Qt::LeftButton);
+    mouse(imageView, QEvent::MouseMove, handle + direction * 20.0,
+          Qt::NoButton, Qt::LeftButton);
+    CHECK(parameterIndex == 1);
+    CHECK(parameterValue > image.offsetYMm);
+    mouse(imageView, QEvent::MouseButtonRelease, handle, Qt::LeftButton,
+          Qt::NoButton);
   }
 
   // Zero-value (Fillet/Chamfer-like) manipulator: the presentation direction is

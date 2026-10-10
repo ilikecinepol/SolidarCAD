@@ -87,9 +87,13 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
       QString::fromUtf8("Проекция существующего ребра в эскиз"));
   auto* arc = toolButton(ToolIconKind::Arc,
                          QString::fromUtf8("Дуга по 3 точкам"), this);
+  auto* bezier = toolButton(ToolIconKind::Bezier,
+                            QString::fromUtf8("Кривая Безье"), this);
+  bezier->setToolTip(QString::fromUtf8(
+      "Кривая Безье по 4 точкам: начало, две опорные, конец"));
   auto* toolGroup = new QButtonGroup(this);
   toolGroup->setExclusive(true);
-  for (auto* button : {line, rectangle, circle, arc, projection})
+  for (auto* button : {line, rectangle, circle, arc, bezier, projection})
     toolGroup->addButton(button);
 
   auto* creationLayout = new QHBoxLayout;
@@ -99,9 +103,10 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   creationLayout->addWidget(circle);
   creationLayout->addWidget(projection);
   creationLayout->addWidget(arc);
+  creationLayout->addWidget(bezier);
   root->addWidget(groupWidget(
       QString::fromUtf8("СОЗДАНИЕ"), creationLayout, this,
-      {line, rectangle, circle, projection, arc}));
+      {line, rectangle, circle, projection, arc, bezier}));
 
   auto* separator1 = new QFrame(this);
   separator1->setFrameShape(QFrame::VLine);
@@ -213,6 +218,8 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           [canvas] { canvas->setTool(SketchCanvas::Tool::Circle); });
   connect(arc, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::Arc); });
+  connect(bezier, &QPushButton::clicked, canvas,
+          [canvas] { canvas->setTool(SketchCanvas::Tool::Bezier); });
   connect(projection, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::Projection); });
   connect(mirror, &QPushButton::clicked, canvas,

@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QColor>
+#include <QImage>
 #include <QPalette>
 #include <QSize>
+#include <QString>
 
 #include <array>
 #include <cstddef>
@@ -29,6 +31,21 @@ struct SketchSceneReference {
   SketchPlacement placement{SketchPlacement::xy()};
 };
 
+// Render-only reference image. Pixels are loaded before a frame is built, so
+// painting the sketch never performs file I/O and cannot retain Document
+// state. QImage copies remain cheap through Qt's implicit sharing.
+struct SketchSceneImageReference {
+  QString name;
+  QImage pixels;
+  SketchPlacement placement{SketchPlacement::xy()};
+  double offsetXMm{};
+  double offsetYMm{};
+  double offsetZMm{};
+  double scale{1.0};
+  int pixelWidth{};
+  int pixelHeight{};
+};
+
 // Render-only geometry detached from the mutable Sketch model. Stable IDs are
 // retained so transient tool state can be revalidated against an immutable
 // frame scene without positional identities escaping the frame.
@@ -53,9 +70,11 @@ struct SketchRenderGeometry {
   std::vector<sketch::Line> linePrimitives;
   std::vector<sketch::Circle> circlePrimitives;
   std::vector<sketch::Arc> arcPrimitives;
+  std::vector<sketch::Bezier> bezierPrimitives;
   std::vector<sketch::GeometryId> lineIds;
   std::vector<sketch::GeometryId> circleIds;
   std::vector<sketch::GeometryId> arcIds;
+  std::vector<sketch::GeometryId> bezierIds;
   std::vector<sketch::Dimension> dimensionPrimitives;
   std::vector<sketch::Constraint> constraintPrimitives;
   std::vector<std::size_t> centerNodeElementIdsData;
@@ -68,6 +87,9 @@ struct SketchRenderGeometry {
   }
   [[nodiscard]] const std::vector<sketch::Arc>& arcs() const noexcept {
     return arcPrimitives;
+  }
+  [[nodiscard]] const std::vector<sketch::Bezier>& beziers() const noexcept {
+    return bezierPrimitives;
   }
   [[nodiscard]] const std::vector<sketch::Dimension>& dimensions()
       const noexcept {
@@ -88,11 +110,14 @@ struct SketchRenderGeometry {
       sketch::GeometryId id) const noexcept;
   [[nodiscard]] std::optional<std::size_t> arcIndex(
       sketch::GeometryId id) const noexcept;
+  [[nodiscard]] std::optional<std::size_t> bezierIndex(
+      sketch::GeometryId id) const noexcept;
   [[nodiscard]] std::optional<std::size_t> dimensionIndex(
       sketch::DimensionId id) const noexcept;
   [[nodiscard]] sketch::GeometryId lineId(std::size_t index) const noexcept;
   [[nodiscard]] sketch::GeometryId circleId(std::size_t index) const noexcept;
   [[nodiscard]] sketch::GeometryId arcId(std::size_t index) const noexcept;
+  [[nodiscard]] sketch::GeometryId bezierId(std::size_t index) const noexcept;
   [[nodiscard]] bool isGeometryLocked(sketch::GeometryId id) const noexcept;
   [[nodiscard]] std::optional<sketch::Point> elementCenterPoint(
       std::size_t elementId) const noexcept;
@@ -108,6 +133,7 @@ struct SketchRenderGeometry {
   std::unordered_map<sketch::GeometryId, std::size_t> lineIndexById_;
   std::unordered_map<sketch::GeometryId, std::size_t> circleIndexById_;
   std::unordered_map<sketch::GeometryId, std::size_t> arcIndexById_;
+  std::unordered_map<sketch::GeometryId, std::size_t> bezierIndexById_;
   std::unordered_map<sketch::DimensionId, std::size_t> dimensionIndexById_;
   std::unordered_map<sketch::GeometryId, Style> styleById_;
   std::unordered_map<std::size_t, sketch::Point> elementCenterById_;
@@ -127,6 +153,7 @@ struct SketchRenderScene {
   SketchRenderGeometry sketch;
   SketchRenderGeometry referenceProfile;
   std::vector<SketchRenderSceneReference> sceneSketches;
+  std::vector<SketchSceneImageReference> sceneImages;
   std::shared_ptr<const BodyRenderMesh> referenceBodyMesh;
   std::shared_ptr<const BodyRenderMesh> referenceFaceMesh;
   std::vector<std::shared_ptr<const BodyRenderMesh>> sceneBodyMeshes;
@@ -155,7 +182,8 @@ class SketchRenderSceneCache final {
       const SketchPlacement& referencePlacement,
       double referenceWidthMm, double referenceDepthMm,
       double referenceHeightMm, bool referenceBodyVisible,
-      bool realReferenceBodyVisible, bool referenceProfileVisible);
+      bool realReferenceBodyVisible, bool referenceProfileVisible,
+      std::span<const SketchSceneImageReference> sceneImages = {});
   void invalidate() noexcept;
   [[nodiscard]] std::size_t buildCount() const noexcept;
 
@@ -215,7 +243,7 @@ enum class SketchRenderCircleMode {
 };
 
 enum class SketchRenderRectangleMode { TwoPoints, ThreePoints, FromCenter };
-enum class SketchRenderSelectionKind { None, Line, Circle, Arc };
+enum class SketchRenderSelectionKind { None, Line, Circle, Arc, Bezier };
 enum class SketchRenderSnapKind {
   None,
   LinePoint,
@@ -261,11 +289,13 @@ struct SketchRenderSnapshot {
   sketch::GeometryId selectionCircleId{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionLineId{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionArcId{sketch::kInvalidGeometryId};
+  sketch::GeometryId selectionBezierId{sketch::kInvalidGeometryId};
   std::size_t selectionElementId{};
   std::vector<sketch::GeometryId> selectedLineIds;
   std::vector<std::size_t> selectedElementIds;
   std::vector<sketch::GeometryId> selectedCircleIds;
   std::vector<sketch::GeometryId> selectedArcIds;
+  std::vector<sketch::GeometryId> selectedBezierIds;
   sketch::Point hoverPoint{};
   std::optional<SketchRenderSnap> constructionHover;
   std::optional<SketchProjectionEdgeToken> hoveredProjectionEdge;

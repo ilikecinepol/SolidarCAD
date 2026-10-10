@@ -135,7 +135,8 @@ bool validPointReference(const sketch::Sketch& model,
                           (reference.elementCenterId != 0 ? 1 : 0) +
                           (reference.lineId != sketch::kInvalidGeometryId ? 1 : 0) +
                           (reference.circleId != sketch::kInvalidGeometryId ? 1 : 0) +
-                          (reference.arcId != sketch::kInvalidGeometryId ? 1 : 0);
+                          (reference.arcId != sketch::kInvalidGeometryId ? 1 : 0) +
+                          (reference.bezierId != sketch::kInvalidGeometryId ? 1 : 0);
   if (sourceCount != 1) return false;
   if (reference.origin) return true;
   return model.referencedPoint(reference).has_value();
@@ -147,7 +148,8 @@ bool validConstraintReferences(const sketch::Sketch& model,
     return !point.origin && point.elementCenterId == 0 &&
            point.lineId == sketch::kInvalidGeometryId &&
            point.circleId == sketch::kInvalidGeometryId &&
-           point.arcId == sketch::kInvalidGeometryId;
+           point.arcId == sketch::kInvalidGeometryId &&
+           point.bezierId == sketch::kInvalidGeometryId;
   };
   if (!finite(constraint.value)) return false;
   const auto first = model.geometryLocation(constraint.firstGeometry);
@@ -265,6 +267,12 @@ bool samePointReference(sketch::PointReference first,
     return first.arcId != sketch::kInvalidGeometryId &&
            second.arcId != sketch::kInvalidGeometryId &&
            first.arcId == second.arcId && first.start == second.start;
+  if (first.bezierId != sketch::kInvalidGeometryId ||
+      second.bezierId != sketch::kInvalidGeometryId)
+    return first.bezierId != sketch::kInvalidGeometryId &&
+           second.bezierId != sketch::kInvalidGeometryId &&
+           first.bezierId == second.bezierId &&
+           first.bezierPoint == second.bezierPoint;
   return first.lineId != sketch::kInvalidGeometryId &&
          second.lineId != sketch::kInvalidGeometryId &&
          first.lineId == second.lineId && first.start == second.start;
@@ -343,6 +351,13 @@ void autoCoincidentNewGeometry(
                  first.start == second.start;
         }
 
+        if (first.bezierId != sketch::kInvalidGeometryId ||
+            second.bezierId != sketch::kInvalidGeometryId)
+          return first.bezierId != sketch::kInvalidGeometryId &&
+                 second.bezierId != sketch::kInvalidGeometryId &&
+                 first.bezierId == second.bezierId &&
+                 first.bezierPoint == second.bezierPoint;
+
         return first.lineId == second.lineId &&
                first.start == second.start;
       };
@@ -394,6 +409,16 @@ void autoCoincidentNewGeometry(
     addOldReference(endpoint);
     endpoint.start = false;
     addOldReference(endpoint);
+  }
+  for (std::size_t index = 0; index < sketch.beziers().size(); ++index) {
+    const auto id = sketch.bezierId(index);
+    if (id == sketch::kInvalidGeometryId || isNew(id)) continue;
+    for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      sketch::PointReference reference;
+      reference.bezierId = id;
+      reference.bezierPoint = pointIndex;
+      addOldReference(reference);
+    }
   }
 
   // Existing virtual centers of composite elements are CAD points too.
@@ -481,6 +506,16 @@ void autoCoincidentNewGeometry(
     addNewReference(endpoint);
     endpoint.start = false;
     addNewReference(endpoint);
+  }
+  for (std::size_t index = 0; index < sketch.beziers().size(); ++index) {
+    const auto id = sketch.bezierId(index);
+    if (id == sketch::kInvalidGeometryId || !isNew(id)) continue;
+    for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      sketch::PointReference reference;
+      reference.bezierId = id;
+      reference.bezierPoint = pointIndex;
+      addNewReference(reference);
+    }
   }
 
   // Newly created center-based rectangles expose a virtual center node.
@@ -910,6 +945,18 @@ SketchCommandResult SketchCommandController::execute(
             auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(model.arcId(before));
             return value;
+          } else if constexpr (std::is_same_v<T, AddBezierCommand>) {
+            if (!finite(typed.start) || !finite(typed.control1) ||
+                !finite(typed.control2) || !finite(typed.end))
+              return rejected(SketchCommandError::InvalidInput);
+            const auto before = model.beziers().size();
+            model.addBezier(typed.start, typed.control1, typed.control2,
+                            typed.end, typed.dashed);
+            if (model.beziers().size() != before + 1)
+              return rejected(SketchCommandError::MutationRejected);
+            auto value = accepted(geometryEffects());
+            value.changedGeometryIds.push_back(model.bezierId(before));
+            return value;
           } else if constexpr (std::is_same_v<T, ProjectGeometryCommand>) {
             auto value = accepted(constraintEffects());
             const bool created = std::visit(
@@ -1076,7 +1123,7 @@ SketchCommandResult SketchCommandController::execute(
                       const auto id = model.circleId(index);
                       if (item.dashed) model.setCircleDashedById(id, true);
                       value.changedGeometryIds.push_back(id);
-                    } else {
+                    } else if constexpr (std::is_same_v<P, AddArcCommand>) {
                       if (!finite(item.center) || !finite(item.radiusMm) ||
                           !finite(item.startAngleRad) ||
                           !finite(item.sweepAngleRad) ||
@@ -1088,6 +1135,15 @@ SketchCommandResult SketchCommandController::execute(
                                    item.dashed);
                       if (model.arcs().size() != index + 1) return false;
                       value.changedGeometryIds.push_back(model.arcId(index));
+                    } else {
+                      if (!finite(item.start) || !finite(item.control1) ||
+                          !finite(item.control2) || !finite(item.end))
+                        return false;
+                      const auto index = model.beziers().size();
+                      model.addBezier(item.start, item.control1, item.control2,
+                                      item.end, item.dashed);
+                      if (model.beziers().size() != index + 1) return false;
+                      value.changedGeometryIds.push_back(model.bezierId(index));
                     }
                     return true;
                   },
@@ -1109,6 +1165,9 @@ SketchCommandResult SketchCommandController::execute(
                 break;
               case sketch::GeometryKind::Arc:
                 model.removeArc(location->index);
+                break;
+              case sketch::GeometryKind::Bezier:
+                model.removeBezier(location->index);
                 break;
             }
             auto value = accepted(geometryEffects());
@@ -1160,6 +1219,9 @@ SketchCommandResult SketchCommandController::execute(
                   break;
                 case sketch::GeometryKind::Arc:
                   model.removeArc(location->index);
+                  break;
+                case sketch::GeometryKind::Bezier:
+                  model.removeBezier(location->index);
                   break;
               }
             }
@@ -1685,6 +1747,18 @@ SketchCommandResult SketchCommandController::execute(
             auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(typed.id);
             return value;
+          } else if constexpr (std::is_same_v<T, SetBezierDashedCommand>) {
+            const auto index = model.bezierIndex(typed.id);
+            if (!index)
+              return rejected(SketchCommandError::StaleReference);
+            if (model.isGeometryLocked(typed.id))
+              return rejected(SketchCommandError::Conflict);
+            if (model.beziers()[*index].dashed == typed.dashed)
+              return accepted();
+            model.setBezierDashedById(typed.id, typed.dashed);
+            auto value = accepted(geometryEffects());
+            value.changedGeometryIds.push_back(typed.id);
+            return value;
           } else if constexpr (std::is_same_v<T, SetElementDashedCommand>) {
             if (typed.elementId == 0)
               return rejected(SketchCommandError::InvalidInput);
@@ -1706,7 +1780,8 @@ SketchCommandResult SketchCommandController::execute(
             return value;
           } else if constexpr (std::is_same_v<T, SetSelectionDashedCommand>) {
             if (typed.lineIds.empty() && typed.elementIds.empty() &&
-                typed.circleIds.empty() && typed.arcIds.empty())
+                typed.circleIds.empty() && typed.arcIds.empty() &&
+                typed.bezierIds.empty())
               return rejected(SketchCommandError::InvalidInput);
             if (std::any_of(typed.lineIds.begin(), typed.lineIds.end(),
                             [&model](sketch::GeometryId id) {
@@ -1719,6 +1794,10 @@ SketchCommandResult SketchCommandController::execute(
                 std::any_of(typed.arcIds.begin(), typed.arcIds.end(),
                             [&model](sketch::GeometryId id) {
                               return !model.arcIndex(id);
+                            }) ||
+                std::any_of(typed.bezierIds.begin(), typed.bezierIds.end(),
+                            [&model](sketch::GeometryId id) {
+                              return !model.bezierIndex(id);
                             }))
               return rejected(SketchCommandError::StaleReference);
             for (const auto elementId : typed.elementIds)
@@ -1737,6 +1816,10 @@ SketchCommandResult SketchCommandController::execute(
                               return model.isGeometryLocked(id);
                             }) ||
                 std::any_of(typed.arcIds.begin(), typed.arcIds.end(),
+                            [&model](sketch::GeometryId id) {
+                              return model.isGeometryLocked(id);
+                            }) ||
+                std::any_of(typed.bezierIds.begin(), typed.bezierIds.end(),
                             [&model](sketch::GeometryId id) {
                               return model.isGeometryLocked(id);
                             }))
@@ -1762,6 +1845,11 @@ SketchCommandResult SketchCommandController::execute(
               if (model.arcs()[*index].dashed != typed.dashed)
                 value.changedGeometryIds.push_back(id);
             }
+            for (const auto id : typed.bezierIds) {
+              const auto index = model.bezierIndex(id);
+              if (model.beziers()[*index].dashed != typed.dashed)
+                value.changedGeometryIds.push_back(id);
+            }
             if (value.changedGeometryIds.empty()) return accepted();
             for (const auto id : typed.lineIds)
               model.setLineDashedById(id, typed.dashed);
@@ -1771,6 +1859,8 @@ SketchCommandResult SketchCommandController::execute(
               model.setCircleDashedById(id, typed.dashed);
             for (const auto id : typed.arcIds)
               model.setArcDashedById(id, typed.dashed);
+            for (const auto id : typed.bezierIds)
+              model.setBezierDashedById(id, typed.dashed);
             return value;
           } else if constexpr (std::is_same_v<T, TranslatePointCommand>) {
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
@@ -1810,7 +1900,7 @@ SketchCommandResult SketchCommandController::execute(
           } else if constexpr (std::is_same_v<T, TranslateSelectionCommand>) {
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
                 (typed.elementIds.empty() && typed.circleIds.empty() &&
-                 typed.arcIds.empty()))
+                 typed.arcIds.empty() && typed.bezierIds.empty()))
               return rejected(SketchCommandError::InvalidInput);
             if (std::any_of(typed.circleIds.begin(), typed.circleIds.end(),
                             [&model](sketch::GeometryId id) {
@@ -1819,6 +1909,10 @@ SketchCommandResult SketchCommandController::execute(
                 std::any_of(typed.arcIds.begin(), typed.arcIds.end(),
                             [&model](sketch::GeometryId id) {
                               return !model.arcIndex(id);
+                            }) ||
+                std::any_of(typed.bezierIds.begin(), typed.bezierIds.end(),
+                            [&model](sketch::GeometryId id) {
+                              return !model.bezierIndex(id);
                             }))
               return rejected(SketchCommandError::StaleReference);
             for (const auto elementId : typed.elementIds)
@@ -1836,10 +1930,15 @@ SketchCommandResult SketchCommandController::execute(
                 std::any_of(typed.arcIds.begin(), typed.arcIds.end(),
                             [&model](sketch::GeometryId id) {
                               return model.isGeometryLocked(id);
+                            }) ||
+                std::any_of(typed.bezierIds.begin(), typed.bezierIds.end(),
+                            [&model](sketch::GeometryId id) {
+                              return model.isGeometryLocked(id);
                             }))
               return rejected(SketchCommandError::Conflict);
             model.translateSelection(typed.elementIds, typed.circleIds,
-                                     typed.arcIds, typed.dxMm, typed.dyMm);
+                                     typed.arcIds, typed.bezierIds,
+                                     typed.dxMm, typed.dyMm);
             auto value = accepted(geometryEffects());
             value.changedGeometryIds =
                 elementGeometryIds(model, typed.elementIds);
@@ -1849,6 +1948,9 @@ SketchCommandResult SketchCommandController::execute(
             value.changedGeometryIds.insert(value.changedGeometryIds.end(),
                                             typed.arcIds.begin(),
                                             typed.arcIds.end());
+            value.changedGeometryIds.insert(value.changedGeometryIds.end(),
+                                            typed.bezierIds.begin(),
+                                            typed.bezierIds.end());
             return value;
           } else if constexpr (std::is_same_v<T, TranslateCircleCommand>) {
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
@@ -1869,6 +1971,17 @@ SketchCommandResult SketchCommandController::execute(
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
             model.translateArcById(typed.id, typed.dxMm, typed.dyMm);
+            auto value = accepted(geometryEffects());
+            value.changedGeometryIds.push_back(typed.id);
+            return value;
+          } else if constexpr (std::is_same_v<T, TranslateBezierCommand>) {
+            if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
+                !model.bezierIndex(typed.id))
+              return rejected(SketchCommandError::StaleReference);
+            if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
+            if (model.isGeometryLocked(typed.id))
+              return rejected(SketchCommandError::Conflict);
+            model.translateBezierById(typed.id, typed.dxMm, typed.dyMm);
             auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(typed.id);
             return value;
@@ -1941,6 +2054,19 @@ SketchCommandResult SketchCommandController::execute(
                   value.changedGeometryIds.push_back(model.arcId(index));
                   break;
                 }
+                case sketch::GeometryKind::Bezier: {
+                  const auto source = model.beziers()[location->index];
+                  std::array<sketch::Point, 4> points{};
+                  for (std::size_t point = 0; point < points.size(); ++point)
+                    points[point] = mirrored(source.points[point]);
+                  const auto index = model.beziers().size();
+                  model.addBezier(points[0], points[1], points[2], points[3],
+                                  source.dashed);
+                  if (model.beziers().size() != index + 1)
+                    return rejected(SketchCommandError::MutationRejected);
+                  value.changedGeometryIds.push_back(model.bezierId(index));
+                  break;
+                }
               }
             }
             struct Endpoint {
@@ -1964,6 +2090,15 @@ SketchCommandResult SketchCommandController::execute(
                 second.start = false;
                 endpoints.push_back({first, sketch::arcStartPoint(arc)});
                 endpoints.push_back({second, sketch::arcEndPoint(arc)});
+              } else if (location->kind == sketch::GeometryKind::Bezier) {
+                const auto& bezier = model.beziers()[location->index];
+                sketch::PointReference first;
+                first.bezierId = id;
+                first.bezierPoint = 0;
+                auto second = first;
+                second.bezierPoint = 3;
+                endpoints.push_back({first, bezier.points[0]});
+                endpoints.push_back({second, bezier.points[3]});
               }
             }
             for (std::size_t first = 0; first < endpoints.size(); ++first) {
@@ -1980,7 +2115,11 @@ SketchCommandResult SketchCommandController::execute(
                     (endpoints[first].reference.arcId !=
                          sketch::kInvalidGeometryId &&
                      endpoints[first].reference.arcId ==
-                         endpoints[second].reference.arcId);
+                         endpoints[second].reference.arcId) ||
+                    (endpoints[first].reference.bezierId !=
+                         sketch::kInvalidGeometryId &&
+                     endpoints[first].reference.bezierId ==
+                         endpoints[second].reference.bezierId);
                 if (sameGeometry) continue;
                 sketch::Constraint coincident;
                 coincident.type = sketch::ConstraintType::Coincident;
@@ -2058,7 +2197,7 @@ SketchCommandResult SketchCommandController::execute(
                     return rejected(SketchCommandError::MutationRejected);
                 }
               }
-            } else {
+            } else if (location->kind == sketch::GeometryKind::Arc) {
               const auto source = model.arcs()[location->index];
               model.removeArc(location->index);
               for (const auto interval :
@@ -2072,6 +2211,54 @@ SketchCommandResult SketchCommandController::execute(
                                 source.sweepAngleRad * interval.first,
                             sweep, source.dashed))
                   return rejected(SketchCommandError::MutationRejected);
+              }
+            } else {
+              const auto source = model.beziers()[location->index];
+              const auto lerp = [](sketch::Point first, sketch::Point second,
+                                   double parameter) {
+                return sketch::Point{
+                    first.xMm + (second.xMm - first.xMm) * parameter,
+                    first.yMm + (second.yMm - first.yMm) * parameter};
+              };
+              const auto split = [&lerp](const std::array<sketch::Point, 4>& p,
+                                         double parameter) {
+                const auto p01 = lerp(p[0], p[1], parameter);
+                const auto p12 = lerp(p[1], p[2], parameter);
+                const auto p23 = lerp(p[2], p[3], parameter);
+                const auto p012 = lerp(p01, p12, parameter);
+                const auto p123 = lerp(p12, p23, parameter);
+                const auto p0123 = lerp(p012, p123, parameter);
+                return std::pair{
+                    std::array<sketch::Point, 4>{p[0], p01, p012, p0123},
+                    std::array<sketch::Point, 4>{p0123, p123, p23, p[3]}};
+              };
+              const auto firstSplit = split(source.points,
+                                            typed.firstParameter);
+              const double rightParameter =
+                  typed.firstParameter >= 1.0
+                      ? 1.0
+                      : (typed.secondParameter - typed.firstParameter) /
+                            (1.0 - typed.firstParameter);
+              const auto secondSplit = split(firstSplit.second,
+                                             rightParameter);
+              model.removeBezier(location->index);
+              if (typed.firstParameter > minimumInterval) {
+                const auto index = model.beziers().size();
+                model.addBezier(firstSplit.first[0], firstSplit.first[1],
+                                firstSplit.first[2], firstSplit.first[3],
+                                source.dashed);
+                if (model.beziers().size() != index + 1)
+                  return rejected(SketchCommandError::MutationRejected);
+                value.changedGeometryIds.push_back(model.bezierId(index));
+              }
+              if (1.0 - typed.secondParameter > minimumInterval) {
+                const auto index = model.beziers().size();
+                model.addBezier(secondSplit.second[0], secondSplit.second[1],
+                                secondSplit.second[2], secondSplit.second[3],
+                                source.dashed);
+                if (model.beziers().size() != index + 1)
+                  return rejected(SketchCommandError::MutationRejected);
+                value.changedGeometryIds.push_back(model.bezierId(index));
               }
             }
             return value;
@@ -2173,7 +2360,7 @@ SketchCommandResult SketchCommandController::executeInTransaction(
           } else if constexpr (std::is_same_v<T, TranslateSelectionCommand>) {
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
                 (typed.elementIds.empty() && typed.circleIds.empty() &&
-                 typed.arcIds.empty()))
+                 typed.arcIds.empty() && typed.bezierIds.empty()))
               return rejected(SketchCommandError::InvalidInput);
             if (std::any_of(typed.circleIds.begin(), typed.circleIds.end(),
                             [&model](sketch::GeometryId id) {
@@ -2182,6 +2369,10 @@ SketchCommandResult SketchCommandController::executeInTransaction(
                 std::any_of(typed.arcIds.begin(), typed.arcIds.end(),
                             [&model](sketch::GeometryId id) {
                               return !model.arcIndex(id);
+                            }) ||
+                std::any_of(typed.bezierIds.begin(), typed.bezierIds.end(),
+                            [&model](sketch::GeometryId id) {
+                              return !model.bezierIndex(id);
                             }))
               return rejected(SketchCommandError::StaleReference);
             for (const auto elementId : typed.elementIds)
@@ -2199,10 +2390,15 @@ SketchCommandResult SketchCommandController::executeInTransaction(
                 std::any_of(typed.arcIds.begin(), typed.arcIds.end(),
                             [&model](sketch::GeometryId id) {
                               return model.isGeometryLocked(id);
+                            }) ||
+                std::any_of(typed.bezierIds.begin(), typed.bezierIds.end(),
+                            [&model](sketch::GeometryId id) {
+                              return model.isGeometryLocked(id);
                             }))
               return rejected(SketchCommandError::Conflict);
             model.translateSelection(typed.elementIds, typed.circleIds,
-                                     typed.arcIds, typed.dxMm, typed.dyMm);
+                                     typed.arcIds, typed.bezierIds,
+                                     typed.dxMm, typed.dyMm);
             auto value = accepted(geometryEffects());
             value.changedGeometryIds =
                 elementGeometryIds(model, typed.elementIds);
@@ -2212,6 +2408,9 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             value.changedGeometryIds.insert(value.changedGeometryIds.end(),
                                             typed.arcIds.begin(),
                                             typed.arcIds.end());
+            value.changedGeometryIds.insert(value.changedGeometryIds.end(),
+                                            typed.bezierIds.begin(),
+                                            typed.bezierIds.end());
             return value;
           } else if constexpr (std::is_same_v<T, TranslateCircleCommand>) {
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
@@ -2224,7 +2423,7 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(typed.id);
             return value;
-          } else {
+          } else if constexpr (std::is_same_v<T, TranslateArcCommand>) {
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
                 !model.arcIndex(typed.id))
               return rejected(SketchCommandError::StaleReference);
@@ -2232,6 +2431,17 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
             model.translateArcById(typed.id, typed.dxMm, typed.dyMm);
+            auto value = accepted(geometryEffects());
+            value.changedGeometryIds.push_back(typed.id);
+            return value;
+          } else {
+            if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
+                !model.bezierIndex(typed.id))
+              return rejected(SketchCommandError::StaleReference);
+            if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
+            if (model.isGeometryLocked(typed.id))
+              return rejected(SketchCommandError::Conflict);
+            model.translateBezierById(typed.id, typed.dxMm, typed.dyMm);
             auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(typed.id);
             return value;

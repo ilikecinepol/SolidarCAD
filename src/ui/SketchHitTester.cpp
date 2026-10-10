@@ -61,6 +61,7 @@ bool validPointReference(const sketch::PointReference& reference) noexcept {
          reference.lineId != sketch::kInvalidGeometryId ||
          reference.circleId != sketch::kInvalidGeometryId ||
          reference.arcId != sketch::kInvalidGeometryId ||
+         reference.bezierId != sketch::kInvalidGeometryId ||
          reference.elementCenterId != 0;
 }
 
@@ -139,6 +140,7 @@ bool SketchHitTester::accepts(const SketchPickTarget& target,
       case SketchPickEntityKind::Line: return filter.lines;
       case SketchPickEntityKind::Circle: return filter.circles;
       case SketchPickEntityKind::Arc: return filter.arcs;
+      case SketchPickEntityKind::Bezier: return filter.beziers;
     }
     return false;
   }
@@ -156,6 +158,8 @@ bool SketchHitTester::accepts(const SketchPickTarget& target,
       case SketchPickPointKind::LineEndpoint: return filter.lineEndpoints;
       case SketchPickPointKind::CircleCenter: return filter.circleCenters;
       case SketchPickPointKind::ArcEndpoint: return filter.arcEndpoints;
+      case SketchPickPointKind::BezierControlPoint:
+        return filter.bezierControlPoints;
       case SketchPickPointKind::ElementCenter: return filter.elementCenters;
       case SketchPickPointKind::LineMidpoint: return false;
     }

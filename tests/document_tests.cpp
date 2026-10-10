@@ -104,6 +104,27 @@ class GuardedShapeFeature final : public solidar::ShapeFeature {
 }  // namespace
 
 int main() {
+  {
+    solidar::Document imageDocument;
+    auto& image = imageDocument.addReferenceImage(
+        "Photo", "C:/missing/reference.png", "Базовая плоскость XY",
+        solidar::SketchPlacement::xy(), 1920, 1080);
+    const auto id = image.id;
+    image.offsetXMm = 12.5;
+    image.offsetYMm = -7.0;
+    image.offsetZMm = 3.0;
+    image.scale = 0.4;
+    image.visible = false;
+    CHECK(imageDocument.referenceImages().size() == 1);
+    CHECK(imageDocument.findReferenceImage(id));
+    CHECK(imageDocument.findReferenceImage(id)->pixelWidth == 1920);
+    CHECK(imageDocument.findReferenceImage(id)->scale == 0.4);
+    CHECK(imageDocument.findReferenceImage(id)->offsetZMm == 3.0);
+    CHECK(imageDocument.removeReferenceImage(id));
+    CHECK(!imageDocument.findReferenceImage(id));
+    CHECK(!imageDocument.removeReferenceImage(id));
+  }
+
   solidar::Document document;
   CHECK(document.sketches().empty());
   CHECK(document.bodies().empty());

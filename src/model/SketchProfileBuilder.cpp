@@ -12,6 +12,8 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <NCollection_Array1.hxx>
 
 #include <cmath>
 #include <utility>
@@ -42,11 +44,15 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
   std::size_t solidArcs = 0;
   for (const auto& arc : geometry.arcs())
     if (!arc.dashed) ++solidArcs;
-  if ((solidLines > 0 && solidCircles > 0) || solidCircles > 1)
+  std::size_t solidBeziers = 0;
+  for (const auto& bezier : geometry.beziers())
+    if (!bezier.dashed) ++solidBeziers;
+  if ((solidLines + solidArcs + solidBeziers > 0 && solidCircles > 0) ||
+      solidCircles > 1)
     return fail("Extrude 2.0 supports one profile at a time");
   // Two edges are sufficient for a valid closed wire: a semicircle plus its
   // diameter, or two arcs sharing both endpoints (a lens/full split circle).
-  if (solidCircles == 0 && solidLines + solidArcs < 2)
+  if (solidCircles == 0 && solidLines + solidArcs + solidBeziers < 2)
     return fail("Profile has insufficient geometry");
   if (solidCircles == 0 && !geometry.isClosed())
     return fail("Profile is not closed");
@@ -100,6 +106,11 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       canonicalPoints.push_back(sketch::arcStartPoint(arc));
       canonicalPoints.push_back(sketch::arcEndPoint(arc));
     }
+    for (const auto& bezier : geometry.beziers()) {
+      if (bezier.dashed) continue;
+      canonicalPoints.push_back(bezier.points[0]);
+      canonicalPoints.push_back(bezier.points[3]);
+    }
     const auto canonicalPoint = [&canonicalPoints](sketch::Point point) {
       for (const auto& candidate : canonicalPoints)
         if (std::abs(candidate.xMm - point.xMm) <= kEndpointTolerance &&
@@ -137,6 +148,20 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       if (!edgeBuilder.IsDone()) return fail("Could not build an arc edge");
       pending.push_back({toWorldPoint(sketch::arcStartPoint(arc)),
                          toWorldPoint(sketch::arcEndPoint(arc)),
+                         edgeBuilder.Edge()});
+    }
+
+    for (const auto& bezier : geometry.beziers()) {
+      if (bezier.dashed) continue;
+      NCollection_Array1<gp_Pnt> poles(1, 4);
+      for (int pole = 1; pole <= 4; ++pole)
+        poles.SetValue(pole, toWorldPoint(bezier.points[pole - 1]));
+      Handle(Geom_BezierCurve) curve = new Geom_BezierCurve(poles);
+      BRepBuilderAPI_MakeEdge edgeBuilder(curve);
+      if (!edgeBuilder.IsDone())
+        return fail("Could not build a Bezier profile edge");
+      pending.push_back({toWorldPoint(canonicalPoint(bezier.points[0])),
+                         toWorldPoint(canonicalPoint(bezier.points[3])),
                          edgeBuilder.Edge()});
     }
 

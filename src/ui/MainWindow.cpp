@@ -36,6 +36,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QIcon>
+#include <QImageReader>
 #include <QInputDialog>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -711,6 +712,7 @@ void MainWindow::updateUndoAvailability() {
 }
 
 void MainWindow::resetTransientModelingUi() {
+  commitReferenceImageEdit();
   // PartDesignCoordinator owns modern sessions, while legacy sketch
   // extrusion and the dedicated Revolve panel have separate presentation.
   // Reset all presentation surfaces together before another ribbon command
@@ -723,6 +725,8 @@ void MainWindow::resetTransientModelingUi() {
 
 void MainWindow::resetTransientModelingPresentation() {
   viewport_->resetToolInteraction();
+  pendingReferenceImagePath_.clear();
+  pendingReferenceImagePixelSize_ = {};
   selectedExtrusionSource_.reset();
   if (toolParametersDock_) toolParametersDock_->hide();
   if (revolveDock_) revolveDock_->hide();
@@ -943,6 +947,7 @@ bool MainWindow::loadProject(const QString& path, QString* error) {
 }
 
 void MainWindow::saveProject() {
+  commitReferenceImageEdit();
   // The Sketcher edits a working copy. Commit it before serializing so Save
   // never reports success while silently leaving the visible sketch out of
   // the project file.
@@ -992,6 +997,199 @@ void MainWindow::importStep() {
                             fileName);
 }
 
+void MainWindow::importReferenceImage() {
+  if (!ensureHistoryAtEnd()) {
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  const QString fileName = QFileDialog::getOpenFileName(
+      this, QString::fromUtf8("Добавить изображение"), QString(),
+      QString::fromUtf8(
+          "Изображения (*.png *.jpg *.jpeg *.bmp *.webp);;Все файлы (*)"));
+  if (fileName.isEmpty()) {
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  QImageReader reader(fileName);
+  if (!reader.canRead() || !reader.size().isValid()) {
+    QMessageBox::warning(this, QString::fromUtf8("Изображение"),
+                         QString::fromUtf8("Не удалось прочитать выбранный файл."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  if (reader.size().width() > 16384 || reader.size().height() > 16384 ||
+      static_cast<qint64>(reader.size().width()) * reader.size().height() >
+          100000000LL) {
+    QMessageBox::warning(
+        this, QString::fromUtf8("Изображение"),
+        QString::fromUtf8("Изображение слишком большое (максимум 100 мегапикселей)."));
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  resetTransientModelingUi();
+  pendingReferenceImagePath_ = QFileInfo(fileName).absoluteFilePath();
+  pendingReferenceImagePixelSize_ = reader.size();
+  statusBar()->showMessage(
+      QString::fromUtf8("Выберите базовую плоскость или плоскую грань для изображения"));
+  viewport_->beginImagePlaneSelection();
+}
+
+void MainWindow::finishReferenceImageImport(const SketchPlanePick& pick) {
+  if (pendingReferenceImagePath_.isEmpty() ||
+      !pendingReferenceImagePixelSize_.isValid())
+    return;
+  SketchPlacement placement = SketchPlacement::xy();
+  if (const auto* datum = std::get_if<DatumPlanePick>(&pick.source)) {
+    placement = datum->placement;
+  } else if (const auto* legacy =
+                 std::get_if<LegacySolidFacePick>(&pick.source)) {
+    placement = legacy->placement;
+  } else if (const auto* bodyFace = std::get_if<BodyFacePick>(&pick.source)) {
+    const auto& reference = bodyFace->face;
+    const Body* body = document_.findBody(reference.bodyId);
+    const ShapeFeature* feature = nullptr;
+    if (body)
+      for (const auto& candidate : body->features())
+        if (candidate->id() == reference.featureId) {
+          feature = candidate.get();
+          break;
+        }
+    const auto topology = feature ? feature->topologyIndex() : nullptr;
+    const auto resolvedFace = topology
+                                  ? topology->resolveFace(reference.topology())
+                                  : FaceResolution{};
+    const auto resolved = resolvedFace
+                              ? resolveFacePlacement(*resolvedFace.subshape)
+                              : ResolvedFacePlacement{};
+    if (!resolved.resolved || !resolved.planar) {
+      QMessageBox::warning(
+          this, QString::fromUtf8("Изображение"),
+          QString::fromUtf8("Изображение можно разместить только на доступной плоской грани."));
+      pendingReferenceImagePath_.clear();
+      modelRibbon_->clearActiveTool();
+      rebuildFeatureTree();
+      return;
+    }
+    placement = resolved.placement;
+  }
+
+  const auto previousSelection = captureHistorySelection();
+  Document previous = document_;
+  ReferenceImageId addedId = kInvalidReferenceImageId;
+  try {
+    auto& image = document_.addReferenceImage(
+        QFileInfo(pendingReferenceImagePath_).completeBaseName().toStdString(),
+        pendingReferenceImagePath_.toStdString(),
+        pick.presentationLabel.toStdString(), placement,
+        pendingReferenceImagePixelSize_.width(),
+        pendingReferenceImagePixelSize_.height());
+    addedId = image.id;
+  } catch (const std::exception& exception) {
+    QMessageBox::critical(this, QString::fromUtf8("Изображение"),
+                          QString::fromUtf8("Не удалось добавить изображение: %1")
+                              .arg(QString::fromUtf8(exception.what())));
+    pendingReferenceImagePath_.clear();
+    pendingReferenceImagePixelSize_ = {};
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  if (!pushModelTransition(std::move(previous), previousSelection,
+                           captureCommittedEndState())) {
+    pendingReferenceImagePath_.clear();
+    pendingReferenceImagePixelSize_ = {};
+    modelRibbon_->clearActiveTool();
+    return;
+  }
+  pendingReferenceImagePath_.clear();
+  pendingReferenceImagePixelSize_ = {};
+  selectedReferenceImageId_ = addedId;
+  modelRibbon_->clearActiveTool();
+  refreshBodyViewFromDocument();
+  rebuildFeatureTree();
+  completeModelTransitionUi();
+  statusBar()->showMessage(QString::fromUtf8("Изображение добавлено"), 3000);
+}
+
+void MainWindow::updateReferenceImageParameter(int parameterIndex,
+                                               double value) {
+  auto* image = document_.findReferenceImage(selectedReferenceImageId_);
+  if (!image || !std::isfinite(value) || parameterIndex < 0 ||
+      parameterIndex > 3)
+    return;
+  const double modelValue = parameterIndex == 3 ? value / 100.0 : value;
+  const double current = parameterIndex == 0   ? image->offsetXMm
+                         : parameterIndex == 1 ? image->offsetYMm
+                         : parameterIndex == 2 ? image->offsetZMm
+                                               : image->scale;
+  if (std::abs(current - modelValue) <= 1e-12) return;
+
+  if (!referenceImageEditBefore_) {
+    referenceImageEditBefore_ = document_;
+    referenceImageEditSelectionBefore_ = captureHistorySelection();
+  }
+  if (parameterIndex == 0)
+    image->offsetXMm = modelValue;
+  else if (parameterIndex == 1)
+    image->offsetYMm = modelValue;
+  else if (parameterIndex == 2)
+    image->offsetZMm = modelValue;
+  else
+    image->scale = modelValue;
+
+  // Keep drag and typed edits live without creating one Undo step per mouse
+  // move. The snapshot is committed once on release/Enter/selection change.
+  setWindowModified(true);
+  viewport_->setReferenceImages(document_.referenceImages());
+  viewport_->setReferenceImageManipulator(*image);
+}
+
+void MainWindow::commitReferenceImageEdit() {
+  if (!referenceImageEditBefore_) return;
+  Document previous = std::move(*referenceImageEditBefore_);
+  HistorySelectionState previousSelection =
+      referenceImageEditSelectionBefore_.value_or(captureHistorySelection());
+  referenceImageEditBefore_.reset();
+  referenceImageEditSelectionBefore_.reset();
+  if (!pushModelTransition(std::move(previous), std::move(previousSelection),
+                           captureCommittedEndState())) {
+    viewport_->setReferenceImages(document_.referenceImages());
+    showSelectedReferenceImageManipulator();
+    return;
+  }
+  completeModelTransitionUi();
+}
+
+void MainWindow::showSelectedReferenceImageManipulator() {
+  const auto* image = document_.findReferenceImage(selectedReferenceImageId_);
+  if (!image || !image->visible) {
+    if (viewport_->referenceImageManipulatorActive())
+      viewport_->clearToolManipulator();
+    return;
+  }
+  viewport_->setReferenceImageManipulator(*image);
+  statusBar()->showMessage(
+      QString::fromUtf8("Потяните стрелку X, Y или Z либо введите смещение и масштаб"));
+}
+
+void MainWindow::removeReferenceImage(ReferenceImageId id) {
+  commitReferenceImageEdit();
+  if (!document_.findReferenceImage(id)) return;
+  const auto previousSelection = captureHistorySelection();
+  Document previous = document_;
+  if (!document_.removeReferenceImage(id)) return;
+  if (!pushModelTransition(std::move(previous), previousSelection,
+                           captureCommittedEndState()))
+    return;
+  if (selectedReferenceImageId_ == id) {
+    selectedReferenceImageId_ = kInvalidReferenceImageId;
+    if (viewport_->referenceImageManipulatorActive())
+      viewport_->clearToolManipulator();
+  }
+  viewport_->setReferenceImages(document_.referenceImages());
+  rebuildFeatureTree();
+  completeModelTransitionUi();
+}
+
 void MainWindow::applyImportedDocument(Document staged,
                                        const QString& importedName) {
   commitDocumentReplacement({std::move(staged), std::nullopt},
@@ -1018,6 +1216,9 @@ void MainWindow::commitDocumentReplacement(
   currentSketchSupport_ = QStringLiteral("XY");
   currentSketchPlacement_ = SketchPlacement::xy();
   currentSketchFaceReference_.reset();
+  selectedReferenceImageId_ = kInvalidReferenceImageId;
+  referenceImageEditBefore_.reset();
+  referenceImageEditSelectionBefore_.reset();
   sketchViews_.clear();
   viewport_->resetScene();
   viewport_->setBox(document_.box());
@@ -2394,8 +2595,13 @@ void MainWindow::buildUi() {
                   applyPartDesignUiEffect(std::move(*effect));
                 });
           });
-  connect(viewport_, &Viewport::toolManipulatorDragFinished, this,
-          [this] { flushPreviewUpdate(); });
+  connect(viewport_, &Viewport::toolManipulatorDragFinished, this, [this] {
+    if (viewport_->referenceImageManipulatorActive()) {
+      commitReferenceImageEdit();
+      return;
+    }
+    flushPreviewUpdate();
+  });
   connect(viewport_, &Viewport::extrusionManipulatorDragFinished, this,
           [this] { flushPreviewUpdate(); });
   // HUD Enter commit: the value is already interpreted + preview-synced via the
@@ -2403,6 +2609,10 @@ void MainWindow::buildUi() {
   // like the Готово button. Each accept*Tool guards its own lifecycle, so an
   // invalid preview will not accept and focus stays in the HUD field.
   connect(viewport_, &Viewport::toolParameterCommitted, this, [this] {
+    if (viewport_->referenceImageManipulatorActive()) {
+      commitReferenceImageEdit();
+      return;
+    }
     flushPreviewUpdate();
     // Extrude still uses its dedicated on-canvas spinbox. Treat Enter there
     // exactly like the Apply button before dispatching ToolSession tools.
@@ -2779,6 +2989,8 @@ void MainWindow::buildUi() {
             }
             viewport_->beginSketchPlaneSelection();
           });
+  connect(modelRibbon_, &ModelRibbon::referenceImageRequested, this,
+          &MainWindow::importReferenceImage);
   connect(modelRibbon_, &ModelRibbon::extrudeRequested, this,
           [this] {
             if (!ensureHistoryAtEnd()) {
@@ -2953,6 +3165,10 @@ void MainWindow::buildUi() {
             statusBar()->showMessage(QString::fromUtf8("Рабочая плоскость: ") +
                                      pick.presentationLabel);
           });
+  connect(viewport_, &Viewport::imagePlanePicked, this,
+          &MainWindow::finishReferenceImageImport);
+  connect(viewport_, &Viewport::referenceImageParameterChanged, this,
+          &MainWindow::updateReferenceImageParameter);
   connect(viewport_, &Viewport::extrusionSourcePicked, this,
           [this](const ExtrusionSourcePick& pick) {
             if (const auto* face = std::get_if<BodyFacePick>(&pick.source)) {
@@ -3006,6 +3222,10 @@ void MainWindow::buildUi() {
       modelTreeDock->setVisible(!sketchMode);
       if (!sketchMode) modelTreeDock->raise();
     }
+    if (sketchMode && viewport_->referenceImageManipulatorActive())
+      viewport_->clearToolManipulator();
+    else if (!sketchMode)
+      showSelectedReferenceImageManipulator();
     updateUndoAvailability();
   });
   workspaceStack_->setCurrentWidget(viewport_);
@@ -3023,6 +3243,18 @@ void MainWindow::buildUi() {
           [this](const QPoint& point) {
             auto* item = featureTree_->itemAt(point);
             if (!item) return;
+            const int kind = item->data(0, Qt::UserRole).toInt();
+            if (kind == 4) {
+              const auto imageId = static_cast<ReferenceImageId>(
+                  item->data(0, Qt::UserRole + 3).toULongLong());
+              QMenu menu(featureTree_);
+              QAction* remove =
+                  menu.addAction(QString::fromUtf8("Удалить изображение"));
+              if (menu.exec(featureTree_->viewport()->mapToGlobal(point)) ==
+                  remove)
+                removeReferenceImage(imageId);
+              return;
+            }
             const auto bodyId = static_cast<BodyId>(
                 item->data(0, Qt::UserRole + 2).toULongLong());
             if (bodyId == kInvalidBodyId) return;
@@ -3037,6 +3269,11 @@ void MainWindow::buildUi() {
   connect(deleteBodyShortcut, &QShortcut::activated, this, [this] {
     auto* item = featureTree_->currentItem();
     if (!item) return;
+    if (item->data(0, Qt::UserRole).toInt() == 4) {
+      removeReferenceImage(static_cast<ReferenceImageId>(
+          item->data(0, Qt::UserRole + 3).toULongLong()));
+      return;
+    }
     const auto bodyId = static_cast<BodyId>(
         item->data(0, Qt::UserRole + 2).toULongLong());
     if (bodyId != kInvalidBodyId) removeBody(bodyId);
@@ -3047,6 +3284,31 @@ void MainWindow::buildUi() {
             const bool visible = item->checkState(0) == Qt::Checked;
             const auto bodyId = static_cast<BodyId>(
                 item->data(0, Qt::UserRole + 2).toULongLong());
+            if (kind == 4) {
+              commitReferenceImageEdit();
+              const auto imageId = static_cast<ReferenceImageId>(
+                  item->data(0, Qt::UserRole + 3).toULongLong());
+              auto* image = document_.findReferenceImage(imageId);
+              if (!image || image->visible == visible) return;
+              const auto previousSelection = captureHistorySelection();
+              Document previous = document_;
+              image->visible = visible;
+              if (!pushModelTransition(std::move(previous), previousSelection,
+                                       captureCommittedEndState())) {
+                const QSignalBlocker blocker(featureTree_);
+                item->setCheckState(0,
+                                    visible ? Qt::Unchecked : Qt::Checked);
+                return;
+              }
+              viewport_->setReferenceImages(document_.referenceImages());
+              if (imageId == selectedReferenceImageId_)
+                showSelectedReferenceImageManipulator();
+              completeModelTransitionUi();
+              if (workspaceStack_->currentWidget() == sketchCanvas_)
+                sketchCanvas_->updateSceneImages(
+                    document_.referenceImages());
+              return;
+            }
             if (kind == 3 && bodyId != kInvalidBodyId) {
               Body* body = document_.findBody(bodyId);
               if (!body || body->visible() == visible) return;
@@ -3342,11 +3604,32 @@ void MainWindow::buildUi() {
             modelRibbon_->clearActiveTool();
             if (reason == ViewportCancelReason::SketchPlaneSelection)
               rebuildFeatureTree();
+            if (reason == ViewportCancelReason::ImagePlaneSelection) {
+              pendingReferenceImagePath_.clear();
+              pendingReferenceImagePixelSize_ = {};
+              rebuildFeatureTree();
+            }
             statusBar()->showMessage(QString::fromUtf8("Инструменты сброшены"),
                                      2000);
           });
   modelTreeDock_->setWidget(featureTree_);
   addDockWidget(Qt::LeftDockWidgetArea, modelTreeDock_);
+
+  connect(featureTree_, &QTreeWidget::currentItemChanged, this,
+          [this](QTreeWidgetItem* current) {
+            commitReferenceImageEdit();
+            if (!current || current->data(0, Qt::UserRole).toInt() != 4) {
+              selectedReferenceImageId_ = kInvalidReferenceImageId;
+              if (viewport_->referenceImageManipulatorActive())
+                viewport_->clearToolManipulator();
+              return;
+            }
+            resetTransientModelingUi();
+            modelRibbon_->clearActiveTool();
+            selectedReferenceImageId_ = static_cast<ReferenceImageId>(
+                current->data(0, Qt::UserRole + 3).toULongLong());
+            showSelectedReferenceImageManipulator();
+          });
 
   historyDock_ =
       new QDockWidget(QString::fromUtf8("История построений"), this);
@@ -3404,7 +3687,7 @@ void MainWindow::finishSketch() {
   QString completionMessage =
       QString::fromUtf8("Эскиз завершён — модель перестроена");
   if (sketch.lines().empty() && sketch.circles().empty() &&
-      sketch.arcs().empty()) {
+      sketch.arcs().empty() && sketch.beziers().empty()) {
     workspaceStack_->setCurrentWidget(viewport_);
     statusBar()->showMessage(
         QString::fromUtf8("Пустой эскиз закрыт без сохранения"), 3000);
@@ -3511,7 +3794,7 @@ MainWindow::detectAutomaticExtrudeOperation() const {
     DocumentSketch operationProfile = *profile;
     const auto& pickedProfile = viewport_->extrusionCandidateSketch();
     if (!pickedProfile.lines().empty() || !pickedProfile.circles().empty() ||
-        !pickedProfile.arcs().empty())
+        !pickedProfile.arcs().empty() || !pickedProfile.beziers().empty())
       operationProfile.geometry = pickedProfile;
     operation = detectExtrudeOperation(
         operationProfile, extrusionLengthSpin_->value(),
@@ -3586,13 +3869,13 @@ void MainWindow::extrudeSketch() {
   // here loses the selection and makes Apply fail with "one profile at a time".
   const bool hasPickedProfile =
       !pickedSketch.lines().empty() || !pickedSketch.circles().empty() ||
-      !pickedSketch.arcs().empty();
+      !pickedSketch.arcs().empty() || !pickedSketch.beziers().empty();
   const sketch::Sketch sketch =
       hasPickedProfile
           ? pickedSketch
           : modelSketch ? modelSketch->geometry : sketchCanvas_->sketch();
   if (sketch.lines().empty() && sketch.circles().empty() &&
-      sketch.arcs().empty()) {
+      sketch.arcs().empty() && sketch.beziers().empty()) {
     QMessageBox::information(this, QString::fromUtf8("Выдавливание"),
                              QString::fromUtf8("Сначала создайте замкнутый контур эскиза."));
     return;
@@ -3772,6 +4055,7 @@ bool MainWindow::hasHistoricalLegacyExtrusion() const noexcept {
 
 void MainWindow::refreshBodyViewFromDocument(
     const std::vector<BodyId>& transientVisibleBodies) {
+  viewport_->setReferenceImages(document_.referenceImages());
   if (historicalLegacyExtrusionSourceSketchId_ &&
       !document_.findSketch(*historicalLegacyExtrusionSourceSketchId_))
     historicalLegacyExtrusionSourceSketchId_.reset();
@@ -3889,7 +4173,8 @@ void MainWindow::updateRevolveProfileSelection(
   const auto& selectedProfile = region ? region->geometry : emptyProfile;
   const bool empty = selectedProfile.lines().empty() &&
                      selectedProfile.circles().empty() &&
-                     selectedProfile.arcs().empty();
+                     selectedProfile.arcs().empty() &&
+                     selectedProfile.beziers().empty();
   const SketchId id = region ? region->sketchId : kInvalidSketchId;
   if (empty || id == kInvalidSketchId || !document_.findSketch(id)) {
     partDesignCoordinator_.clearRevolveAxis(document_);
@@ -5560,7 +5845,7 @@ void MainWindow::createSketchExtrude(const ExtrusionSourcePick& pick) {
   std::optional<sketch::Sketch> profileOverride;
   const auto& pickedProfile = region->geometry;
   if (!pickedProfile.lines().empty() || !pickedProfile.circles().empty() ||
-      !pickedProfile.arcs().empty()) {
+      !pickedProfile.arcs().empty() || !pickedProfile.beziers().empty()) {
     context.profile.geometry = pickedProfile;
     if (!isSupportedSingleSketchProfile(*profile))
       profileOverride = pickedProfile;
@@ -6407,7 +6692,8 @@ void MainWindow::configureSketchSceneReferences(SketchId excludedSketchId) {
         {documentSketch.geometry, documentSketch.placement});
   }
   sketchCanvas_->setSceneReferences(currentSketchPlacement_, bodyShapes,
-                                    std::move(sketches));
+                                    std::move(sketches),
+                                    document_.referenceImages());
 }
 
 void MainWindow::editSketchStep(std::size_t index) {
@@ -6815,6 +7101,29 @@ void MainWindow::rebuildFeatureTree() {
       viewport_->setSketchVisible(index, visible);
     }
   }
+  auto* images =
+      new QTreeWidgetItem(project, {QString::fromUtf8("Изображения")});
+  QTreeWidgetItem* selectedImageItem = nullptr;
+  if (document_.referenceImages().empty()) {
+    new QTreeWidgetItem(images, {QString::fromUtf8("Изображений нет")});
+  } else {
+    for (const auto& image : document_.referenceImages()) {
+      auto* imageItem = new QTreeWidgetItem(
+          images, {QString::fromUtf8("▧  ") + QString::fromStdString(image.name)});
+      imageItem->setData(0, Qt::UserRole, 4);
+      imageItem->setData(0, Qt::UserRole + 3,
+                         QVariant::fromValue<qulonglong>(image.id));
+      imageItem->setToolTip(
+          0, QString::fromStdString(image.sourcePath) +
+                 QString::fromUtf8("\nПлоскость: ") +
+                 QString::fromStdString(image.supportName));
+      imageItem->setFlags(imageItem->flags() | Qt::ItemIsUserCheckable);
+      imageItem->setCheckState(0,
+                               image.visible ? Qt::Checked : Qt::Unchecked);
+      if (image.id == selectedReferenceImageId_)
+        selectedImageItem = imageItem;
+    }
+  }
   auto* models = new QTreeWidgetItem(project, {QString::fromUtf8("Модели")});
   if (!activeSolid || document_.bodies().empty()) {
     new QTreeWidgetItem(models, {QString::fromUtf8("Твёрдых тел нет")});
@@ -6837,6 +7146,14 @@ void MainWindow::rebuildFeatureTree() {
     }
   }
   featureTree_->expandAll();
+  if (selectedImageItem) {
+    featureTree_->setCurrentItem(selectedImageItem);
+    showSelectedReferenceImageManipulator();
+  } else if (selectedReferenceImageId_ != kInvalidReferenceImageId) {
+    selectedReferenceImageId_ = kInvalidReferenceImageId;
+    if (viewport_->referenceImageManipulatorActive())
+      viewport_->clearToolManipulator();
+  }
 }
 
 void MainWindow::exportPdf() {

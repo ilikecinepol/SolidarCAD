@@ -17,6 +17,7 @@ class ModelRibbon final : public QWidget {
 
  signals:
   void createSketchRequested();
+  void referenceImageRequested();
   void extrudeRequested();
   void revolveRequested();
   void pocketRequested();

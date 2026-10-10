@@ -50,6 +50,7 @@ class SketchCanvas final : public QWidget {
     Rectangle,
     Circle,
     Arc,
+    Bezier,
     Projection,
     AutoDimension,
     LockConstraint,
@@ -110,7 +111,10 @@ class SketchCanvas final : public QWidget {
   void setSceneReferences(
       SketchPlacement activePlacement,
       const std::vector<ShapeFeature::ShapePtr>& bodyShapes,
-      std::vector<SketchSceneReference> sketches);
+      std::vector<SketchSceneReference> sketches,
+      const std::vector<ReferenceImage>& images = {});
+  // Refreshes image visibility/content without resetting the sketch camera.
+  void updateSceneImages(const std::vector<ReferenceImage>& images);
   void clearSketchEditContext();
   void setReferenceProfile(const sketch::Sketch& profile, bool visible);
   [[nodiscard]] bool canUndo() const noexcept;
@@ -200,7 +204,7 @@ signals:
  private:
   [[nodiscard]] SketchRenderSnapshot renderSnapshot() const;
   void markCommittedRenderSceneDirty() noexcept;
-  enum class SelectionKind { None, Line, Circle, Arc };
+  enum class SelectionKind { None, Line, Circle, Arc, Bezier };
   enum class ConstructionSnapKind {
     None,
     LinePoint,
@@ -269,6 +273,7 @@ signals:
   [[nodiscard]] bool lineElementSelected(std::size_t elementId) const;
   [[nodiscard]] bool circleSelected(sketch::GeometryId id) const;
   [[nodiscard]] bool arcSelected(sketch::GeometryId id) const;
+  [[nodiscard]] bool bezierSelected(sketch::GeometryId id) const;
   void commitPoint(sketch::Point point);
   void showDimensionEditor(QPoint position);
   void updateDimensionEditor();
@@ -361,11 +366,13 @@ signals:
   sketch::GeometryId selectionCircleId_{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionLineId_{sketch::kInvalidGeometryId};
   sketch::GeometryId selectionArcId_{sketch::kInvalidGeometryId};
+  sketch::GeometryId selectionBezierId_{sketch::kInvalidGeometryId};
   std::size_t selectionElementId_{};
   std::vector<sketch::GeometryId> selectedLineIds_;
   std::vector<std::size_t> selectedElementIds_;
   std::vector<sketch::GeometryId> selectedCircleIds_;
   std::vector<sketch::GeometryId> selectedArcIds_;
+  std::vector<sketch::GeometryId> selectedBezierIds_;
   sketch::Point hoverPoint_{};
   std::optional<ConstructionSnap> constructionHover_;
   QDoubleSpinBox* primaryDimension_{nullptr};
@@ -394,6 +401,7 @@ signals:
   std::shared_ptr<const BodyRenderMesh> referenceFaceMesh_;
   std::vector<std::shared_ptr<const BodyRenderMesh>> sceneBodyMeshes_;
   std::vector<SketchSceneReference> sceneSketches_;
+  std::vector<SketchSceneImageReference> sceneImages_;
   SketchPlacement referencePlacement_{SketchPlacement::xy()};
   bool realReferenceBodyVisible_{false};
   sketch::Sketch referenceProfile_;

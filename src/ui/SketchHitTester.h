@@ -37,7 +37,7 @@ enum class SketchBoxHitPolicy {
   CurveBoundsOrCenter
 };
 
-enum class SketchPickEntityKind { Line, Circle, Arc };
+enum class SketchPickEntityKind { Line, Circle, Arc, Bezier };
 
 struct SketchPickEntityRef {
   SketchPickEntityKind kind{SketchPickEntityKind::Line};
@@ -54,6 +54,7 @@ enum class SketchPickPointKind {
   LineEndpoint,
   CircleCenter,
   ArcEndpoint,
+  BezierControlPoint,
   ElementCenter,
   LineMidpoint
 };
@@ -159,9 +160,11 @@ struct SketchPickFilter {
   bool lines{true};
   bool circles{true};
   bool arcs{true};
+  bool beziers{true};
   bool lineEndpoints{true};
   bool circleCenters{true};
   bool arcEndpoints{true};
+  bool bezierControlPoints{true};
   bool elementCenters{true};
   bool lineMidpoints{true};
   bool includeConstruction{true};

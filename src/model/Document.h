@@ -11,6 +11,24 @@
 
 namespace solidar {
 
+using ReferenceImageId = std::uint64_t;
+inline constexpr ReferenceImageId kInvalidReferenceImageId = 0;
+
+struct ReferenceImage {
+  ReferenceImageId id{kInvalidReferenceImageId};
+  std::string name;
+  std::string sourcePath;
+  std::string supportName;
+  SketchPlacement placement{SketchPlacement::xy()};
+  double offsetXMm{};
+  double offsetYMm{};
+  double offsetZMm{};
+  double scale{1.0};
+  int pixelWidth{};
+  int pixelHeight{};
+  bool visible{true};
+};
+
 struct DocumentSketch {
   SketchId id{kInvalidSketchId};
   std::string name;
@@ -72,6 +90,20 @@ class Document final {
   bool replaceSketchGeometry(SketchId id, sketch::Sketch geometry);
   bool markSketchDirty(SketchId id);
 
+  ReferenceImage& addReferenceImage(std::string name,
+                                    std::string sourcePath,
+                                    std::string supportName,
+                                    SketchPlacement placement,
+                                    int pixelWidth, int pixelHeight);
+  ReferenceImage& addReferenceImage(ReferenceImage image);
+  [[nodiscard]] const std::vector<ReferenceImage>& referenceImages()
+      const noexcept;
+  [[nodiscard]] ReferenceImage* findReferenceImage(
+      ReferenceImageId id) noexcept;
+  [[nodiscard]] const ReferenceImage* findReferenceImage(
+      ReferenceImageId id) const noexcept;
+  bool removeReferenceImage(ReferenceImageId id);
+
   Body& addBody(std::string name = {});
   Body& addBody(BodyId id, std::string name);
   [[nodiscard]] const std::vector<Body>& bodies() const noexcept;
@@ -113,14 +145,18 @@ class Document final {
                          const ShapeFeature* feature);
   bool applySketchSlice(std::size_t index,
                         std::optional<DocumentSketch> sketch);
+  bool applyReferenceImageSlice(std::size_t index,
+                                std::optional<ReferenceImage> image);
 
  private:
   static SketchId nextSketchId() noexcept;
+  static ReferenceImageId nextReferenceImageId() noexcept;
   bool applyValidatedRemovalPlan(const FeatureRemovalPlan& plan,
                                  std::string* error);
   bool updateSketchPlacement(DocumentSketch& sketch);
 
   std::vector<DocumentSketch> sketches_;
+  std::vector<ReferenceImage> referenceImages_;
   std::vector<Body> bodies_;
   BoxParameters box_;
   std::string dependencyError_;

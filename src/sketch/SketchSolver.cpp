@@ -1926,9 +1926,11 @@ SolveResult BasicSketchSolver::solveStableLowLevel(
   struct LockedLine { GeometryId id; Line value; };
   struct LockedCircle { GeometryId id; Circle value; };
   struct LockedArc { GeometryId id; Arc value; };
+  struct LockedBezier { GeometryId id; Bezier value; };
   std::vector<LockedLine> lockedLines;
   std::vector<LockedCircle> lockedCircles;
   std::vector<LockedArc> lockedArcs;
+  std::vector<LockedBezier> lockedBeziers;
   for (std::size_t index = 0; index < sketch.lineIds_.size(); ++index)
     if (sketch.isGeometryLocked(sketch.lineIds_[index]))
       lockedLines.push_back({sketch.lineIds_[index], sketch.lines_[index]});
@@ -1938,9 +1940,14 @@ SolveResult BasicSketchSolver::solveStableLowLevel(
   for (std::size_t index = 0; index < sketch.arcIds_.size(); ++index)
     if (sketch.isGeometryLocked(sketch.arcIds_[index]))
       lockedArcs.push_back({sketch.arcIds_[index], sketch.arcs_[index]});
+  for (std::size_t index = 0; index < sketch.bezierIds_.size(); ++index)
+    if (sketch.isGeometryLocked(sketch.bezierIds_[index]))
+      lockedBeziers.push_back(
+          {sketch.bezierIds_[index], sketch.beziers_[index]});
 
   const std::size_t lockedCount =
-      lockedLines.size() + lockedCircles.size() + lockedArcs.size();
+      lockedLines.size() + lockedCircles.size() + lockedArcs.size() +
+      lockedBeziers.size();
 
   for (int pass = 0;
        pass < std::max(1, maxPasses);
@@ -1962,6 +1969,9 @@ SolveResult BasicSketchSolver::solveStableLowLevel(
     for (const auto& item : lockedArcs)
       if (const auto index = sketch.arcIndex(item.id))
         sketch.arcs_[*index] = item.value;
+    for (const auto& item : lockedBeziers)
+      if (const auto index = sketch.bezierIndex(item.id))
+        sketch.beziers_[*index] = item.value;
 
     const auto audit =
         analyzeConstraintSystem(sketch, false);
@@ -2030,16 +2040,20 @@ SolveResult BasicSketchSolver::solveStableComponent(
     std::size_t lineCount = 0;
     std::size_t circleCount = 0;
     std::size_t arcCount = 0;
+    std::size_t bezierCount = 0;
     for (const auto id : component.geometryIds) {
       const auto location = sketch.geometryLocation(id);
       if (!location) continue;
       lineCount += location->kind == GeometryKind::Line;
       circleCount += location->kind == GeometryKind::Circle;
       arcCount += location->kind == GeometryKind::Arc;
+      bezierCount += location->kind == GeometryKind::Bezier;
     }
     local.lines_.reserve(lineCount); local.lineIds_.reserve(lineCount);
     local.circles_.reserve(circleCount); local.circleIds_.reserve(circleCount);
     local.arcs_.reserve(arcCount); local.arcIds_.reserve(arcCount);
+    local.beziers_.reserve(bezierCount);
+    local.bezierIds_.reserve(bezierCount);
     local.constraints_.reserve(component.constraintIds.size());
     local.centerNodeElementIds_.reserve(lineCount);
     local.nextElementId_ = sketch.nextElementId_;
@@ -2061,6 +2075,10 @@ SolveResult BasicSketchSolver::solveStableComponent(
         case GeometryKind::Arc:
           local.arcs_.push_back(sketch.arcs_[location->index]);
           local.arcIds_.push_back(id);
+          break;
+        case GeometryKind::Bezier:
+          local.beziers_.push_back(sketch.beziers_[location->index]);
+          local.bezierIds_.push_back(id);
           break;
       }
     }
@@ -2104,6 +2122,9 @@ SolveResult BasicSketchSolver::solveStableComponent(
     for (std::size_t index = 0; index < local.arcIds_.size(); ++index)
       if (const auto target = sketch.arcIndex(local.arcIds_[index]))
         sketch.arcs_[*target] = local.arcs_[index];
+    for (std::size_t index = 0; index < local.bezierIds_.size(); ++index)
+      if (const auto target = sketch.bezierIndex(local.bezierIds_[index]))
+        sketch.beziers_[*target] = local.beziers_[index];
   }
   sketch.updateBounds();
   return total;
@@ -2122,7 +2143,7 @@ SolveResult BasicSketchSolver::solveStableHistoricalForBenchmark(
   result.converged = true;
   result.componentsVisited = 1;
   result.geometriesVisited = sketch.lines_.size() + sketch.circles_.size() +
-                             sketch.arcs_.size();
+                             sketch.arcs_.size() + sketch.beziers_.size();
   result.constraintsVisited = sketch.constraints_.size();
   for (int pass = 0; pass < std::max(1, maxPasses); ++pass) {
     // This is the historical whole-Sketch lock snapshot. Keeping it isolated

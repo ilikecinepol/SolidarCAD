@@ -10,6 +10,7 @@ namespace solidar {
 enum class ToolIconKind {
   ImportedShape,
   CreateSketch,
+  ReferenceImage,
   Extrude,
   Pocket,
   Revolve,
@@ -27,6 +28,7 @@ enum class ToolIconKind {
   Rectangle,
   Circle,
   Arc,
+  Bezier,
   Projection,
   Polygon,
   Slot,

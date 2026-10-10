@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
   CHECK(creation && editing && view);
 
   CHECK(creation->findChild<QToolButton*>("createSketchCommand"));
+  CHECK(!creation->findChild<QToolButton*>("referenceImageCommand"));
   CHECK(creation->findChild<QToolButton*>("extrudeCommand"));
   auto* pocketCommand = creation->findChild<QToolButton*>("pocketCommand");
   CHECK(pocketCommand);
@@ -60,6 +61,7 @@ int main(int argc, char** argv) {
   CHECK(editing->findChild<QToolButton*>("joinBodiesCommand"));
   CHECK(editing->findChild<QToolButton*>("moveCommand"));
   CHECK(view->findChild<QToolButton*>("rulerCommand"));
+  CHECK(view->findChild<QToolButton*>("referenceImageCommand"));
   CHECK(!creation->findChild<QToolButton*>("filletCommand"));
 
   const auto commands = ribbon.findChildren<QToolButton*>();
@@ -83,7 +85,7 @@ int main(int argc, char** argv) {
     commandRects.push_back(
         QRect(command->mapTo(&ribbon, QPoint{}), command->size()));
   }
-  CHECK(documentedCommands == 14);
+  CHECK(documentedCommands == 15);
   for (std::size_t first = 0; first < commandRects.size(); ++first)
     for (std::size_t second = first + 1; second < commandRects.size(); ++second)
       CHECK(!commandRects[first].intersects(commandRects[second]));
@@ -108,6 +110,7 @@ int main(int argc, char** argv) {
   for (const auto kind : historyKinds)
     CHECK(!solidar::partDesignToolIcon(kind).isNull());
   CHECK(!solidar::modelCommandIcon(QStringLiteral("createSketch")).isNull());
+  CHECK(!solidar::modelCommandIcon(QStringLiteral("referenceImage")).isNull());
   CHECK(!solidar::modelCommandIcon(QStringLiteral("ruler")).isNull());
   solidar::HistoryStep compactStep;
   compactStep.title = QString::fromUtf8("Фаска 1");
@@ -124,7 +127,7 @@ int main(int argc, char** argv) {
 
   CHECK(creation->findChild<QMenu*>("modelGroupMenu")->actions().size() == 4);
   CHECK(editing->findChild<QMenu*>("modelGroupMenu")->actions().size() == 9);
-  CHECK(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 3);
+  CHECK(view->findChild<QMenu*>("modelGroupMenu")->actions().size() == 4);
 
   solidar::ToolParametersPanel panel;
   const auto* shellHelp = solidar::partDesignToolHelp(

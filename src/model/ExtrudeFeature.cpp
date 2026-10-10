@@ -63,6 +63,14 @@ bool sameArcIdentity(const sketch::Arc& first,
          sameValue(first.sweepAngleRad, second.sweepAngleRad);
 }
 
+bool sameBezier(const sketch::Bezier& first,
+                const sketch::Bezier& second) noexcept {
+  if (first.dashed != second.dashed) return false;
+  for (std::size_t index = 0; index < first.points.size(); ++index)
+    if (!samePoint(first.points[index], second.points[index])) return false;
+  return true;
+}
+
 template <typename Primitive, typename Equal, typename SameIdentity,
           typename IdAt>
 bool matchPrimitiveIds(const std::vector<Primitive>& source,
@@ -342,7 +350,11 @@ bool ExtrudeFeature::resolveProfileOverride(const sketch::Sketch& source,
         matchPrimitiveIds(
             source.arcs(), snapshot.arcs(), sameArc, sameArcIdentity,
             [&source](std::size_t index) { return source.arcId(index); },
-            &matched.arcIds);
+            &matched.arcIds) &&
+        matchPrimitiveIds(
+            source.beziers(), snapshot.beziers(), sameBezier, sameBezier,
+            [&source](std::size_t index) { return source.bezierId(index); },
+            &matched.bezierIds);
 
     if (!allMatched) {
       // Compatibility for older files and graph-split regions whose selected
@@ -382,6 +394,16 @@ bool ExtrudeFeature::resolveProfileOverride(const sketch::Sketch& source,
     const auto& arc = source.arcs()[*index];
     refreshed.addArc(arc.center, arc.radiusMm, arc.startAngleRad,
                      arc.sweepAngleRad, arc.dashed);
+  }
+  for (const auto id : profileSelectionIds_->bezierIds) {
+    const auto index = source.bezierIndex(id);
+    if (!index) {
+      if (error) *error = "selected profile Bezier no longer exists";
+      return false;
+    }
+    const auto& bezier = source.beziers()[*index];
+    refreshed.addBezier(bezier.points[0], bezier.points[1], bezier.points[2],
+                        bezier.points[3], bezier.dashed);
   }
 
   *selected = std::move(refreshed);

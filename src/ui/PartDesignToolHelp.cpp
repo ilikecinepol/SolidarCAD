@@ -9,8 +9,9 @@ namespace {
 using Kind = PartDesignToolKind;
 struct Entry { Kind kind; const char* commandId; PartDesignToolHelp help; };
 
-const std::array<Entry, 14> kEntries{{
+const std::array<Entry, 15> kEntries{{
     {Kind::None, "createSketch", {QString::fromUtf8("Создать эскиз"), QString::fromUtf8("Создаёт новый 2D-эскиз на базовой плоскости или плоской грани детали."), QString::fromUtf8("Создаёт новый 2D-эскиз для построения геометрии. Выберите базовую плоскость или плоскую грань детали. Эскиз можно использовать для выдавливания, вращения и других параметрических операций."), QString::fromUtf8("Выберите плоскость или плоскую грань для нового эскиза."), {}, {QString::fromUtf8("Выберите плоскость или плоскую грань для нового эскиза.")}}},
+    {Kind::None, "referenceImage", {QString::fromUtf8("Изображение"), QString::fromUtf8("Размещает фотографию или чертёж на выбранной плоскости."), QString::fromUtf8("Выберите файл изображения, затем базовую плоскость или плоскую грань. Положение и масштаб меняются в свойствах изображения; видимость управляется в дереве построений."), QString::fromUtf8("Выберите плоскость или плоскую грань для изображения."), {}, {QString::fromUtf8("Выберите файл изображения."), QString::fromUtf8("Выберите плоскость или плоскую грань."), QString::fromUtf8("Настройте положение и масштаб в свойствах.")}}},
     {Kind::Extrude, "extrude", {QString::fromUtf8("Выдавливание"), QString::fromUtf8("Создаёт или изменяет объём, перемещая замкнутый профиль по прямой."), QString::fromUtf8("Создаёт 3D-объём из замкнутого эскиза. Выберите эскиз и задайте расстояние стрелкой во viewport либо числом. Операция может создать новое тело, объединить геометрию или выполнить вырез."), QString::fromUtf8("Выберите замкнутый эскиз."), QString::fromUtf8("Потяните стрелку или введите длину."), {QString::fromUtf8("Выберите замкнутый эскиз."), QString::fromUtf8("Потяните стрелку или введите длину."), QString::fromUtf8("Выберите операцию: новое тело / объединение / вырез.")}}},
     {Kind::Pocket, "pocket", {QString::fromUtf8("Вырез"), QString::fromUtf8("Удаляет объём, выдавливая замкнутый профиль внутрь детали."), QString::fromUtf8("Создаёт параметрический вырез из замкнутого эскиза. Выберите профиль и задайте глубину стрелкой во viewport либо числом."), QString::fromUtf8("Выберите замкнутый профиль для выреза."), QString::fromUtf8("Потяните стрелку или введите глубину."), {QString::fromUtf8("Выберите замкнутый профиль для выреза."), QString::fromUtf8("Задайте глубину выреза.")}}},
     {Kind::Revolve, "revolve", {QString::fromUtf8("Вращение"), QString::fromUtf8("Создаёт 3D-тело вращением выбранных профилей вокруг оси."), QString::fromUtf8("Выберите одну или несколько замкнутых областей прямо в 3D-виде (Ctrl добавляет или убирает область), затем щёлкните базовую ось или прямую эскиза. Угол меняется интерактивной дугой либо числом рядом с ней."), QString::fromUtf8("Выберите профиль; удерживайте Ctrl для нескольких областей."), QString::fromUtf8("Потяните синюю дугу или сразу введите угол в поле рядом с ней."), {QString::fromUtf8("Выберите профиль; Ctrl добавляет области."), QString::fromUtf8("Щёлкните базовую ось или прямую эскиза."), QString::fromUtf8("Потяните дугу или введите угол и нажмите Enter.")}}},
@@ -82,6 +83,8 @@ QIcon partDesignToolIcon(PartDesignToolKind kind) {
 QIcon modelCommandIcon(const QString& commandId) {
   if (commandId == QLatin1String("createSketch"))
     return toolIcon(ToolIconKind::CreateSketch);
+  if (commandId == QLatin1String("referenceImage"))
+    return toolIcon(ToolIconKind::ReferenceImage);
   if (commandId == QLatin1String("ruler"))
     return toolIcon(ToolIconKind::Ruler);
   for (const auto& entry : kEntries)

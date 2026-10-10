@@ -53,9 +53,10 @@ int main(int argc, char** argv) {
   solidar::SketchRibbon ribbon(&canvas);
   const auto buttons = ribbon.findChildren<QPushButton*>(
       QStringLiteral("toolButton"));
-  CHECK(buttons.size() == 17);
+  CHECK(buttons.size() == 18);
   bool hasMirror = false;
   bool hasTrim = false;
+  bool hasBezier = false;
   for (const auto* button : buttons) {
     CHECK(!button->icon().isNull());
     CHECK(hasVisiblePixel(button->icon()));
@@ -65,8 +66,11 @@ int main(int argc, char** argv) {
                 button->accessibleName() == QString::fromUtf8("Зеркало");
     hasTrim = hasTrim ||
               button->accessibleName() == QString::fromUtf8("Ножницы");
+    hasBezier = hasBezier ||
+                button->accessibleName() == QString::fromUtf8("Кривая Безье");
   }
   CHECK(hasMirror);
   CHECK(hasTrim);
+  CHECK(hasBezier);
   return 0;
 }

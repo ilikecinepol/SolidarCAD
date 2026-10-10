@@ -36,7 +36,8 @@ bool SketchInteractionController::hasActiveGesture() const noexcept {
          line.startMidpointCarrier || line.endMidpointCarrier ||
          line.startArcCarrier || line.endArcCarrier || creation.anchor ||
          !creation.rectanglePoints.empty() || !creation.circlePoints.empty() ||
-         !creation.arcPoints.empty() || !creation.circleGuideIds.empty() ||
+         !creation.arcPoints.empty() || !creation.bezierPoints.empty() ||
+         !creation.circleGuideIds.empty() ||
          !state.mirror.source.empty() || state.trim.preview ||
          state.arc.chordAngleRad || state.arc.sagittaSign ||
          state.arc.dimensionKeyboardEdit ||
@@ -112,6 +113,14 @@ void SketchInteractionController::appendArcPoint(sketch::Point point) {
 
 void SketchInteractionController::clearArcPoints() noexcept {
   state_.creation.arcPoints.clear();
+}
+
+void SketchInteractionController::appendBezierPoint(sketch::Point point) {
+  state_.creation.bezierPoints.push_back(point);
+}
+
+void SketchInteractionController::clearBezierPoints() noexcept {
+  state_.creation.bezierPoints.clear();
 }
 
 void SketchInteractionController::appendCircleGuide(sketch::GeometryId lineId) {

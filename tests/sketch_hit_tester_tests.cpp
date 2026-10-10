@@ -88,9 +88,12 @@ void adapterUsesStableReferencesForRepresentativeGeometry() {
   sketch.addLine({0.0, 0.0}, {10.0, 0.0}, 17);
   sketch.addCircle({20.0, 10.0}, 5.0);
   sketch.addArc({30.0, 0.0}, 4.0, 0.0, 1.5707963267948966);
+  sketch.addBezier({40.0, 0.0}, {45.0, 10.0},
+                   {55.0, 10.0}, {60.0, 0.0});
   const auto lineId = sketch.lineId(0);
   const auto circleId = sketch.circleId(0);
   const auto arcId = sketch.arcId(0);
+  const auto bezierId = sketch.bezierId(0);
 
   SketchHitSceneOptions options;
   options.origin = SketchHitPoint{0.0, 0.0};
@@ -115,6 +118,10 @@ void adapterUsesStableReferencesForRepresentativeGeometry() {
   CHECK(hit && hit->entity()->kind == SketchPickEntityKind::Arc);
   CHECK(hit->entity()->geometryId == arcId);
 
+  hit = SketchHitTester::pick(scene, {50.0, 7.5}, onlyEntities());
+  CHECK(hit && hit->entity()->kind == SketchPickEntityKind::Bezier);
+  CHECK(hit->entity()->geometryId == bezierId);
+
   auto pointHit = SketchHitTester::pick(scene, {0.0, 0.0}, onlyPoints());
   CHECK(pointHit && pointHit->point());
   CHECK(pointHit->point()->kind == SketchPickPointKind::LineEndpoint);
@@ -129,6 +136,12 @@ void adapterUsesStableReferencesForRepresentativeGeometry() {
   CHECK(pointHit && pointHit->point()->kind ==
                         SketchPickPointKind::ArcEndpoint);
   CHECK(pointHit->point()->reference.arcId == arcId);
+
+  pointHit = SketchHitTester::pick(scene, {45.0, 10.0}, onlyPoints());
+  CHECK(pointHit && pointHit->point()->kind ==
+                        SketchPickPointKind::BezierControlPoint);
+  CHECK(pointHit->point()->reference.bezierId == bezierId);
+  CHECK(pointHit->point()->reference.bezierPoint == 1);
 
   auto midpointOnly = onlyPoints();
   midpointOnly.lineEndpoints = false;

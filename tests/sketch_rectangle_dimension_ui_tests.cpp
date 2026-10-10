@@ -1635,7 +1635,8 @@ int main(int argc, char** argv) {
     for (const auto tool : {solidar::SketchCanvas::Tool::Line,
                             solidar::SketchCanvas::Tool::Rectangle,
                             solidar::SketchCanvas::Tool::Circle,
-                            solidar::SketchCanvas::Tool::Arc}) {
+                            solidar::SketchCanvas::Tool::Arc,
+                            solidar::SketchCanvas::Tool::Bezier}) {
       solidar::SketchCanvas gestureCanvas;
       gestureCanvas.resize(900, 650);
       gestureCanvas.show();
@@ -1655,6 +1656,10 @@ int main(int argc, char** argv) {
       click(gestureCanvas, second);
       if (tool == solidar::SketchCanvas::Tool::Arc)
         click(gestureCanvas, QPointF(405.0, 275.0));
+      if (tool == solidar::SketchCanvas::Tool::Bezier) {
+        click(gestureCanvas, QPointF(420.0, 270.0));
+        click(gestureCanvas, QPointF(480.0, 300.0));
+      }
 
       if (tool == solidar::SketchCanvas::Tool::Line)
         CHECK(gestureCanvas.sketch().lines().size() == 1);
@@ -1662,9 +1667,51 @@ int main(int argc, char** argv) {
         CHECK(gestureCanvas.sketch().lines().size() == 4);
       else if (tool == solidar::SketchCanvas::Tool::Circle)
         CHECK(gestureCanvas.sketch().circles().size() == 1);
-      else
+      else if (tool == solidar::SketchCanvas::Tool::Arc)
         CHECK(gestureCanvas.sketch().arcs().size() == 1);
+      else
+        CHECK(gestureCanvas.sketch().beziers().size() == 1);
     }
+  }
+  {
+    // Control points are selectable and movable through the real mouse-event
+    // path; the sampled curve body remains selectable for deletion.
+    solidar::SketchCanvas bezierCanvas;
+    bezierCanvas.resize(900, 650);
+    bezierCanvas.setSnapEnabled(false);
+    bezierCanvas.setTool(solidar::SketchCanvas::Tool::Bezier);
+    bezierCanvas.show();
+    QApplication::processEvents();
+
+    const QPointF first(350.0, 350.0);
+    const QPointF control(400.0, 250.0);
+    click(bezierCanvas, first);
+    click(bezierCanvas, control);
+    click(bezierCanvas, QPointF(500.0, 250.0));
+    click(bezierCanvas, QPointF(550.0, 350.0));
+    CHECK(bezierCanvas.sketch().beziers().size() == 1);
+    const auto before = bezierCanvas.sketch().beziers()[0].points[1];
+
+    bezierCanvas.setTool(solidar::SketchCanvas::Tool::Select);
+    const QPointF movedControl(420.0, 230.0);
+    QMouseEvent press(QEvent::MouseButtonPress, control, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&bezierCanvas, &press);
+    QMouseEvent move(QEvent::MouseMove, movedControl, Qt::NoButton,
+                     Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&bezierCanvas, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, movedControl,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&bezierCanvas, &release);
+    CHECK(std::abs(bezierCanvas.sketch().beziers()[0].points[1].xMm -
+                       before.xMm - 4.0) < 1e-6);
+    CHECK(std::abs(bezierCanvas.sketch().beziers()[0].points[1].yMm -
+                       before.yMm - 4.0) < 1e-6);
+
+    click(bezierCanvas, QPointF(457.5, 267.5));
+    QKeyEvent removeBezier(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&bezierCanvas, &removeBezier);
+    CHECK(bezierCanvas.sketch().beziers().empty());
   }
   {
     // AutoDimension first operand is cancelled through the same RMB path;

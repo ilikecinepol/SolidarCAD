@@ -64,6 +64,7 @@ class ExtrudeFeature final : public ShapeFeature {
     std::vector<sketch::GeometryId> lineIds;
     std::vector<sketch::GeometryId> circleIds;
     std::vector<sketch::GeometryId> arcIds;
+    std::vector<sketch::GeometryId> bezierIds;
   };
 
   bool rebuildFaceSource(const RebuildContext& context,

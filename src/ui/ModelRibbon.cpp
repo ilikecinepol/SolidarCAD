@@ -57,7 +57,7 @@ QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
   widget->setObjectName("modelToolGroup");
   widget->setProperty("groupTitle", title);
   auto* layout = new QVBoxLayout(widget);
-  layout->setContentsMargins(12, 3, 12, 2);
+  layout->setContentsMargins(4, 3, 4, 2);
   layout->setSpacing(2);
   layout->addLayout(commands);
   auto* caption = new QToolButton(widget);
@@ -102,24 +102,29 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   setObjectName("modelRibbon");
   setFixedHeight(124);
   auto* root = new QHBoxLayout(this);
-  root->setContentsMargins(18, 6, 18, 6);
-  root->setSpacing(8);
+  root->setContentsMargins(4, 6, 4, 6);
+  root->setSpacing(3);
 
   auto* createSketch = commandButton(QStringLiteral("createSketch"), this);
+  auto* referenceImage =
+      commandButton(QStringLiteral("referenceImage"), this);
   auto* extrude = commandButton(QStringLiteral("extrude"), this);
   auto* pocket = commandButton(QStringLiteral("pocket"), this);
   auto* revolve = commandButton(QStringLiteral("revolve"), this);
   createSketch->setObjectName("createSketchCommand");
+  referenceImage->setObjectName("referenceImageCommand");
   extrude->setObjectName("extrudeCommand");
   pocket->setObjectName("pocketCommand");
   revolve->setObjectName("revolveCommand");
   createSketch->setCheckable(true);
+  referenceImage->setCheckable(true);
   extrude->setCheckable(true);
   pocket->setCheckable(true);
   revolve->setCheckable(true);
   toolGroup_ = new QButtonGroup(this);
   toolGroup_->setExclusive(true);
   toolGroup_->addButton(createSketch);
+  toolGroup_->addButton(referenceImage);
   toolGroup_->addButton(extrude);
   toolGroup_->addButton(pocket);
   toolGroup_->addButton(revolve);
@@ -233,13 +238,16 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   });
   quality->setMenu(qualityMenu);
   views->addWidget(rulerButton_);
+  views->addWidget(referenceImage);
   views->addWidget(displayMode);
   views->addWidget(quality);
   root->addWidget(group(QString::fromUtf8("ОТОБРАЖЕНИЕ"), views, this,
-                        {rulerButton_, displayMode, quality}), 1);
+                        {rulerButton_, referenceImage, displayMode, quality}), 1);
 
   connect(createSketch, &QToolButton::clicked, this,
           &ModelRibbon::createSketchRequested);
+  connect(referenceImage, &QToolButton::clicked, this,
+          &ModelRibbon::referenceImageRequested);
   connect(extrude, &QToolButton::clicked, this,
           &ModelRibbon::extrudeRequested);
   connect(pocket, &QToolButton::clicked, this,
