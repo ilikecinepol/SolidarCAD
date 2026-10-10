@@ -122,13 +122,53 @@ jobs:
       - name: Verify Release install foundation
         run: cmake --install build/release
 
-      - name: Package portable release
-        if: runner.os == 'Windows'
+      - name: Package release
         run: cpack --config build/release/CPackConfig.cmake
 
       - name: Validate and finalize release artifacts
         if: runner.os == 'Windows'
         run: python scripts/finalize_release.py --root . --build-dir build/release
+
+      - name: Validate Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package="$(find build/release -maxdepth 1 -name 'solidarcad_*_amd64.deb' -print -quit)"
+          test -n "$package"
+          dpkg-deb --info "$package"
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/bin/solidar'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/bin/qt.conf'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libQt6Core.so.6'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/plugins/platforms/libqxcb.so'
+          dpkg-deb --contents "$package" | grep -F './usr/bin/solidar'
+          dpkg-deb --contents "$package" | grep -F './usr/share/applications/solidarcad.desktop'
+          dpkg-deb --contents "$package" | grep -F './usr/share/mime/packages/application-x-solidarcad.xml'
+          sha256sum "$package" > "$package.sha256"
+          python scripts/generate_sbom.py \
+            --qt-version 6.8.3 \
+            --occt-version 8.0.1 \
+            --build-profile release \
+            --output "${package%.deb}.spdx.json"
+
+      - name: Install and smoke-test Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package="$(find build/release -maxdepth 1 -name 'solidarcad_*_amd64.deb' -print -quit)"
+          sudo apt-get install -y "$package"
+          test -x /usr/bin/solidar
+          test -x /opt/solidarcad/bin/solidar
+          desktop-file-validate /usr/share/applications/solidarcad.desktop
+          if env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH \
+              ldd /opt/solidarcad/bin/solidar | grep -F 'not found'; then
+            exit 1
+          fi
+          set +e
+          env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH \
+            QT_QPA_PLATFORM=offscreen timeout 10s solidar
+          status=$?
+          set -e
+          test "$status" -eq 124
 
       - name: Upload portable release
         if: runner.os == 'Windows'
@@ -136,6 +176,16 @@ jobs:
         with:
           name: solidarcad-portable-${{ matrix.os }}
           path: build/release/SolidarCAD-*
+
+      - name: Upload Debian package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: solidarcad-deb-ubuntu24.04-x64
+          path: |
+            build/release/solidarcad_*.deb
+            build/release/solidarcad_*.deb.sha256
+            build/release/solidarcad_*.spdx.json
 
   sanitizers:
     runs-on: ubuntu-24.04

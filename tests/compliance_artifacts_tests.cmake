@@ -19,6 +19,11 @@ set(required_files
   LICENSES/OCCT/README.md
   docs/dependency-policy.md
   docs/release-checklist.md
+  packaging/linux/application-x-solidarcad.xml
+  packaging/linux/postinst
+  packaging/linux/postrm
+  packaging/linux/solidar
+  packaging/linux/solidarcad.desktop
   sbom/README.md
   sbom/components.json
   scripts/finalize_release.py
@@ -30,6 +35,40 @@ foreach(relative_path IN LISTS required_files)
     message(FATAL_ERROR "Missing compliance artifact: ${relative_path}")
   endif()
 endforeach()
+
+file(READ "${SOURCE_DIR}/packaging/linux/solidarcad.desktop" desktop_entry)
+foreach(required_desktop_text
+        "Type=Application"
+        "Exec=solidar %f"
+        "Icon=solidarcad"
+        "MimeType=application/x-solidarcad;")
+  string(FIND "${desktop_entry}" "${required_desktop_text}"
+         desktop_text_position)
+  if(desktop_text_position EQUAL -1)
+    message(FATAL_ERROR
+            "Linux desktop entry is missing: ${required_desktop_text}")
+  endif()
+endforeach()
+
+file(READ "${SOURCE_DIR}/packaging/linux/application-x-solidarcad.xml"
+     linux_mime_definition)
+foreach(required_mime_text
+        "application/x-solidarcad"
+        "*.solidar")
+  string(FIND "${linux_mime_definition}" "${required_mime_text}"
+         mime_text_position)
+  if(mime_text_position EQUAL -1)
+    message(FATAL_ERROR
+            "Linux MIME definition is missing: ${required_mime_text}")
+  endif()
+endforeach()
+
+file(READ "${SOURCE_DIR}/packaging/linux/solidar" linux_launcher)
+string(FIND "${linux_launcher}" "/opt/solidarcad/bin/solidar"
+       launcher_target_position)
+if(launcher_target_position EQUAL -1)
+  message(FATAL_ERROR "Linux launcher does not use the packaged executable")
+endif()
 
 file(READ "${SOURCE_DIR}/vcpkg.json" vcpkg_manifest)
 string(JSON baseline GET "${vcpkg_manifest}" builtin-baseline)

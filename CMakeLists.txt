@@ -76,6 +76,9 @@ option(SOLIDAR_BUILD_BENCHMARKS
        "Build opt-in performance benchmarks (never registered with CTest)" OFF)
 option(SOLIDAR_BUILD_FUZZERS
        "Build opt-in libFuzzer targets (Clang non-MSVC driver only)" OFF)
+option(SOLIDAR_BUILD_LINUX_PACKAGE
+       "Use the system-wide /opt layout and Debian package metadata on Linux"
+       OFF)
 option(SOLIDAR_ENABLE_SANITIZERS
        "Instrument SolidarCAD targets with supported runtime sanitizers" OFF)
 option(SOLIDAR_ENABLE_CLANG_TIDY
@@ -171,6 +174,12 @@ if(SOLIDAR_BUILD_FUZZERS)
   add_subdirectory(fuzz)
 endif()
 
+if(UNIX AND NOT APPLE AND SOLIDAR_BUILD_LINUX_PACKAGE)
+  set(SOLIDAR_DOCUMENTATION_INSTALL_DIR "usr/share/doc/solidarcad")
+else()
+  set(SOLIDAR_DOCUMENTATION_INSTALL_DIR "share/SolidarCAD")
+endif()
+
 install(FILES
   LICENSE
   NOTICE
@@ -178,22 +187,59 @@ install(FILES
   CHANGELOG.md
   DEPENDENCIES.md
   THIRD_PARTY_NOTICES.md
-  DESTINATION share/SolidarCAD
+  DESTINATION "${SOLIDAR_DOCUMENTATION_INSTALL_DIR}"
 )
-install(DIRECTORY LICENSES/ DESTINATION share/SolidarCAD/LICENSES)
+install(DIRECTORY LICENSES/
+        DESTINATION "${SOLIDAR_DOCUMENTATION_INSTALL_DIR}/LICENSES")
 if(EXISTS "${OpenCASCADE_DIR}/copyright")
   install(FILES "${OpenCASCADE_DIR}/copyright"
-          DESTINATION share/SolidarCAD/LICENSES/OCCT)
+          DESTINATION "${SOLIDAR_DOCUMENTATION_INSTALL_DIR}/LICENSES/OCCT")
+endif()
+
+if(UNIX AND NOT APPLE AND SOLIDAR_BUILD_LINUX_PACKAGE)
+  install(PROGRAMS packaging/linux/solidar DESTINATION usr/bin)
+  install(FILES packaging/linux/solidarcad.desktop
+          DESTINATION usr/share/applications)
+  install(FILES packaging/linux/application-x-solidarcad.xml
+          DESTINATION usr/share/mime/packages)
+  install(FILES src/assets/solidarity-3d-logo.png
+          DESTINATION usr/share/pixmaps
+          RENAME solidarcad.png)
 endif()
 
 set(CPACK_PACKAGE_NAME "SolidarCAD")
 set(CPACK_PACKAGE_VENDOR "SolidarCAD")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Parametric CAD application for solid modelling")
+set(CPACK_PACKAGE_HOMEPAGE_URL
+    "https://github.com/ilikecinepol/SolidarCAD")
 set(CPACK_PACKAGE_FILE_NAME
     "SolidarCAD-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
 if(WIN32)
   set(CPACK_GENERATOR "ZIP")
+elseif(UNIX AND NOT APPLE AND SOLIDAR_BUILD_LINUX_PACKAGE)
+  set(CPACK_GENERATOR "DEB")
+  set(CPACK_PACKAGING_INSTALL_PREFIX "/")
+  set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
+  set(CPACK_DEBIAN_PACKAGE_NAME "solidarcad")
+  set(CPACK_DEBIAN_PACKAGE_RELEASE "1")
+  set(CPACK_DEBIAN_PACKAGE_MAINTAINER
+      "Mikhail Molotkov <ilikecinepol@users.noreply.github.com>")
+  set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
+  set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+  set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+      "SolidarCAD is a parametric CAD application for constrained sketches,
+ solid feature modelling, editable history, and STEP/STL exchange.")
+  set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS
+      "desktop-file-utils, shared-mime-info")
+  set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+  set(CPACK_DEBIAN_COMPRESSION_TYPE "xz")
+  set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+      "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/postrm")
+  set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
 else()
   set(CPACK_GENERATOR "TGZ")
 endif()

@@ -45,7 +45,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/release/stage",
-        "SOLIDAR_BUILD_TESTS": "OFF"
+        "SOLIDAR_BUILD_TESTS": "OFF",
+        "SOLIDAR_BUILD_LINUX_PACKAGE": "ON"
       }
     },
     {

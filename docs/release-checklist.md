@@ -1,6 +1,7 @@
 # MVP release checklist
 
-This checklist is the publication gate for the Windows x64 0.1.0 MVP Preview.
+This checklist is the publication gate for the Windows x64 and Ubuntu 24.04
+x86_64 0.1.0 MVP Preview.
 Record the tested commit and machine configuration in the release notes.
 Check an item only for the exact release-candidate commit. A successful local
 run from another revision is useful evidence but does not complete the tagged
@@ -23,6 +24,8 @@ The latest pre-release evidence is recorded in
 - [ ] Configure, build and install the `release` preset.
 - [ ] Create the portable archive with CPack, then run
       `python scripts/finalize_release.py --root . --build-dir build/release`.
+- [ ] Create the Ubuntu package with CPack and retain the CI-validated `.deb`,
+      `.deb.sha256` and `.spdx.json` files as one release set.
 - [ ] Retain the validated ZIP, generated `.zip.sha256` and release-profile
       `.spdx.json` as one release set.
 - [ ] Run the compliance test against the final source tree.
@@ -47,15 +50,20 @@ The latest pre-release evidence is recorded in
 - [ ] Create and edit a Sketch -> Extrude -> Fillet/Chamfer model.
 - [ ] Save it as `.solidar`, restart the application and continue editing it.
 - [ ] Export STEP and STL and confirm that both files can be read independently.
+- [ ] On an Ubuntu 24.04 x86_64 VM without Qt or OCCT, install the package with
+      `sudo apt install ./solidarcad_0.1.0-1_amd64.deb`.
+- [ ] Launch from the desktop menu and with `solidar`, then open a `.solidar`
+      file from the file manager and repeat the modelling/export smoke test.
 
 ## Publication
 
-- [ ] Publish the ZIP, SHA-256, SBOM and release notes together.
-- [ ] Label the release **Windows x64 MVP Preview** and state that it is
-      portable, unsigned and limited to single-part modelling.
+- [ ] Publish the ZIP and Debian package with their SHA-256, SBOM and release
+      notes together.
+- [ ] Label the release **Windows x64 / Ubuntu 24.04 x64 MVP Preview** and state
+      that it is unsigned and limited to single-part modelling.
 - [ ] Include the known limitations from `CHANGELOG.md`.
-- [ ] Keep Linux described as a CI-validated source build until its manual GPU
-      and clean-machine binary gates are completed.
+- [ ] Keep the Debian package described as Ubuntu 24.04 x86_64-only until its
+      manual GPU and clean-machine binary gates are completed.
 
 Do not set the release date, create `v0.1.0`, or publish artifacts while either
 manual gate above remains incomplete.

@@ -1,17 +1,28 @@
 # Солидарность CAD
 
 Solidar CAD (Солидарность CAD) is an early open-source parametric CAD
-application. Source builds are validated on Windows and Ubuntu; the 0.1.0 MVP
-binary distribution targets Windows x64. The first milestone is a dependable
-part-design workflow: constrained 2D sketch → solid features → editable history.
+application. Source builds and binary packages are validated on Windows and
+Ubuntu 24.04. The first milestone is a dependable part-design workflow:
+constrained 2D sketch → solid features → editable history.
 
 ## Download and run
 
-The MVP is distributed as a portable Windows x64 ZIP. Extract the complete
+The Windows MVP is distributed as a portable x64 ZIP. Extract the complete
 archive and run `bin/solidar.exe`; installation is not required. The executable
 is not code-signed in 0.1.0, so Windows may show a reputation warning on first
-launch. Linux is currently supported as a source build, not as an end-user
-binary package.
+launch.
+
+Ubuntu 24.04 x86_64 uses the release `.deb`. After downloading it, install and
+launch SolidarCAD with:
+
+```bash
+sudo apt install ./solidarcad_0.1.0-1_amd64.deb
+solidar
+```
+
+The Debian package contains the pinned Qt 6.8.3 runtime in an isolated
+`/opt/solidarcad` tree and registers the application and `.solidar` project
+files with the desktop environment.
 
 ## MVP scope
 
@@ -91,17 +102,27 @@ cmake --preset release
 cmake --build --preset release
 cmake --install build/release
 cpack --config build/release/CPackConfig.cmake
+```
+
+On Windows, finalize the generated ZIP and its sidecars with:
+
+```bash
 python scripts/finalize_release.py --root . --build-dir build/release
 ```
 
-The install step creates a runnable tree in `build/release/stage`. CPack creates
-a portable Windows ZIP including runtime dependencies and third-party notices.
-The finalization step rejects an incomplete archive and creates its SHA-256 and
-release-profile SPDX sidecars. GitHub Actions uploads all three files together.
-The Linux install tree remains a developer validation artifact rather than an
-MVP distribution. Publishing a public release still requires a clean-machine
-smoke test. The portable archive includes the canonical Qt 6.8.3 license texts
-and the binary-package SPDX inventories used to verify the deployed Qt modules.
+On Ubuntu, CPack directly produces
+`build/release/solidarcad_0.1.0-1_amd64.deb`; CI validates, installs and
+smoke-tests that package before publishing it as an artifact.
+
+The install step creates a runnable tree in `build/release/stage`. On Windows,
+CPack creates a portable ZIP including runtime dependencies and third-party
+notices. On Ubuntu, CPack creates an installable `.deb` with a private Qt 6.8.3
+runtime, desktop entry and `.solidar` MIME association. GitHub Actions installs
+and smoke-tests the generated Debian package, then uploads it with SHA-256 and
+release-profile SPDX sidecars. Publishing a public release still requires a
+clean-machine smoke test. Release artifacts include the canonical Qt 6.8.3
+license texts and the binary-package SPDX inventories used to verify the
+deployed Qt modules.
 
 ## Known MVP limitations
 
@@ -109,7 +130,7 @@ and the binary-package SPDX inventories used to verify the deployed Qt modules.
 - Polygon, Slot, Text and sketch mirroring are not exposed as commands;
 - the drawing workbench is not a complete production ESKD workflow;
 - the Windows package is portable and unsigned;
-- Linux has CI coverage but no supported MVP binary distribution;
+- the Linux binary package currently targets Ubuntu 24.04 x86_64 only;
 - complex topological edits can still require reselecting a face or edge.
 
 ## Roadmap

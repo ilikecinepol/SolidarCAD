@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=SolidarCAD
+Name[ru]=Солидарность CAD
+Comment=Parametric CAD application
+Comment[ru]=Параметрическая система автоматизированного проектирования
+Exec=solidar %f
+TryExec=solidar
+Icon=solidarcad
+Terminal=false
+Categories=Graphics;Engineering;Science;
+MimeType=application/x-solidarcad;
+StartupNotify=true
+StartupWMClass=SolidarCAD

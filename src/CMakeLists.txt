@@ -322,5 +322,29 @@ if(WIN32)
   )
   install(SCRIPT ${SOLIDAR_QT_DEPLOY_SCRIPT})
 else()
-  install(TARGETS solidar RUNTIME DESTINATION bin)
+  if(UNIX AND NOT APPLE AND SOLIDAR_BUILD_LINUX_PACKAGE)
+    # The official Debian package carries its pinned Qt runtime privately.
+    # Keep the executable and libraries together under /opt so they cannot
+    # shadow distribution-provided Qt libraries.
+    set_target_properties(solidar PROPERTIES
+      INSTALL_RPATH "$ORIGIN/../lib"
+    )
+    install(TARGETS solidar RUNTIME DESTINATION opt/solidarcad/bin)
+
+    qt_generate_deploy_script(
+      TARGET solidar
+      OUTPUT_SCRIPT SOLIDAR_QT_DEPLOY_SCRIPT
+      CONTENT "
+set(QT_DEPLOY_BIN_DIR \"opt/solidarcad/bin\")
+set(QT_DEPLOY_LIB_DIR \"opt/solidarcad/lib\")
+set(QT_DEPLOY_PLUGINS_DIR \"opt/solidarcad/plugins\")
+qt_deploy_runtime_dependencies(
+  EXECUTABLE \"$<TARGET_FILE:solidar>\"
+  GENERATE_QT_CONF
+  NO_TRANSLATIONS
+)")
+    install(SCRIPT ${SOLIDAR_QT_DEPLOY_SCRIPT})
+  else()
+    install(TARGETS solidar RUNTIME DESTINATION bin)
+  endif()
 endif()
