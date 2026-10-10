@@ -1,4 +1,5 @@
 {
   "qt_version": "6.11.1",
+  "icu_version": "73.2",
   "occt_version": "8.0.1"
 }

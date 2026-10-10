@@ -6849,33 +6849,6 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
 
   pushUndoState();
 
-  // Parallel conflicts with an explicit angle/perpendicular relationship on
-  // the same pair in the current sequential solver. Remove only that pair.
-  std::vector<sketch::ConstraintId> conflicting;
-
-  for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.type != sketch::ConstraintType::Angle &&
-        constraint.type != sketch::ConstraintType::Perpendicular)
-      continue;
-
-    const bool sameOrder =
-        constraint.firstGeometry == firstId &&
-        constraint.secondGeometry == clickedId;
-    const bool reverseOrder =
-        constraint.firstGeometry == clickedId &&
-        constraint.secondGeometry == firstId;
-
-    if (sameOrder || reverseOrder)
-      conflicting.push_back(constraint.id);
-  }
-
-  for (const auto id : conflicting) {
-    if (!executeCommand(RemoveConstraintCommand{id}).accepted) {
-      cancelPendingUndo();
-      return;
-    }
-  }
-
   sketch::Constraint constraint;
   constraint.type = sketch::ConstraintType::Parallel;
   constraint.firstGeometry = firstId;
@@ -7017,31 +6990,6 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
 
   pushUndoState();
 
-  // Perpendicular is an angular relationship. Remove an old explicit Angle
-  // constraint for this exact pair so the simple solver is not overconstrained.
-  std::vector<sketch::ConstraintId> oldAngles;
-
-  for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.type != sketch::ConstraintType::Angle) continue;
-
-    const bool sameOrder =
-        constraint.firstGeometry == firstId &&
-        constraint.secondGeometry == clickedId;
-    const bool reverseOrder =
-        constraint.firstGeometry == clickedId &&
-        constraint.secondGeometry == firstId;
-
-    if (sameOrder || reverseOrder)
-      oldAngles.push_back(constraint.id);
-  }
-
-  for (const auto id : oldAngles) {
-    if (!executeCommand(RemoveConstraintCommand{id}).accepted) {
-      cancelPendingUndo();
-      return;
-    }
-  }
-
   sketch::Constraint constraint;
   constraint.type = sketch::ConstraintType::Perpendicular;
   constraint.firstGeometry = firstId;
@@ -7117,23 +7065,6 @@ void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
   }
 
   pushUndoState();
-
-  // If the same line had the opposite orthogonal constraint, replace it.
-  std::vector<sketch::ConstraintId> opposite;
-  for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.firstGeometry != id) continue;
-    if ((type == sketch::ConstraintType::Vertical &&
-         constraint.type == sketch::ConstraintType::Horizontal) ||
-        (type == sketch::ConstraintType::Horizontal &&
-         constraint.type == sketch::ConstraintType::Vertical))
-      opposite.push_back(constraint.id);
-  }
-  for (const auto constraintId : opposite) {
-    if (!executeCommand(RemoveConstraintCommand{constraintId}).accepted) {
-      cancelPendingUndo();
-      return;
-    }
-  }
 
   sketch::Constraint constraint;
   constraint.type = type;
@@ -10144,8 +10075,8 @@ void SketchCanvas::runConstraintDiagnostics() {
 
   QString constraintText;
 
-  if (sketch_.lines().empty() &&
-      sketch_.circles().empty()) {
+  if (sketch_.lines().empty() && sketch_.circles().empty() &&
+      sketch_.arcs().empty()) {
     constraintText =
         QString::fromUtf8("Эскиз пуст");
   } else if (constraintState.conflicting) {
@@ -10154,8 +10085,13 @@ void SketchCanvas::runConstraintDiagnostics() {
             "Конфликт ограничений · нарушено: %1")
             .arg(
                 constraintState.violations.size());
-  } else if (
-      constraintState.fullyConstrained) {
+  } else if (!constraintState.components.empty() &&
+             std::all_of(constraintState.components.begin(),
+                         constraintState.components.end(),
+                         [](const auto& component) {
+                           return component.degreesOfFreedom == 0 &&
+                                  !component.conflicting;
+                         })) {
     constraintText =
         QString::fromUtf8(
             "Эскиз полностью определён · DOF: 0");

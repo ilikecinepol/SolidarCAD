@@ -25,6 +25,16 @@ https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/
 Официальная информация: https://www.qt.io/licensing/ и
 https://doc.qt.io/qt-6/licenses-used-in-qt.html
 
+## ICU 73.2
+
+Copyright © 1991-2023 Unicode, Inc. All rights reserved.
+
+Linux-пакет динамически поставляет `libicudata`, `libicui18n` и `libicuuc`,
+которые требуются официальной бинарной сборке Qt 6.8.3. Полный неизменённый
+текст лицензии из архива ICU 73.2 находится в `LICENSES/ICU/LICENSE`.
+
+Официальный исходный код: https://github.com/unicode-org/icu/releases/tag/release-73-2
+
 ## Open CASCADE Technology 8.0.1
 
 Copyright (C) OPEN CASCADE S.A.S. and contributors.

@@ -436,9 +436,10 @@ void sketchFreeCameraTests() {
 }
 
 void sketchConstraintToolTests() {
-  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
-  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
-  const auto screenPoint = [](double xMm, double yMm) {
+  const auto screenPoint = [](const solidar::SketchCanvas& canvas,
+                              double xMm, double yMm) {
+    const double centerX = 44.0 + (canvas.width() - 44.0) * 0.5;
+    const double centerY = 30.0 + (canvas.height() - 30.0) * 0.5;
     return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
   };
   const auto move = [](solidar::SketchCanvas& canvas, QPointF at) {
@@ -490,8 +491,8 @@ void sketchConstraintToolTests() {
     canvas.show();
     QApplication::processEvents();
 
-    const QPointF first = screenPoint(-20.0, -7.0);
-    const QPointF second = screenPoint(17.5, 13.5);
+    const QPointF first = screenPoint(canvas, -20.0, -7.0);
+    const QPointF second = screenPoint(canvas, 17.5, 13.5);
     move(canvas, first);
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     click(canvas, first);
@@ -514,12 +515,12 @@ void sketchConstraintToolTests() {
     canvas.show();
     QApplication::processEvents();
 
-    move(canvas, screenPoint(0.0, 0.0));
+    move(canvas, screenPoint(canvas, 0.0, 0.0));
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
-    click(canvas, screenPoint(0.0, 0.0));
-    move(canvas, screenPoint(5.0, 16.0));
+    click(canvas, screenPoint(canvas, 0.0, 0.0));
+    move(canvas, screenPoint(canvas, 5.0, 16.0));
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Circle));
-    click(canvas, screenPoint(5.0, 16.0));
+    click(canvas, screenPoint(canvas, 5.0, 16.0));
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Tangent));
   }
@@ -543,23 +544,23 @@ void sketchConstraintToolTests() {
              solidar::SketchCanvas::Tool::ParallelConstraint,
              solidar::SketchCanvas::Tool::PerpendicularConstraint}) {
       canvas.setTool(tool);
-      move(canvas, screenPoint(-20.0, 3.5));
+      move(canvas, screenPoint(canvas, -20.0, 3.5));
       CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
     }
     canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
-    move(canvas, screenPoint(-30.0, 0.0));
+    move(canvas, screenPoint(canvas, -30.0, 0.0));
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Point));
 
     canvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
-    move(canvas, screenPoint(-20.0, 3.5));
+    move(canvas, screenPoint(canvas, -20.0, 3.5));
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Line));
-    move(canvas, screenPoint(0.0, -20.0));
+    move(canvas, screenPoint(canvas, 0.0, -20.0));
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::YAxis));
 
     canvas.setTool(solidar::SketchCanvas::Tool::LockConstraint);
-    move(canvas, screenPoint(30.0, 8.0));
+    move(canvas, screenPoint(canvas, 30.0, 8.0));
     CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Arc));
-    click(canvas, screenPoint(30.0, 8.0));
+    click(canvas, screenPoint(canvas, 30.0, 8.0));
     CHECK(canvas.sketch().isGeometryLocked(canvas.sketch().arcId(0)));
   }
 
@@ -607,8 +608,9 @@ void sketchConstraintToolTests() {
     QApplication::processEvents();
     const auto before = canvas.sketch().lines()[
         *canvas.sketch().lineIndex(activeLine)];
-    click(canvas, screenPoint((before.start.xMm + before.end.xMm) * 0.5,
-                              (before.start.yMm + before.end.yMm) * 0.5));
+    click(canvas,
+          screenPoint(canvas, (before.start.xMm + before.end.xMm) * 0.5,
+                      (before.start.yMm + before.end.yMm) * 0.5));
     auto* input = canvas.findChild<QDoubleSpinBox*>(
         QStringLiteral("primaryDimension"));
     CHECK(input != nullptr);
@@ -618,6 +620,7 @@ void sketchConstraintToolTests() {
     input->setValue(25.0);
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(input, &enter);
+    QApplication::processEvents();
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Distance));
 
@@ -625,11 +628,12 @@ void sketchConstraintToolTests() {
         solidar::SketchCanvas::Tool::PerpendicularConstraint);
     const auto sized = canvas.sketch().lines()[
         *canvas.sketch().lineIndex(activeLine)];
-    click(canvas, screenPoint((sized.start.xMm + sized.end.xMm) * 0.5,
-                              (sized.start.yMm + sized.end.yMm) * 0.5));
-    move(canvas, screenPoint(sized.end.xMm, sized.end.yMm));
+    click(canvas,
+          screenPoint(canvas, (sized.start.xMm + sized.end.xMm) * 0.5,
+                      (sized.start.yMm + sized.end.yMm) * 0.5));
+    move(canvas, screenPoint(canvas, sized.end.xMm, sized.end.yMm));
     CHECK(hoverGeometryIs(canvas, projectionLine));
-    click(canvas, screenPoint(sized.end.xMm, sized.end.yMm));
+    click(canvas, screenPoint(canvas, sized.end.xMm, sized.end.yMm));
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Perpendicular));
   }
@@ -683,7 +687,7 @@ void sketchConstraintToolTests() {
     dimensionCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
     dimensionCanvas.show();
     QApplication::processEvents();
-    click(dimensionCanvas, screenPoint(-8.0, -20.5));
+    click(dimensionCanvas, screenPoint(dimensionCanvas, -8.0, -20.5));
     auto* input = dimensionCanvas.findChild<QDoubleSpinBox*>(
         QStringLiteral("primaryDimension"));
     CHECK(input != nullptr);
@@ -691,6 +695,7 @@ void sketchConstraintToolTests() {
     input->setValue(25.0);
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(input, &enter);
+    QApplication::processEvents();
     CHECK(!input->isVisible());
     CHECK(hasConstraint(dimensionCanvas.sketch(),
                         solidar::sketch::ConstraintType::Distance));
@@ -708,10 +713,10 @@ void sketchConstraintToolTests() {
     tangentCanvas.setTool(solidar::SketchCanvas::Tool::TangentConstraint);
     tangentCanvas.show();
     QApplication::processEvents();
-    click(tangentCanvas, screenPoint(-8.0, -20.5));
-    move(tangentCanvas, screenPoint(10.0, 0.0));
+    click(tangentCanvas, screenPoint(tangentCanvas, -8.0, -20.5));
+    move(tangentCanvas, screenPoint(tangentCanvas, 10.0, 0.0));
     CHECK(hoverGeometryIs(tangentCanvas, projectionCircle));
-    click(tangentCanvas, screenPoint(10.0, 0.0));
+    click(tangentCanvas, screenPoint(tangentCanvas, 10.0, 0.0));
     CHECK(hasConstraint(tangentCanvas.sketch(),
                         solidar::sketch::ConstraintType::Tangent));
     const auto& tangent = tangentCanvas.sketch().lines()[
@@ -761,8 +766,8 @@ void sketchConstraintToolTests() {
     QApplication::processEvents();
 
     canvas.setTool(solidar::SketchCanvas::Tool::TangentConstraint);
-    click(canvas, screenPoint(-8.0, -15.5));
-    click(canvas, screenPoint(10.0, 0.0));
+    click(canvas, screenPoint(canvas, -8.0, -15.5));
+    click(canvas, screenPoint(canvas, 10.0, 0.0));
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Tangent));
 
@@ -770,9 +775,9 @@ void sketchConstraintToolTests() {
     const auto tangent = canvas.sketch().lines()[
         *canvas.sketch().lineIndex(activeLine)];
     click(canvas,
-          screenPoint((tangent.start.xMm + tangent.end.xMm) * 0.5,
+          screenPoint(canvas, (tangent.start.xMm + tangent.end.xMm) * 0.5,
                       (tangent.start.yMm + tangent.end.yMm) * 0.5));
-    click(canvas, screenPoint(20.0, -25.0));
+    click(canvas, screenPoint(canvas, 20.0, -25.0));
     CHECK(canvas.interactionState().autoDimension.target ==
           solidar::SketchAutoDimensionTarget::Angle);
     auto* input = canvas.findChild<QDoubleSpinBox*>(
@@ -782,6 +787,7 @@ void sketchConstraintToolTests() {
     input->setValue(90.0);
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(input, &enter);
+    QApplication::processEvents();
     CHECK(!input->isVisible());
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Angle));
@@ -792,12 +798,14 @@ void sketchConstraintToolTests() {
     const auto perpendicular = canvas.sketch().lines()[
         *canvas.sketch().lineIndex(activeLine)];
     click(canvas,
-          screenPoint((perpendicular.start.xMm + perpendicular.end.xMm) * 0.5,
+          screenPoint(canvas,
+                      (perpendicular.start.xMm + perpendicular.end.xMm) * 0.5,
                       (perpendicular.start.yMm + perpendicular.end.yMm) *
                           0.5));
     CHECK(input->isVisible());
     input->setValue(25.0);
     QApplication::sendEvent(input, &enter);
+    QApplication::processEvents();
     CHECK(!input->isVisible());
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Distance));

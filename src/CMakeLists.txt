@@ -266,7 +266,7 @@ target_compile_definitions(solidar_home
 )
 solidar_warnings(solidar_home)
 
-add_executable(solidar
+qt_add_executable(solidar
   app/main.cpp
   assets/icons.qrc
 )

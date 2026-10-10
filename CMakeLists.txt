@@ -90,6 +90,8 @@ if(NOT SOLIDAR_TEST_TIMEOUT_SECONDS MATCHES "^[1-9][0-9]*$")
 endif()
 set(SOLIDAR_REQUIRED_QT_VERSION "" CACHE STRING
     "Require an exact Qt version (empty accepts any supported Qt)")
+set(SOLIDAR_ICU_RUNTIME_DIR "$ENV{SOLIDAR_ICU_RUNTIME_DIR}" CACHE PATH
+    "Directory containing the ICU 73 shared libraries bundled on Linux")
 
 include(cmake/SolidarDeveloperProfiles.cmake)
 
@@ -197,6 +199,20 @@ if(EXISTS "${OpenCASCADE_DIR}/copyright")
 endif()
 
 if(UNIX AND NOT APPLE AND SOLIDAR_BUILD_LINUX_PACKAGE)
+  foreach(_solidar_icu_library IN ITEMS icudata icui18n icuuc)
+    if(NOT EXISTS
+       "${SOLIDAR_ICU_RUNTIME_DIR}/lib${_solidar_icu_library}.so.73")
+      message(FATAL_ERROR
+        "The Linux package requires ICU 73 runtime libraries. Missing "
+        "${SOLIDAR_ICU_RUNTIME_DIR}/lib${_solidar_icu_library}.so.73")
+    endif()
+  endforeach()
+  install(DIRECTORY "${SOLIDAR_ICU_RUNTIME_DIR}/"
+          DESTINATION opt/solidarcad/lib
+          FILES_MATCHING
+          PATTERN "libicudata.so.73*"
+          PATTERN "libicui18n.so.73*"
+          PATTERN "libicuuc.so.73*")
   install(PROGRAMS packaging/linux/solidar DESTINATION usr/bin)
   install(FILES packaging/linux/solidarcad.desktop
           DESTINATION usr/share/applications)

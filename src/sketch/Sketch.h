@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -125,6 +126,28 @@ struct Constraint {
   PointReference firstPoint{};
   PointReference secondPoint{};
   double value{};
+};
+
+enum class ConstraintApplyStatus {
+  Accepted,
+  Redundant,
+  Conflicting,
+  Unsupported,
+  InvalidReference,
+  SolverFailed,
+};
+
+struct ConstraintApplyResult {
+  ConstraintApplyStatus status{ConstraintApplyStatus::SolverFailed};
+  ConstraintId constraintId{kInvalidConstraintId};
+  std::vector<ConstraintId> relatedConstraintIds;
+  std::string diagnostic;
+
+  [[nodiscard]] bool accepted() const noexcept {
+    return status == ConstraintApplyStatus::Accepted ||
+           (status == ConstraintApplyStatus::Redundant &&
+            constraintId != kInvalidConstraintId);
+  }
 };
 
 enum class GeometryKind { Line, Circle, Arc };
@@ -312,6 +335,10 @@ class Sketch final {
   bool setDimensionValue(std::size_t index, double valueMm);
 
   ConstraintId addConstraint(Constraint constraint);
+  // Safe interactive boundary. The candidate is committed only when the
+  // complete affected constraint component remains valid.
+  [[nodiscard]] ConstraintApplyResult tryApplyConstraint(
+      Constraint constraint, bool commitRedundant = false);
   // Persistence-only bulk restore: the caller validates the complete set,
   // then the solver runs once after every constraint is present.
   [[nodiscard]] bool restoreConstraints(std::vector<Constraint> constraints);

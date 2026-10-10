@@ -16,6 +16,7 @@ set(required_files
   LICENSES/Qt/qtbase/GPL-3.0-only.txt
   LICENSES/Qt/SBOM/qtbase-6.8.3.spdx
   LICENSES/Qt/SBOM/qtsvg-6.8.3.spdx
+  LICENSES/ICU/LICENSE
   LICENSES/OCCT/README.md
   docs/dependency-policy.md
   docs/release-checklist.md
@@ -180,7 +181,7 @@ if(NOT sbom_check_result EQUAL 0)
           "${PYTHON_LAUNCHER}: ${sbom_check_output}${sbom_check_error}")
 endif()
 
-foreach(required_text "Qt" "Open CASCADE" "NOASSERTION")
+foreach(required_text "Qt" "ICU" "Open CASCADE" "NOASSERTION")
   string(FIND "${sbom}" "${required_text}" text_position)
   if(text_position EQUAL -1)
     message(FATAL_ERROR "SBOM is missing required text: ${required_text}")

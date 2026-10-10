@@ -5,6 +5,7 @@
 #include <limits>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace solidar::sketch {
@@ -40,6 +41,7 @@ struct Layout {
   std::vector<double> variables;
   std::unordered_map<GeometryId, std::size_t> lineBase;
   std::unordered_map<GeometryId, std::size_t> circleBase;
+  std::unordered_map<GeometryId, std::size_t> arcBase;
   std::vector<EndpointLink> implicitEndpointLinks;
   std::vector<LineRelation> implicitLineRelations;
 };
@@ -56,14 +58,21 @@ double dot2(double ax, double ay, double bx, double by) {
   return ax * bx + ay * by;
 }
 
-Layout makeLayout(const Sketch& sketch) {
+Layout makeLayout(
+    const Sketch& sketch,
+    const std::unordered_set<GeometryId>* includedGeometry = nullptr) {
   Layout result;
   result.variables.reserve(sketch.lines().size() * 4 +
-                           sketch.circles().size() * 3);
+                           sketch.circles().size() * 3 +
+                           sketch.arcs().size() * 5);
+
+  const auto included = [includedGeometry](GeometryId id) {
+    return !includedGeometry || includedGeometry->contains(id);
+  };
 
   for (std::size_t i = 0; i < sketch.lines().size(); ++i) {
     const auto id = sketch.lineId(i);
-    if (id == kInvalidGeometryId) continue;
+    if (id == kInvalidGeometryId || !included(id)) continue;
     result.lineBase[id] = result.variables.size();
     const auto& line = sketch.lines()[i];
     result.variables.insert(result.variables.end(),
@@ -72,17 +81,28 @@ Layout makeLayout(const Sketch& sketch) {
   }
   for (std::size_t i = 0; i < sketch.circles().size(); ++i) {
     const auto id = sketch.circleId(i);
-    if (id == kInvalidGeometryId) continue;
+    if (id == kInvalidGeometryId || !included(id)) continue;
     result.circleBase[id] = result.variables.size();
     const auto& circle = sketch.circles()[i];
     result.variables.insert(result.variables.end(),
                             {circle.center.xMm, circle.center.yMm,
                              circle.radiusMm});
   }
+  for (std::size_t i = 0; i < sketch.arcs().size(); ++i) {
+    const auto id = sketch.arcId(i);
+    if (id == kInvalidGeometryId || !included(id)) continue;
+    result.arcBase[id] = result.variables.size();
+    const auto& arc = sketch.arcs()[i];
+    result.variables.insert(result.variables.end(),
+                            {arc.center.xMm, arc.center.yMm, arc.radiusMm,
+                             arc.startAngleRad, arc.sweepAngleRad});
+  }
 
   // Preserve implicit topology of composite elements (notably rectangles).
   for (std::size_t i = 0; i < sketch.lines().size(); ++i) {
+    if (!included(sketch.lineId(i))) continue;
     for (std::size_t j = i + 1; j < sketch.lines().size(); ++j) {
+      if (!included(sketch.lineId(j))) continue;
       if (sketch.lines()[i].elementId != sketch.lines()[j].elementId)
         continue;
       for (const bool firstStart : {true, false}) {
@@ -102,7 +122,8 @@ Layout makeLayout(const Sketch& sketch) {
 
   std::unordered_map<std::size_t, std::vector<std::size_t>> elements;
   for (std::size_t i = 0; i < sketch.lines().size(); ++i)
-    elements[sketch.lines()[i].elementId].push_back(i);
+    if (included(sketch.lineId(i)))
+      elements[sketch.lines()[i].elementId].push_back(i);
 
   for (const auto& [elementId, indices] : elements) {
     (void)elementId;
@@ -178,6 +199,17 @@ std::optional<Circle> circleOf(const Layout& layout,
                 variables[b + 2], false};
 }
 
+std::optional<Arc> arcOf(const Layout& layout,
+                         const std::vector<double>& variables,
+                         GeometryId id) {
+  const auto found = layout.arcBase.find(id);
+  if (found == layout.arcBase.end() || found->second + 4 >= variables.size())
+    return std::nullopt;
+  const auto b = found->second;
+  return Arc{{variables[b], variables[b + 1]}, variables[b + 2],
+             variables[b + 3], variables[b + 4], false};
+}
+
 std::optional<Point> pointOf(const Sketch& sketch,
                              const Layout& layout,
                              const std::vector<double>& variables,
@@ -206,15 +238,10 @@ std::optional<Point> pointOf(const Sketch& sketch,
     return circle ? std::optional<Point>{circle->center} : std::nullopt;
   }
 
-  // Arc variables are not part of the diagnostic layout yet. Endpoint
-  // references are still valid CAD points and are read from the current
-  // fixed Arc geometry.
   if (reference.arcId != kInvalidGeometryId) {
-    const auto index = sketch.arcIndex(reference.arcId);
-    if (!index) return std::nullopt;
-    return reference.start
-               ? arcStartPoint(sketch.arcs()[*index])
-               : arcEndPoint(sketch.arcs()[*index]);
+    const auto arc = arcOf(layout, variables, reference.arcId);
+    if (!arc) return std::nullopt;
+    return reference.start ? arcStartPoint(*arc) : arcEndPoint(*arc);
   }
 
   const auto line = lineOf(layout, variables, reference.lineId);
@@ -290,7 +317,9 @@ double finiteArcDistance(Point point, const Arc& arc) {
 
 std::vector<Equation> evaluate(const Sketch& sketch,
                                const Layout& layout,
-                               const std::vector<double>& variables) {
+                               const std::vector<double>& variables,
+                               const std::unordered_set<ConstraintId>*
+                                   includedConstraints = nullptr) {
   std::vector<Equation> equations;
   equations.reserve(sketch.constraints().size() * 2 +
                     layout.implicitEndpointLinks.size() * 2 +
@@ -310,6 +339,9 @@ std::vector<Equation> evaluate(const Sketch& sketch,
       };
 
   for (const auto& constraint : sketch.constraints()) {
+    if (includedConstraints &&
+        !includedConstraints->contains(constraint.id))
+      continue;
     switch (constraint.type) {
       case ConstraintType::Horizontal: {
         const auto line =
@@ -484,15 +516,14 @@ std::vector<Equation> evaluate(const Sketch& sketch,
       }
 
       case ConstraintType::PointOnArc: {
-        const auto arcIndex =
-            sketch.arcIndex(constraint.firstGeometry);
+        const auto arc = arcOf(layout, variables, constraint.firstGeometry);
         const auto point =
             pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!arcIndex || !point) {
+        if (!arc || !point) {
           invalidEquation(constraint);
           break;
         }
-        add(finiteArcDistance(*point, sketch.arcs()[*arcIndex]),
+        add(finiteArcDistance(*point, *arc),
             kLengthTolerance, constraint);
         break;
       }
@@ -506,8 +537,8 @@ std::vector<Equation> evaluate(const Sketch& sketch,
         const sketch::Point midpoint{
             (line->start.xMm + line->end.xMm) * 0.5,
             (line->start.yMm + line->end.yMm) * 0.5};
-        add(pointDistance(midpoint, *point),
-            kLengthTolerance, constraint);
+        add(point->xMm - midpoint.xMm, kLengthTolerance, constraint);
+        add(point->yMm - midpoint.yMm, kLengthTolerance, constraint);
         break;
       }
 
@@ -534,9 +565,8 @@ std::vector<Equation> evaluate(const Sketch& sketch,
           break;
         }
 
-        const auto arcIndex = sketch.arcIndex(constraint.secondGeometry);
-        if (!arcIndex) { invalidEquation(constraint); break; }
-        const auto& arc = sketch.arcs()[*arcIndex];
+        const auto arc = arcOf(layout, variables, constraint.secondGeometry);
+        if (!arc) { invalidEquation(constraint); break; }
         const double dx = line->end.xMm - line->start.xMm;
         const double dy = line->end.yMm - line->start.yMm;
         const double lengthSquared = dx * dx + dy * dy;
@@ -545,15 +575,15 @@ std::vector<Equation> evaluate(const Sketch& sketch,
           break;
         }
         const double t = std::clamp(
-            ((arc.center.xMm - line->start.xMm) * dx +
-             (arc.center.yMm - line->start.yMm) * dy) /
+            ((arc->center.xMm - line->start.xMm) * dx +
+             (arc->center.yMm - line->start.yMm) * dy) /
                 lengthSquared,
             0.0, 1.0);
         const Point contact{line->start.xMm + dx * t,
                             line->start.yMm + dy * t};
-        add(segmentDistance(arc.center, *line) - arc.radiusMm,
+        add(segmentDistance(arc->center, *line) - arc->radiusMm,
             kLengthTolerance, constraint);
-        add(finiteArcDistance(contact, arc),
+        add(finiteArcDistance(contact, *arc),
             kLengthTolerance, constraint);
         break;
       }
@@ -608,13 +638,24 @@ std::vector<Equation> evaluate(const Sketch& sketch,
           break;
         }
 
-        // Arcs are not part of the numeric diagnostics layout yet, but Lock
-        // is still a valid model constraint for them: every arc mutator and
-        // the stable solver baseline already honour isGeometryLocked().
-        // Treat the existing arc as a valid locked carrier instead of marking
-        // the constraint invalid and transactionally deleting projections.
-        if (sketch.arcIndex(constraint.firstGeometry))
+        if (const auto baselineIndex =
+                sketch.arcIndex(constraint.firstGeometry)) {
+          const auto current = arcOf(layout, variables,
+                                     constraint.firstGeometry);
+          if (!current) { invalidEquation(constraint); break; }
+          const auto& baseline = sketch.arcs()[*baselineIndex];
+          add(current->center.xMm - baseline.center.xMm,
+              kLengthTolerance, constraint);
+          add(current->center.yMm - baseline.center.yMm,
+              kLengthTolerance, constraint);
+          add(current->radiusMm - baseline.radiusMm,
+              kLengthTolerance, constraint);
+          add(current->startAngleRad - baseline.startAngleRad,
+              kAngularTolerance, constraint);
+          add(current->sweepAngleRad - baseline.sweepAngleRad,
+              kAngularTolerance, constraint);
           break;
+        }
 
         invalidEquation(constraint);
         break;
@@ -746,14 +787,16 @@ std::size_t matrixRank(std::vector<std::vector<double>> matrix) {
 
 }  // namespace
 
-ConstraintDiagnostics analyzeConstraintSystem(
-    const Sketch& sketch, bool computeDof) {
+static ConstraintDiagnostics analyzeConstraintSubset(
+    const Sketch& sketch, bool computeDof,
+    const std::unordered_set<GeometryId>* includedGeometry,
+    const std::unordered_set<ConstraintId>* includedConstraints) {
   ConstraintDiagnostics result;
-  const Layout layout = makeLayout(sketch);
+  const Layout layout = makeLayout(sketch, includedGeometry);
   result.variableCount = layout.variables.size();
 
   const auto base =
-      evaluate(sketch, layout, layout.variables);
+      evaluate(sketch, layout, layout.variables, includedConstraints);
 
   std::unordered_map<
       ConstraintId,
@@ -815,7 +858,7 @@ ConstraintDiagnostics analyzeConstraintSystem(
       perturbed[column] += step;
 
       const auto changed =
-          evaluate(sketch, layout, perturbed);
+          evaluate(sketch, layout, perturbed, includedConstraints);
       if (changed.size() != base.size())
         continue;
 
@@ -848,6 +891,26 @@ ConstraintDiagnostics analyzeConstraintSystem(
       result.variableCount > 0 &&
       result.degreesOfFreedom == 0;
 
+  return result;
+}
+
+ConstraintDiagnostics analyzeConstraintSystem(
+    const Sketch& sketch, bool computeDof) {
+  auto result = analyzeConstraintSubset(sketch, computeDof, nullptr, nullptr);
+  for (const auto& component : sketch.constraintComponents()) {
+    const std::unordered_set<GeometryId> geometry(
+        component.geometryIds.begin(), component.geometryIds.end());
+    const std::unordered_set<ConstraintId> constraints(
+        component.constraintIds.begin(), component.constraintIds.end());
+    const auto state = analyzeConstraintSubset(
+        sketch, computeDof, &geometry, &constraints);
+    result.components.push_back({component.geometryIds,
+                                 component.constraintIds,
+                                 state.variableCount,
+                                 state.equationRank,
+                                 state.degreesOfFreedom,
+                                 state.conflicting});
+  }
   return result;
 }
 

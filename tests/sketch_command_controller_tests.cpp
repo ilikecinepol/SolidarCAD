@@ -1,6 +1,7 @@
 #include "TestAssertions.h"
 
 #include "ui/SketchCommandController.h"
+#include "sketch/SketchConstraintDiagnostics.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -177,6 +178,177 @@ void constraintsUseStrictSchemas() {
   CHECK(valid.effects.constraintsChanged);
 }
 
+void constraintCommandsExposeTypedTransactionalFailures() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  const auto first = addLine(controller, model, {0.0, 0.0}, {10.0, 0.0});
+  const auto second =
+      addLine(controller, model, {0.0, 5.0}, {8.660254037844, 10.0});
+  const auto circle = controller.execute(
+      model, AddCircleCommand{{30.0, 0.0}, 2.0, false});
+  CHECK(circle.accepted);
+
+  sketch::Constraint angle;
+  angle.type = sketch::ConstraintType::Angle;
+  angle.firstGeometry = first;
+  angle.secondGeometry = second;
+  angle.value = 30.0;
+  CHECK(controller.execute(model, AddConstraintCommand{angle}).accepted);
+  const auto beforeConflict = model.semanticFingerprint();
+
+  sketch::Constraint parallel;
+  parallel.type = sketch::ConstraintType::Parallel;
+  parallel.firstGeometry = first;
+  parallel.secondGeometry = second;
+  const auto conflict =
+      controller.execute(model, AddConstraintCommand{parallel});
+  CHECK(!conflict.accepted);
+  CHECK(conflict.constraintApplyResult.has_value());
+  CHECK(conflict.constraintApplyResult->status ==
+        sketch::ConstraintApplyStatus::Conflicting);
+  CHECK(model.semanticFingerprint() == beforeConflict);
+
+  sketch::Constraint stale;
+  stale.type = sketch::ConstraintType::Horizontal;
+  stale.firstGeometry = 999999;
+  const auto invalid = controller.execute(model, AddConstraintCommand{stale});
+  CHECK(!invalid.accepted);
+  CHECK(invalid.constraintApplyResult.has_value());
+  CHECK(invalid.constraintApplyResult->status ==
+        sketch::ConstraintApplyStatus::InvalidReference);
+  CHECK(model.semanticFingerprint() == beforeConflict);
+
+  sketch::Constraint unsupported;
+  unsupported.type = sketch::ConstraintType::Equal;
+  unsupported.firstGeometry = first;
+  unsupported.secondGeometry = circle.changedGeometryIds.front();
+  const auto unsupportedResult =
+      controller.execute(model, AddConstraintCommand{unsupported});
+  CHECK(!unsupportedResult.accepted);
+  CHECK(unsupportedResult.constraintApplyResult.has_value());
+  CHECK(unsupportedResult.constraintApplyResult->status ==
+        sketch::ConstraintApplyStatus::Unsupported);
+  CHECK(model.semanticFingerprint() == beforeConflict);
+}
+
+void drivingDimensionMayCommitRankRedundantConstraint() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  model.addLine({-40.0, -35.0}, {40.0, -35.0});
+  model.addCircle({0.0, 0.0}, 10.0);
+  model.addLine({-8.0, -35.0}, {-8.0, -6.0});
+  const auto carrier = model.lineId(0);
+  const auto circle = model.circleId(0);
+  const auto active = model.lineId(1);
+
+  sketch::Constraint constraint;
+  constraint.type = sketch::ConstraintType::Lock;
+  constraint.firstGeometry = carrier;
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Lock;
+  constraint.firstGeometry = circle;
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::PointOnLine;
+  constraint.firstGeometry = carrier;
+  constraint.secondPoint = {active, true};
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::PointOnCircle;
+  constraint.firstGeometry = circle;
+  constraint.secondPoint = {active, false};
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Perpendicular;
+  constraint.firstGeometry = carrier;
+  constraint.secondGeometry = active;
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+
+  sketch::Dimension dimension;
+  dimension.kind = sketch::DimensionKind::PointDistance;
+  dimension.firstPoint = {active, true};
+  dimension.secondPoint = {active, false};
+  dimension.valueMm = 25.0;
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Distance;
+  constraint.firstPoint = dimension.firstPoint;
+  constraint.secondPoint = dimension.secondPoint;
+  constraint.value = dimension.valueMm;
+
+  const auto beforeConstraints = model.constraints().size();
+  const auto result = controller.execute(
+      model, UpsertDrivingDimensionCommand{dimension, constraint, std::nullopt,
+                                           false});
+  CHECK(result.accepted);
+  CHECK(model.constraints().size() == beforeConstraints + 1);
+  CHECK(model.dimensions().size() == 1);
+  CHECK(model.constraints().back().type == sketch::ConstraintType::Distance);
+  CHECK(model.constraints().back().id != sketch::kInvalidConstraintId);
+}
+
+void directLineDimensionMovesReversedOrthogonalJunction() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  model.addLine({-12.0, 0.0}, {0.0, 0.0});
+  model.addLine({-12.0, -15.0}, {-12.0, 0.0});
+  model.addLine({-12.0, -15.0}, {-5.0, -15.0});
+  const auto dimensioned = model.lineId(0);
+  const auto vertical = model.lineId(1);
+  const auto lower = model.lineId(2);
+
+  sketch::Constraint constraint;
+  constraint.type = sketch::ConstraintType::Horizontal;
+  constraint.firstGeometry = dimensioned;
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Vertical;
+  constraint.firstGeometry = vertical;
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Horizontal;
+  constraint.firstGeometry = lower;
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Coincident;
+  constraint.firstPoint = {dimensioned, true};
+  constraint.secondPoint = {vertical, false};
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::Coincident;
+  constraint.firstPoint = {vertical, true};
+  constraint.secondPoint = {lower, true};
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+  constraint = {};
+  constraint.type = sketch::ConstraintType::PointOnYAxis;
+  constraint.secondPoint = {dimensioned, false};
+  CHECK(model.addConstraint(constraint) != sketch::kInvalidConstraintId);
+
+  sketch::Dimension dimension;
+  dimension.kind = sketch::DimensionKind::PointDistanceX;
+  dimension.firstPoint = {dimensioned, true};
+  dimension.secondPoint = {dimensioned, false};
+  dimension.valueMm = 10.0;
+  constraint = {};
+  constraint.type = sketch::ConstraintType::DistanceX;
+  constraint.firstPoint = dimension.firstPoint;
+  constraint.secondPoint = dimension.secondPoint;
+  constraint.value = dimension.valueMm;
+
+  const auto result = controller.execute(
+      model, UpsertDrivingDimensionCommand{dimension, constraint, std::nullopt,
+                                           false});
+  CHECK(result.accepted);
+  CHECK(model.dimensions().size() == 1);
+  const auto& resized = model.lines()[*model.lineIndex(dimensioned)];
+  const auto& translatedVertical = model.lines()[*model.lineIndex(vertical)];
+  CHECK(std::abs(resized.start.xMm + 10.0) < 1e-7);
+  CHECK(std::abs(resized.end.xMm) < 1e-7);
+  CHECK(std::abs(translatedVertical.start.xMm + 10.0) < 1e-7);
+  CHECK(std::abs(translatedVertical.end.xMm + 10.0) < 1e-7);
+  CHECK(!sketch::analyzeConstraintSystem(model).conflicting);
+}
+
 void stableIdsDriveAutoConstraints() {
   sketch::Sketch model;
   SketchCommandController controller;
@@ -322,6 +494,9 @@ int main() {
   liveCommandsReuseTheOuterJournal();
   creationJournalWorkHasDeterministicBounds();
   constraintsUseStrictSchemas();
+  constraintCommandsExposeTypedTransactionalFailures();
+  drivingDimensionMayCommitRankRedundantConstraint();
+  directLineDimensionMovesReversedOrthogonalJunction();
   stableIdsDriveAutoConstraints();
   arcStyleAndStaleDeltaAreSafe();
   lockedAndNoOpMutationsReportTruthfully();

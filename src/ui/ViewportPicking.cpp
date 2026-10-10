@@ -30,6 +30,15 @@ std::optional<double> triangleDepthAt(QPointF point, const ProjectedPoint& a,
   return a.depth * w + b.depth * u + c.depth * v;
 }
 
+double triangleMaximumDepth(const ProjectedPoint& a,
+                            const ProjectedPoint& b,
+                            const ProjectedPoint& c) {
+  if (!std::isfinite(a.depth) || !std::isfinite(b.depth) ||
+      !std::isfinite(c.depth))
+    return std::numeric_limits<double>::infinity();
+  return std::max({a.depth, b.depth, c.depth});
+}
+
 SegmentHit closestSegmentHit(QPointF point, const ProjectedPoint& a,
                              const ProjectedPoint& b) {
   const QPointF segment = b.screen - a.screen;
@@ -1219,10 +1228,10 @@ bool ProjectedPickingScene::ensure(const std::vector<PickingMeshInput>& meshes,
             pending->vertices[projected[0]].projected,
             pending->vertices[projected[1]].projected,
             pending->vertices[projected[2]].projected));
-        triangleMaximumDepths.push_back(std::max(
-            {pending->vertices[projected[0]].projected.depth,
-             pending->vertices[projected[1]].projected.depth,
-             pending->vertices[projected[2]].projected.depth}));
+        triangleMaximumDepths.push_back(triangleMaximumDepth(
+            pending->vertices[projected[0]].projected,
+            pending->vertices[projected[1]].projected,
+            pending->vertices[projected[2]].projected));
       }
       for (std::size_t edgeIndex = 0;
            edgeIndex < input.mesh->edges().size(); ++edgeIndex) {
@@ -1611,7 +1620,7 @@ std::vector<std::size_t> collectFacesInRect(
   for (const auto& triangle : triangles) {
     boxes.push_back(triangleBounds(triangle.a, triangle.b, triangle.c));
     maximumDepths.push_back(
-        std::max({triangle.a.depth, triangle.b.depth, triangle.c.depth}));
+        triangleMaximumDepth(triangle.a, triangle.b, triangle.c));
   }
   AabbBvh bvh;
   bvh.build(std::move(boxes), std::move(maximumDepths));
@@ -1656,7 +1665,7 @@ std::vector<std::size_t> collectEdgesInRect(
   for (const auto& triangle : triangles) {
     triangleBoxes.push_back(triangleBounds(triangle.a, triangle.b, triangle.c));
     triangleMaximumDepths.push_back(
-        std::max({triangle.a.depth, triangle.b.depth, triangle.c.depth}));
+        triangleMaximumDepth(triangle.a, triangle.b, triangle.c));
   }
   AabbBvh triangleBvh;
   triangleBvh.build(std::move(triangleBoxes),

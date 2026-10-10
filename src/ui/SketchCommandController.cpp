@@ -57,6 +57,57 @@ SketchCommandResult accepted(SketchCommandEffects effects = {}) {
   return result;
 }
 
+SketchCommandEffects constraintEffects();
+
+SketchCommandResult fromConstraintApply(
+    sketch::ConstraintApplyResult applied, bool redundantIsSuccess = false) {
+  if (applied.accepted()) {
+    auto result = accepted(constraintEffects());
+    result.changedConstraintIds.push_back(applied.constraintId);
+    result.constraintApplyResult = std::move(applied);
+    return result;
+  }
+  if (redundantIsSuccess &&
+      applied.status == sketch::ConstraintApplyStatus::Redundant) {
+    auto result = accepted();
+    result.constraintApplyResult = std::move(applied);
+    return result;
+  }
+  SketchCommandError error = SketchCommandError::Conflict;
+  switch (applied.status) {
+    case sketch::ConstraintApplyStatus::Redundant:
+      error = SketchCommandError::Duplicate;
+      break;
+    case sketch::ConstraintApplyStatus::InvalidReference:
+      error = SketchCommandError::StaleReference;
+      break;
+    case sketch::ConstraintApplyStatus::Unsupported:
+      error = SketchCommandError::Unsupported;
+      break;
+    case sketch::ConstraintApplyStatus::SolverFailed:
+      error = SketchCommandError::SolverFailed;
+      break;
+    case sketch::ConstraintApplyStatus::Conflicting:
+      error = SketchCommandError::Conflict;
+      break;
+    case sketch::ConstraintApplyStatus::Accepted:
+      break;
+  }
+  auto result = rejected(error);
+  result.constraintApplyResult = std::move(applied);
+  return result;
+}
+
+sketch::ConstraintId tryApplyConstraintId(sketch::Sketch& model,
+                                          sketch::Constraint constraint,
+                                          bool commitRedundant = false) {
+  const auto result = model.tryApplyConstraint(std::move(constraint),
+                                               commitRedundant);
+  return result.accepted()
+             ? result.constraintId
+             : sketch::kInvalidConstraintId;
+}
+
 SketchCommandEffects geometryEffects() {
   return {.committedRenderSceneDirty = true,
           .geometryChanged = true,
@@ -524,7 +575,7 @@ void autoCoincidentNewGeometry(
     constraint.secondPoint =
         candidate.reference;
 
-    sketch.addConstraint(constraint);
+    (void)sketch.tryApplyConstraint(constraint);
   }
 
   // BODY SNAP PERSISTENCE
@@ -695,7 +746,7 @@ void autoCoincidentNewGeometry(
         c.type = sketch::ConstraintType::PointOnLine;
         c.firstGeometry = bestLine;
         c.secondPoint = candidate.reference;
-        (void)sketch.addConstraint(c);
+        (void)sketch.tryApplyConstraint(c);
       }
 
       continue;
@@ -720,7 +771,7 @@ void autoCoincidentNewGeometry(
         c.type = sketch::ConstraintType::PointOnCircle;
         c.firstGeometry = bestCircle;
         c.secondPoint = candidate.reference;
-        (void)sketch.addConstraint(c);
+        (void)sketch.tryApplyConstraint(c);
       }
 
       continue;
@@ -740,7 +791,7 @@ void autoCoincidentNewGeometry(
         c.type = sketch::ConstraintType::PointOnArc;
         c.firstGeometry = bestArc;
         c.secondPoint = candidate.reference;
-        (void)sketch.addConstraint(c);
+        (void)sketch.tryApplyConstraint(c);
       }
     }
   }
@@ -768,7 +819,7 @@ void autoCoincidentNewGeometry(
           sketch::Constraint constraint;
           constraint.type = type;
           constraint.secondPoint = candidate.reference;
-          (void)sketch.addConstraint(constraint);
+          (void)sketch.tryApplyConstraint(constraint);
         };
 
     if (std::abs(point->yMm) <= kAxisCoordinateToleranceMm)
@@ -970,7 +1021,7 @@ SketchCommandResult SketchCommandController::execute(
                   sketch::Constraint lock;
                   lock.type = sketch::ConstraintType::Lock;
                   lock.firstGeometry = value.changedGeometryIds.front();
-                  const auto lockId = model.addConstraint(lock);
+                  const auto lockId = tryApplyConstraintId(model, lock);
                   if (lockId == sketch::kInvalidConstraintId) return false;
                   value.changedConstraintIds.push_back(lockId);
                   return true;
@@ -1121,16 +1172,9 @@ SketchCommandResult SketchCommandController::execute(
             value.changedGeometryIds = typed.geometryIds;
             return value;
           } else if constexpr (std::is_same_v<T, AddConstraintCommand>) {
-            if (!validConstraintReferences(model, typed.constraint))
-              return rejected(SketchCommandError::StaleReference);
-            const auto id = model.addConstraint(typed.constraint);
-            if (id == sketch::kInvalidConstraintId && typed.bestEffort)
-              return accepted();
-            if (id == sketch::kInvalidConstraintId)
-              return rejected(SketchCommandError::Conflict);
-            auto value = accepted(constraintEffects());
-            value.changedConstraintIds.push_back(id);
-            return value;
+            return fromConstraintApply(
+                model.tryApplyConstraint(typed.constraint, true),
+                typed.bestEffort);
           } else if constexpr (std::is_same_v<T, BindPointCommand>) {
             if (!validPointReference(model, typed.movingPoint))
               return rejected(SketchCommandError::StaleReference);
@@ -1154,7 +1198,7 @@ SketchCommandResult SketchCommandController::execute(
                   return existing.id;
                 }
               }
-              return model.addConstraint(constraint);
+              return tryApplyConstraintId(model, constraint);
             };
             auto makeConstraint = [&typed](sketch::ConstraintType type) {
               sketch::Constraint constraint;
@@ -1344,13 +1388,14 @@ SketchCommandResult SketchCommandController::execute(
                 parallel.type = sketch::ConstraintType::Parallel;
                 parallel.firstGeometry = first;
                 parallel.secondGeometry = second;
-                const auto id = model.addConstraint(parallel);
+                const auto id = tryApplyConstraintId(model, parallel);
                 if (id == sketch::kInvalidConstraintId)
                   return rejected(SketchCommandError::Conflict);
                 result.changedConstraintIds.push_back(id);
               }
             }
-            const auto constraintId = model.addConstraint(typed.constraint);
+            const auto constraintId =
+                tryApplyConstraintId(model, typed.constraint, true);
             if (constraintId == sketch::kInvalidConstraintId)
               return rejected(SketchCommandError::Conflict);
             model.storeDimension(typed.dimension);
@@ -1594,7 +1639,7 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::InvalidInput);
             if (dimension.kind != sketch::DimensionKind::LineAngle)
               constraint.value = visibleValue;
-            const auto constraintId = model.addConstraint(constraint);
+            const auto constraintId = tryApplyConstraintId(model, constraint);
             if (constraintId == sketch::kInvalidConstraintId)
               return rejected(SketchCommandError::Conflict);
             if (!model.setDimensionValue(*dimensionIndex, visibleValue))
@@ -1941,7 +1986,7 @@ SketchCommandResult SketchCommandController::execute(
                 coincident.type = sketch::ConstraintType::Coincident;
                 coincident.firstPoint = endpoints[first].reference;
                 coincident.secondPoint = endpoints[second].reference;
-                const auto id = model.addConstraint(coincident);
+                const auto id = tryApplyConstraintId(model, coincident);
                 if (id != sketch::kInvalidConstraintId) {
                   value.effects.constraintsChanged = true;
                   value.changedConstraintIds.push_back(id);

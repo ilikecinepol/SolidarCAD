@@ -34,6 +34,26 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 zstd
 
+      - name: Restore ICU 73 runtime cache
+        if: runner.os == 'Linux'
+        id: icu-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/icu73
+          key: icu73-${{ runner.os }}-${{ hashFiles('scripts/build_icu_runtime.sh') }}
+
+      - name: Build ICU 73 runtime
+        if: runner.os == 'Linux' && steps.icu-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/build_icu_runtime.sh "$GITHUB_WORKSPACE/.cache/icu73"
+
+      - name: Configure ICU 73 runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/.cache/icu73/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "SOLIDAR_ICU_RUNTIME_DIR=$GITHUB_WORKSPACE/.cache/icu73/lib" >> "$GITHUB_ENV"
+
       - name: Enable MSVC command line tools
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -75,7 +95,7 @@ jobs:
         run: cmake --preset ci
 
       - name: Build
-        run: cmake --build --preset ci
+        run: cmake --build --preset ci --parallel 2
 
       - name: Generate build-profile SBOM
         shell: bash
@@ -117,7 +137,7 @@ jobs:
         run: cmake --preset release
 
       - name: Build Release profile
-        run: cmake --build --preset release
+        run: cmake --build --preset release --parallel 2
 
       - name: Verify Release install foundation
         run: cmake --install build/release
@@ -139,6 +159,9 @@ jobs:
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/bin/solidar'
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/bin/qt.conf'
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libQt6Core.so.6'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libicuuc.so.73'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libicui18n.so.73'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libicudata.so.73'
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/plugins/platforms/libqxcb.so'
           dpkg-deb --contents "$package" | grep -F './usr/bin/solidar'
           dpkg-deb --contents "$package" | grep -F './usr/share/applications/solidarcad.desktop'
@@ -161,6 +184,10 @@ jobs:
           desktop-file-validate /usr/share/applications/solidarcad.desktop
           if env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH \
               ldd /opt/solidarcad/bin/solidar | grep -F 'not found'; then
+            exit 1
+          fi
+          if env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH \
+              ldd /opt/solidarcad/plugins/platforms/libqxcb.so | grep -F 'not found'; then
             exit 1
           fi
           set +e
@@ -207,6 +234,22 @@ jobs:
       - name: Install Linux OpenGL dependencies
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 zstd
 
+      - name: Restore ICU 73 runtime cache
+        id: icu-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/icu73
+          key: icu73-${{ runner.os }}-${{ hashFiles('scripts/build_icu_runtime.sh') }}
+
+      - name: Build ICU 73 runtime
+        if: steps.icu-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build_icu_runtime.sh "$GITHUB_WORKSPACE/.cache/icu73"
+
+      - name: Configure ICU 73 runtime
+        run: |
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/.cache/icu73/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "SOLIDAR_ICU_RUNTIME_DIR=$GITHUB_WORKSPACE/.cache/icu73/lib" >> "$GITHUB_ENV"
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -231,7 +274,7 @@ jobs:
         run: cmake --preset sanitizers
 
       - name: Build sanitizers
-        run: cmake --build --preset sanitizers
+        run: cmake --build --preset sanitizers --parallel 2
 
       - name: Test sanitizers
         env:

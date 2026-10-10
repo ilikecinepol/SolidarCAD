@@ -13,6 +13,15 @@ struct ConstraintViolation {
   double normalizedResidual{};
 };
 
+struct ConstraintComponentDiagnostic {
+  std::vector<GeometryId> geometryIds;
+  std::vector<ConstraintId> constraintIds;
+  std::size_t variableCount{};
+  std::size_t equationRank{};
+  std::size_t degreesOfFreedom{};
+  bool conflicting{false};
+};
+
 struct ConstraintDiagnostics {
   std::size_t variableCount{};
   std::size_t equationRank{};
@@ -22,6 +31,7 @@ struct ConstraintDiagnostics {
   bool fullyConstrained{false};
   double maxNormalizedResidual{};
   std::vector<ConstraintViolation> violations;
+  std::vector<ConstraintComponentDiagnostic> components;
 };
 
 // Audit the COMPLETE current constraint system. With computeDof=true a

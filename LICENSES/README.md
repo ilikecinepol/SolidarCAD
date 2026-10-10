@@ -4,6 +4,7 @@
 дистрибутив SolidarCAD.
 
 - `Qt/` содержит license bundle и SPDX inventories Qt 6.8.3.
+- `ICU/LICENSE` содержит неизменённый текст лицензии ICU 73.2.
 - `OCCT/README.md` описывает обязательные файлы лицензии и exception.
 
 Канонические тексты не заменяются пересказами. Release pipeline копирует этот

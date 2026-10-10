@@ -38,6 +38,7 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None,
     if not project_match:
         raise ValueError("SolidarCAD project version was not found")
     qt = qt_version or metadata["qt_version"]
+    icu = metadata["icu_version"]
     occt = occt_version or metadata["occt_version"]
     project = project_match.group(1)
     baseline = manifest["builtin-baseline"]
@@ -47,6 +48,9 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None,
                 "Copyright (c) 2026 Молотков Михаил Алексеевич"),
         package("Qt", "SPDXRef-Qt", qt, "LGPL-3.0-only",
                 f"https://download.qt.io/official_releases/qt/{'.'.join(qt.split('.')[:2])}/{qt}/"),
+        package("ICU", "SPDXRef-ICU", icu, "Unicode-DFS-2016",
+                f"https://github.com/unicode-org/icu/releases/tag/release-{icu.replace('.', '-')}",
+                "Copyright (c) 1991-2023 Unicode, Inc."),
         package("Open CASCADE Technology", "SPDXRef-OCCT", occt,
                 "LGPL-2.1-only WITH OCCT-exception-1.0",
                 "https://github.com/Open-Cascade-SAS/OCCT"),
@@ -56,12 +60,12 @@ def generate(root: Path, qt_version: str | None, occt_version: str | None,
                 minimum_match.group(1),
                 "BSD-3-Clause", "https://cmake.org/"),
     ]
-    packages[2]["externalRefs"] = [{
+    packages[3]["externalRefs"] = [{
         "referenceCategory": "PACKAGE-MANAGER",
         "referenceType": "purl",
         "referenceLocator": f"pkg:vcpkg/opencascade@{occt}",
     }]
-    dependencies = ["SPDXRef-Qt", "SPDXRef-OCCT",
+    dependencies = ["SPDXRef-Qt", "SPDXRef-ICU", "SPDXRef-OCCT",
                     "SPDXRef-vcpkg-baseline", "SPDXRef-CMake"]
     document = {
         "spdxVersion": "SPDX-2.3",

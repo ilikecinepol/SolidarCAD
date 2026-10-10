@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QKeyEvent>
 #include <QImage>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QTemporaryDir>
@@ -1691,10 +1692,166 @@ int main(int argc, char** argv) {
           solidar::SketchAutoDimensionTarget::None);
     CHECK(editor->isVisible());
     editor->setValue(30.0);
+    auto* lineEdit = editor->findChild<QLineEdit*>();
+    CHECK(lineEdit != nullptr);
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-    QApplication::sendEvent(editor, &enter);
+    QApplication::sendEvent(lineEdit, &enter);
     QApplication::processEvents();
     CHECK(dimensionCanvas.sketch().dimensions().size() == 1);
+  }
+  {
+    // A projected/locked vertical carrier anchors the right endpoints of two
+    // horizontal segments. Placing horizontal point dimensions must resize
+    // the free left endpoints; Enter must not be rejected just because the
+    // selected second endpoint is constrained to the carrier.
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, -15.0}, {0.0, 45.0});
+    geometry.addLine({-12.0, 20.0}, {0.0, 20.0});
+    geometry.addLine({-8.0, -5.0}, {0.0, -5.0});
+    const auto carrier = geometry.lineId(0);
+    const auto upper = geometry.lineId(1);
+    const auto lower = geometry.lineId(2);
+
+    solidar::sketch::Constraint constraint;
+    constraint.type = solidar::sketch::ConstraintType::Lock;
+    constraint.firstGeometry = carrier;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    for (const auto segment : {upper, lower}) {
+      constraint = {};
+      constraint.type = solidar::sketch::ConstraintType::Horizontal;
+      constraint.firstGeometry = segment;
+      CHECK(geometry.addConstraint(constraint) !=
+            solidar::sketch::kInvalidConstraintId);
+      constraint = {};
+      constraint.type = solidar::sketch::ConstraintType::PointOnLine;
+      constraint.firstGeometry = carrier;
+      constraint.secondPoint = {segment, false};
+      CHECK(geometry.addConstraint(constraint) !=
+            solidar::sketch::kInvalidConstraintId);
+    }
+
+    solidar::SketchCanvas anchoredCanvas;
+    anchoredCanvas.resize(900, 650);
+    anchoredCanvas.loadSketch(geometry);
+    anchoredCanvas.show();
+    anchoredCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    QApplication::processEvents();
+
+    const auto addHorizontalDimension =
+        [&](solidar::sketch::Point first, solidar::sketch::Point second,
+            solidar::sketch::Point placement, double value) {
+          click(anchoredCanvas, screenPoint(anchoredCanvas, first));
+          click(anchoredCanvas, screenPoint(anchoredCanvas, second));
+          moveMouse(anchoredCanvas, screenPoint(anchoredCanvas, placement));
+          auto* editor = anchoredCanvas.findChild<QDoubleSpinBox*>(
+              "primaryDimension");
+          CHECK(editor != nullptr && editor->isVisible());
+          CHECK(anchoredCanvas.interactionState().autoDimension.pointMode ==
+                solidar::SketchPointDimensionMode::X);
+          editor->setValue(value);
+          auto* lineEdit = editor->findChild<QLineEdit*>();
+          CHECK(lineEdit != nullptr);
+          QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+          QApplication::sendEvent(lineEdit, &enter);
+          QApplication::processEvents();
+          CHECK(!editor->isVisible());
+        };
+
+    addHorizontalDimension({-12.0, 20.0}, {0.0, 20.0}, {-6.0, 30.0},
+                           13.0);
+    CHECK(anchoredCanvas.sketch().dimensions().size() == 1);
+    CHECK(anchoredCanvas.sketch().dimensions().back().kind ==
+          solidar::sketch::DimensionKind::PointDistanceX);
+    const auto upperIndex = anchoredCanvas.sketch().lineIndex(upper);
+    CHECK(upperIndex.has_value());
+    CHECK(std::abs(anchoredCanvas.sketch().lines()[*upperIndex].start.xMm +
+                   13.0) < 1e-7);
+    CHECK(std::abs(anchoredCanvas.sketch().lines()[*upperIndex].end.xMm) <
+          1e-7);
+    addHorizontalDimension({-8.0, -5.0}, {0.0, -5.0}, {-4.0, -15.0}, 5.0);
+    CHECK(anchoredCanvas.sketch().dimensions().size() == 2);
+    CHECK(anchoredCanvas.sketch().dimensions().back().kind ==
+          solidar::sketch::DimensionKind::PointDistanceX);
+    const auto lowerIndex = anchoredCanvas.sketch().lineIndex(lower);
+    CHECK(lowerIndex.has_value());
+    CHECK(std::abs(anchoredCanvas.sketch().lines()[*lowerIndex].start.xMm +
+                   5.0) < 1e-7);
+    CHECK(std::abs(anchoredCanvas.sketch().lines()[*lowerIndex].end.xMm) <
+          1e-7);
+    const auto carrierIndex = anchoredCanvas.sketch().lineIndex(carrier);
+    CHECK(carrierIndex.has_value());
+    CHECK(std::abs(anchoredCanvas.sketch().lines()[*carrierIndex].start.xMm) <
+          1e-7);
+    CHECK(std::abs(anchoredCanvas.sketch().lines()[*carrierIndex].end.xMm) <
+          1e-7);
+  }
+  {
+    // Direct-line AutoDimension must not depend on which endpoint of an
+    // attached Vertical line was drawn first. The reversed neighbour used to
+    // pull the resized junction back during the next solver pass, so Enter
+    // left the editor open and rejected an otherwise valid width.
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-12.0, 5.0}, {0.0, 5.0});
+    geometry.addLine({-12.0, -10.0}, {-12.0, 5.0});
+    geometry.addLine({-12.0, -10.0}, {-5.0, -10.0});
+    const auto dimensioned = geometry.lineId(0);
+    const auto vertical = geometry.lineId(1);
+
+    solidar::sketch::Constraint constraint;
+    constraint.type = solidar::sketch::ConstraintType::Horizontal;
+    constraint.firstGeometry = dimensioned;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Vertical;
+    constraint.firstGeometry = vertical;
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::Coincident;
+    constraint.firstPoint = {dimensioned, true};
+    constraint.secondPoint = {vertical, false};
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+    constraint = {};
+    constraint.type = solidar::sketch::ConstraintType::PointOnYAxis;
+    constraint.secondPoint = {dimensioned, false};
+    CHECK(geometry.addConstraint(constraint) !=
+          solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas reversedCanvas;
+    reversedCanvas.resize(900, 650);
+    reversedCanvas.loadSketch(geometry);
+    reversedCanvas.show();
+    reversedCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    QApplication::processEvents();
+    click(reversedCanvas, screenPoint(reversedCanvas, {-6.0, 5.0}));
+    auto* editor =
+        reversedCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(editor != nullptr && editor->isVisible());
+    editor->setValue(10.0);
+    auto* lineEdit = editor->findChild<QLineEdit*>();
+    CHECK(lineEdit != nullptr);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(lineEdit, &enter);
+    QApplication::processEvents();
+
+    CHECK(!editor->isVisible());
+    CHECK(reversedCanvas.sketch().dimensions().size() == 1);
+    const auto resizedIndex = reversedCanvas.sketch().lineIndex(dimensioned);
+    const auto verticalIndex = reversedCanvas.sketch().lineIndex(vertical);
+    CHECK(resizedIndex.has_value() && verticalIndex.has_value());
+    CHECK(std::abs(reversedCanvas.sketch().lines()[*resizedIndex].start.xMm +
+                   10.0) < 1e-7);
+    CHECK(std::abs(reversedCanvas.sketch().lines()[*resizedIndex].end.xMm) <
+          1e-7);
+    CHECK(std::abs(reversedCanvas.sketch().lines()[*verticalIndex].start.xMm +
+                   10.0) < 1e-7);
+    CHECK(std::abs(reversedCanvas.sketch().lines()[*verticalIndex].end.xMm +
+                   10.0) < 1e-7);
+    CHECK(!solidar::sketch::analyzeConstraintSystem(reversedCanvas.sketch())
+               .conflicting);
   }
   {
     // Escape cancels a real two-operand constraint carrier. Re-entering the

@@ -33,6 +33,48 @@ class SketchTestAccess {
     sketch.hasLastSolvedFingerprint_ = false;
     return true;
   }
+
+  static void perturbGeometry(Sketch& sketch, GeometryId id) {
+    const auto location = sketch.geometryLocation(id);
+    CHECK(location.has_value());
+    switch (location->kind) {
+      case GeometryKind::Line:
+        sketch.lines_[location->index].end.xMm += 0.2;
+        sketch.lines_[location->index].end.yMm += 0.3;
+        break;
+      case GeometryKind::Circle:
+        sketch.circles_[location->index].center.xMm += 0.2;
+        sketch.circles_[location->index].radiusMm += 0.1;
+        break;
+      case GeometryKind::Arc:
+        sketch.arcs_[location->index].center.xMm += 0.2;
+        sketch.arcs_[location->index].radiusMm += 0.1;
+        break;
+    }
+    sketch.hasLastSolvedFingerprint_ = false;
+  }
+
+  static void perturbPoint(Sketch& sketch, PointReference reference) {
+    if (reference.lineId != kInvalidGeometryId) {
+      const auto index = sketch.lineIndex(reference.lineId);
+      CHECK(index.has_value());
+      auto& point = reference.start ? sketch.lines_[*index].start
+                                    : sketch.lines_[*index].end;
+      point.xMm += 0.2;
+      point.yMm += 0.3;
+    } else if (reference.circleId != kInvalidGeometryId) {
+      const auto index = sketch.circleIndex(reference.circleId);
+      CHECK(index.has_value());
+      sketch.circles_[*index].center.xMm += 0.2;
+      sketch.circles_[*index].center.yMm += 0.3;
+    } else if (reference.arcId != kInvalidGeometryId) {
+      const auto index = sketch.arcIndex(reference.arcId);
+      CHECK(index.has_value());
+      sketch.arcs_[*index].center.xMm += 0.2;
+      sketch.arcs_[*index].center.yMm += 0.3;
+    }
+    sketch.hasLastSolvedFingerprint_ = false;
+  }
 };
 
 }  // namespace solidar::sketch
@@ -1210,7 +1252,9 @@ void circleCenterCoordinateJunctionsAreTransitiveAndReversible() {
   CHECK(dynamic.semanticFingerprint() == dragAfter);
 }
 
-void componentSolvePreservesPersistedConstraintOrder() {
+void knownSolverV1PersistedOrderDependenceRemainsVisible() {
+  // KNOWN SOLVER V1 LIMITATION: this test exposes order dependence so no new
+  // production code can mistake it for the intended CAD contract.
   // Install the persisted vector without restoreConstraints(): that public
   // loader boundary performs a full solve and would precondition both copies
   // before this regression got a chance to distinguish vector order from ID
@@ -1275,6 +1319,266 @@ void componentSolvePreservesPersistedConstraintOrder() {
   CHECK(idSorted.semanticFingerprint() != local.semanticFingerprint());
 }
 
+void arcMidpointAndComponentDiagnosticsAreTruthful() {
+  Sketch arcOnly;
+  arcOnly.addArc({2.0, 3.0}, 5.0, 0.25, 1.75);
+  const auto freeArc = analyzeConstraintSystem(arcOnly);
+  CHECK(freeArc.variableCount == 5);
+  CHECK(freeArc.degreesOfFreedom == 5);
+  CHECK(freeArc.components.size() == 1);
+  CHECK(freeArc.components.front().geometryIds ==
+        std::vector<GeometryId>{arcOnly.arcId(0)});
+  CHECK(freeArc.components.front().degreesOfFreedom == 5);
+
+  Constraint lock;
+  lock.type = ConstraintType::Lock;
+  lock.firstGeometry = arcOnly.arcId(0);
+  const auto locked = arcOnly.tryApplyConstraint(lock);
+  CHECK(locked.status == ConstraintApplyStatus::Accepted);
+  const auto lockedArc = analyzeConstraintSystem(arcOnly);
+  CHECK(lockedArc.equationRank == 5);
+  CHECK(lockedArc.degreesOfFreedom == 0);
+
+  Sketch midpoint;
+  midpoint.addLine({0.0, 0.0}, {10.0, 0.0});
+  midpoint.addLine({2.0, 3.0}, {4.0, 6.0});
+  const auto before = analyzeConstraintSystem(midpoint);
+  Constraint midpointConstraint;
+  midpointConstraint.type = ConstraintType::Midpoint;
+  midpointConstraint.firstGeometry = midpoint.lineId(0);
+  midpointConstraint.secondPoint = {midpoint.lineId(1), true};
+  const auto midpointApplied = midpoint.tryApplyConstraint(midpointConstraint);
+  CHECK(midpointApplied.status == ConstraintApplyStatus::Accepted);
+  const auto after = analyzeConstraintSystem(midpoint);
+  CHECK(after.equationRank == before.equationRank + 2);
+  CHECK(after.degreesOfFreedom + 2 == before.degreesOfFreedom);
+
+  Sketch independent;
+  independent.addLine({0.0, 0.0}, {10.0, 2.0});
+  independent.addLine({100.0, 0.0}, {110.0, 3.0});
+  Constraint firstLock;
+  firstLock.type = ConstraintType::Lock;
+  firstLock.firstGeometry = independent.lineId(0);
+  CHECK(independent.tryApplyConstraint(firstLock).accepted());
+  const auto independentState = analyzeConstraintSystem(independent);
+  CHECK(independentState.components.size() == 2);
+  CHECK(independentState.degreesOfFreedom == 4);
+  CHECK(independentState.components[0].degreesOfFreedom == 0);
+  CHECK(independentState.components[1].degreesOfFreedom == 4);
+}
+
+void constraintPreflightClassifiesAndRollsBackAtomically() {
+  Sketch angular;
+  constexpr double pi = 3.14159265358979323846;
+  angular.addLine({0.0, 0.0}, {10.0, 0.0});
+  angular.addLine({0.0, 5.0}, {10.0 * std::cos(pi / 6.0),
+                               5.0 + 10.0 * std::sin(pi / 6.0)});
+  Constraint angle;
+  angle.type = ConstraintType::Angle;
+  angle.firstGeometry = angular.lineId(0);
+  angle.secondGeometry = angular.lineId(1);
+  angle.value = 30.0;
+  CHECK(angular.tryApplyConstraint(angle).accepted());
+  const auto angularFingerprint = angular.semanticFingerprint();
+  const auto angleId = angular.constraints().front().id;
+  Constraint parallel;
+  parallel.type = ConstraintType::Parallel;
+  parallel.firstGeometry = angular.lineId(0);
+  parallel.secondGeometry = angular.lineId(1);
+  const auto conflict = angular.tryApplyConstraint(parallel);
+  CHECK(conflict.status == ConstraintApplyStatus::Conflicting);
+  CHECK(angular.semanticFingerprint() == angularFingerprint);
+  CHECK(angular.constraints().size() == 1);
+  CHECK(angular.constraints().front().id == angleId);
+  CHECK(std::find(conflict.relatedConstraintIds.begin(),
+                  conflict.relatedConstraintIds.end(), angleId) !=
+        conflict.relatedConstraintIds.end());
+
+  Constraint stale;
+  stale.type = ConstraintType::Horizontal;
+  stale.firstGeometry = 999999;
+  const auto staleFingerprint = angular.semanticFingerprint();
+  CHECK(angular.tryApplyConstraint(stale).status ==
+        ConstraintApplyStatus::InvalidReference);
+  CHECK(angular.semanticFingerprint() == staleFingerprint);
+
+  Constraint unsupported;
+  angular.addCircle({30.0, 0.0}, 2.0);
+  unsupported.type = ConstraintType::Equal;
+  unsupported.firstGeometry = angular.lineId(0);
+  unsupported.secondGeometry = angular.circleId(0);
+  const auto unsupportedFingerprint = angular.semanticFingerprint();
+  CHECK(angular.tryApplyConstraint(unsupported).status ==
+        ConstraintApplyStatus::Unsupported);
+  CHECK(angular.semanticFingerprint() == unsupportedFingerprint);
+
+  Sketch orthogonal;
+  orthogonal.addLine({0.0, 0.0}, {10.0, 0.0});
+  Constraint horizontal;
+  horizontal.type = ConstraintType::Horizontal;
+  horizontal.firstGeometry = orthogonal.lineId(0);
+  CHECK(orthogonal.tryApplyConstraint(horizontal).accepted());
+  const auto horizontalFingerprint = orthogonal.semanticFingerprint();
+  const auto horizontalId = orthogonal.constraints().front().id;
+  const auto duplicate = orthogonal.tryApplyConstraint(horizontal);
+  CHECK(duplicate.status == ConstraintApplyStatus::Redundant);
+  CHECK(orthogonal.semanticFingerprint() == horizontalFingerprint);
+  Constraint vertical = horizontal;
+  vertical.type = ConstraintType::Vertical;
+  const auto hvConflict = orthogonal.tryApplyConstraint(vertical);
+  CHECK(hvConflict.status == ConstraintApplyStatus::Conflicting);
+  CHECK(orthogonal.semanticFingerprint() == horizontalFingerprint);
+  CHECK(orthogonal.constraints().size() == 1);
+  CHECK(orthogonal.constraints().front().id == horizontalId);
+
+  Sketch history;
+  history.addLine({0.0, 0.0}, {10.0, 2.0});
+  history.beginDeltaJournal();
+  Constraint historyHorizontal;
+  historyHorizontal.type = ConstraintType::Horizontal;
+  historyHorizontal.firstGeometry = history.lineId(0);
+  const auto accepted = history.tryApplyConstraint(historyHorizontal);
+  CHECK(accepted.accepted());
+  const auto addDelta = history.finishDeltaJournal();
+  CHECK(!addDelta.empty());
+  const auto constrainedFingerprint = history.semanticFingerprint();
+  history.beginDeltaJournal();
+  CHECK(history.removeConstraint(accepted.constraintId));
+  const auto deleteDelta = history.finishDeltaJournal();
+  CHECK(history.constraints().empty());
+  CHECK(history.applyDelta(deleteDelta, false));
+  CHECK(history.semanticFingerprint() == constrainedFingerprint);
+  CHECK(history.constraints().front().id == accepted.constraintId);
+  CHECK(history.applyDelta(deleteDelta, true));
+  CHECK(history.constraints().empty());
+  CHECK(history.applyDelta(deleteDelta, false));
+  CHECK(history.constraints().front().id == accepted.constraintId);
+}
+
+void interactiveConstraintSemanticsStayInSync() {
+  const auto makeCase = [](ConstraintType type) {
+    Sketch sketch;
+    Constraint constraint;
+    constraint.type = type;
+    switch (type) {
+      case ConstraintType::Horizontal:
+      case ConstraintType::Vertical:
+      case ConstraintType::Length:
+        sketch.addLine({0.0, 0.0}, {6.0, 2.0});
+        constraint.firstGeometry = sketch.lineId(0);
+        if (type == ConstraintType::Length) constraint.value = 8.0;
+        break;
+      case ConstraintType::Lock:
+        sketch.addArc({0.0, 0.0}, 5.0, 0.2, 1.4);
+        constraint.firstGeometry = sketch.arcId(0);
+        break;
+      case ConstraintType::Radius:
+      case ConstraintType::Diameter:
+        sketch.addCircle({1.0, 2.0}, 3.0);
+        constraint.firstGeometry = sketch.circleId(0);
+        constraint.value = type == ConstraintType::Radius ? 4.0 : 8.0;
+        break;
+      case ConstraintType::Parallel:
+      case ConstraintType::Perpendicular:
+      case ConstraintType::Equal:
+      case ConstraintType::Angle:
+        sketch.addLine({0.0, 0.0}, {8.0, 1.0});
+        sketch.addLine({0.0, 5.0}, {4.0, 8.0});
+        constraint.firstGeometry = sketch.lineId(0);
+        constraint.secondGeometry = sketch.lineId(1);
+        if (type == ConstraintType::Angle) constraint.value = 35.0;
+        break;
+      case ConstraintType::LineDistance:
+        sketch.addLine({0.0, 0.0}, {8.0, 0.0});
+        sketch.addLine({0.0, 5.0}, {8.0, 5.0});
+        constraint.firstGeometry = sketch.lineId(0);
+        constraint.secondGeometry = sketch.lineId(1);
+        constraint.value = 4.0;
+        {
+          Constraint parallel;
+          parallel.type = ConstraintType::Parallel;
+          parallel.firstGeometry = constraint.firstGeometry;
+          parallel.secondGeometry = constraint.secondGeometry;
+          CHECK(sketch.tryApplyConstraint(parallel).accepted());
+        }
+        break;
+      case ConstraintType::Tangent:
+        sketch.addLine({-5.0, -8.0}, {-5.0, 8.0});
+        sketch.addCircle({0.0, 0.0}, 5.0);
+        constraint.firstGeometry = sketch.lineId(0);
+        constraint.secondGeometry = sketch.circleId(0);
+        break;
+      case ConstraintType::Coincident:
+      case ConstraintType::Distance:
+      case ConstraintType::DistanceX:
+      case ConstraintType::DistanceY:
+        sketch.addLine({0.0, 0.0}, {3.0, 2.0});
+        sketch.addLine({8.0, 7.0}, {10.0, 9.0});
+        constraint.firstPoint = {sketch.lineId(0), false};
+        constraint.secondPoint = {sketch.lineId(1), true};
+        if (type != ConstraintType::Coincident) constraint.value = 6.0;
+        break;
+      case ConstraintType::Midpoint:
+      case ConstraintType::PointOnLine:
+        sketch.addLine({0.0, 0.0}, {10.0, 0.0});
+        sketch.addLine({3.0, 4.0}, {5.0, 6.0});
+        constraint.firstGeometry = sketch.lineId(0);
+        constraint.secondPoint = {sketch.lineId(1), true};
+        break;
+      case ConstraintType::PointOnCircle:
+        sketch.addCircle({0.0, 0.0}, 5.0);
+        sketch.addLine({7.0, 1.0}, {9.0, 3.0});
+        constraint.firstGeometry = sketch.circleId(0);
+        constraint.secondPoint = {sketch.lineId(0), true};
+        break;
+      case ConstraintType::PointOnArc:
+        sketch.addArc({0.0, 0.0}, 5.0, 0.0, 1.5);
+        sketch.addLine({4.0, 3.0}, {7.0, 5.0});
+        constraint.firstGeometry = sketch.arcId(0);
+        constraint.secondPoint = {sketch.lineId(0), true};
+        break;
+      case ConstraintType::PointOnXAxis:
+      case ConstraintType::PointOnYAxis:
+        sketch.addLine({3.0, 4.0}, {7.0, 8.0});
+        constraint.secondPoint = {sketch.lineId(0), true};
+        break;
+    }
+    return std::pair{std::move(sketch), constraint};
+  };
+
+  for (int raw = static_cast<int>(ConstraintType::Horizontal);
+       raw <= static_cast<int>(ConstraintType::PointOnYAxis); ++raw) {
+    const auto type = static_cast<ConstraintType>(raw);
+    auto [sketch, constraint] = makeCase(type);
+    const auto applied = sketch.tryApplyConstraint(constraint);
+    if (!applied.accepted())
+      std::cerr << "constraint semantic matrix rejected type " << raw
+                << " status " << static_cast<int>(applied.status) << ": "
+                << applied.diagnostic << '\n';
+    CHECK(applied.accepted());
+    CHECK(applied.constraintId != kInvalidConstraintId);
+    auto diagnostics = analyzeConstraintSystem(sketch);
+    CHECK(!hasConstraintViolation(diagnostics, applied.constraintId));
+
+    if (type != ConstraintType::Lock) {
+      if (constraint.firstGeometry != kInvalidGeometryId)
+        SketchTestAccess::perturbGeometry(sketch,
+                                          constraint.firstGeometry);
+      else
+        SketchTestAccess::perturbPoint(sketch, constraint.secondPoint);
+      const auto solved = BasicSketchSolver::solveStable(sketch);
+      if (solved.unsupported != 0 || solved.invalidReferences != 0)
+        std::cerr << "constraint semantic matrix solve failed type " << raw
+                  << " unsupported=" << solved.unsupported
+                  << " invalid=" << solved.invalidReferences << '\n';
+      CHECK(solved.unsupported == 0);
+      CHECK(solved.invalidReferences == 0);
+      diagnostics = analyzeConstraintSystem(sketch);
+      CHECK(!hasConstraintViolation(diagnostics, applied.constraintId));
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1298,6 +1602,9 @@ int main() {
   indexedDimensionRemovalIsStableAndReversible();
   coordinateJunctionsDefineLocalSolveComponents();
   circleCenterCoordinateJunctionsAreTransitiveAndReversible();
-  componentSolvePreservesPersistedConstraintOrder();
+  knownSolverV1PersistedOrderDependenceRemainsVisible();
+  arcMidpointAndComponentDiagnosticsAreTruthful();
+  constraintPreflightClassifiesAndRollsBackAtomically();
+  interactiveConstraintSemanticsStayInSync();
   return EXIT_SUCCESS;
 }

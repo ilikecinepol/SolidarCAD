@@ -38,6 +38,7 @@
 #include "model/MoveFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/ShellFeature.h"
+#include "sketch/SketchConstraintDiagnostics.h"
 
 namespace {
 
@@ -325,6 +326,54 @@ int main(int argc, char* argv[]) {
   CHECK(solidar::test::near(
       solidar::test::volumeOf(*restoredBody->resultShape()), sourceVolume,
       1e-4));
+
+  // A constraint accepted through the transactional boundary retains its
+  // stable ID and component diagnostics across a native v2 round-trip.
+  {
+    solidar::Document transactionalDocument;
+    auto& safetySketch =
+        transactionalDocument.addSketch("Transactional constraints");
+    const auto safetySketchId = safetySketch.id;
+    safetySketch.geometry.addLine({0.0, 0.0}, {10.0, 2.0});
+    solidar::sketch::Constraint horizontal;
+    horizontal.type = solidar::sketch::ConstraintType::Horizontal;
+    horizontal.firstGeometry = safetySketch.geometry.lineId(0);
+    const auto horizontalApplied =
+        safetySketch.geometry.tryApplyConstraint(horizontal);
+    CHECK(horizontalApplied.accepted());
+    const auto safetyDiagnostics = solidar::sketch::analyzeConstraintSystem(
+        safetySketch.geometry);
+    CHECK(!safetyDiagnostics.conflicting);
+    CHECK(!solidar::sketch::hasConstraintViolation(
+        safetyDiagnostics, horizontalApplied.constraintId));
+
+    const QString safetyPath =
+        directory.filePath("transactional-constraint-v2.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        safetyPath, transactionalDocument, &error));
+    solidar::Document transactionalRestored;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        safetyPath, &transactionalRestored, &error));
+    const auto* restoredSafetySketch =
+        transactionalRestored.findSketch(safetySketchId);
+    CHECK(restoredSafetySketch);
+    CHECK(restoredSafetySketch->geometry.constraints().size() == 1);
+    CHECK(restoredSafetySketch->geometry.constraints().front().id ==
+          horizontalApplied.constraintId);
+    CHECK(restoredSafetySketch->geometry.constraints().front().type ==
+          solidar::sketch::ConstraintType::Horizontal);
+    const auto restoredSafetyDiagnostics =
+        solidar::sketch::analyzeConstraintSystem(
+            restoredSafetySketch->geometry);
+    CHECK(restoredSafetyDiagnostics.equationRank ==
+          safetyDiagnostics.equationRank);
+    CHECK(restoredSafetyDiagnostics.degreesOfFreedom ==
+          safetyDiagnostics.degreesOfFreedom);
+    CHECK(restoredSafetyDiagnostics.components.size() ==
+          safetyDiagnostics.components.size());
+    CHECK(!solidar::sketch::hasConstraintViolation(
+        restoredSafetyDiagnostics, horizontalApplied.constraintId));
+  }
 
   // A native Line + Arc profile remains editable after a complete project
   // round-trip. IDs and feature parameters must survive serialization, while

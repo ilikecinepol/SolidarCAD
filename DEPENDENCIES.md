@@ -8,6 +8,7 @@
 | Компонент | Версия/ограничение | Назначение | Тип связи | Лицензия | Источник и фиксация | Владелец |
 |---|---|---|---|---|---|---|
 | Qt | минимум API >= 6.5; рекомендуется для dev 6.11.1; CI и Release: 6.8.3 | Core, Widgets, OpenGLWidgets, PrintSupport | динамическая runtime-библиотека | LGPL-3.0-only или коммерческая лицензия в зависимости от поставки | `find_package(Qt6 6.5)`; CI/Release policy фиксирует 6.8.3; фактическая версия передаётся в SBOM | release owner |
+| ICU | 73.2 (только Linux Release) | Unicode runtime для официальной Qt 6.8.3 | динамическая runtime-библиотека | Unicode-DFS-2016 | официальный архив `icu4c-73_2-src.tgz`, SHA-256 закреплён в `scripts/build_icu_runtime.sh` | build owner |
 | Open CASCADE Technology | 8.0.1 | B-Rep, topology, boolean, fillet, mesh | динамическая runtime-библиотека | LGPL-2.1-only WITH OCCT-exception-1.0 | manifest mode, vcpkg port `opencascade`, baseline `00c5775211f45cd08b37fce0484b4cb940e422ab` | CAD core owner |
 | vcpkg | baseline `00c5775211f45cd08b37fce0484b4cb940e422ab` | получение и фиксация OCCT | build-only | MIT | `vcpkg.json` | build owner |
 | CMake | >= 3.24 | конфигурация и сборка | build-only | BSD-3-Clause | `CMakeLists.txt` | build owner |

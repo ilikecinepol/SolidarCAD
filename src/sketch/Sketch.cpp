@@ -23,6 +23,160 @@ std::atomic_size_t fullSketchCopyCount{};
 std::atomic_size_t deltaJournalBeginCount{};
 std::atomic_bool failNextNestedConstraintJournal{};
 
+int pointReferenceSourceCount(PointReference reference) noexcept {
+  return (reference.origin ? 1 : 0) +
+         (reference.elementCenterId != 0 ? 1 : 0) +
+         (reference.lineId != kInvalidGeometryId ? 1 : 0) +
+         (reference.circleId != kInvalidGeometryId ? 1 : 0) +
+         (reference.arcId != kInvalidGeometryId ? 1 : 0);
+}
+
+bool emptyPointReference(PointReference reference) noexcept {
+  return pointReferenceSourceCount(reference) == 0;
+}
+
+bool validPointReferenceForConstraint(const Sketch& sketch,
+                                      PointReference reference) {
+  return pointReferenceSourceCount(reference) == 1 &&
+         (reference.origin || sketch.referencedPoint(reference).has_value());
+}
+
+bool samePointReference(PointReference first, PointReference second) noexcept {
+  return first.lineId == second.lineId && first.start == second.start &&
+         first.circleId == second.circleId &&
+         first.elementCenterId == second.elementCenterId &&
+         first.arcId == second.arcId && first.origin == second.origin;
+}
+
+bool equivalentConstraint(const Constraint& first,
+                          const Constraint& second) noexcept {
+  if (first.type != second.type ||
+      std::abs(first.value - second.value) > 1e-9)
+    return false;
+  const bool sameGeometryOrder =
+      first.firstGeometry == second.firstGeometry &&
+      first.secondGeometry == second.secondGeometry;
+  const bool reverseGeometryOrder =
+      first.firstGeometry == second.secondGeometry &&
+      first.secondGeometry == second.firstGeometry;
+  const bool samePointOrder =
+      samePointReference(first.firstPoint, second.firstPoint) &&
+      samePointReference(first.secondPoint, second.secondPoint);
+  const bool reversePointOrder =
+      samePointReference(first.firstPoint, second.secondPoint) &&
+      samePointReference(first.secondPoint, second.firstPoint);
+  switch (first.type) {
+    case ConstraintType::Parallel:
+    case ConstraintType::Perpendicular:
+    case ConstraintType::Equal:
+    case ConstraintType::Angle:
+    case ConstraintType::LineDistance:
+      return (sameGeometryOrder || reverseGeometryOrder) && samePointOrder;
+    case ConstraintType::Coincident:
+    case ConstraintType::Distance:
+    case ConstraintType::DistanceX:
+    case ConstraintType::DistanceY:
+      return sameGeometryOrder && (samePointOrder || reversePointOrder);
+    default:
+      return sameGeometryOrder && samePointOrder;
+  }
+}
+
+bool supportedConstraintSchema(const Sketch& sketch,
+                               const Constraint& constraint) {
+  const auto first = sketch.geometryLocation(constraint.firstGeometry);
+  const auto second = sketch.geometryLocation(constraint.secondGeometry);
+  const bool firstPoint = !emptyPointReference(constraint.firstPoint);
+  const bool secondPoint = !emptyPointReference(constraint.secondPoint);
+  const bool noPoints = !firstPoint && !secondPoint;
+  const bool distinct = first && second &&
+                        constraint.firstGeometry != constraint.secondGeometry;
+  const auto firstIs = [&](GeometryKind kind) {
+    return first && first->kind == kind;
+  };
+  const auto secondIs = [&](GeometryKind kind) {
+    return second && second->kind == kind;
+  };
+
+  switch (constraint.type) {
+    case ConstraintType::Horizontal:
+    case ConstraintType::Vertical:
+      return firstIs(GeometryKind::Line) && !second && noPoints;
+    case ConstraintType::Length:
+      return firstIs(GeometryKind::Line) && !second && noPoints &&
+             constraint.value > 0.0;
+    case ConstraintType::Radius:
+    case ConstraintType::Diameter:
+      return firstIs(GeometryKind::Circle) && !second && noPoints &&
+             constraint.value > 0.0;
+    case ConstraintType::Lock:
+      return first.has_value() && !second && noPoints;
+    case ConstraintType::Parallel:
+    case ConstraintType::Perpendicular:
+      return firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line) &&
+             distinct && noPoints;
+    case ConstraintType::Angle:
+      return firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line) &&
+             distinct && noPoints && constraint.value > 0.0 &&
+             constraint.value < 180.0;
+    case ConstraintType::LineDistance:
+      return firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line) &&
+             distinct && noPoints && constraint.value > 0.0;
+    case ConstraintType::Equal:
+      return distinct && noPoints &&
+             ((firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line)) ||
+              (firstIs(GeometryKind::Circle) &&
+               secondIs(GeometryKind::Circle)));
+    case ConstraintType::Tangent:
+      return firstIs(GeometryKind::Line) && distinct && noPoints &&
+             (secondIs(GeometryKind::Circle) || secondIs(GeometryKind::Arc));
+    case ConstraintType::Coincident:
+      return !first && !second && firstPoint && secondPoint;
+    case ConstraintType::Distance:
+    case ConstraintType::DistanceX:
+    case ConstraintType::DistanceY:
+      return !first && !second && firstPoint && secondPoint &&
+             constraint.value > 0.0;
+    case ConstraintType::Midpoint:
+    case ConstraintType::PointOnLine:
+      return firstIs(GeometryKind::Line) && !second && !firstPoint &&
+             secondPoint;
+    case ConstraintType::PointOnCircle:
+      return firstIs(GeometryKind::Circle) && !second && !firstPoint &&
+             secondPoint;
+    case ConstraintType::PointOnArc:
+      return firstIs(GeometryKind::Arc) && !second && !firstPoint &&
+             secondPoint;
+    case ConstraintType::PointOnXAxis:
+    case ConstraintType::PointOnYAxis:
+      return !first && !second && !firstPoint && secondPoint;
+  }
+  return false;
+}
+
+std::vector<GeometryId> referencedGeometryIds(const Sketch& sketch,
+                                              const Constraint& constraint) {
+  std::vector<GeometryId> result;
+  const auto add = [&result](GeometryId id) {
+    if (id != kInvalidGeometryId &&
+        std::find(result.begin(), result.end(), id) == result.end())
+      result.push_back(id);
+  };
+  add(constraint.firstGeometry);
+  add(constraint.secondGeometry);
+  for (const auto point : {constraint.firstPoint, constraint.secondPoint}) {
+    add(point.lineId);
+    add(point.circleId);
+    add(point.arcId);
+    if (point.elementCenterId != 0) {
+      for (std::size_t i = 0; i < sketch.lines().size(); ++i)
+        if (sketch.lines()[i].elementId == point.elementCenterId)
+          add(sketch.lineId(i));
+    }
+  }
+  return result;
+}
+
 [[nodiscard]] std::optional<DimensionId> firstFreeDimensionId(
     const std::vector<Dimension>& dimensions, DimensionId start,
     DimensionId additionallyReserved = kInvalidDimensionId) noexcept {
@@ -5640,42 +5794,91 @@ bool Sketch::setLineLength(std::size_t index, double lengthMm) {
   const auto same = [](Point a, Point b) {
     return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
   };
-  std::vector<Point> junctionPoints{oldMoving};
-  const auto collectJunctionPoint = [&junctionPoints](Point candidate) {
-    if (std::none_of(junctionPoints.begin(), junctionPoints.end(),
-                     [candidate](Point item) {
-                       return std::hypot(item.xMm - candidate.xMm,
-                                         item.yMm - candidate.yMm) <= 1e-12;
-                     }))
-      junctionPoints.push_back(candidate);
+  const double moveX = newMoving.xMm - oldMoving.xMm;
+  const double moveY = newMoving.yMm - oldMoving.yMm;
+
+  struct JunctionMove {
+    Point from;
+    Point to;
   };
-  for (std::size_t junctionIndex = 0;
-       junctionIndex < junctionPoints.size(); ++junctionIndex) {
-    const Point anchor = junctionPoints[junctionIndex];
-    for (const auto& line : lines_) {
-      if (same(line.start, anchor)) collectJunctionPoint(line.start);
-      if (same(line.end, anchor)) collectJunctionPoint(line.end);
+
+  std::vector<JunctionMove> junctionMoves{{oldMoving, newMoving}};
+  const auto addJunctionMove = [&junctionMoves](Point from, Point to) {
+    const auto existing = std::find_if(
+        junctionMoves.begin(), junctionMoves.end(),
+        [from](const JunctionMove& item) {
+          return std::hypot(item.from.xMm - from.xMm,
+                            item.from.yMm - from.yMm) <= 1e-12;
+        });
+    if (existing == junctionMoves.end())
+      junctionMoves.push_back({from, to});
+  };
+  const auto preservesTranslationAxis =
+      [this, moveX, moveY](GeometryId id) {
+        constexpr double tolerance = 1e-9;
+        const bool horizontalMove =
+            std::abs(moveX) > tolerance && std::abs(moveY) <= tolerance;
+        const bool verticalMove =
+            std::abs(moveY) > tolerance && std::abs(moveX) <= tolerance;
+        return std::any_of(
+            constraints_.begin(), constraints_.end(),
+            [id, horizontalMove, verticalMove](const Constraint& item) {
+              return item.firstGeometry == id &&
+                     ((horizontalMove &&
+                       item.type == ConstraintType::Vertical) ||
+                      (verticalMove &&
+                       item.type == ConstraintType::Horizontal));
+            });
+      };
+
+  // Moving one end of a dimensioned horizontal segment must translate an
+  // attached Vertical line in X (and symmetrically for Vertical/Horizontal).
+  // Otherwise the next sequential H/V pass anchors that neighbour at its
+  // stored start point and silently moves the junction back. Which end was
+  // drawn first must not decide whether the dimension can be applied.
+  for (std::size_t moveIndex = 0; moveIndex < junctionMoves.size();
+       ++moveIndex) {
+    const auto movement = junctionMoves[moveIndex];
+    for (std::size_t lineIndexValue = 0; lineIndexValue < lines_.size();
+         ++lineIndexValue) {
+      const auto& line = lines_[lineIndexValue];
+      if (same(line.start, movement.from))
+        addJunctionMove(line.start, movement.to);
+      if (same(line.end, movement.from))
+        addJunctionMove(line.end, movement.to);
+      if (lineIds_[lineIndexValue] == lineIdValue ||
+          !preservesTranslationAxis(lineIds_[lineIndexValue]))
+        continue;
+      if (same(line.start, movement.from)) {
+        addJunctionMove(
+            line.end,
+            Point{line.end.xMm + moveX, line.end.yMm + moveY});
+      } else if (same(line.end, movement.from)) {
+        addJunctionMove(
+            line.start,
+            Point{line.start.xMm + moveX, line.start.yMm + moveY});
+      }
     }
     for (const auto& circle : circles_)
-      if (same(circle.center, anchor)) collectJunctionPoint(circle.center);
+      if (same(circle.center, movement.from))
+        addJunctionMove(circle.center, movement.to);
   }
-  const auto belongsToJunction = [&junctionPoints, &same](Point candidate) {
-    return std::any_of(junctionPoints.begin(), junctionPoints.end(),
-                       [candidate, &same](Point item) {
-                         return same(item, candidate);
-                       });
+
+  const auto movedPoint = [&junctionMoves, &same](Point candidate) {
+    const auto found = std::find_if(
+        junctionMoves.begin(), junctionMoves.end(),
+        [candidate, &same](const JunctionMove& item) {
+          return same(item.from, candidate);
+        });
+    return found == junctionMoves.end() ? candidate : found->to;
   };
-  if (moveStart)
-    lines_[index].start = newMoving;
-  else
-    lines_[index].end = newMoving;
+
   for (auto& line : lines_) {
-    if (&line == &lines_[index]) continue;
-    if (belongsToJunction(line.start)) line.start = newMoving;
-    if (belongsToJunction(line.end)) line.end = newMoving;
+    line.start = movedPoint(line.start);
+    line.end = movedPoint(line.end);
   }
   for (auto& circle : circles_)
-    if (belongsToJunction(circle.center)) circle.center = newMoving;
+    circle.center = movedPoint(circle.center);
   updateBounds();
   return true;
 }
@@ -6081,6 +6284,25 @@ bool Sketch::setPointDistanceX(
       !std::isfinite(distanceMm) ||
       distanceMm <= 0.0)
     return false;
+
+  // A horizontal segment dimensioned between its own endpoints is also its
+  // line length. Route it through the length mutator so endpoint mobility is
+  // resolved from PointOnLine/Coincident anchors instead of always moving the
+  // second endpoint (which can be attached to a locked projected carrier).
+  const bool ownLineEndpoints =
+      !firstReference.origin && !secondReference.origin &&
+      firstReference.elementCenterId == 0 &&
+      secondReference.elementCenterId == 0 &&
+      firstReference.circleId == kInvalidGeometryId &&
+      secondReference.circleId == kInvalidGeometryId &&
+      firstReference.arcId == kInvalidGeometryId &&
+      secondReference.arcId == kInvalidGeometryId &&
+      firstReference.lineId != kInvalidGeometryId &&
+      firstReference.lineId == secondReference.lineId &&
+      firstReference.start != secondReference.start;
+  if (ownLineEndpoints &&
+      std::abs(second->yMm - first->yMm) <= 1e-7)
+    return setLineLengthById(firstReference.lineId, distanceMm);
 
   const auto rectangleElementForPoint =
       [this](PointReference reference)
@@ -6570,6 +6792,24 @@ bool Sketch::setPointDistanceY(
       !std::isfinite(distanceMm) ||
       distanceMm <= 0.0)
     return false;
+
+  // Vertical own-endpoint dimensions use the same anchor-aware path as an
+  // explicit line length. This preserves an endpoint constrained to a locked
+  // carrier and moves the free end regardless of selection order.
+  const bool ownLineEndpoints =
+      !firstReference.origin && !secondReference.origin &&
+      firstReference.elementCenterId == 0 &&
+      secondReference.elementCenterId == 0 &&
+      firstReference.circleId == kInvalidGeometryId &&
+      secondReference.circleId == kInvalidGeometryId &&
+      firstReference.arcId == kInvalidGeometryId &&
+      secondReference.arcId == kInvalidGeometryId &&
+      firstReference.lineId != kInvalidGeometryId &&
+      firstReference.lineId == secondReference.lineId &&
+      firstReference.start != secondReference.start;
+  if (ownLineEndpoints &&
+      std::abs(second->xMm - first->xMm) <= 1e-7)
+    return setLineLengthById(firstReference.lineId, distanceMm);
 
   const auto rectangleElementForPoint =
       [this](PointReference reference)
@@ -7174,6 +7414,179 @@ ConstraintId Sketch::addConstraint(
   }
 
   return addedId;
+}
+
+ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
+                                                 bool commitRedundant) {
+  ConstraintApplyResult result;
+  const auto reject = [&result](ConstraintApplyStatus status,
+                                std::string diagnostic) {
+    result.status = status;
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+
+  const int type = static_cast<int>(constraint.type);
+  if (type < static_cast<int>(ConstraintType::Horizontal) ||
+      type > static_cast<int>(ConstraintType::PointOnYAxis) ||
+      !std::isfinite(constraint.value))
+    return reject(ConstraintApplyStatus::Unsupported,
+                  "Unsupported constraint type or value");
+
+  if ((constraint.firstGeometry != kInvalidGeometryId &&
+       !geometryLocation(constraint.firstGeometry)) ||
+      (constraint.secondGeometry != kInvalidGeometryId &&
+       !geometryLocation(constraint.secondGeometry)) ||
+      (!emptyPointReference(constraint.firstPoint) &&
+       !validPointReferenceForConstraint(*this, constraint.firstPoint)) ||
+      (!emptyPointReference(constraint.secondPoint) &&
+       !validPointReferenceForConstraint(*this, constraint.secondPoint)) ||
+      (constraint.id != kInvalidConstraintId &&
+       constraintIndex(constraint.id)))
+    return reject(ConstraintApplyStatus::InvalidReference,
+                  "Constraint contains a stale or malformed reference");
+
+  if (!supportedConstraintSchema(*this, constraint))
+    return reject(ConstraintApplyStatus::Unsupported,
+                  "Constraint geometry combination is not supported");
+
+  const auto seeds = referencedGeometryIds(*this, constraint);
+  if (seeds.empty())
+    return reject(ConstraintApplyStatus::InvalidReference,
+                  "Constraint does not reference sketch geometry");
+
+  const auto duplicate = std::find_if(
+      constraints_.begin(), constraints_.end(),
+      [&constraint](const Constraint& old) {
+        return equivalentConstraint(old, constraint);
+      });
+  if (duplicate != constraints_.end()) {
+    result.status = ConstraintApplyStatus::Redundant;
+    result.relatedConstraintIds = {duplicate->id};
+    result.diagnostic = "Equivalent constraint already exists";
+    return result;
+  }
+
+  const auto affectedBefore = connectedComponent(seeds);
+  result.relatedConstraintIds = affectedBefore.constraintIds;
+  const auto sameGeometryPair = [&constraint](const Constraint& old) {
+    return (old.firstGeometry == constraint.firstGeometry &&
+            old.secondGeometry == constraint.secondGeometry) ||
+           (old.firstGeometry == constraint.secondGeometry &&
+            old.secondGeometry == constraint.firstGeometry);
+  };
+  for (const auto& old : constraints_) {
+    bool conflicts = false;
+    if (old.firstGeometry == constraint.firstGeometry) {
+      conflicts =
+          (constraint.type == ConstraintType::Horizontal &&
+           old.type == ConstraintType::Vertical) ||
+          (constraint.type == ConstraintType::Vertical &&
+           old.type == ConstraintType::Horizontal);
+    }
+    if (sameGeometryPair(old)) {
+      if (constraint.type == ConstraintType::Parallel)
+        conflicts = conflicts || old.type == ConstraintType::Perpendicular ||
+                    (old.type == ConstraintType::Angle &&
+                     std::abs(old.value) > 1e-9 &&
+                     std::abs(old.value - 180.0) > 1e-9);
+      else if (constraint.type == ConstraintType::Perpendicular)
+        conflicts = conflicts || old.type == ConstraintType::Parallel ||
+                    (old.type == ConstraintType::Angle &&
+                     std::abs(old.value - 90.0) > 1e-9);
+      else if (constraint.type == ConstraintType::Angle)
+        conflicts = conflicts ||
+                    (old.type == ConstraintType::Parallel &&
+                     std::abs(constraint.value) > 1e-9 &&
+                     std::abs(constraint.value - 180.0) > 1e-9) ||
+                    (old.type == ConstraintType::Perpendicular &&
+                     std::abs(constraint.value - 90.0) > 1e-9);
+    }
+    if (conflicts) {
+      result.status = ConstraintApplyStatus::Conflicting;
+      result.relatedConstraintIds = {old.id};
+      result.diagnostic =
+          "Constraint conflicts with an existing orientation relationship";
+      return result;
+    }
+  }
+  const auto before = analyzeConstraintSystem(*this, true);
+  std::vector<ConstraintId> previouslySatisfied;
+  for (const auto& old : constraints_)
+    if (!hasConstraintViolation(before, old.id))
+      previouslySatisfied.push_back(old.id);
+
+  const auto originalFingerprint = semanticFingerprint();
+  beginDeltaJournal();
+  if (failNextNestedConstraintJournal.exchange(false))
+    throw std::runtime_error("injected nested journal failure");
+  journalCaptureComponents(seeds);
+  journalCapturePoint(constraint.firstPoint);
+  journalCapturePoint(constraint.secondPoint);
+
+  if (constraint.id == kInvalidConstraintId)
+    constraint.id = nextConstraintId_++;
+  else
+    nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
+  result.constraintId = constraint.id;
+  constraints_.push_back(constraint);
+  journalRecordAddedConstraint(constraint.id, constraints_.size() - 1);
+  invalidateStructureIndexes();
+
+  const SolveResult solved =
+      BasicSketchSolver::solveStableComponent(*this, seeds);
+  const auto after = analyzeConstraintSystem(*this, true);
+  bool oldConstraintBroken = false;
+  for (const auto id : previouslySatisfied) {
+    if (hasConstraintViolation(after, id)) {
+      oldConstraintBroken = true;
+      break;
+    }
+  }
+
+  ConstraintApplyStatus failure = ConstraintApplyStatus::Accepted;
+  std::string diagnostic;
+  if (solved.invalidReferences != 0) {
+    failure = ConstraintApplyStatus::InvalidReference;
+    diagnostic = "Solver rejected a constraint reference";
+  } else if (solved.unsupported != 0) {
+    failure = ConstraintApplyStatus::Unsupported;
+    diagnostic = "Solver does not support this constraint";
+  } else if (hasConstraintViolation(after, constraint.id) ||
+             oldConstraintBroken) {
+    failure = ConstraintApplyStatus::Conflicting;
+    diagnostic = "Constraint conflicts with existing dependencies";
+  } else if (!solved.converged) {
+    failure = ConstraintApplyStatus::SolverFailed;
+    diagnostic = "Constraint solver did not converge";
+  } else if (after.equationRank <= before.equationRank) {
+    failure = ConstraintApplyStatus::Redundant;
+    diagnostic = "Constraint does not add an independent equation";
+  }
+
+  if (failure == ConstraintApplyStatus::Redundant && commitRedundant) {
+    static_cast<void>(finishDeltaJournal());
+    updateBounds();
+    result.status = failure;
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  }
+
+  if (failure != ConstraintApplyStatus::Accepted) {
+    static_cast<void>(cancelDeltaJournal());
+    result.constraintId = kInvalidConstraintId;
+    result.status = failure;
+    result.diagnostic = std::move(diagnostic);
+    if (semanticFingerprint() != originalFingerprint)
+      result.diagnostic += "; rollback verification failed";
+    return result;
+  }
+
+  static_cast<void>(finishDeltaJournal());
+  updateBounds();
+  result.status = ConstraintApplyStatus::Accepted;
+  result.diagnostic = "Constraint accepted";
+  return result;
 }
 
 bool Sketch::restoreConstraints(std::vector<Constraint> constraints) {
