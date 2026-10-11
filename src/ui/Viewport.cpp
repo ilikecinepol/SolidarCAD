@@ -1187,6 +1187,7 @@ void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
 
 Viewport::~Viewport() {
   if (context()) {
+    QObject::disconnect(context(), nullptr, this, nullptr);
     makeCurrent();
     renderer_.release();
     doneCurrent();
