@@ -204,6 +204,7 @@ bool ViewportRenderer::initialize() {
     return false;
   }
   context_ = current;
+  released_ = false;
   error_.clear();
   auto compile = [this](QOpenGLShaderProgram& program, const char* vertex,
                         const char* fragment, bool edgeProgram) {
@@ -245,6 +246,7 @@ bool ViewportRenderer::initialize() {
     surfaceProgram_.removeAllShaders();
     edgeProgram_.removeAllShaders();
     context_.clear();
+    released_ = true;
   }
   return initialized_;
 }
@@ -306,12 +308,16 @@ void ViewportRenderer::destroyGpuMesh(GpuMesh& gpu,
 }
 
 void ViewportRenderer::release() {
+  if (released_) return;
   if (initialized_ && QOpenGLContext::currentContext() &&
       !currentContextIsCompatible()) {
     error_ = QStringLiteral(
         "Refusing to release renderer resources from an unrelated OpenGL context");
     return;
   }
+  // Mark the transition before destroying Qt OpenGL wrappers. Re-entrant and
+  // later owner/destructor cleanup requests are consequently no-ops.
+  released_ = true;
   const bool canDestroyGlObjects = currentContextIsCompatible();
   destroyGpuMesh(*preview_, canDestroyGlObjects);
   destroyGpuMesh(*cutPreview_, canDestroyGlObjects);

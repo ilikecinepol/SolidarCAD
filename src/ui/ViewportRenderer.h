@@ -171,6 +171,7 @@ class ViewportRenderer final {
   QString error_;
   double lastUploadMilliseconds_{};
   bool initialized_{};
+  bool released_{true};
   QPointer<QOpenGLContext> context_;
   std::uint64_t uploadGenerationClock_{};
   std::size_t lastOrdinarySourceMeshes_{};

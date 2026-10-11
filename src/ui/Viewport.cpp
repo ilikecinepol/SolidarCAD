@@ -1186,22 +1186,35 @@ void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
 }
 
 Viewport::~Viewport() {
-  if (context()) {
-    QObject::disconnect(context(), nullptr, this, nullptr);
+  destructionStarted_ = true;
+  QObject::disconnect(contextAboutToBeDestroyedConnection_);
+  contextAboutToBeDestroyedConnection_ = {};
+  releaseRendererResources();
+}
+
+void Viewport::releaseRendererResources() noexcept {
+  QOpenGLContext* glContext = context();
+  bool madeCurrent = false;
+  if (glContext && glContext->isValid() &&
+      QOpenGLContext::currentContext() != glContext) {
     makeCurrent();
-    renderer_.release();
-    doneCurrent();
+    madeCurrent = QOpenGLContext::currentContext() == glContext;
   }
+  renderer_.release();
+  if (madeCurrent) doneCurrent();
 }
 
 void Viewport::initializeGL() {
   renderer_.initialize();
-  if (context()) {
-    connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
-      makeCurrent();
-      renderer_.release();
-      doneCurrent();
-    }, Qt::DirectConnection);
+  QObject::disconnect(contextAboutToBeDestroyedConnection_);
+  contextAboutToBeDestroyedConnection_ = {};
+  if (QOpenGLContext* glContext = context()) {
+    contextAboutToBeDestroyedConnection_ = connect(
+        glContext, &QOpenGLContext::aboutToBeDestroyed, this,
+        [this] {
+          if (!destructionStarted_) releaseRendererResources();
+        },
+        Qt::DirectConnection);
   }
 }
 

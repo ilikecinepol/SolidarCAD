@@ -6,6 +6,7 @@
 #include <QString>
 #include <QOpenGLWidget>
 #include <QImage>
+#include <QMetaObject>
 #include <array>
 #include <vector>
 #include <optional>
@@ -345,6 +346,7 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] QRectF projectedDisplayedBodyBounds() const;
   [[nodiscard]] const ProjectedPickingScene& pickingScene() const;
   [[nodiscard]] std::vector<PickingMeshInput> pickingMeshInputs() const;
+  void releaseRendererResources() noexcept;
   void synchronizeRendererResources();
   void scheduleHover(QPointF viewPosition);
   void flushPendingHover(std::optional<QPointF> exactPosition = std::nullopt);
@@ -415,6 +417,8 @@ class Viewport final : public QOpenGLWidget {
   ToolPreviewPresentation toolPreviewPresentation_{
       ToolPreviewPresentation::OverlaySourceSelection};
   ViewportRenderer renderer_;
+  QMetaObject::Connection contextAboutToBeDestroyedConnection_;
+  bool destructionStarted_{};
   ViewportDisplayMode displayMode_{ViewportDisplayMode::ShadedWithEdges};
   ViewportMeshQuality meshQuality_{ViewportMeshQuality::Normal};
   BodyId toolPreviewBodyId_{kInvalidBodyId};

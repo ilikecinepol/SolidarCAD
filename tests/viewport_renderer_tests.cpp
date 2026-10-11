@@ -408,6 +408,10 @@ int main(int argc, char** argv) {
   CHECK(renderer.initialize());
   CHECK(renderer.resourceDiagnostics().initialized);
   renderer.release();
+  // Viewport cleanup may be requested by aboutToBeDestroyed and then again by
+  // owner destruction. The second request must not touch released GPU state.
+  renderer.release();
+  CHECK(!renderer.resourceDiagnostics().initialized);
   framebuffer.release();
   context.doneCurrent();
 

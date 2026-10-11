@@ -2089,7 +2089,6 @@ QString firstSerializedDocumentDifference(const QByteArray& left,
 }  // namespace
 
 int main(int argc, char** argv) {
-  qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication application(argc, argv);
 
   QTemporaryDir directory(QDir::current().filePath(
