@@ -109,10 +109,15 @@ jobs:
           name: solidarcad-sbom-${{ matrix.os }}
           path: build/solidarcad.spdx.json
 
-      - name: Test
-        env:
-          QT_QPA_PLATFORM: offscreen
+      - name: Test on Windows
+        if: runner.os == 'Windows'
         run: ctest --preset ci
+
+      - name: Test on Linux
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: xvfb-run -a ctest --preset ci
 
       - name: Package Linux build dependencies
         if: runner.os == 'Linux'
@@ -278,5 +283,5 @@ jobs:
 
       - name: Test sanitizers
         env:
-          QT_QPA_PLATFORM: offscreen
-        run: ctest --preset sanitizers
+          QT_QPA_PLATFORM: xcb
+        run: xvfb-run -a ctest --preset sanitizers
