@@ -168,6 +168,7 @@ jobs:
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libicui18n.so.73'
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/lib/libicudata.so.73'
           dpkg-deb --contents "$package" | grep -F './opt/solidarcad/plugins/platforms/libqxcb.so'
+          dpkg-deb --contents "$package" | grep -F './opt/solidarcad/plugins/platforms/libqoffscreen.so'
           dpkg-deb --contents "$package" | grep -F './usr/bin/solidar'
           dpkg-deb --contents "$package" | grep -F './usr/share/applications/solidarcad.desktop'
           dpkg-deb --contents "$package" | grep -F './usr/share/mime/packages/application-x-solidarcad.xml'

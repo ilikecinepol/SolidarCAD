@@ -271,6 +271,9 @@ qt_add_executable(solidar
   assets/icons.qrc
 )
 target_link_libraries(solidar PRIVATE solidar_home solidar_editor)
+if(UNIX AND NOT APPLE AND SOLIDAR_BUILD_LINUX_PACKAGE)
+  qt_import_plugins(solidar INCLUDE Qt6::QOffscreenIntegrationPlugin)
+endif()
 solidar_warnings(solidar)
 
 # Keep Windows development builds runnable outside a specially configured
