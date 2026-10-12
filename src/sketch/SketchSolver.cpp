@@ -1303,7 +1303,8 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
         seed.secondGeometry;
 
     // Finite Arcs use a dedicated pass below.
-    if (!sketch.circleIndex(circleId))
+    if (!sketch.circleIndex(circleId) ||
+        !sketch.lineIndex(seed.firstGeometry))
       continue;
 
     if (circleId == kInvalidGeometryId ||
@@ -1337,12 +1338,9 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
           item.secondGeometry != circleId)
         continue;
 
-      if (item.firstGeometry ==
-              kInvalidGeometryId ||
-          !sketch.lineIndex(item.firstGeometry)) {
-        ++result.invalidReferences;
+      if (item.firstGeometry == kInvalidGeometryId ||
+          !sketch.lineIndex(item.firstGeometry))
         continue;
-      }
 
       if (std::find(
               carrierIds.begin(),
@@ -1646,11 +1644,11 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
   // LINE-ARC TANGENCY FINAL PASS
   for (const auto& constraint : sketch.constraints()) {
     if (constraint.type != ConstraintType::Tangent ||
-        !sketch.arcIndex(constraint.secondGeometry))
+        !sketch.arcIndex(constraint.secondGeometry) ||
+        !sketch.lineIndex(constraint.firstGeometry))
       continue;
 
-    if (constraint.firstGeometry == kInvalidGeometryId ||
-        !sketch.lineIndex(constraint.firstGeometry)) {
+    if (constraint.firstGeometry == kInvalidGeometryId) {
       ++result.invalidReferences;
       continue;
     }
@@ -1660,6 +1658,25 @@ SolveResult BasicSketchSolver::solve(Sketch& sketch) {
       ++result.applied;
     else
       ++result.invalidReferences;
+  }
+
+  // General curve tangency. The specialized grouped pass above remains in
+  // charge of line-circle multi-tangent systems; all other valid pairs are
+  // projected here (circle-circle, arc-circle and Bezier endpoint tangency).
+  for (const auto& constraint : sketch.constraints()) {
+    if (constraint.type != ConstraintType::Tangent) continue;
+    const bool specializedLineCircle =
+        sketch.lineIndex(constraint.firstGeometry) &&
+        sketch.circleIndex(constraint.secondGeometry);
+    const bool specializedLineArc =
+        sketch.lineIndex(constraint.firstGeometry) &&
+        sketch.arcIndex(constraint.secondGeometry);
+    if (specializedLineCircle || specializedLineArc) continue;
+    if (sketch.setGeometriesTangentByIds(constraint.firstGeometry,
+                                         constraint.secondGeometry))
+      ++result.applied;
+    else
+      ++result.unsupported;
   }
   // CRASH-FREE 11: FINAL COMPOSITE-SAFE EQUAL STABILIZATION
   //

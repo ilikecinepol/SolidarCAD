@@ -38,6 +38,7 @@
 #include "model/MoveFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/ShellFeature.h"
+#include "model/TopologyReferenceResolver.h"
 #include "sketch/SketchConstraintDiagnostics.h"
 
 namespace {
@@ -103,6 +104,50 @@ int main(int argc, char* argv[]) {
   }
 
   // Cubic Bezier poles and point references survive the stable v1 boundary.
+  // A face-backed Mirror keeps its stable topology reference across the
+  // project boundary and rebuilds against the restored source feature.
+  {
+    solidar::Document source;
+    auto& sketch = source.addSketch("Mirror face profile");
+    sketch.geometry.addRectangle({10.0, 0.0}, {20.0, 10.0});
+    auto& body = source.addBody("Mirror face body");
+    auto extrusion =
+        std::make_unique<solidar::ExtrudeFeature>(sketch.id, 5.0);
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    CHECK(source.recompute());
+    const auto topFace =
+        solidar::test::topPlanarFace(*body.resultShape(), 5.0);
+    CHECK(topFace.has_value());
+    const auto planeFace = solidar::makeFaceReference(
+        *body.resultShape(), body.id(), extrusionId, *topFace);
+    CHECK(planeFace.signature.has_value());
+    auto mirror =
+        std::make_unique<solidar::MirrorFeature>(extrusionId, planeFace);
+    const auto mirrorId = mirror->id();
+    body.addFeature(std::move(mirror));
+    CHECK(source.recompute());
+
+    const QString path = directory.filePath("mirror-face.solidar");
+    QString mirrorError;
+    CHECK(solidar::project::ProjectFile::saveDocument(path, source,
+                                                       &mirrorError));
+    solidar::Document restored;
+    CHECK(solidar::project::ProjectFile::loadDocument(path, &restored,
+                                                       &mirrorError));
+    const auto* loaded =
+        dynamic_cast<const solidar::MirrorFeature*>(restored.findFeature(
+            mirrorId));
+    CHECK(loaded);
+    CHECK(loaded->planeFace() == planeFace);
+    const auto* restoredBody = restored.findBody(body.id());
+    CHECK(restoredBody && restoredBody->resultShape());
+    const auto bounds =
+        solidar::test::boundsOf(*restoredBody->resultShape());
+    CHECK(solidar::test::near(bounds.minZ, 0.0));
+    CHECK(solidar::test::near(bounds.maxZ, 10.0));
+  }
+
   {
     solidar::project::ProjectData data;
     solidar::project::SavedSketch saved;

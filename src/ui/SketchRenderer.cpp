@@ -1985,18 +1985,13 @@ class SketchFrameRecorder final {
     if (points.size() == 1) {
       painter.drawLine(mapPoint(points[0]), mapPoint(hoverPoint_));
     } else {
-      sketch::Bezier preview;
-      preview.points[0] = points[0];
-      preview.points[1] = points[1];
-      preview.points[2] = points.size() >= 3 ? points[2] : hoverPoint_;
-      preview.points[3] = hoverPoint_;
-      painter.drawPolyline(bezierPolyline(preview));
-      painter.setPen(QPen(withAlpha(palette().transient, 110), 1.0,
-                          Qt::DashLine));
-      painter.drawLine(mapPoint(preview.points[0]),
-                       mapPoint(preview.points[1]));
-      painter.drawLine(mapPoint(preview.points[2]),
-                       mapPoint(preview.points[3]));
+      auto previewKnots = points;
+      if (std::hypot(hoverPoint_.xMm - previewKnots.back().xMm,
+                     hoverPoint_.yMm - previewKnots.back().yMm) > 1e-9)
+        previewKnots.push_back(hoverPoint_);
+      for (const auto& segment :
+           sketch::interpolatingBezierChain(previewKnots))
+        painter.drawPolyline(bezierPolyline(segment));
     }
     painter.setBrush(palette().transientSurface);
     for (const auto point : points)
@@ -2809,6 +2804,19 @@ class SketchFrameRecorder final {
           painter.restore();
         };
 
+    const auto drawHighlightedBezier =
+        [&](sketch::GeometryId id) {
+          if (id == sketch::kInvalidGeometryId) return;
+          const auto index = sketch_.bezierIndex(id);
+          if (!index) return;
+          painter.save();
+          painter.setPen(QPen(constraintHighlight, 4.0, Qt::SolidLine,
+                              Qt::RoundCap));
+          painter.setBrush(Qt::NoBrush);
+          painter.drawPolyline(bezierPolyline(sketch_.beziers()[*index]));
+          painter.restore();
+        };
+
     // The object under the cursor is deliberately distinct from the already
     // selected first operand. This makes the next click predictable for every
     // Sketcher constraint tool.
@@ -2853,6 +2861,16 @@ class SketchFrameRecorder final {
           painter.drawPolyline(circlePolyline(
               arc.center, arc.radiusMm, arc.startAngleRad,
               arc.sweepAngleRad, segments));
+          painter.restore();
+        }
+      } else if (hoverKind == SketchGeometryOperandKind::Bezier) {
+        const auto index = sketch_.bezierIndex(hoverId);
+        if (index) {
+          painter.save();
+          painter.setPen(QPen(hoverColor, 4.0, Qt::SolidLine,
+                              Qt::RoundCap));
+          painter.setBrush(Qt::NoBrush);
+          painter.drawPolyline(bezierPolyline(sketch_.beziers()[*index]));
           painter.restore();
         }
       } else if (hoverKind == SketchGeometryOperandKind::Point &&
@@ -2906,17 +2924,17 @@ class SketchFrameRecorder final {
     }
 
     if (tool() == Tool::PerpendicularConstraint &&
-        interactionState().constraint.perpendicularFirstLine.has_value()) {
-      drawHighlightedLine(
-          static_cast<sketch::GeometryId>(
-              interactionState().constraint.perpendicularFirstLine.value_or(sketch::kInvalidGeometryId)));
+        interactionState().constraint.perpendicularFirst.has_value()) {
+      const auto operand = *interactionState().constraint.perpendicularFirst;
+      if (operand.kind == SketchGeometryOperandKind::Line)
+        drawHighlightedLine(operand.geometryId);
     }
 
     if (tool() == Tool::ParallelConstraint &&
-        interactionState().constraint.parallelFirstLine.has_value()) {
-      drawHighlightedLine(
-          static_cast<sketch::GeometryId>(
-              interactionState().constraint.parallelFirstLine.value_or(sketch::kInvalidGeometryId)));
+        interactionState().constraint.parallelFirst.has_value()) {
+      const auto operand = *interactionState().constraint.parallelFirst;
+      if (operand.kind == SketchGeometryOperandKind::Line)
+        drawHighlightedLine(operand.geometryId);
     }
 
     if (tool() == Tool::EqualConstraint &&
@@ -2936,6 +2954,8 @@ class SketchFrameRecorder final {
         drawHighlightedLine(operand.geometryId);
       else if (operand.kind == SketchGeometryOperandKind::Arc)
         drawHighlightedArc(operand.geometryId);
+      else if (operand.kind == SketchGeometryOperandKind::Bezier)
+        drawHighlightedBezier(operand.geometryId);
     }
   }
   }

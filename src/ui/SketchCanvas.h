@@ -150,6 +150,11 @@ class SketchCanvas final : public QWidget {
   selectedConstraintPanelEntries() const;
   bool removeConstraintById(sketch::ConstraintId id);
   bool setDimensionDriving(std::size_t dimensionIndex, bool driving);
+  void beginMirrorElementSelection();
+  void beginMirrorAxisSelection();
+  void clearMirrorElementSelection();
+  void clearMirrorAxisSelection();
+  bool applyMirrorSelection();
 
   // Screen -> Sketch axis mapping for point AutoDimension. The user chooses a
   // dimension orientation visually (horizontal or vertical on screen), while
@@ -189,6 +194,8 @@ signals:
   void primaryDimensionChanged(double value);
   void lineStyleSelectionChanged(bool lineSelected, bool dashed);
   void constraintStatusChanged(const QString& status);
+  void mirrorSelectionChanged(int elementCount, bool axisSelected,
+                              bool selectingAxis);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -275,6 +282,8 @@ signals:
   [[nodiscard]] bool arcSelected(sketch::GeometryId id) const;
   [[nodiscard]] bool bezierSelected(sketch::GeometryId id) const;
   void commitPoint(sketch::Point point);
+  bool finishBezierChain();
+  void finishLineChain();
   void showDimensionEditor(QPoint position);
   void updateDimensionEditor();
   void positionDimensionEditor();
@@ -327,6 +336,7 @@ signals:
       MirrorGeometryRef seed) const;
   void setMirrorSourceSelection(
       const std::vector<MirrorGeometryRef>& source);
+  void publishMirrorSelection();
   bool mirrorContourAboutLine(sketch::GeometryId axisId);
   using TrimGeometryKind = SketchTrimGeometryKind;
   using TrimPreview = SketchTrimPreview;

@@ -110,6 +110,7 @@ class Viewport final : public QOpenGLWidget {
   void beginMirrorBodySelection();
   void beginMirrorPlaneSelection();
   void showMirrorPlaneSelection(int planeIndex);
+  void showMirrorFaceSelection(const FaceReference& face);
   [[nodiscard]] bool mirrorBodySelectionActive() const noexcept;
   [[nodiscard]] bool mirrorPlaneSelectionActive() const noexcept;
   void beginMoveBodySelection();
@@ -249,6 +250,7 @@ class Viewport final : public QOpenGLWidget {
   void imagePlanePicked(const SketchPlanePick& pick);
   void mirrorBodyPicked(BodyId bodyId);
   void mirrorPlanePicked(int planeIndex);
+  void mirrorPlaneFacePicked(const FaceReference& face);
   void moveBodyPicked(BodyId bodyId);
   void linearPatternBodyPicked(BodyId bodyId);
   void linearPatternAxisPicked(int axisIndex);

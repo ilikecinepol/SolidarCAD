@@ -11,6 +11,7 @@ void MirrorToolSession::begin(std::optional<FeatureId> editingFeatureId) {
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   plane_.reset();
+  planeFace_.reset();
   editingFeatureId_ = editingFeatureId;
   previewShape_.reset();
   error_.clear();
@@ -23,6 +24,7 @@ void MirrorToolSession::setBody(BodyId bodyId, FeatureId sourceFeatureId,
   sourceFeatureId_ = sourceFeatureId;
   sourceShape_ = std::move(sourceShape);
   plane_.reset();
+  planeFace_.reset();
   updatePreview();
 }
 
@@ -31,16 +33,25 @@ void MirrorToolSession::clearBody() {
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   plane_.reset();
+  planeFace_.reset();
   updatePreview();
 }
 
 void MirrorToolSession::setPlane(MirrorPlane plane) {
   plane_ = plane;
+  planeFace_.reset();
+  updatePreview();
+}
+
+void MirrorToolSession::setPlaneFace(FaceReference planeFace) {
+  plane_.reset();
+  planeFace_ = std::move(planeFace);
   updatePreview();
 }
 
 void MirrorToolSession::clearPlane() {
   plane_.reset();
+  planeFace_.reset();
   updatePreview();
 }
 
@@ -54,6 +65,10 @@ const std::optional<MirrorPlane>& MirrorToolSession::plane() const noexcept {
   return plane_;
 }
 
+const std::optional<FaceReference>& MirrorToolSession::planeFace() const noexcept {
+  return planeFace_;
+}
+
 std::optional<FeatureId> MirrorToolSession::editingFeatureId() const noexcept {
   return editingFeatureId_;
 }
@@ -65,7 +80,7 @@ ToolLifecycle MirrorToolSession::lifecycle() const noexcept {
 ToolSelectionStage MirrorToolSession::selectionStage() const noexcept {
   if (lifecycle_ == ToolLifecycle::Inactive) return ToolSelectionStage::None;
   if (bodyId_ == kInvalidBodyId) return ToolSelectionStage::SelectingInput;
-  if (!plane_) return ToolSelectionStage::SelectingReference;
+  if (!plane_ && !planeFace_) return ToolSelectionStage::SelectingReference;
   return ToolSelectionStage::EditingParameters;
 }
 
@@ -94,11 +109,20 @@ bool MirrorToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
-  if (!plane_) {
+  if (!plane_ && !planeFace_) {
     lifecycle_ = ToolLifecycle::SelectingReference;
     return false;
   }
-  previewShape_ = buildMirrorShape(*sourceShape_, *plane_, &error_);
+  if (planeFace_ &&
+      (planeFace_->bodyId != bodyId_ ||
+       planeFace_->featureId != sourceFeatureId_)) {
+    error_ = "Mirror plane face must belong to the selected source Feature";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
+  previewShape_ = planeFace_
+                      ? buildMirrorShape(*sourceShape_, *planeFace_, &error_)
+                      : buildMirrorShape(*sourceShape_, *plane_, &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
   return bool(previewShape_);
@@ -109,6 +133,7 @@ void MirrorToolSession::cancel() noexcept {
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
   plane_.reset();
+  planeFace_.reset();
   editingFeatureId_.reset();
   previewShape_.reset();
   error_.clear();

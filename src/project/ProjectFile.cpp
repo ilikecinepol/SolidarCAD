@@ -1737,9 +1737,25 @@ bool validateChamfer(const QJsonObject& feature,
 
 bool validateMirror(const QJsonObject& feature,
                     FeatureValidationContext& context) {
-  return context.localFeature(feature, "sourceFeatureId") &&
-         enumNumber(feature.value("plane"), QStringLiteral("plane"),
-                    static_cast<qint64>(MirrorPlane::YZ), context.error);
+  if (!context.localFeature(feature, "sourceFeatureId") ||
+      !enumNumber(feature.value("plane"), QStringLiteral("plane"),
+                  static_cast<qint64>(MirrorPlane::YZ), context.error))
+    return false;
+  if (!feature.contains("planeFace")) return true;
+  if (!context.accountTopologyReferences(1) ||
+      !validateTopologyReference(feature.value("planeFace"), true,
+                                 context.featureSets, context.error))
+    return false;
+  const auto face = feature.value("planeFace").toObject();
+  if (static_cast<BodyId>(face.value("bodyId").toInteger()) !=
+          context.bodyId ||
+      face.value("featureId").toInteger() !=
+          feature.value("sourceFeatureId").toInteger())
+    return invalid(
+        context.error,
+        QString::fromUtf8(
+            "грань плоскости Mirror должна принадлежать исходной фиче текущего тела."));
+  return true;
 }
 
 bool validateMove(const QJsonObject& feature,
@@ -2058,6 +2074,8 @@ bool encodeMirror(const Feature& feature, QJsonObject& saved,
   if (!mirror) return false;
   saved["sourceFeatureId"] = static_cast<qint64>(mirror->sourceFeatureId());
   saved["plane"] = static_cast<int>(mirror->plane());
+  if (mirror->planeFace())
+    saved["planeFace"] = savedFaceReference(*mirror->planeFace());
   return true;
 }
 
@@ -2263,9 +2281,15 @@ bool decodeChamfer(const QJsonObject& saved, FeatureId id,
 bool decodeMirror(const QJsonObject& saved, FeatureId id,
                   const std::string& name, Body& body,
                   const FeatureDecodeContext&) {
-  body.addFeature(std::make_unique<MirrorFeature>(
-      id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
-      static_cast<MirrorPlane>(saved.value("plane").toInt()), name));
+  const auto source =
+      static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger());
+  if (saved.contains("planeFace"))
+    body.addFeature(std::make_unique<MirrorFeature>(
+        id, source, loadedFaceReference(saved.value("planeFace")), name));
+  else
+    body.addFeature(std::make_unique<MirrorFeature>(
+        id, source, static_cast<MirrorPlane>(saved.value("plane").toInt()),
+        name));
   return true;
 }
 

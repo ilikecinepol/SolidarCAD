@@ -73,6 +73,16 @@ void click(solidar::SketchCanvas& canvas, QPointF point) {
   QApplication::sendEvent(&canvas, &release);
 }
 
+void clickWithModifiers(solidar::SketchCanvas& canvas, QPointF point,
+                        Qt::KeyboardModifiers modifiers) {
+  QMouseEvent press(QEvent::MouseButtonPress, point, Qt::LeftButton,
+                    Qt::LeftButton, modifiers);
+  QApplication::sendEvent(&canvas, &press);
+  QMouseEvent release(QEvent::MouseButtonRelease, point, Qt::LeftButton,
+                      Qt::NoButton, modifiers);
+  QApplication::sendEvent(&canvas, &release);
+}
+
 void moveMouse(solidar::SketchCanvas& canvas, QPointF point) {
   QMouseEvent event(QEvent::MouseMove, point, Qt::NoButton,
                     Qt::NoButton, Qt::NoModifier);
@@ -553,6 +563,76 @@ int main(int argc, char** argv) {
         }));
   }
 
+  // Line remains active as a connected polyline until a double click ends the
+  // gesture. Every segment is committed and constrained at its shared node.
+  {
+    solidar::SketchCanvas polylineCanvas;
+    polylineCanvas.resize(900, 650);
+    polylineCanvas.setTool(solidar::SketchCanvas::Tool::Line);
+    polylineCanvas.show();
+    QApplication::processEvents();
+    click(polylineCanvas, screenPoint(polylineCanvas, {-20.0, 0.0}));
+    click(polylineCanvas, screenPoint(polylineCanvas, {0.0, 10.0}));
+    CHECK(polylineCanvas.hasActiveInteraction());
+    click(polylineCanvas, screenPoint(polylineCanvas, {20.0, 0.0}));
+    click(polylineCanvas, screenPoint(polylineCanvas, {20.0, 0.0}));
+    doubleClick(polylineCanvas, screenPoint(polylineCanvas, {20.0, 0.0}));
+    CHECK(polylineCanvas.sketch().lines().size() == 2);
+    CHECK(!polylineCanvas.hasActiveInteraction());
+    CHECK(std::hypot(polylineCanvas.sketch().lines()[0].end.xMm -
+                         polylineCanvas.sketch().lines()[1].start.xMm,
+                     polylineCanvas.sketch().lines()[0].end.yMm -
+                         polylineCanvas.sketch().lines()[1].start.yMm) <
+          1e-8);
+  }
+
+  // Curve accepts an arbitrary number of interpolation knots and is committed
+  // as one smooth chain. Its first knot snaps to existing sketch geometry.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({-30.0, 0.0}, {-20.0, 0.0});
+    solidar::SketchCanvas curveCanvas;
+    curveCanvas.resize(900, 650);
+    curveCanvas.loadSketch(geometry);
+    curveCanvas.setTool(solidar::SketchCanvas::Tool::Bezier);
+    curveCanvas.show();
+    QApplication::processEvents();
+    click(curveCanvas, screenPoint(curveCanvas, {-20.0, 0.0}));
+    click(curveCanvas, screenPoint(curveCanvas, {-5.0, 12.0}));
+    click(curveCanvas, screenPoint(curveCanvas, {10.0, -8.0}));
+    click(curveCanvas, screenPoint(curveCanvas, {25.0, 5.0}));
+    CHECK(curveCanvas.sketch().beziers().empty());
+    doubleClick(curveCanvas, screenPoint(curveCanvas, {25.0, 5.0}));
+    CHECK(curveCanvas.sketch().beziers().size() == 3);
+    CHECK(!curveCanvas.hasActiveInteraction());
+    CHECK(std::hypot(curveCanvas.sketch().beziers().front().points[0].xMm +
+                         20.0,
+                     curveCanvas.sketch().beziers().front().points[0].yMm) <
+          1e-8);
+    CHECK(curveCanvas.undoHistorySize() == 1);
+    curveCanvas.undo();
+    CHECK(curveCanvas.sketch().beziers().empty());
+  }
+
+  // The pending first knot is itself a snap target, so a closed free-form
+  // curve has exact topological closure and can be used as a profile.
+  {
+    solidar::SketchCanvas curveCanvas;
+    curveCanvas.resize(900, 650);
+    curveCanvas.setTool(solidar::SketchCanvas::Tool::Bezier);
+    curveCanvas.show();
+    QApplication::processEvents();
+    const QPointF first = screenPoint(curveCanvas, {-20.0, 0.0});
+    click(curveCanvas, first);
+    click(curveCanvas, screenPoint(curveCanvas, {0.0, 18.0}));
+    click(curveCanvas, screenPoint(curveCanvas, {20.0, 0.0}));
+    click(curveCanvas, screenPoint(curveCanvas, {0.0, -18.0}));
+    click(curveCanvas, first + QPointF(2.0, 1.0));
+    doubleClick(curveCanvas, first + QPointF(2.0, 1.0));
+    CHECK(curveCanvas.sketch().beziers().size() == 4);
+    CHECK(curveCanvas.sketch().isClosed());
+  }
+
   // A normal click selects one primitive rectangle side. A double click
   // expands that selection to the complete closed contour.
   {
@@ -581,8 +661,8 @@ int main(int argc, char** argv) {
                       }));
   }
 
-  // Sketch mirror uses a double-clicked closed contour followed by one axis
-  // click and creates a connected reflected copy in one Undo transaction.
+  // Sketch mirror uses a double-clicked closed contour followed by an axis
+  // selection and Apply, creating a connected copy in one Undo transaction.
   {
     solidar::sketch::Sketch geometry;
     geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
@@ -597,6 +677,7 @@ int main(int argc, char** argv) {
     QApplication::processEvents();
     doubleClick(mirrorCanvas, screenPoint(mirrorCanvas, {5.0, 0.0}));
     click(mirrorCanvas, screenPoint(mirrorCanvas, {20.0, 5.0}));
+    CHECK(mirrorCanvas.applyMirrorSelection());
     CHECK(mirrorCanvas.sketch().lines().size() == 9);
     CHECK(std::count_if(
               mirrorCanvas.sketch().lines().begin(),
@@ -610,8 +691,8 @@ int main(int argc, char** argv) {
   }
 
   // One click mirrors just one primitive. Lines, circles and arcs share the
-  // same selection stage; the following click must select a distinct line as
-  // the symmetry axis.
+  // same selection stage; the following click selects a distinct line as the
+  // symmetry axis before Apply.
   {
     solidar::sketch::Sketch geometry;
     geometry.addLine({0.0, 0.0}, {5.0, 0.0});
@@ -625,6 +706,7 @@ int main(int argc, char** argv) {
     click(lineMirrorCanvas, screenPoint(lineMirrorCanvas, {2.5, 0.0}));
     CHECK(lineMirrorCanvas.sketch().lines().size() == 2);
     click(lineMirrorCanvas, screenPoint(lineMirrorCanvas, {10.0, 2.0}));
+    CHECK(lineMirrorCanvas.applyMirrorSelection());
     CHECK(lineMirrorCanvas.sketch().lines().size() == 3);
     const auto& reflectedLine = lineMirrorCanvas.sketch().lines().back();
     CHECK(std::abs(reflectedLine.start.xMm - 20.0) < 1e-6);
@@ -635,6 +717,31 @@ int main(int argc, char** argv) {
     CHECK(lineMirrorCanvas.sketch().lines().size() == 2);
     lineMirrorCanvas.redo();
     CHECK(lineMirrorCanvas.sketch().lines().size() == 3);
+  }
+
+  // Ctrl builds a multi-element mirror source set before the axis stage.
+  {
+    solidar::sketch::Sketch geometry;
+    geometry.addLine({0.0, 0.0}, {5.0, 0.0});
+    geometry.addLine({0.0, 4.0}, {5.0, 4.0});
+    geometry.addLine({10.0, -5.0}, {10.0, 8.0});
+    solidar::SketchCanvas multiMirrorCanvas;
+    multiMirrorCanvas.resize(900, 650);
+    multiMirrorCanvas.loadSketch(geometry);
+    multiMirrorCanvas.setTool(solidar::SketchCanvas::Tool::Mirror);
+    multiMirrorCanvas.show();
+    QApplication::processEvents();
+    clickWithModifiers(multiMirrorCanvas,
+                       screenPoint(multiMirrorCanvas, {2.5, 0.0}),
+                       Qt::ControlModifier);
+    clickWithModifiers(multiMirrorCanvas,
+                       screenPoint(multiMirrorCanvas, {2.5, 4.0}),
+                       Qt::ControlModifier);
+    CHECK(multiMirrorCanvas.interactionState().mirror.source.size() == 2);
+    multiMirrorCanvas.beginMirrorAxisSelection();
+    click(multiMirrorCanvas, screenPoint(multiMirrorCanvas, {10.0, 2.0}));
+    CHECK(multiMirrorCanvas.applyMirrorSelection());
+    CHECK(multiMirrorCanvas.sketch().lines().size() == 5);
   }
 
   {
@@ -651,6 +758,7 @@ int main(int argc, char** argv) {
     QApplication::processEvents();
     click(circleMirrorCanvas, screenPoint(circleMirrorCanvas, {6.0, 3.0}));
     click(circleMirrorCanvas, screenPoint(circleMirrorCanvas, {10.0, 3.0}));
+    CHECK(circleMirrorCanvas.applyMirrorSelection());
     CHECK(circleMirrorCanvas.sketch().circles().size() == 2);
     const auto& reflectedCircle = circleMirrorCanvas.sketch().circles().back();
     CHECK(std::abs(reflectedCircle.center.xMm - 18.0) < 1e-6);
@@ -676,6 +784,7 @@ int main(int argc, char** argv) {
     doubleClick(curvedMirrorCanvas,
                 screenPoint(curvedMirrorCanvas, {5.0, 5.0}));
     click(curvedMirrorCanvas, screenPoint(curvedMirrorCanvas, {20.0, 3.0}));
+    CHECK(curvedMirrorCanvas.applyMirrorSelection());
     CHECK(curvedMirrorCanvas.sketch().lines().size() == 3);
     CHECK(curvedMirrorCanvas.sketch().arcs().size() == 2);
     const auto& reflectedArc = curvedMirrorCanvas.sketch().arcs().back();
@@ -1659,6 +1768,7 @@ int main(int argc, char** argv) {
       if (tool == solidar::SketchCanvas::Tool::Bezier) {
         click(gestureCanvas, QPointF(420.0, 270.0));
         click(gestureCanvas, QPointF(480.0, 300.0));
+        doubleClick(gestureCanvas, QPointF(480.0, 300.0));
       }
 
       if (tool == solidar::SketchCanvas::Tool::Line)
@@ -1670,7 +1780,7 @@ int main(int argc, char** argv) {
       else if (tool == solidar::SketchCanvas::Tool::Arc)
         CHECK(gestureCanvas.sketch().arcs().size() == 1);
       else
-        CHECK(gestureCanvas.sketch().beziers().size() == 1);
+        CHECK(gestureCanvas.sketch().beziers().size() == 3);
     }
   }
   {
@@ -1684,16 +1794,15 @@ int main(int argc, char** argv) {
     QApplication::processEvents();
 
     const QPointF first(350.0, 350.0);
-    const QPointF control(400.0, 250.0);
+    const QPointF control(383.333, 350.0);
     click(bezierCanvas, first);
-    click(bezierCanvas, control);
-    click(bezierCanvas, QPointF(500.0, 250.0));
     click(bezierCanvas, QPointF(550.0, 350.0));
+    doubleClick(bezierCanvas, QPointF(550.0, 350.0));
     CHECK(bezierCanvas.sketch().beziers().size() == 1);
     const auto before = bezierCanvas.sketch().beziers()[0].points[1];
 
     bezierCanvas.setTool(solidar::SketchCanvas::Tool::Select);
-    const QPointF movedControl(420.0, 230.0);
+    const QPointF movedControl(403.333, 330.0);
     QMouseEvent press(QEvent::MouseButtonPress, control, Qt::LeftButton,
                       Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&bezierCanvas, &press);
@@ -1708,7 +1817,7 @@ int main(int argc, char** argv) {
     CHECK(std::abs(bezierCanvas.sketch().beziers()[0].points[1].yMm -
                        before.yMm - 4.0) < 1e-6);
 
-    click(bezierCanvas, QPointF(457.5, 267.5));
+    click(bezierCanvas, QPointF(450.0, 350.0));
     QKeyEvent removeBezier(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
     QApplication::sendEvent(&bezierCanvas, &removeBezier);
     CHECK(bezierCanvas.sketch().beziers().empty());

@@ -526,6 +526,81 @@ void sketchConstraintToolTests() {
                         solidar::sketch::ConstraintType::Tangent));
   }
 
+  // Tangency is a curve-to-curve relation too: two circles and Bezier curves
+  // remain selectable in either operand slot.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addCircle({-12.0, 10.0}, 5.0);
+    sketch.addCircle({8.0, 10.0}, 4.0);
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.setTool(solidar::SketchCanvas::Tool::TangentConstraint);
+    canvas.show();
+    QApplication::processEvents();
+    click(canvas, screenPoint(canvas, -7.0, 10.0));
+    move(canvas, screenPoint(canvas, 12.0, 10.0));
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::Circle));
+    click(canvas, screenPoint(canvas, 12.0, 10.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Tangent));
+  }
+
+  // H/V works directly, while parallel/perpendicular and point binding also
+  // accept the persistent sketch axes as operands.
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 12.0}, {-10.0, 16.0});
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.show();
+    QApplication::processEvents();
+
+    canvas.setTool(solidar::SketchCanvas::Tool::OrthogonalConstraint);
+    click(canvas, screenPoint(canvas, -20.0, 14.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Horizontal));
+  }
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-30.0, 12.0}, {-10.0, 16.0});
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.show();
+    QApplication::processEvents();
+
+    canvas.setTool(solidar::SketchCanvas::Tool::ParallelConstraint);
+    click(canvas, screenPoint(canvas, -20.0, 14.0));
+    move(canvas, screenPoint(canvas, 25.0, 0.0));
+    CHECK(hoverIs(canvas, solidar::SketchGeometryOperandKind::XAxis));
+    click(canvas, screenPoint(canvas, 25.0, 0.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Horizontal));
+  }
+  {
+    solidar::sketch::Sketch sketch;
+    sketch.addLine({-25.0, 9.0}, {-8.0, 16.0});
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(sketch);
+    canvas.show();
+    QApplication::processEvents();
+
+    canvas.setTool(solidar::SketchCanvas::Tool::PerpendicularConstraint);
+    click(canvas, screenPoint(canvas, -16.5, 12.5));
+    click(canvas, screenPoint(canvas, 0.0, -20.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::Horizontal));
+
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    click(canvas, screenPoint(canvas, -25.0, 9.0));
+    click(canvas, screenPoint(canvas, 20.0, 0.0));
+    CHECK(hasConstraint(canvas.sketch(),
+                        solidar::sketch::ConstraintType::PointOnXAxis));
+  }
+
   // Every remaining constraint tool advertises a valid target before the
   // click. Coincident prioritises a vertex; Lock also supports finite arcs.
   {
@@ -1476,6 +1551,8 @@ int main(int argc, char** argv) {
     CHECK(sketchCanvas != nullptr);
     auto* sketchSettingsDock = editor->findChild<QDockWidget*>(
         QStringLiteral("sketchSettingsDock"));
+    auto* sketchMirrorDock = editor->findChild<QDockWidget*>(
+        QStringLiteral("sketchMirrorParametersDock"));
     auto* modelTreeDock = editor->findChild<QDockWidget*>(
         QStringLiteral("modelTreeDock"));
     auto* historyDock = editor->findChild<QDockWidget*>(
@@ -1491,6 +1568,14 @@ int main(int argc, char** argv) {
     auto* darkTheme = editor->findChild<QAction*>(
         QStringLiteral("themeDarkAction"));
     CHECK(sketchSettingsDock != nullptr);
+    CHECK(sketchMirrorDock != nullptr);
+    CHECK(sketchMirrorDock->allowedAreas().testFlag(Qt::LeftDockWidgetArea));
+    CHECK(sketchMirrorDock->findChild<QPushButton*>(
+              QStringLiteral("sketchMirrorSelectElementsButton")) != nullptr);
+    CHECK(sketchMirrorDock->findChild<QPushButton*>(
+              QStringLiteral("sketchMirrorSelectAxisButton")) != nullptr);
+    CHECK(sketchMirrorDock->findChild<QPushButton*>(
+              QStringLiteral("sketchMirrorApplyButton")) != nullptr);
     CHECK(modelTreeDock != nullptr);
     auto* modelTree = modelTreeDock->findChild<QTreeWidget*>();
     CHECK(modelTree != nullptr);
@@ -1534,6 +1619,10 @@ int main(int argc, char** argv) {
     workspace->setCurrentWidget(sketchCanvas);
     CHECK(!sketchSettingsDock->isHidden());
     CHECK(modelTreeDock->isHidden());
+    sketchCanvas->setTool(solidar::SketchCanvas::Tool::Mirror);
+    CHECK(!sketchMirrorDock->isHidden());
+    sketchCanvas->setTool(solidar::SketchCanvas::Tool::Select);
+    CHECK(sketchMirrorDock->isHidden());
     workspace->setCurrentWidget(modelWorkspace);
     CHECK(sketchSettingsDock->isHidden());
     CHECK(!modelTreeDock->isHidden());

@@ -44,6 +44,9 @@ class MainWindowUndoTestAccess {
       const Viewport& viewport) {
     return viewport.toolPreviewPresentationRevision_;
   }
+  static void updateMirrorPlaneHover(Viewport& viewport, QPointF position) {
+    viewport.updateMirrorPlaneHover(position);
+  }
 };
 }  // namespace solidar
 
@@ -318,6 +321,38 @@ int main(int argc, char** argv) {
           Qt::LeftButton);
     CHECK(axisPicks == 1);
     CHECK(pickedAxis == 0);
+  }
+
+  // Mirror's Plane picker accepts a planar source face as a first-class
+  // reference and publishes its stable topology identity.
+  {
+    solidar::Viewport mirrorView;
+    mirrorView.resize(800, 600);
+    mirrorView.setBodyShape(source, bodyId, sourceFeatureId);
+    mirrorView.setSolidVisible(true);
+    mirrorView.setSelectedBodies({bodyId});
+    int facePicks = 0;
+    std::optional<solidar::FaceReference> pickedFace;
+    QObject::connect(&mirrorView,
+                     &solidar::Viewport::mirrorPlaneFacePicked, &mirrorView,
+                     [&](const solidar::FaceReference& face) {
+                       ++facePicks;
+                       pickedFace = face;
+                     });
+    const QPointF topFace = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    mirrorView.beginMirrorPlaneSelection();
+    solidar::MainWindowUndoTestAccess::updateMirrorPlaneHover(mirrorView,
+                                                              topFace);
+    CHECK(mirrorView.effectiveHoveredFaceIndices().size() == 1);
+    mouse(mirrorView, QEvent::MouseButtonPress, topFace, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(facePicks == 1);
+    CHECK(pickedFace.has_value());
+    CHECK(pickedFace->bodyId == bodyId);
+    CHECK(pickedFace->featureId == sourceFeatureId);
+    CHECK(pickedFace->signature.has_value());
+    CHECK(pickedFace->signature->surface == solidar::SurfaceKind::Plane);
+    CHECK(!mirrorView.mirrorPlaneSelectionActive());
   }
 
   // Move selects the same stable whole Body and transitions directly to its

@@ -2064,6 +2064,19 @@ void Viewport::showMirrorPlaneSelection(int planeIndex) {
   update();
 }
 
+void Viewport::showMirrorFaceSelection(const FaceReference& face) {
+  pickMode_ = PickMode::MirrorPreview;
+  selectionFilter_ = SelectionFilter::Any;
+  selectedBasePlane_ = -1;
+  setSelectedBodyFaces({face});
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  hoveredToolBodyId_ = kInvalidBodyId;
+  for (bool& visible : basePlanesVisible_) visible = true;
+  unsetCursor();
+  update();
+}
+
 void Viewport::beginMoveBodySelection() {
   pickMode_ = PickMode::MoveBody;
   selectionFilter_ = SelectionFilter::Face;
@@ -3049,6 +3062,7 @@ void Viewport::leaveEvent(QEvent* event) {
     update();
   } else if (pickMode_ == PickMode::MirrorPlane) {
     selectedBasePlane_ = -1;
+    hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
     update();
   } else if (pickMode_ == PickMode::LinearPatternAxis ||
              pickMode_ == PickMode::CircularPatternAxis ||
@@ -4410,7 +4424,20 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
   }
   if (pickMode_ == PickMode::MirrorPlane) {
     updateMirrorPlaneHover(scenePosition);
-    if (selectedBasePlane_ >= 0) {
+    if (hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1)) {
+      const auto pickedFace =
+          faceReferenceForGlobalIndex(hoveredBodyFaceIndex_);
+      if (pickedFace) {
+        pickMode_ = PickMode::MirrorPreview;
+        selectionFilter_ = SelectionFilter::Any;
+        selectedFace_ = static_cast<int>(hoveredBodyFaceIndex_);
+        selectedBodyFaceIndices_ = {hoveredBodyFaceIndex_};
+        selectedBodyFaceReferences_ = {*pickedFace};
+        hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+        unsetCursor();
+        emit mirrorPlaneFacePicked(*pickedFace);
+      }
+    } else if (selectedBasePlane_ >= 0) {
       const int pickedPlane = selectedBasePlane_;
       pickMode_ = PickMode::MirrorPreview;
       selectionFilter_ = SelectionFilter::Any;
@@ -5376,6 +5403,22 @@ void Viewport::updateMirrorPlaneHover(QPointF position) {
   hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
   hoveredToolBodyId_ = kInvalidBodyId;
 
+  // A planar model face is a first-class mirror reference and takes priority
+  // over the translucent global datum planes drawn behind it.
+  if (solidVisible_ && hasDisplayedBodyTriangles()) {
+    if (const auto hit = pickingScene().faceAt(position)) {
+      const auto reference = faceReferenceForGlobalIndex(hit->faceIndex);
+      if (reference && reference->signature &&
+          reference->signature->surface == SurfaceKind::Plane &&
+          (selectedBodyIds_.empty() ||
+           std::find(selectedBodyIds_.begin(), selectedBodyIds_.end(),
+                     reference->bodyId) != selectedBodyIds_.end())) {
+        hoveredBodyFaceIndex_ = hit->faceIndex;
+        return;
+      }
+    }
+  }
+
   const float x = static_cast<float>(box_.widthMm) * 0.5F;
   const float y = static_cast<float>(box_.depthMm) * 0.5F;
   const float planeSize = std::max(35.0F, std::max(x, y) * 1.35F);
@@ -6229,8 +6272,10 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
   }
   if (pickMode_ == PickMode::MirrorPlane) {
     updateMirrorPlaneHover(scenePosition);
-    setCursor(selectedBasePlane_ >= 0 ? Qt::PointingHandCursor
-                                      : Qt::CrossCursor);
+    setCursor(selectedBasePlane_ >= 0 ||
+                      hoveredBodyFaceIndex_ != static_cast<std::size_t>(-1)
+                  ? Qt::PointingHandCursor
+                  : Qt::CrossCursor);
     update();
     return;
   }

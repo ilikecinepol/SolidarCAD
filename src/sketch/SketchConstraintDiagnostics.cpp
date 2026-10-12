@@ -222,6 +222,20 @@ std::optional<Arc> arcOf(const Layout& layout,
              variables[b + 3], variables[b + 4], false};
 }
 
+std::optional<Bezier> bezierOf(const Layout& layout,
+                               const std::vector<double>& variables,
+                               GeometryId id) {
+  const auto found = layout.bezierBase.find(id);
+  if (found == layout.bezierBase.end() || found->second + 7 >= variables.size())
+    return std::nullopt;
+  Bezier result;
+  for (std::size_t index = 0; index < result.points.size(); ++index) {
+    const auto base = found->second + index * 2;
+    result.points[index] = {variables[base], variables[base + 1]};
+  }
+  return result;
+}
+
 std::optional<Point> pointOf(const Sketch& sketch,
                              const Layout& layout,
                              const std::vector<double>& variables,
@@ -575,36 +589,186 @@ std::vector<Equation> evaluate(const Sketch& sketch,
       }
 
       case ConstraintType::Tangent: {
-        const auto line =
+        const auto firstLine =
             lineOf(layout, variables, constraint.firstGeometry);
-        if (!line) { invalidEquation(constraint); break; }
-        if (const auto circle =
-                circleOf(layout, variables, constraint.secondGeometry)) {
-          add(segmentDistance(circle->center, *line) - circle->radiusMm,
+        const auto secondLine =
+            lineOf(layout, variables, constraint.secondGeometry);
+        const auto firstCircle =
+            circleOf(layout, variables, constraint.firstGeometry);
+        const auto secondCircle =
+            circleOf(layout, variables, constraint.secondGeometry);
+        const auto firstArc =
+            arcOf(layout, variables, constraint.firstGeometry);
+        const auto secondArc =
+            arcOf(layout, variables, constraint.secondGeometry);
+        const auto firstBezier =
+            bezierOf(layout, variables, constraint.firstGeometry);
+        const auto secondBezier =
+            bezierOf(layout, variables, constraint.secondGeometry);
+
+        const auto radialData = [](const std::optional<Circle>& circle,
+                                   const std::optional<Arc>& arc)
+            -> std::optional<std::pair<Point, double>> {
+          if (circle) return std::pair{circle->center, circle->radiusMm};
+          if (arc) return std::pair{arc->center, arc->radiusMm};
+          return std::nullopt;
+        };
+        const auto firstRadial = radialData(firstCircle, firstArc);
+        const auto secondRadial = radialData(secondCircle, secondArc);
+        const auto endpointAndTangent = [](const Bezier& curve, bool start) {
+          const Point endpoint = curve.points[start ? 0 : 3];
+          const Point handle = curve.points[start ? 1 : 2];
+          return std::pair{endpoint,
+                           Point{handle.xMm - endpoint.xMm,
+                                 handle.yMm - endpoint.yMm}};
+        };
+        const auto normalizedCross = [](Point first, Point second) {
+          const double denominator =
+              std::hypot(first.xMm, first.yMm) *
+              std::hypot(second.xMm, second.yMm);
+          return denominator <= 1e-12
+                     ? kDegeneratePenalty
+                     : cross2(first.xMm, first.yMm,
+                              second.xMm, second.yMm) /
+                           denominator;
+        };
+        const auto normalizedDot = [](Point first, Point second) {
+          const double denominator =
+              std::hypot(first.xMm, first.yMm) *
+              std::hypot(second.xMm, second.yMm);
+          return denominator <= 1e-12
+                     ? kDegeneratePenalty
+                     : dot2(first.xMm, first.yMm,
+                            second.xMm, second.yMm) /
+                           denominator;
+        };
+
+        if ((firstLine || secondLine) &&
+            (firstCircle || secondCircle || firstArc || secondArc)) {
+          const auto& line = firstLine ? *firstLine : *secondLine;
+          const auto radial = firstRadial ? *firstRadial : *secondRadial;
+          add(segmentDistance(radial.first, line) - radial.second,
               kLengthTolerance, constraint);
+          const auto& finiteArc = firstArc ? firstArc : secondArc;
+          if (finiteArc) {
+            const double dx = line.end.xMm - line.start.xMm;
+            const double dy = line.end.yMm - line.start.yMm;
+            const double lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared <= 1e-12) {
+              invalidEquation(constraint);
+              break;
+            }
+            const double t = std::clamp(
+                ((finiteArc->center.xMm - line.start.xMm) * dx +
+                 (finiteArc->center.yMm - line.start.yMm) * dy) /
+                    lengthSquared,
+                0.0, 1.0);
+            const Point contact{line.start.xMm + dx * t,
+                                line.start.yMm + dy * t};
+            add(finiteArcDistance(contact, *finiteArc),
+                kLengthTolerance, constraint);
+          }
           break;
         }
 
-        const auto arc = arcOf(layout, variables, constraint.secondGeometry);
-        if (!arc) { invalidEquation(constraint); break; }
-        const double dx = line->end.xMm - line->start.xMm;
-        const double dy = line->end.yMm - line->start.yMm;
-        const double lengthSquared = dx * dx + dy * dy;
-        if (lengthSquared <= 1e-12) {
-          invalidEquation(constraint);
+        if (firstRadial && secondRadial) {
+          const double distance = pointDistance(firstRadial->first,
+                                                secondRadial->first);
+          const double external = firstRadial->second + secondRadial->second;
+          const double internal =
+              std::abs(firstRadial->second - secondRadial->second);
+          const double target =
+              internal > 1e-9 && std::abs(distance - internal) <
+                                      std::abs(distance - external)
+                  ? internal
+                  : external;
+          add(distance - target, kLengthTolerance, constraint);
+          if (distance > 1e-12) {
+            const double ux =
+                (secondRadial->first.xMm - firstRadial->first.xMm) / distance;
+            const double uy =
+                (secondRadial->first.yMm - firstRadial->first.yMm) / distance;
+            const bool internalBranch = target == internal && internal > 1e-9;
+            const Point contact =
+                internalBranch && firstRadial->second < secondRadial->second
+                    ? Point{firstRadial->first.xMm - ux * firstRadial->second,
+                            firstRadial->first.yMm - uy * firstRadial->second}
+                    : Point{firstRadial->first.xMm + ux * firstRadial->second,
+                            firstRadial->first.yMm + uy * firstRadial->second};
+            if (firstArc)
+              add(finiteArcDistance(contact, *firstArc), kLengthTolerance,
+                  constraint);
+            if (secondArc)
+              add(finiteArcDistance(contact, *secondArc), kLengthTolerance,
+                  constraint);
+          }
           break;
         }
-        const double t = std::clamp(
-            ((arc->center.xMm - line->start.xMm) * dx +
-             (arc->center.yMm - line->start.yMm) * dy) /
-                lengthSquared,
-            0.0, 1.0);
-        const Point contact{line->start.xMm + dx * t,
-                            line->start.yMm + dy * t};
-        add(segmentDistance(arc->center, *line) - arc->radiusMm,
-            kLengthTolerance, constraint);
-        add(finiteArcDistance(contact, *arc),
-            kLengthTolerance, constraint);
+
+        if ((firstLine || secondLine) && (firstBezier || secondBezier)) {
+          const auto& line = firstLine ? *firstLine : *secondLine;
+          const auto& curve = firstBezier ? *firstBezier : *secondBezier;
+          const auto start = endpointAndTangent(curve, true);
+          const auto end = endpointAndTangent(curve, false);
+          const bool useStart = segmentDistance(start.first, line) <=
+                                segmentDistance(end.first, line);
+          const auto chosen = useStart ? start : end;
+          add(segmentDistance(chosen.first, line), kLengthTolerance,
+              constraint);
+          add(normalizedCross(
+                  {line.end.xMm - line.start.xMm,
+                   line.end.yMm - line.start.yMm},
+                  chosen.second),
+              kAngularTolerance, constraint);
+          break;
+        }
+
+        if ((firstRadial || secondRadial) &&
+            (firstBezier || secondBezier)) {
+          const auto radial = firstRadial ? *firstRadial : *secondRadial;
+          const auto& curve = firstBezier ? *firstBezier : *secondBezier;
+          const auto start = endpointAndTangent(curve, true);
+          const auto end = endpointAndTangent(curve, false);
+          const bool useStart =
+              std::abs(pointDistance(start.first, radial.first) -
+                       radial.second) <=
+              std::abs(pointDistance(end.first, radial.first) - radial.second);
+          const auto chosen = useStart ? start : end;
+          const Point radius{chosen.first.xMm - radial.first.xMm,
+                             chosen.first.yMm - radial.first.yMm};
+          add(std::hypot(radius.xMm, radius.yMm) - radial.second,
+              kLengthTolerance, constraint);
+          add(normalizedDot(radius, chosen.second), kAngularTolerance,
+              constraint);
+          break;
+        }
+
+        if (firstBezier && secondBezier) {
+          double best = std::numeric_limits<double>::max();
+          std::pair<Point, Point> firstData;
+          std::pair<Point, Point> secondData;
+          for (const bool firstStart : {true, false}) {
+            for (const bool secondStart : {true, false}) {
+              const auto a = endpointAndTangent(*firstBezier, firstStart);
+              const auto b = endpointAndTangent(*secondBezier, secondStart);
+              const double distance = pointDistance(a.first, b.first);
+              if (distance < best) {
+                best = distance;
+                firstData = a;
+                secondData = b;
+              }
+            }
+          }
+          add(firstData.first.xMm - secondData.first.xMm,
+              kLengthTolerance, constraint);
+          add(firstData.first.yMm - secondData.first.yMm,
+              kLengthTolerance, constraint);
+          add(normalizedCross(firstData.second, secondData.second),
+              kAngularTolerance, constraint);
+          break;
+        }
+
+        invalidEquation(constraint);
         break;
       }
 

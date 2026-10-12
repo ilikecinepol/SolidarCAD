@@ -318,6 +318,10 @@ class MainWindow final : public QMainWindow {
   QDockWidget* sketchSettingsDock_{nullptr};
   QComboBox* sketchLineTypeCombo_{nullptr};
   QTreeWidget* sketchConstraintsList_{nullptr};
+  QDockWidget* sketchMirrorDock_{nullptr};
+  QLabel* sketchMirrorElementsValue_{nullptr};
+  QLabel* sketchMirrorAxisValue_{nullptr};
+  QPushButton* sketchMirrorApplyButton_{nullptr};
   int historyPosition_{0};
   struct SketchViewEntry {
     SketchId documentSketchId{kInvalidSketchId};

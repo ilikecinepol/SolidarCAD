@@ -121,6 +121,24 @@ int main() {
   }
   CHECK(foundSmoothFace);
 
+  // Curved-face normals must come from the exact B-Rep surface rather than
+  // from averaging the tessellation triangles. Triangle averaging rotates
+  // cylinder normals slightly toward one neighbouring chord and exposes the
+  // mesh as diagonal/longitudinal bands under directional lighting.
+  std::size_t cylindricalVertices = 0;
+  for (const auto& vertex : normalCylinder.vertices()) {
+    const double radialLength = std::hypot(vertex.position.x,
+                                           vertex.position.y);
+    if (std::abs(radialLength - 35.0) > 1e-7 ||
+        std::abs(vertex.normal.z) > 1e-7)
+      continue;
+    const solidar::Vector3d radial{vertex.position.x / radialLength,
+                                   vertex.position.y / radialLength, 0.0};
+    CHECK(dot(vertex.normal, radial) > 0.999999999);
+    ++cylindricalVertices;
+  }
+  CHECK(cylindricalVertices > 8);
+
   const TopoDS_Face plane = BRepBuilderAPI_MakeFace(
       gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), -10.0, 10.0, -10.0, 10.0);
   BodyRenderMesh forward;

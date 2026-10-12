@@ -1188,11 +1188,12 @@ void SketchCanvas::setTool(Tool tool) {
         QString::fromUtf8("Проекция: выберите ребро существующей геометрии"));
   else if (tool == Tool::Mirror)
     emit selectionChanged(QString::fromUtf8(
-        "Зеркало: один клик — объект, двойной — замкнутый контур"));
+        "Зеркало: выберите элементы; Ctrl добавляет несколько объектов"));
   else if (tool == Tool::Trim)
     emit selectionChanged(QString::fromUtf8(
         "Ножницы: щёлкните по подсвеченному участку"));
   emit toolChanged(tool);
+  if (tool == Tool::Mirror) publishMirrorSelection();
   update();
 }
 
@@ -1215,6 +1216,65 @@ void SketchCanvas::setCircleDiameter(double diameterMm) {
   if (tool() == Tool::Circle && circleMode_ == CircleMode::CenterRadius &&
       interactionState().creation.anchor && primaryDimension_->isVisible())
     setPrimaryDimension(circleDiameterMm_);
+}
+
+void SketchCanvas::beginMirrorElementSelection() {
+  if (tool() != Tool::Mirror) setTool(Tool::Mirror);
+  auto mirror = interactionState().mirror;
+  mirror.selectingAxis = false;
+  mirror.axis.reset();
+  interaction_.updateMirror(std::move(mirror));
+  publishMirrorSelection();
+  emit selectionChanged(QString::fromUtf8(
+      "Зеркало: выберите объект; Ctrl добавляет или убирает объекты"));
+}
+
+void SketchCanvas::beginMirrorAxisSelection() {
+  if (tool() != Tool::Mirror) setTool(Tool::Mirror);
+  auto mirror = interactionState().mirror;
+  if (mirror.source.empty()) {
+    emit selectionChanged(QString::fromUtf8(
+        "Зеркало: сначала выберите хотя бы один элемент"));
+    return;
+  }
+  mirror.selectingAxis = true;
+  mirror.axis.reset();
+  interaction_.updateMirror(std::move(mirror));
+  publishMirrorSelection();
+  emit selectionChanged(
+      QString::fromUtf8("Зеркало: выберите прямую-ось"));
+}
+
+void SketchCanvas::clearMirrorElementSelection() {
+  if (tool() != Tool::Mirror) return;
+  interaction_.updateMirror({});
+  clearGeometrySelection();
+  publishMirrorSelection();
+  emit selectionChanged(
+      QString::fromUtf8("Зеркало: выбор элементов сброшен"));
+  update();
+}
+
+void SketchCanvas::clearMirrorAxisSelection() {
+  if (tool() != Tool::Mirror) return;
+  auto mirror = interactionState().mirror;
+  mirror.axis.reset();
+  mirror.selectingAxis = !mirror.source.empty();
+  interaction_.updateMirror(std::move(mirror));
+  publishMirrorSelection();
+  emit selectionChanged(
+      QString::fromUtf8("Зеркало: выберите новую прямую-ось"));
+  update();
+}
+
+bool SketchCanvas::applyMirrorSelection() {
+  const auto& mirror = interactionState().mirror;
+  if (tool() != Tool::Mirror || mirror.source.empty() || !mirror.axis) {
+    emit selectionChanged(QString::fromUtf8(
+        "Зеркало: выберите элементы и ось симметрии"));
+    return false;
+  }
+  return mirrorContourAboutLine(*mirror.axis);
 }
 
 SketchCanvas::Tool SketchCanvas::tool() const noexcept {
@@ -2684,7 +2744,8 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
       tool() == Tool::Line ||
       tool() == Tool::Rectangle ||
       tool() == Tool::Circle ||
-      tool() == Tool::Arc;
+      tool() == Tool::Arc ||
+      tool() == Tool::Bezier;
 
   sketch::GeometryId draggedGeometryId = sketch::kInvalidGeometryId;
   std::size_t draggedElementId = 0;
@@ -2725,6 +2786,20 @@ SketchCanvas::ConstructionSnap SketchCanvas::constructionSnapAt(
   if (tangentCircleMode) {
     result.point = unmapPoint(position);
     return result;
+  }
+
+  // A Bezier chain is committed only when the gesture finishes, so its first
+  // knot is not yet present in the model hit scene. Make that pending knot a
+  // real snap target; otherwise a visually closed curve ends with a small
+  // mouse-coordinate gap and cannot form an extrudable wire.
+  if (tool() == Tool::Bezier &&
+      interactionState().creation.bezierPoints.size() >= 2) {
+    const auto first = interactionState().creation.bezierPoints.front();
+    if (QLineF(position, mapPoint(first)).length() <= 10.0) {
+      result.point = first;
+      result.kind = ConstructionSnapKind::LinePoint;
+      return result;
+    }
   }
 
   // A body snap is only advertised when the current construction stage can
@@ -3128,21 +3203,61 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
   }
 
   if (tool() == Tool::Mirror) {
-    if (interactionState().mirror.source.empty()) {
+    const bool additive =
+        event->modifiers().testFlag(Qt::ControlModifier);
+    if (!interactionState().mirror.selectingAxis || additive) {
       const auto source = mirrorGeometryAt(event->position());
       if (!source) {
         emit selectionChanged(QString::fromUtf8(
             "Зеркало: выберите прямую, дугу или окружность"));
       } else {
-        setMirrorSourceSelection({*source});
-        emit selectionChanged(QString::fromUtf8(
-            "Зеркало: объект выбран, теперь выберите прямую-ось"));
+        auto selected = interactionState().mirror.source;
+        const auto same = [source](MirrorGeometryRef item) {
+          return item.kind == source->kind &&
+                 item.geometryId == source->geometryId;
+        };
+        const auto found = std::find_if(selected.begin(), selected.end(), same);
+        if (additive) {
+          if (found == selected.end())
+            selected.push_back(*source);
+          else
+            selected.erase(found);
+        } else {
+          selected = {*source};
+        }
+        setMirrorSourceSelection(selected);
+        auto mirror = interactionState().mirror;
+        mirror.selectingAxis = !additive && !mirror.source.empty();
+        mirror.axis.reset();
+        interaction_.updateMirror(std::move(mirror));
+        publishMirrorSelection();
+        emit selectionChanged(
+            additive
+                ? QString::fromUtf8(
+                      "Зеркало: выбрано элементов: %1 · продолжайте с Ctrl или выберите ось")
+                      .arg(interactionState().mirror.source.size())
+                : QString::fromUtf8(
+                      "Зеркало: объект выбран, теперь выберите прямую-ось"));
       }
     } else {
       const auto axis = lineAt(event->position());
-      if (!axis || !mirrorContourAboutLine(*axis))
+      const bool sourceAxis = axis && std::any_of(
+          interactionState().mirror.source.begin(),
+          interactionState().mirror.source.end(), [axis](MirrorGeometryRef item) {
+            return item.kind == MirrorGeometryKind::Line &&
+                   item.geometryId == *axis;
+          });
+      if (!axis || sourceAxis) {
         emit selectionChanged(QString::fromUtf8(
             "Зеркало: выберите отдельную прямую как ось симметрии"));
+      } else {
+        auto mirror = interactionState().mirror;
+        mirror.axis = *axis;
+        interaction_.updateMirror(std::move(mirror));
+        publishMirrorSelection();
+        emit selectionChanged(QString::fromUtf8(
+            "Зеркало: ось выбрана · нажмите «Создать»"));
+      }
     }
     event->accept();
     return;
@@ -3528,6 +3643,18 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
     return;
   }
 
+  if (tool() == Tool::Line) {
+    finishLineChain();
+    event->accept();
+    return;
+  }
+
+  if (tool() == Tool::Bezier) {
+    static_cast<void>(finishBezierChain());
+    event->accept();
+    return;
+  }
+
   const auto dimensionHit = dimensionAt(event->position());
   if (tool() == Tool::Mirror) {
     const auto seed = mirrorGeometryAt(event->position());
@@ -3535,6 +3662,11 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
                               : std::vector<MirrorGeometryRef>{};
     if (!contour.empty()) {
       setMirrorSourceSelection(contour);
+      auto mirror = interactionState().mirror;
+      mirror.selectingAxis = true;
+      mirror.axis.reset();
+      interaction_.updateMirror(std::move(mirror));
+      publishMirrorSelection();
       emit selectionChanged(QString::fromUtf8(
           "Зеркало: контур выбран, теперь выберите прямую-ось"));
       event->accept();
@@ -3784,45 +3916,44 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
 
   if (event->buttons() == Qt::NoButton && constraintTool) {
     constexpr double hitTolerance = 9.0;
-    int hoverKind = 0;  // 1 line, 2 circle, 3 arc, 4 point, 5/6 datum axes
+    int hoverKind = 0;  // 1 line, 2 circle, 3 arc, 4 point, 5/6 axes, 7 Bezier
     sketch::GeometryId hoverId = sketch::kInvalidGeometryId;
     sketch::Point hoverGeometryPoint{};
 
-    const bool lineAllowed =
-        tool() != Tool::TangentConstraint ||
-        !interactionState().constraint.tangentFirst ||
-        interactionState().constraint.tangentFirst->kind !=
-            SketchGeometryOperandKind::Line;
+    const bool lineAllowed = true;
     const bool circleAllowed =
         tool() == Tool::AutoDimension ||
         tool() == Tool::LockConstraint ||
         tool() == Tool::CoincidentConstraint ||
         tool() == Tool::EqualConstraint ||
-        (tool() == Tool::TangentConstraint &&
-         (!interactionState().constraint.tangentFirst ||
-          interactionState().constraint.tangentFirst->kind ==
-              SketchGeometryOperandKind::Line));
+        tool() == Tool::TangentConstraint;
     const bool arcAllowed =
         tool() == Tool::LockConstraint ||
         tool() == Tool::CoincidentConstraint ||
-        (tool() == Tool::TangentConstraint &&
-         (!interactionState().constraint.tangentFirst ||
-          interactionState().constraint.tangentFirst->kind ==
-              SketchGeometryOperandKind::Line));
+        tool() == Tool::TangentConstraint;
 
     SketchHitTolerancePolicy tolerance;
     tolerance.entityPx = hitTolerance;
     tolerance.pointPx = hitTolerance;
     tolerance.endpointPx = hitTolerance;
-    auto scene = hitScene(tolerance, tool() == Tool::AutoDimension ||
-                                         tool() == Tool::CoincidentConstraint);
+    auto scene = hitScene(
+        tolerance, tool() == Tool::AutoDimension ||
+                       tool() == Tool::CoincidentConstraint ||
+                       tool() == Tool::OrthogonalConstraint ||
+                       tool() == Tool::ParallelConstraint ||
+                       tool() == Tool::PerpendicularConstraint);
     sketch::GeometryId excludedLine = sketch::kInvalidGeometryId;
     if (tool() == Tool::ParallelConstraint &&
-        interactionState().constraint.parallelFirstLine)
-      excludedLine = *interactionState().constraint.parallelFirstLine;
+        interactionState().constraint.parallelFirst &&
+        interactionState().constraint.parallelFirst->kind ==
+            SketchGeometryOperandKind::Line)
+      excludedLine = interactionState().constraint.parallelFirst->geometryId;
     else if (tool() == Tool::PerpendicularConstraint &&
-             interactionState().constraint.perpendicularFirstLine)
-      excludedLine = *interactionState().constraint.perpendicularFirstLine;
+             interactionState().constraint.perpendicularFirst &&
+             interactionState().constraint.perpendicularFirst->kind ==
+                 SketchGeometryOperandKind::Line)
+      excludedLine =
+          interactionState().constraint.perpendicularFirst->geometryId;
     for (auto& candidate : scene.candidates) {
       const auto* entity = std::get_if<SketchPickEntityRef>(&candidate.target);
       if (entity && entity->geometryId == excludedLine)
@@ -3832,12 +3963,15 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     filter.lines = lineAllowed;
     filter.circles = circleAllowed;
     filter.arcs = arcAllowed;
-    filter.beziers = false;
+    filter.beziers = tool() == Tool::TangentConstraint;
     filter.points = tool() == Tool::CoincidentConstraint ||
                     tool() == Tool::AutoDimension;
     filter.lineMidpoints = false;
     filter.datums = tool() == Tool::AutoDimension ||
-                    tool() == Tool::CoincidentConstraint;
+                    tool() == Tool::CoincidentConstraint ||
+                    tool() == Tool::OrthogonalConstraint ||
+                    tool() == Tool::ParallelConstraint ||
+                    tool() == Tool::PerpendicularConstraint;
     filter.projections = false;
     filter.dimensions = false;
     if (const auto hit = SketchHitTester::pick(
@@ -3849,8 +3983,9 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         hoverId = entity->geometryId;
         hoverKind = entity->kind == SketchPickEntityKind::Line
                         ? 1
-                    : entity->kind == SketchPickEntityKind::Circle ? 2
-                                                                    : 3;
+                    : entity->kind == SketchPickEntityKind::Circle
+                        ? 2
+                    : entity->kind == SketchPickEntityKind::Arc ? 3 : 7;
       } else if (const auto* datum = hit->datum()) {
         switch (datum->kind) {
           case SketchPickDatumKind::Origin:
@@ -3874,6 +4009,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
                             ? SketchGeometryOperandKind::Circle
                         : hoverKind == 3
                             ? SketchGeometryOperandKind::Arc
+                        : hoverKind == 7
+                            ? SketchGeometryOperandKind::Bezier
                         : hoverKind == 4
                             ? SketchGeometryOperandKind::Point
                         : hoverKind == 5
@@ -3904,7 +4041,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
       tool() == Tool::Line ||
       tool() == Tool::Rectangle ||
       tool() == Tool::Circle ||
-      tool() == Tool::Arc;
+      tool() == Tool::Arc ||
+      tool() == Tool::Bezier;
 
   if (creationTool) {
     const auto constructionSnap =
@@ -5467,6 +5605,92 @@ std::optional<std::size_t> SketchCanvas::dimensionAt(
   return token.transientSlot;
 }
 void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
+  // Coordinate axes are real datum carriers for the merged Coincident /
+  // Point-on-geometry tool. Either selection order is accepted.
+  std::optional<sketch::PointReference> datumPoint;
+  std::optional<SketchDatumReference> clickedAxis;
+  {
+    SketchHitTolerancePolicy tolerance;
+    tolerance.pointPx = 10.0;
+    tolerance.endpointPx = 10.0;
+    auto scene = hitScene(tolerance, true);
+    SketchPickFilter filter;
+    filter.entities = false;
+    filter.lineMidpoints = false;
+    filter.projections = false;
+    filter.dimensions = false;
+    if (const auto hit = SketchHitTester::pick(scene, hitPoint(position), filter)) {
+      if (const auto* point = hit->point()) {
+        datumPoint = point->reference;
+      } else if (const auto* datum = hit->datum()) {
+        if (datum->kind == SketchPickDatumKind::XAxis)
+          clickedAxis = SketchDatumReference::XAxis;
+        else if (datum->kind == SketchPickDatumKind::YAxis)
+          clickedAxis = SketchDatumReference::YAxis;
+      }
+    }
+  }
+  const auto applyPointOnAxis = [this](sketch::PointReference point,
+                                        SketchDatumReference axis) {
+    const auto type = axis == SketchDatumReference::XAxis
+                          ? sketch::ConstraintType::PointOnXAxis
+                          : sketch::ConstraintType::PointOnYAxis;
+    const bool duplicate = std::any_of(
+        sketch_.constraints().begin(), sketch_.constraints().end(),
+        [type, point](const sketch::Constraint& item) {
+          return item.type == type && item.secondPoint.lineId == point.lineId &&
+                 item.secondPoint.circleId == point.circleId &&
+                 item.secondPoint.arcId == point.arcId &&
+                 item.secondPoint.bezierId == point.bezierId &&
+                 item.secondPoint.elementCenterId == point.elementCenterId &&
+                 item.secondPoint.start == point.start &&
+                 item.secondPoint.bezierPoint == point.bezierPoint;
+        });
+    if (duplicate) return true;
+    pushUndoState();
+    sketch::Constraint constraint;
+    constraint.type = type;
+    constraint.secondPoint = point;
+    if (!executeCommand(AddConstraintCommand{constraint}).accepted) {
+      cancelPendingUndo();
+      return false;
+    }
+    notifyGeometryChanged();
+    return true;
+  };
+  if (clickedAxis &&
+      (pointAt(position, 10.0).has_value() ||
+       geometryAt(position, 9.0).has_value()))
+    clickedAxis.reset();
+  if (clickedAxis && interactionState().constraint.coincidentFirstPoint) {
+    const bool added = applyPointOnAxis(
+        *interactionState().constraint.coincidentFirstPoint, *clickedAxis);
+    interaction_.setCoincidentFirstPoint(std::nullopt);
+    interaction_.setCoincidentFirstDatum(std::nullopt);
+    emit selectionChanged(QString::fromUtf8(
+        added ? "Ограничение: точка на координатной оси"
+              : "Ограничение отклонено"));
+    update();
+    return;
+  }
+  if (datumPoint && interactionState().constraint.coincidentFirstDatum) {
+    const bool added = applyPointOnAxis(
+        *datumPoint, *interactionState().constraint.coincidentFirstDatum);
+    interaction_.setCoincidentFirstDatum(std::nullopt);
+    emit selectionChanged(QString::fromUtf8(
+        added ? "Ограничение: точка на координатной оси"
+              : "Ограничение отклонено"));
+    update();
+    return;
+  }
+  if (clickedAxis && !interactionState().constraint.coincidentFirstPoint) {
+    interaction_.setCoincidentFirstDatum(*clickedAxis);
+    emit selectionChanged(QString::fromUtf8(
+        "Координатная ось выбрана: укажите точку"));
+    update();
+    return;
+  }
+
   // POINT-ON-CIRCLE PRIORITY ROUTER V3
   //
   // Keep the requested workflow deliberately narrow and deterministic:
@@ -6208,138 +6432,52 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 }
 void SketchCanvas::handleTangentConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
-
-  enum class HitKind {
-    None = 0,
-    Line = 1,
-    Circle = 2,
-    Arc = 3
-  };
-
-  HitKind hitKind = HitKind::None;
-  sketch::GeometryId hitId = sketch::kInvalidGeometryId;
   SketchPickFilter tangentFilter;
-  tangentFilter.beziers = false;
-  if (const auto first = interactionState().constraint.tangentFirst) {
-    const bool firstIsLine =
-        first->kind == SketchGeometryOperandKind::Line;
-    tangentFilter.lines = !firstIsLine;
-    tangentFilter.circles = firstIsLine;
-    tangentFilter.arcs = firstIsLine;
-  }
-  if (const auto hit = geometryAt(position, hitTolerance, tangentFilter)) {
-    hitId = hit->geometryId;
-    hitKind = hit->kind == SketchPickEntityKind::Line
-                  ? HitKind::Line
-              : hit->kind == SketchPickEntityKind::Circle ? HitKind::Circle
-                                                           : HitKind::Arc;
-  }
-
-  if (hitKind == HitKind::None ||
-      hitId == sketch::kInvalidGeometryId)
-    return;
-
-  const auto operandKind = [](HitKind kind) {
-    return kind == HitKind::Line
-               ? SketchGeometryOperandKind::Line
-           : kind == HitKind::Circle
-               ? SketchGeometryOperandKind::Circle
-               : SketchGeometryOperandKind::Arc;
-  };
-  const auto hitOperandKind = operandKind(hitKind);
+  tangentFilter.beziers = true;
   const auto firstOperand = interactionState().constraint.tangentFirst;
+  const auto hit = geometryAt(
+      position, hitTolerance, tangentFilter,
+      firstOperand ? firstOperand->geometryId : sketch::kInvalidGeometryId);
+  if (!hit || hit->geometryId == sketch::kInvalidGeometryId) return;
+
+  const auto operandKind = [](SketchPickEntityKind kind) {
+    switch (kind) {
+      case SketchPickEntityKind::Line: return SketchGeometryOperandKind::Line;
+      case SketchPickEntityKind::Circle:
+        return SketchGeometryOperandKind::Circle;
+      case SketchPickEntityKind::Arc: return SketchGeometryOperandKind::Arc;
+      case SketchPickEntityKind::Bezier:
+        return SketchGeometryOperandKind::Bezier;
+    }
+    return SketchGeometryOperandKind::Line;
+  };
+  const SketchGeometryOperand selected{
+      operandKind(hit->kind), hit->geometryId, hit->elementId};
 
   if (!firstOperand) {
-    interaction_.setTangentFirst(
-        SketchGeometryOperand{hitOperandKind, hitId, 0});
-
-    if (hitKind == HitKind::Line) {
-      emit selectionChanged(
-          QString::fromUtf8("Касательная: выберите окружность или дугу"));
-    }
-    else {
-      emit selectionChanged(
-          QString::fromUtf8(
-              "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
-              "\xD0\xB2\xD1\x8B\xD0\xB1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD0\xB5 "
-              "\xD0\xBF\xD1\x80\xD1\x8F\xD0\xBC\xD1\x83\xD1\x8E"));
-    }
-
+    interaction_.setTangentFirst(selected);
+    emit selectionChanged(QString::fromUtf8(
+        "Касательность: выберите второй элемент"));
     update();
     return;
-  }
-
-  const auto firstId = firstOperand->geometryId;
-  const auto firstKind = firstOperand->kind == SketchGeometryOperandKind::Line
-                             ? HitKind::Line
-                         : firstOperand->kind ==
-                                   SketchGeometryOperandKind::Circle
-                             ? HitKind::Circle
-                             : HitKind::Arc;
-
-  if (firstKind == hitKind) {
-    emit selectionChanged(
-        firstKind == HitKind::Line
-            ? QString::fromUtf8(
-                  "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
-                  "\xD0\xBD\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE "
-                  "\xD0\xB2\xD1\x8B\xD0\xB1\xD1\x80\xD0\xB0\xD1\x82\xD1\x8C "
-                  "\xD0\xBE\xD0\xBA\xD1\x80\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C")
-            : QString::fromUtf8(
-                  "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F: "
-                  "\xD0\xBD\xD1\x83\xD0\xB6\xD0\xBD\xD0\xBE "
-                  "\xD0\xB2\xD1\x8B\xD0\xB1\xD1\x80\xD0\xB0\xD1\x82\xD1\x8C "
-                  "\xD0\xBF\xD1\x80\xD1\x8F\xD0\xBC\xD1\x83\xD1\x8E"));
-    update();
-    return;
-  }
-
-  sketch::GeometryId lineId =
-      sketch::kInvalidGeometryId;
-
-  sketch::GeometryId curvedId =
-      sketch::kInvalidGeometryId;
-
-  if (firstKind == HitKind::Line &&
-      (hitKind == HitKind::Circle || hitKind == HitKind::Arc)) {
-    lineId = firstId;
-    curvedId = hitId;
-  }
-  else if ((firstKind == HitKind::Circle || firstKind == HitKind::Arc) &&
-           hitKind == HitKind::Line) {
-    lineId = hitId;
-    curvedId = firstId;
   }
 
   const auto resetState = [this]() {
     interaction_.setTangentFirst(std::nullopt);
   };
 
-  if (lineId == sketch::kInvalidGeometryId ||
-      curvedId == sketch::kInvalidGeometryId ||
-      !sketch_.lineIndex(lineId) ||
-      (!sketch_.circleIndex(curvedId) && !sketch_.arcIndex(curvedId))) {
-    resetState();
-    update();
-    return;
-  }
-
-  for (const auto& constraint :
-       sketch_.constraints()) {
-    if (constraint.type !=
-        sketch::ConstraintType::Tangent)
-      continue;
-
-    if (constraint.firstGeometry == lineId &&
-        constraint.secondGeometry == curvedId) {
+  for (const auto& constraint : sketch_.constraints()) {
+    if (constraint.type != sketch::ConstraintType::Tangent) continue;
+    const bool sameOrder =
+        constraint.firstGeometry == firstOperand->geometryId &&
+        constraint.secondGeometry == selected.geometryId;
+    const bool reverseOrder =
+        constraint.firstGeometry == selected.geometryId &&
+        constraint.secondGeometry == firstOperand->geometryId;
+    if (sameOrder || reverseOrder) {
       resetState();
-
       emit selectionChanged(
-          QString::fromUtf8(
-              "\xD0\x9A\xD0\xB0\xD1\x81\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB0\xD1\x8F "
-              "\xD1\x83\xD0\xB6\xD0\xB5 "
-              "\xD1\x83\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB0"));
-
+          QString::fromUtf8("Касательность уже установлена"));
       update();
       return;
     }
@@ -6348,10 +6486,17 @@ void SketchCanvas::handleTangentConstraintClick(QPointF position) {
   pushUndoState();
 
   sketch::Constraint constraint;
-  constraint.type =
-      sketch::ConstraintType::Tangent;
-  constraint.firstGeometry = lineId;
-  constraint.secondGeometry = curvedId;
+  constraint.type = sketch::ConstraintType::Tangent;
+  // Preserve the long-standing canonical order for line-circle/arc pairs.
+  if (selected.kind == SketchGeometryOperandKind::Line &&
+      (firstOperand->kind == SketchGeometryOperandKind::Circle ||
+       firstOperand->kind == SketchGeometryOperandKind::Arc)) {
+    constraint.firstGeometry = selected.geometryId;
+    constraint.secondGeometry = firstOperand->geometryId;
+  } else {
+    constraint.firstGeometry = firstOperand->geometryId;
+    constraint.secondGeometry = selected.geometryId;
+  }
 
   const bool added =
       executeCommand(AddConstraintCommand{constraint}).accepted;
@@ -6368,7 +6513,7 @@ void SketchCanvas::handleTangentConstraintClick(QPointF position) {
   }
 
   emit selectionChanged(
-      QString::fromUtf8("Ограничение: Касательная к кривой"));
+      QString::fromUtf8("Ограничение: Касательность"));
 
   notifyGeometryChanged();
   update();
@@ -6909,9 +7054,68 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
 void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
   const auto firstProperty =
-      interactionState().constraint.parallelFirstLine;
+      interactionState().constraint.parallelFirst;
   const auto firstSelectedId =
-      firstProperty.value_or(sketch::kInvalidGeometryId);
+      firstProperty && firstProperty->kind == SketchGeometryOperandKind::Line
+          ? firstProperty->geometryId
+          : sketch::kInvalidGeometryId;
+
+  const auto datumAt = [this, position]()
+      -> std::optional<SketchGeometryOperandKind> {
+    SketchHitTolerancePolicy tolerance;
+    tolerance.entityPx = 9.0;
+    auto scene = hitScene(tolerance, true);
+    SketchPickFilter filter;
+    filter.entities = false;
+    filter.points = false;
+    filter.projections = false;
+    filter.dimensions = false;
+    const auto hit = SketchHitTester::pick(scene, hitPoint(position), filter);
+    const auto* datum = hit ? hit->datum() : nullptr;
+    if (!datum) return std::nullopt;
+    if (datum->kind == SketchPickDatumKind::XAxis)
+      return SketchGeometryOperandKind::XAxis;
+    if (datum->kind == SketchPickDatumKind::YAxis)
+      return SketchGeometryOperandKind::YAxis;
+    return std::nullopt;
+  }();
+
+  const auto applyAxisRelation = [this](sketch::GeometryId lineId,
+                                         SketchGeometryOperandKind axis) {
+    sketch::Constraint constraint;
+    constraint.type = axis == SketchGeometryOperandKind::XAxis
+                          ? sketch::ConstraintType::Horizontal
+                          : sketch::ConstraintType::Vertical;
+    constraint.firstGeometry = lineId;
+    pushUndoState();
+    if (!executeCommand(AddConstraintCommand{constraint}).accepted) {
+      cancelPendingUndo();
+      return false;
+    }
+    notifyGeometryChanged();
+    return true;
+  };
+
+  if (datumAt) {
+    if (!firstProperty) {
+      interaction_.setParallelFirst(
+          SketchGeometryOperand{*datumAt, sketch::kInvalidGeometryId, 0});
+      emit selectionChanged(QString::fromUtf8(
+          "Параллельность: выберите линию"));
+    } else if (firstProperty->kind == SketchGeometryOperandKind::Line) {
+      const bool added = applyAxisRelation(firstProperty->geometryId, *datumAt);
+      interaction_.setParallelFirst(std::nullopt);
+      emit selectionChanged(QString::fromUtf8(
+          added ? "Ограничение: линия параллельна координатной оси"
+                : "Параллельность не добавлена: конфликт зависимостей"));
+    } else {
+      interaction_.setParallelFirst(std::nullopt);
+      emit selectionChanged(QString::fromUtf8(
+          "Параллельность: выберите линию и одну координатную ось"));
+    }
+    update();
+    return;
+  }
 
   SketchPickFilter lineFilter;
   lineFilter.circles = false;
@@ -6927,7 +7131,8 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   if (clickedId == sketch::kInvalidGeometryId) return;
 
   if (!firstProperty) {
-    interaction_.setParallelFirstLine(clickedId);
+    interaction_.setParallelFirst(
+        SketchGeometryOperand{SketchGeometryOperandKind::Line, clickedId, 0});
 
     clearGeometrySelection();
     selectedElementIds_.push_back(
@@ -6945,16 +7150,27 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
     return;
   }
 
-  const auto firstId = *firstProperty;
+  if (firstProperty->kind == SketchGeometryOperandKind::XAxis ||
+      firstProperty->kind == SketchGeometryOperandKind::YAxis) {
+    const bool added = applyAxisRelation(clickedId, firstProperty->kind);
+    interaction_.setParallelFirst(std::nullopt);
+    emit selectionChanged(QString::fromUtf8(
+        added ? "Ограничение: линия параллельна координатной оси"
+              : "Параллельность не добавлена: конфликт зависимостей"));
+    update();
+    return;
+  }
+
+  const auto firstId = firstProperty->geometryId;
 
   if (firstId == sketch::kInvalidGeometryId ||
       !sketch_.lineIndex(firstId)) {
-    interaction_.setParallelFirstLine(std::nullopt);
+    interaction_.setParallelFirst(std::nullopt);
     return;
   }
 
   if (firstId == clickedId) {
-    interaction_.setParallelFirstLine(std::nullopt);
+    interaction_.setParallelFirst(std::nullopt);
     emit selectionChanged(
         QString::fromUtf8("Параллельность: выберите две разные линии"));
     update();
@@ -6972,7 +7188,7 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
         constraint.secondGeometry == firstId;
 
     if (sameOrder || reverseOrder) {
-      interaction_.setParallelFirstLine(std::nullopt);
+      interaction_.setParallelFirst(std::nullopt);
       emit selectionChanged(
           QString::fromUtf8("Эти линии уже параллельны"));
       update();
@@ -6999,7 +7215,7 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
 
   if (firstOrthogonal && secondOrthogonal &&
       *firstOrthogonal != *secondOrthogonal) {
-    interaction_.setParallelFirstLine(std::nullopt);
+    interaction_.setParallelFirst(std::nullopt);
     emit selectionChanged(QString::fromUtf8(
         "Конфликт: одна линия горизонтальна, другая вертикальна"));
     update();
@@ -7018,14 +7234,14 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   if (!added) {
     cancelPendingUndo();
     emit undoAvailable(canUndo());
-    interaction_.setParallelFirstLine(std::nullopt);
+    interaction_.setParallelFirst(std::nullopt);
     emit selectionChanged(QString::fromUtf8(
         "Параллельность не добавлена: конфликт зависимостей"));
     update();
     return;
   }
 
-  interaction_.setParallelFirstLine(std::nullopt);
+  interaction_.setParallelFirst(std::nullopt);
 
   const auto clickedIndex = sketch_.lineIndex(clickedId);
   clearGeometrySelection();
@@ -7050,9 +7266,68 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
 void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   constexpr double hitTolerance = 9.0;
   const auto firstProperty =
-      interactionState().constraint.perpendicularFirstLine;
+      interactionState().constraint.perpendicularFirst;
   const auto firstSelectedId =
-      firstProperty.value_or(sketch::kInvalidGeometryId);
+      firstProperty && firstProperty->kind == SketchGeometryOperandKind::Line
+          ? firstProperty->geometryId
+          : sketch::kInvalidGeometryId;
+
+  const auto datumAt = [this, position]()
+      -> std::optional<SketchGeometryOperandKind> {
+    SketchHitTolerancePolicy tolerance;
+    tolerance.entityPx = 9.0;
+    auto scene = hitScene(tolerance, true);
+    SketchPickFilter filter;
+    filter.entities = false;
+    filter.points = false;
+    filter.projections = false;
+    filter.dimensions = false;
+    const auto hit = SketchHitTester::pick(scene, hitPoint(position), filter);
+    const auto* datum = hit ? hit->datum() : nullptr;
+    if (!datum) return std::nullopt;
+    if (datum->kind == SketchPickDatumKind::XAxis)
+      return SketchGeometryOperandKind::XAxis;
+    if (datum->kind == SketchPickDatumKind::YAxis)
+      return SketchGeometryOperandKind::YAxis;
+    return std::nullopt;
+  }();
+
+  const auto applyAxisRelation = [this](sketch::GeometryId lineId,
+                                         SketchGeometryOperandKind axis) {
+    sketch::Constraint constraint;
+    constraint.type = axis == SketchGeometryOperandKind::XAxis
+                          ? sketch::ConstraintType::Vertical
+                          : sketch::ConstraintType::Horizontal;
+    constraint.firstGeometry = lineId;
+    pushUndoState();
+    if (!executeCommand(AddConstraintCommand{constraint}).accepted) {
+      cancelPendingUndo();
+      return false;
+    }
+    notifyGeometryChanged();
+    return true;
+  };
+
+  if (datumAt) {
+    if (!firstProperty) {
+      interaction_.setPerpendicularFirst(
+          SketchGeometryOperand{*datumAt, sketch::kInvalidGeometryId, 0});
+      emit selectionChanged(QString::fromUtf8(
+          "Перпендикулярность: выберите линию"));
+    } else if (firstProperty->kind == SketchGeometryOperandKind::Line) {
+      const bool added = applyAxisRelation(firstProperty->geometryId, *datumAt);
+      interaction_.setPerpendicularFirst(std::nullopt);
+      emit selectionChanged(QString::fromUtf8(
+          added ? "Ограничение: линия перпендикулярна координатной оси"
+                : "Перпендикулярность не добавлена: конфликт зависимостей"));
+    } else {
+      interaction_.setPerpendicularFirst(std::nullopt);
+      emit selectionChanged(QString::fromUtf8(
+          "Перпендикулярность: выберите линию и одну координатную ось"));
+    }
+    update();
+    return;
+  }
 
   SketchPickFilter lineFilter;
   lineFilter.circles = false;
@@ -7068,7 +7343,8 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   if (clickedId == sketch::kInvalidGeometryId) return;
 
   if (!firstProperty) {
-    interaction_.setPerpendicularFirstLine(clickedId);
+    interaction_.setPerpendicularFirst(
+        SketchGeometryOperand{SketchGeometryOperandKind::Line, clickedId, 0});
 
     clearGeometrySelection();
     selectedElementIds_.push_back(sketch_.lines()[*bestIndex].elementId);
@@ -7085,16 +7361,27 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
     return;
   }
 
-  const auto firstId = *firstProperty;
+  if (firstProperty->kind == SketchGeometryOperandKind::XAxis ||
+      firstProperty->kind == SketchGeometryOperandKind::YAxis) {
+    const bool added = applyAxisRelation(clickedId, firstProperty->kind);
+    interaction_.setPerpendicularFirst(std::nullopt);
+    emit selectionChanged(QString::fromUtf8(
+        added ? "Ограничение: линия перпендикулярна координатной оси"
+              : "Перпендикулярность не добавлена: конфликт зависимостей"));
+    update();
+    return;
+  }
+
+  const auto firstId = firstProperty->geometryId;
 
   if (firstId == sketch::kInvalidGeometryId ||
       !sketch_.lineIndex(firstId)) {
-    interaction_.setPerpendicularFirstLine(std::nullopt);
+    interaction_.setPerpendicularFirst(std::nullopt);
     return;
   }
 
   if (firstId == clickedId) {
-    interaction_.setPerpendicularFirstLine(std::nullopt);
+    interaction_.setPerpendicularFirst(std::nullopt);
     emit selectionChanged(
         QString::fromUtf8("Перпендикулярность: выберите две разные линии"));
     update();
@@ -7113,7 +7400,7 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
         constraint.secondGeometry == firstId;
 
     if (sameOrder || reverseOrder) {
-      interaction_.setPerpendicularFirstLine(std::nullopt);
+      interaction_.setPerpendicularFirst(std::nullopt);
       emit selectionChanged(
           QString::fromUtf8("Эти линии уже перпендикулярны"));
       update();
@@ -7140,7 +7427,7 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   // orientations are already opposite.
   if (firstOrthogonal && secondOrthogonal &&
       *firstOrthogonal == *secondOrthogonal) {
-    interaction_.setPerpendicularFirstLine(std::nullopt);
+    interaction_.setPerpendicularFirst(std::nullopt);
     emit selectionChanged(QString::fromUtf8(
         "Конфликт: обе линии уже имеют одинаковую H/V-ориентацию"));
     update();
@@ -7159,7 +7446,7 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   if (!added) {
     cancelPendingUndo();
     emit undoAvailable(canUndo());
-    interaction_.setPerpendicularFirstLine(std::nullopt);
+    interaction_.setPerpendicularFirst(std::nullopt);
     emit selectionChanged(QString::fromUtf8(
         "Перпендикулярность не добавлена: конфликт зависимостей"));
     update();
@@ -7170,7 +7457,7 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
   // sequential solver a second time here: with interconnected constraints
   // that duplicate pass can move geometry twice.
 
-  interaction_.setPerpendicularFirstLine(std::nullopt);
+  interaction_.setPerpendicularFirst(std::nullopt);
 
   const auto clickedIndex = sketch_.lineIndex(clickedId);
   clearGeometrySelection();
@@ -7851,7 +8138,9 @@ SketchCanvas::closedMirrorContour(MirrorGeometryRef seed) const {
 
 void SketchCanvas::setMirrorSourceSelection(
     const std::vector<MirrorGeometryRef>& source) {
-  interaction_.updateMirror({source});
+  auto mirror = interactionState().mirror;
+  mirror.source = source;
+  interaction_.updateMirror(std::move(mirror));
   clearGeometrySelection();
 
   for (const auto item : source) {
@@ -7880,7 +8169,15 @@ void SketchCanvas::setMirrorSourceSelection(
         break;
     }
   }
+  publishMirrorSelection();
   update();
+}
+
+void SketchCanvas::publishMirrorSelection() {
+  const auto& mirror = interactionState().mirror;
+  emit mirrorSelectionChanged(static_cast<int>(mirror.source.size()),
+                              mirror.axis.has_value(),
+                              mirror.selectingAxis);
 }
 
 bool SketchCanvas::mirrorContourAboutLine(sketch::GeometryId axisId) {
@@ -7919,9 +8216,10 @@ bool SketchCanvas::mirrorContourAboutLine(sketch::GeometryId axisId) {
   }
   setMirrorSourceSelection(created);
   interaction_.updateMirror({});
+  publishMirrorSelection();
   notifyGeometryChanged();
   emit selectionChanged(QString::fromUtf8(
-      "Зеркало создано · один клик — объект, двойной — контур"));
+      "Зеркало создано · выберите следующие элементы"));
   return true;
 }
 
@@ -8541,6 +8839,66 @@ void SketchCanvas::selectInRect(const QRectF& rect, bool additive) {
 
   update();
 }
+bool SketchCanvas::finishBezierChain() {
+  const auto segments = sketch::interpolatingBezierChain(
+      interactionState().creation.bezierPoints);
+  if (segments.empty()) {
+    emit selectionChanged(QString::fromUtf8(
+        "Кривая: задайте не менее двух различных точек"));
+    return false;
+  }
+
+  pushUndoState();
+  std::vector<sketch::GeometryId> createdIds;
+  createdIds.reserve(segments.size());
+  for (const auto& segment : segments) {
+    const auto creation = executeCommand(AddBezierCommand{
+        segment.points[0], segment.points[1], segment.points[2],
+        segment.points[3], segment.dashed});
+    if (!creation.accepted || creation.changedGeometryIds.size() != 1) {
+      cancelPendingUndo();
+      return false;
+    }
+    createdIds.push_back(creation.changedGeometryIds.front());
+  }
+
+  for (std::size_t index = 1; index < createdIds.size(); ++index) {
+    sketch::Constraint coincident;
+    coincident.type = sketch::ConstraintType::Coincident;
+    coincident.firstPoint.bezierId = createdIds[index - 1];
+    coincident.firstPoint.bezierPoint = 3;
+    coincident.secondPoint.bezierId = createdIds[index];
+    coincident.secondPoint.bezierPoint = 0;
+    if (!executeCommand(AddConstraintCommand{coincident, true}).accepted) {
+      cancelPendingUndo();
+      return false;
+    }
+  }
+
+  if (!executeCommand(AutoConstrainNewGeometryCommand{
+           createdIds, 8.0 / std::max(0.001, pixelsPerMm_)})
+           .accepted) {
+    cancelPendingUndo();
+    return false;
+  }
+
+  interaction_.completeCreation();
+  notifyGeometryChanged();
+  emit selectionChanged(
+      QString::fromUtf8("Кривая создана · сегментов: %1")
+          .arg(createdIds.size()));
+  update();
+  return true;
+}
+
+void SketchCanvas::finishLineChain() {
+  if (!interactionState().creation.anchor) return;
+  interaction_.completeCreation();
+  hideDimensionEditor();
+  emit selectionChanged(QString::fromUtf8("Ломаная завершена"));
+  update();
+}
+
 void SketchCanvas::commitPoint(sketch::Point point) {
   if (tool() == Tool::Rectangle && rectangleMode_ == RectangleMode::ThreePoints) {
     commitRectanglePoint(point);
@@ -8555,34 +8913,20 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     return;
   }
   if (tool() == Tool::Bezier) {
-    auto points = interactionState().creation.bezierPoints;
-    points.push_back(point);
-    if (points.size() < 4) {
-      interaction_.appendBezierPoint(point);
-      hoverPoint_ = point;
-      emit selectionChanged(
-          QString::fromUtf8("Безье: точка %1 из 4").arg(points.size()));
-      update();
+    const auto& points = interactionState().creation.bezierPoints;
+    if (!points.empty() &&
+        std::hypot(point.xMm - points.back().xMm,
+                   point.yMm - points.back().yMm) <= 1e-9) {
+      emit selectionChanged(QString::fromUtf8(
+          "Кривая: следующая точка должна отличаться от предыдущей"));
       return;
     }
-    pushUndoState();
-    const auto creation = executeCommand(AddBezierCommand{
-        points[0], points[1], points[2], points[3], false});
-    if (!creation.accepted) {
-      cancelPendingUndo();
-      return;
-    }
-    if (!executeCommand(AutoConstrainNewGeometryCommand{
-             creation.changedGeometryIds,
-             8.0 / std::max(0.001, pixelsPerMm_)})
-             .accepted) {
-      cancelPendingUndo();
-      return;
-    }
-    interaction_.clearBezierPoints();
-    interaction_.completeCreation();
-    notifyGeometryChanged();
-    emit selectionChanged(QString::fromUtf8("Кривая Безье создана"));
+    interaction_.appendBezierPoint(point);
+    hoverPoint_ = point;
+    emit selectionChanged(QString::fromUtf8(
+        "Кривая: узлов %1 · двойной щелчок завершает построение")
+                              .arg(interactionState()
+                                       .creation.bezierPoints.size()));
     update();
     return;
   }
@@ -8591,6 +8935,15 @@ void SketchCanvas::commitPoint(sketch::Point point) {
     hoverPoint_ = point;
     showDimensionEditor(mapPoint(point).toPoint() + QPoint(18, 18));
     update();
+    return;
+  }
+  if (tool() == Tool::Line &&
+      std::hypot(point.xMm - interactionState().creation.anchor->xMm,
+                 point.yMm - interactionState().creation.anchor->yMm) <=
+          1e-9) {
+    // A native double-click may deliver its second press before the dedicated
+    // double-click event. Do not materialize a zero-length tail segment; the
+    // following double-click event will finish the chain.
     return;
   }
   const std::size_t oldLineCount = sketch_.lines().size();
@@ -8926,6 +9279,20 @@ void SketchCanvas::commitPoint(sketch::Point point) {
         }
       }
     }
+  }
+
+  if (tool() == Tool::Line && !newGeometryIds.empty()) {
+    sketch::Point nextAnchor = point;
+    if (const auto index = sketch_.lineIndex(newGeometryIds.front()))
+      nextAnchor = sketch_.lines()[*index].end;
+    interaction_.completeCreation();
+    interaction_.setCreationAnchor(nextAnchor);
+    hoverPoint_ = nextAnchor;
+    hideDimensionEditor();
+    notifyGeometryChanged();
+    emit selectionChanged(QString::fromUtf8(
+        "Ломаная: выберите следующую точку · двойной щелчок завершает"));
+    return;
   }
 
   interaction_.completeCreation();

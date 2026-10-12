@@ -100,9 +100,13 @@ QStringList moveParameters(const ShapeFeature& feature) {
 
 QStringList mirrorParameters(const ShapeFeature& feature) {
   const auto* value = descriptorFeature<MirrorFeature>(feature);
-  return value ? QStringList{QString::fromUtf8("Плоскость: %1")
-                                 .arg(planeText(value->plane()))}
-               : QStringList{};
+  if (!value) return {};
+  const QString reference =
+      value->planeFace()
+          ? QString::fromUtf8("Грань #%1")
+                .arg(value->planeFace()->faceIndex + 1)
+          : planeText(value->plane());
+  return {QString::fromUtf8("Плоскость: %1").arg(reference)};
 }
 
 QStringList linearPatternParameters(const ShapeFeature& feature) {

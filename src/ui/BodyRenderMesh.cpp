@@ -4,6 +4,7 @@
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -233,7 +234,15 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
                   kMaxRenderTriangles - pendingTriangleIndices.size() / 3)
             return setFailure(result, GeometryFailureKind::ResourceLimit,
                               "BodyRenderMesh tessellation limit exceeded");
-          if (!mesh->HasNormals()) mesh->ComputeNormals();
+          // Poly_Triangulation::ComputeNormals() averages adjacent triangle
+          // normals. On analytic curved faces that approximation follows the
+          // tessellation diagonals and makes individual polygons visible in
+          // otherwise smooth shading. Rebuild normals from the face surface
+          // and its UV nodes instead. The triangulation belongs to our
+          // isolated render copy, so replacing its cached normals cannot
+          // mutate the model-owned B-Rep.
+          if (mesh->HasNormals()) mesh->RemoveNormals();
+          BRepLib_ToolTriangulatedShape::ComputeNormals(face, mesh);
           if (!mesh->HasNormals())
             return setFailure(result, GeometryFailureKind::InvalidMesh,
                               "BodyRenderMesh normals are unavailable");

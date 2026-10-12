@@ -28,17 +28,18 @@ bool SketchInteractionController::hasActiveGesture() const noexcept {
          automatic.angleSecondLine || automatic.distanceFirstLine ||
          automatic.distanceSecondLine ||
          constraint.pointOnLineCarrier || constraint.pointOnCircleCarrier ||
-         constraint.perpendicularFirstLine || constraint.parallelFirstLine ||
+         constraint.perpendicularFirst || constraint.parallelFirst ||
          constraint.equalFirst || constraint.tangentFirst ||
          constraint.hoverOperand || constraint.hoverPoint ||
-         constraint.coincidentFirstPoint ||
+         constraint.coincidentFirstPoint || constraint.coincidentFirstDatum ||
          line.startLineCarrier || line.endLineCarrier ||
          line.startMidpointCarrier || line.endMidpointCarrier ||
          line.startArcCarrier || line.endArcCarrier || creation.anchor ||
          !creation.rectanglePoints.empty() || !creation.circlePoints.empty() ||
          !creation.arcPoints.empty() || !creation.bezierPoints.empty() ||
          !creation.circleGuideIds.empty() ||
-         !state.mirror.source.empty() || state.trim.preview ||
+         !state.mirror.source.empty() || state.mirror.axis ||
+         state.mirror.selectingAxis || state.trim.preview ||
          state.arc.chordAngleRad || state.arc.sagittaSign ||
          state.arc.dimensionKeyboardEdit ||
          state.camera.kind != SketchCameraGestureState::Kind::None ||
@@ -271,12 +272,28 @@ void SketchInteractionController::setPointOnCircleCarrier(
 
 void SketchInteractionController::setPerpendicularFirstLine(
     std::optional<sketch::GeometryId> line) noexcept {
-  state_.constraint.perpendicularFirstLine = line;
+  state_.constraint.perpendicularFirst =
+      line ? std::optional{SketchGeometryOperand{
+                 SketchGeometryOperandKind::Line, *line, 0}}
+           : std::nullopt;
 }
 
 void SketchInteractionController::setParallelFirstLine(
     std::optional<sketch::GeometryId> line) noexcept {
-  state_.constraint.parallelFirstLine = line;
+  state_.constraint.parallelFirst =
+      line ? std::optional{SketchGeometryOperand{
+                 SketchGeometryOperandKind::Line, *line, 0}}
+           : std::nullopt;
+}
+
+void SketchInteractionController::setPerpendicularFirst(
+    std::optional<SketchGeometryOperand> operand) noexcept {
+  state_.constraint.perpendicularFirst = std::move(operand);
+}
+
+void SketchInteractionController::setParallelFirst(
+    std::optional<SketchGeometryOperand> operand) noexcept {
+  state_.constraint.parallelFirst = std::move(operand);
 }
 
 void SketchInteractionController::setEqualFirst(
@@ -292,6 +309,11 @@ void SketchInteractionController::setTangentFirst(
 void SketchInteractionController::setCoincidentFirstPoint(
     std::optional<sketch::PointReference> point) noexcept {
   state_.constraint.coincidentFirstPoint = point;
+}
+
+void SketchInteractionController::setCoincidentFirstDatum(
+    std::optional<SketchDatumReference> datum) noexcept {
+  state_.constraint.coincidentFirstDatum = datum;
 }
 
 void SketchInteractionController::completeConstraintOperands() noexcept {

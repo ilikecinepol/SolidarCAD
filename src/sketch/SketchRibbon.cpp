@@ -90,7 +90,7 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   auto* bezier = toolButton(ToolIconKind::Bezier,
                             QString::fromUtf8("Кривая Безье"), this);
   bezier->setToolTip(QString::fromUtf8(
-      "Кривая Безье по 4 точкам: начало, две опорные, конец"));
+      "Гладкая кривая по точкам; двойной щелчок завершает построение"));
   auto* toolGroup = new QButtonGroup(this);
   toolGroup->setExclusive(true);
   for (auto* button : {line, rectangle, circle, arc, bezier, projection})

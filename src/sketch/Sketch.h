@@ -54,6 +54,11 @@ struct Bezier {
 };
 
 [[nodiscard]] Point bezierPointAt(const Bezier& bezier, double t) noexcept;
+// Builds a C1-continuous interpolating curve through every supplied knot.
+// Each returned cubic shares an endpoint with the next one. Fewer than two
+// distinct knots do not form a curve and produce an empty result.
+[[nodiscard]] std::vector<Bezier> interpolatingBezierChain(
+    const std::vector<Point>& knots);
 
 [[nodiscard]] Point arcStartPoint(const Arc& arc) noexcept;
 [[nodiscard]] Point arcEndPoint(const Arc& arc) noexcept;
@@ -315,6 +320,7 @@ class Sketch final {
 
   bool setCircleTangentToLine(GeometryId lineId, GeometryId circleId);
   bool setArcTangentToLine(GeometryId lineId, GeometryId arcId);
+  bool setGeometriesTangentByIds(GeometryId firstId, GeometryId secondId);
   bool translatePoint(PointReference reference, double dxMm, double dyMm);
 
   [[nodiscard]] GeometryId lineId(std::size_t index) const noexcept;

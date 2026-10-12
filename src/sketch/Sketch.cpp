@@ -131,8 +131,10 @@ bool supportedConstraintSchema(const Sketch& sketch,
               (firstIs(GeometryKind::Circle) &&
                secondIs(GeometryKind::Circle)));
     case ConstraintType::Tangent:
-      return firstIs(GeometryKind::Line) && distinct && noPoints &&
-             (secondIs(GeometryKind::Circle) || secondIs(GeometryKind::Arc));
+      // Every sketch primitive represents a differentiable curve. The
+      // solver handles line/circle/arc pairs analytically and endpoint
+      // tangency for Bezier-involving pairs.
+      return distinct && noPoints;
     case ConstraintType::Coincident:
       return !first && !second && firstPoint && secondPoint;
     case ConstraintType::Distance:
@@ -226,6 +228,33 @@ Point bezierPointAt(const Bezier& bezier, double t) noexcept {
               w2 * bezier.points[2].xMm + w3 * bezier.points[3].xMm,
           w0 * bezier.points[0].yMm + w1 * bezier.points[1].yMm +
               w2 * bezier.points[2].yMm + w3 * bezier.points[3].yMm};
+}
+
+std::vector<Bezier> interpolatingBezierChain(
+    const std::vector<Point>& knots) {
+  std::vector<Bezier> result;
+  if (knots.size() < 2) return result;
+  result.reserve(knots.size() - 1);
+
+  for (std::size_t index = 0; index + 1 < knots.size(); ++index) {
+    const Point start = knots[index];
+    const Point end = knots[index + 1];
+    if (std::hypot(end.xMm - start.xMm, end.yMm - start.yMm) <= 1e-9)
+      continue;
+
+    const Point previous = index > 0 ? knots[index - 1] : start;
+    const Point next = index + 2 < knots.size() ? knots[index + 2] : end;
+    Bezier segment;
+    segment.points = {
+        start,
+        {start.xMm + (end.xMm - previous.xMm) / 6.0,
+         start.yMm + (end.yMm - previous.yMm) / 6.0},
+        {end.xMm - (next.xMm - start.xMm) / 6.0,
+         end.yMm - (next.yMm - start.yMm) / 6.0},
+        end};
+    result.push_back(segment);
+  }
+  return result;
 }
 
 namespace {
@@ -5287,6 +5316,304 @@ bool Sketch::setArcTangentToLine(GeometryId lineIdValue,
 
   updateBounds();
   return true;
+}
+
+bool Sketch::setGeometriesTangentByIds(GeometryId firstId,
+                                       GeometryId secondId) {
+  if (firstId == kInvalidGeometryId || secondId == kInvalidGeometryId ||
+      firstId == secondId)
+    return false;
+  const auto firstLocation = geometryLocation(firstId);
+  const auto secondLocation = geometryLocation(secondId);
+  if (!firstLocation || !secondLocation) return false;
+
+  // Keep the mature finite line-circle/arc implementations as the canonical
+  // path, independent of the user's selection order.
+  if (firstLocation->kind == GeometryKind::Line &&
+      secondLocation->kind == GeometryKind::Circle)
+    return setCircleTangentToLine(firstId, secondId);
+  if (secondLocation->kind == GeometryKind::Line &&
+      firstLocation->kind == GeometryKind::Circle)
+    return setCircleTangentToLine(secondId, firstId);
+  if (firstLocation->kind == GeometryKind::Line &&
+      secondLocation->kind == GeometryKind::Arc)
+    return setArcTangentToLine(firstId, secondId);
+  if (secondLocation->kind == GeometryKind::Line &&
+      firstLocation->kind == GeometryKind::Arc)
+    return setArcTangentToLine(secondId, firstId);
+
+  journalCaptureComponents({firstId, secondId});
+
+  const auto radial = [this](GeometryId id)
+      -> std::optional<std::pair<Point, double>> {
+    if (const auto index = circleIndex(id))
+      return std::pair{circles_[*index].center, circles_[*index].radiusMm};
+    if (const auto index = arcIndex(id))
+      return std::pair{arcs_[*index].center, arcs_[*index].radiusMm};
+    return std::nullopt;
+  };
+  const auto setRadialCenter = [this](GeometryId id, Point center) {
+    if (const auto index = circleIndex(id)) {
+      circles_[*index].center = center;
+      return true;
+    }
+    if (const auto index = arcIndex(id)) {
+      arcs_[*index].center = center;
+      return true;
+    }
+    return false;
+  };
+
+  const auto firstRadial = radial(firstId);
+  const auto secondRadial = radial(secondId);
+  if (firstRadial && secondRadial) {
+    GeometryId fixedId = firstId;
+    GeometryId movingId = secondId;
+    auto fixed = *firstRadial;
+    auto moving = *secondRadial;
+    if (isGeometryLocked(movingId)) {
+      if (isGeometryLocked(fixedId)) return false;
+      std::swap(fixedId, movingId);
+      std::swap(fixed, moving);
+    }
+    double dx = moving.first.xMm - fixed.first.xMm;
+    double dy = moving.first.yMm - fixed.first.yMm;
+    double distance = std::hypot(dx, dy);
+    if (distance <= 1e-12) {
+      dx = 1.0;
+      dy = 0.0;
+      distance = 1.0;
+    }
+    const double external = fixed.second + moving.second;
+    const double internal = std::abs(fixed.second - moving.second);
+    const double target =
+        internal > 1e-9 && std::abs(distance - internal) <
+                                std::abs(distance - external)
+            ? internal
+            : external;
+    const bool internalBranch = target == internal && internal > 1e-9;
+    if (!setRadialCenter(
+            movingId, {fixed.first.xMm + dx * target / distance,
+                       fixed.first.yMm + dy * target / distance}))
+      return false;
+
+    const double ux = dx / distance;
+    const double uy = dy / distance;
+    Point contact;
+    if (!internalBranch) {
+      contact = {fixed.first.xMm + ux * fixed.second,
+                 fixed.first.yMm + uy * fixed.second};
+    } else if (fixed.second >= moving.second) {
+      contact = {fixed.first.xMm + ux * fixed.second,
+                 fixed.first.yMm + uy * fixed.second};
+    } else {
+      contact = {fixed.first.xMm - ux * fixed.second,
+                 fixed.first.yMm - uy * fixed.second};
+    }
+    const auto includeArcContact = [this, contact](GeometryId id) {
+      const auto index = arcIndex(id);
+      if (!index) return;
+      auto& arc = arcs_[*index];
+      constexpr double kTwoPi = 6.28318530717958647692;
+      const auto normalize = [](double angle) {
+        constexpr double twoPi = 6.28318530717958647692;
+        angle = std::fmod(angle, twoPi);
+        return angle < 0.0 ? angle + twoPi : angle;
+      };
+      const double contactAngle = std::atan2(
+          contact.yMm - arc.center.yMm, contact.xMm - arc.center.xMm);
+      const double offset = normalize(contactAngle - arc.startAngleRad);
+      if (arc.sweepAngleRad < kTwoPi - 1e-9 &&
+          offset > arc.sweepAngleRad + 1e-9)
+        arc.startAngleRad = contactAngle - arc.sweepAngleRad * 0.5;
+    };
+    includeArcContact(fixedId);
+    includeArcContact(movingId);
+    updateBounds();
+    return true;
+  }
+
+  const auto alignBezierHandle = [this](std::size_t index, bool start,
+                                         Point contact, double tx,
+                                         double ty) {
+    auto& curve = beziers_[index];
+    const std::size_t endpointIndex = start ? 0 : 3;
+    const std::size_t handleIndex = start ? 1 : 2;
+    const Point oldHandle = curve.points[handleIndex];
+    const double handleLength = std::max(
+        1e-6, std::hypot(oldHandle.xMm - curve.points[endpointIndex].xMm,
+                         oldHandle.yMm - curve.points[endpointIndex].yMm));
+    const double tangentLength = std::hypot(tx, ty);
+    if (tangentLength <= 1e-12) return false;
+    tx /= tangentLength;
+    ty /= tangentLength;
+    const Point candidateA{contact.xMm + tx * handleLength,
+                           contact.yMm + ty * handleLength};
+    const Point candidateB{contact.xMm - tx * handleLength,
+                           contact.yMm - ty * handleLength};
+    const auto distanceSquared = [oldHandle](Point point) {
+      const double dx = point.xMm - oldHandle.xMm;
+      const double dy = point.yMm - oldHandle.yMm;
+      return dx * dx + dy * dy;
+    };
+    curve.points[endpointIndex] = contact;
+    curve.points[handleIndex] =
+        distanceSquared(candidateA) <= distanceSquared(candidateB)
+            ? candidateA
+            : candidateB;
+    return true;
+  };
+
+  const auto lineBezier = [&](GeometryId lineIdValue,
+                              GeometryId bezierIdValue) {
+    if (isGeometryLocked(bezierIdValue)) return false;
+    const auto lineIndexValue = lineIndex(lineIdValue);
+    const auto bezierIndexValue = bezierIndex(bezierIdValue);
+    if (!lineIndexValue || !bezierIndexValue) return false;
+    const auto& line = lines_[*lineIndexValue];
+    const double dx = line.end.xMm - line.start.xMm;
+    const double dy = line.end.yMm - line.start.yMm;
+    const double lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 1e-12) return false;
+    const auto& curve = beziers_[*bezierIndexValue];
+    const auto projected = [&](Point point) {
+      const double parameter = std::clamp(
+          ((point.xMm - line.start.xMm) * dx +
+           (point.yMm - line.start.yMm) * dy) /
+              lengthSquared,
+          0.0, 1.0);
+      return Point{line.start.xMm + parameter * dx,
+                   line.start.yMm + parameter * dy};
+    };
+    const Point startContact = projected(curve.points[0]);
+    const Point endContact = projected(curve.points[3]);
+    const double startDistance = std::hypot(
+        startContact.xMm - curve.points[0].xMm,
+        startContact.yMm - curve.points[0].yMm);
+    const double endDistance = std::hypot(endContact.xMm - curve.points[3].xMm,
+                                          endContact.yMm - curve.points[3].yMm);
+    const bool start = startDistance <= endDistance;
+    return alignBezierHandle(*bezierIndexValue, start,
+                             start ? startContact : endContact, dx, dy);
+  };
+  if (firstLocation->kind == GeometryKind::Line &&
+      secondLocation->kind == GeometryKind::Bezier) {
+    const bool applied = lineBezier(firstId, secondId);
+    if (applied) updateBounds();
+    return applied;
+  }
+  if (secondLocation->kind == GeometryKind::Line &&
+      firstLocation->kind == GeometryKind::Bezier) {
+    const bool applied = lineBezier(secondId, firstId);
+    if (applied) updateBounds();
+    return applied;
+  }
+
+  const auto radialBezier = [&](GeometryId radialId,
+                                GeometryId bezierIdValue) {
+    if (isGeometryLocked(bezierIdValue)) return false;
+    const auto carrier = radial(radialId);
+    const auto bezierIndexValue = bezierIndex(bezierIdValue);
+    if (!carrier || !bezierIndexValue || carrier->second <= 1e-12)
+      return false;
+    const auto& curve = beziers_[*bezierIndexValue];
+    const double startError =
+        std::abs(std::hypot(curve.points[0].xMm - carrier->first.xMm,
+                            curve.points[0].yMm - carrier->first.yMm) -
+                 carrier->second);
+    const double endError =
+        std::abs(std::hypot(curve.points[3].xMm - carrier->first.xMm,
+                            curve.points[3].yMm - carrier->first.yMm) -
+                 carrier->second);
+    const bool start = startError <= endError;
+    const Point current = beziers_[*bezierIndexValue].points[start ? 0 : 3];
+    double dx = current.xMm - carrier->first.xMm;
+    double dy = current.yMm - carrier->first.yMm;
+    double length = std::hypot(dx, dy);
+    if (length <= 1e-12) {
+      dx = 1.0;
+      dy = 0.0;
+      length = 1.0;
+    }
+    Point contact{carrier->first.xMm + dx * carrier->second / length,
+                  carrier->first.yMm + dy * carrier->second / length};
+    if (const auto arcIndexValue = arcIndex(radialId)) {
+      const auto& arc = arcs_[*arcIndexValue];
+      constexpr double kTwoPi = 6.28318530717958647692;
+      const auto normalize = [](double angle) {
+        constexpr double twoPi = 6.28318530717958647692;
+        angle = std::fmod(angle, twoPi);
+        return angle < 0.0 ? angle + twoPi : angle;
+      };
+      const double angle = normalize(std::atan2(dy, dx));
+      const double offset = normalize(angle - normalize(arc.startAngleRad));
+      if (arc.sweepAngleRad >= kTwoPi - 1e-9 ||
+          offset > arc.sweepAngleRad + 1e-9) {
+        const Point first = arcStartPoint(arc);
+        const Point last = arcEndPoint(arc);
+        contact = std::hypot(current.xMm - first.xMm,
+                             current.yMm - first.yMm) <=
+                          std::hypot(current.xMm - last.xMm,
+                                     current.yMm - last.yMm)
+                      ? first
+                      : last;
+        dx = contact.xMm - carrier->first.xMm;
+        dy = contact.yMm - carrier->first.yMm;
+      }
+    }
+    return alignBezierHandle(*bezierIndexValue, start, contact, -dy, dx);
+  };
+  if (firstRadial && secondLocation->kind == GeometryKind::Bezier) {
+    const bool applied = radialBezier(firstId, secondId);
+    if (applied) updateBounds();
+    return applied;
+  }
+  if (secondRadial && firstLocation->kind == GeometryKind::Bezier) {
+    const bool applied = radialBezier(secondId, firstId);
+    if (applied) updateBounds();
+    return applied;
+  }
+
+  if (firstLocation->kind == GeometryKind::Bezier &&
+      secondLocation->kind == GeometryKind::Bezier) {
+    if (isGeometryLocked(secondId)) {
+      if (isGeometryLocked(firstId)) return false;
+      return setGeometriesTangentByIds(secondId, firstId);
+    }
+    const auto firstIndex = bezierIndex(firstId);
+    const auto secondIndex = bezierIndex(secondId);
+    if (!firstIndex || !secondIndex) return false;
+    const auto& firstCurve = beziers_[*firstIndex];
+    const auto& secondCurve = beziers_[*secondIndex];
+    double best = std::numeric_limits<double>::max();
+    bool firstStart = true;
+    bool secondStart = true;
+    for (const bool aStart : {true, false}) {
+      for (const bool bStart : {true, false}) {
+        const Point a = firstCurve.points[aStart ? 0 : 3];
+        const Point b = secondCurve.points[bStart ? 0 : 3];
+        const double distance = std::hypot(a.xMm - b.xMm, a.yMm - b.yMm);
+        if (distance < best) {
+          best = distance;
+          firstStart = aStart;
+          secondStart = bStart;
+        }
+      }
+    }
+    const std::size_t firstEndpoint = firstStart ? 0 : 3;
+    const std::size_t firstHandle = firstStart ? 1 : 2;
+    const Point contact = firstCurve.points[firstEndpoint];
+    const Point handle = firstCurve.points[firstHandle];
+    const bool applied = alignBezierHandle(
+        *secondIndex, secondStart, contact, handle.xMm - contact.xMm,
+        handle.yMm - contact.yMm);
+    if (applied) updateBounds();
+    return applied;
+  }
+
+  // Collinear straight segments are represented by the existing parallel
+  // relation; Tangent is intentionally reserved for at least one curve.
+  return false;
 }
 bool Sketch::translatePoint(PointReference reference, double dxMm,
                             double dyMm) {

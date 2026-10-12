@@ -426,7 +426,7 @@ PartDesignToolSnapshot PartDesignCoordinator::snapshot(
       result.extrudeOperation = revolve_.operation(); result.reversed = revolve_.reversed(); break;
     case PartDesignToolKind::Mirror:
       result.bodyId = mirror_.bodyId(); result.sourceFeatureId = mirror_.sourceFeatureId();
-      result.mirrorPlane = mirror_.plane(); break;
+      result.mirrorPlane = mirror_.plane(); result.mirrorPlaneFace = mirror_.planeFace(); break;
     case PartDesignToolKind::Move:
       result.bodyId = move_.bodyId(); result.sourceFeatureId = move_.sourceFeatureId();
       result.offsetMm = move_.offsetMm(); result.translationManipulator = move_.manipulator(); break;
@@ -576,6 +576,7 @@ PartDesignTransitionOutcome PartDesignCoordinator::beginMirror(std::optional<Fea
 void PartDesignCoordinator::setMirrorBody(BodyId a, FeatureId b, ShapeFeature::ShapePtr c) { REQUIRE_ACTIVE(Mirror); mirror_.setBody(a,b,std::move(c)); }
 void PartDesignCoordinator::clearMirrorBody() { REQUIRE_ACTIVE(Mirror); mirror_.clearBody(); }
 void PartDesignCoordinator::setMirrorPlane(MirrorPlane v) { REQUIRE_ACTIVE(Mirror); mirror_.setPlane(v); }
+void PartDesignCoordinator::setMirrorPlaneFace(FaceReference v) { REQUIRE_ACTIVE(Mirror); mirror_.setPlaneFace(std::move(v)); }
 void PartDesignCoordinator::clearMirrorPlane() { REQUIRE_ACTIVE(Mirror); mirror_.clearPlane(); }
 PartDesignTransitionOutcome PartDesignCoordinator::beginMove(Vector3d a, std::optional<FeatureId> b) { return beginAtomic(PartDesignToolKind::Move, [&] { move_.begin(a,b); }); }
 void PartDesignCoordinator::setMoveBody(BodyId a, FeatureId b, ShapeFeature::ShapePtr c) { REQUIRE_ACTIVE(Move); move_.setBody(a,b,std::move(c)); }

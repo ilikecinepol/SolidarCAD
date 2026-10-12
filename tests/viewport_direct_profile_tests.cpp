@@ -821,6 +821,48 @@ int main(int argc, char** argv) {
     CHECK(triangleSession.previewShape());
   }
 
+  // A multi-segment curve created from interpolation knots is a selectable,
+  // extrudable region once its final knot snaps back to the pending first one.
+  {
+    solidar::Viewport curveLoopView;
+    curveLoopView.resize(800, 600);
+    solidar::sketch::Sketch curveLoop;
+    const std::vector<solidar::sketch::Point> knots{
+        {-20.0, 0.0}, {0.0, 18.0}, {20.0, 0.0}, {0.0, -18.0}, {-20.0, 0.0}};
+    for (const auto& segment :
+         solidar::sketch::interpolatingBezierChain(knots))
+      curveLoop.addBezier(segment.points[0], segment.points[1],
+                          segment.points[2], segment.points[3]);
+    CHECK(curveLoop.isClosed());
+    const auto curvePlacement = solidar::SketchPlacement::xy();
+    curveLoopView.addSketch(1, curveLoop, QStringLiteral("XY"), curvePlacement);
+    const solidar::ViewportCameraState curveCamera{
+        curveLoopView.cameraYawDegrees(), curveLoopView.cameraPitchDegrees(),
+        1.0F, {}, curveLoopView.size()};
+    const QPointF inside =
+        curveCamera.worldToScreen(curvePlacement.toWorld(0.0, 0.0));
+    int curvePicks = 0;
+    QObject::connect(&curveLoopView,
+                     &solidar::Viewport::extrusionSourcePicked,
+                     &curveLoopView,
+                     [&](const solidar::ExtrusionSourcePick&) { ++curvePicks; });
+    curveLoopView.beginExtrusionSurfaceSelection();
+    mouse(curveLoopView, QEvent::MouseButtonPress, inside,
+          Qt::LeftButton, Qt::LeftButton);
+    CHECK(curvePicks == 1);
+    CHECK(curveLoopView.extrusionCandidateSketch().isClosed());
+
+    solidar::DocumentSketch profile;
+    profile.id = 1;
+    profile.geometry = curveLoopView.extrusionCandidateSketch();
+    profile.placement = curvePlacement;
+    TopoDS_Shape result;
+    std::string error;
+    CHECK(solidar::buildExtrusionFromSketch(
+        profile, nullptr, 5.0, solidar::ExtrudeOperation::NewBody, false,
+        &result, nullptr, &error));
+  }
+
   // The axis button is useful before a profile has been chosen: global axes
   // remain pickable even though there is no owning sketch yet.
   {

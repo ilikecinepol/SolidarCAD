@@ -1063,6 +1063,65 @@ void bezierPointsParticipateInSketchMechanics() {
          "deleting a Bezier must remove dependent references");
 }
 
+void generalizedTangencySupportsCurves() {
+  {
+    Sketch sketch;
+    sketch.addCircle({0.0, 0.0}, 10.0);
+    sketch.addCircle({24.0, 0.0}, 5.0);
+    const auto first = sketch.circleId(0);
+    const auto second = sketch.circleId(1);
+    expect(sketch.addConstraint(
+               geometryConstraint(ConstraintType::Tangent, first, second)) !=
+               kInvalidConstraintId,
+           "two circles must accept tangency");
+    const auto& a = sketch.circles()[*sketch.circleIndex(first)];
+    const auto& b = sketch.circles()[*sketch.circleIndex(second)];
+    expect(near(std::hypot(b.center.xMm - a.center.xMm,
+                           b.center.yMm - a.center.yMm),
+                a.radiusMm + b.radiusMm, 1e-4),
+           "two circles must become externally tangent");
+    expect(!analyzeConstraintSystem(sketch).conflicting,
+           "circle-circle tangency must be diagnostically satisfied");
+  }
+
+  {
+    Sketch sketch;
+    sketch.addLine({-10.0, 0.0}, {20.0, 0.0});
+    sketch.addBezier({0.0, 3.0}, {4.0, 6.0}, {8.0, 5.0}, {12.0, 4.0});
+    const auto line = sketch.lineId(0);
+    const auto curve = sketch.bezierId(0);
+    expect(sketch.addConstraint(
+               geometryConstraint(ConstraintType::Tangent, line, curve)) !=
+               kInvalidConstraintId,
+           "line and Bezier must accept endpoint tangency");
+    const auto& bezier = sketch.beziers()[*sketch.bezierIndex(curve)];
+    expect(near(bezier.points[0].yMm, 0.0, 1e-4) &&
+               near(bezier.points[1].yMm, 0.0, 1e-4),
+           "Bezier endpoint and handle must align with the tangent line");
+    expect(!analyzeConstraintSystem(sketch).conflicting,
+           "line-Bezier tangency must be diagnostically satisfied");
+  }
+
+  {
+    Sketch sketch;
+    sketch.addBezier({0.0, 0.0}, {3.0, 0.0}, {7.0, 0.0}, {10.0, 0.0});
+    sketch.addBezier({10.0, 2.0}, {12.0, 5.0}, {17.0, 5.0}, {20.0, 2.0});
+    const auto first = sketch.bezierId(0);
+    const auto second = sketch.bezierId(1);
+    expect(sketch.addConstraint(
+               geometryConstraint(ConstraintType::Tangent, first, second)) !=
+               kInvalidConstraintId,
+           "two Bezier curves must accept endpoint tangency");
+    const auto& a = sketch.beziers()[*sketch.bezierIndex(first)];
+    const auto& b = sketch.beziers()[*sketch.bezierIndex(second)];
+    expect(near(a.points[3].xMm, b.points[0].xMm, 1e-4) &&
+               near(a.points[3].yMm, b.points[0].yMm, 1e-4),
+           "tangent Bezier curves must share the selected endpoint");
+    expect(near(b.points[1].yMm, b.points[0].yMm, 1e-4),
+           "tangent Bezier endpoint handles must be collinear");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1085,5 +1144,6 @@ int main() {
   tangencyFollowsDraggedLineWhenCircleCenterIsAxisConstrained();
   lengthUsesRemainingAxisDegreeOfFreedomAfterTangency();
   bezierPointsParticipateInSketchMechanics();
+  generalizedTangencySupportsCurves();
   return EXIT_SUCCESS;
 }

@@ -1767,7 +1767,8 @@ void MainWindow::buildUi() {
     updateMirrorToolPreview();
     viewport_->setFocus();
     statusBar()->showMessage(
-        QString::fromUtf8("2/2 Выберите базовую плоскость в 3D-виде"));
+        QString::fromUtf8(
+            "2/2 Выберите базовую плоскость или плоскую грань в 3D-виде"));
   });
   connect(mirrorAcceptButton_, &QPushButton::clicked, this,
           [this] { applyActivePartDesignTool(); });
@@ -2878,6 +2879,103 @@ void MainWindow::buildUi() {
   sketchSettingsDock_->setMinimumWidth(250);
   addDockWidget(Qt::RightDockWidgetArea, sketchSettingsDock_);
   sketchSettingsDock_->hide();
+
+  sketchMirrorDock_ =
+      new QDockWidget(QString::fromUtf8("Зеркало эскиза"), this);
+  sketchMirrorDock_->setObjectName(QStringLiteral("sketchMirrorParametersDock"));
+  sketchMirrorDock_->setAllowedAreas(Qt::LeftDockWidgetArea);
+  sketchMirrorDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+  auto* sketchMirrorPanel = new QWidget(sketchMirrorDock_);
+  auto* sketchMirrorLayout = new QVBoxLayout(sketchMirrorPanel);
+  sketchMirrorLayout->setContentsMargins(16, 14, 16, 14);
+  sketchMirrorLayout->setSpacing(10);
+
+  auto* mirrorHint = new QLabel(
+      QString::fromUtf8(
+          "Выберите элементы. Удерживайте Ctrl, чтобы добавить несколько. "
+          "Затем выберите прямую-ось."),
+      sketchMirrorPanel);
+  mirrorHint->setWordWrap(true);
+  sketchMirrorLayout->addWidget(mirrorHint);
+
+  auto* elementsRow = new QHBoxLayout;
+  auto* selectElements =
+      new QPushButton(QString::fromUtf8("Выбрать элементы"), sketchMirrorPanel);
+  selectElements->setObjectName(QStringLiteral("sketchMirrorSelectElementsButton"));
+  auto* clearElements =
+      new QPushButton(QString::fromUtf8("Сбросить"), sketchMirrorPanel);
+  clearElements->setObjectName(QStringLiteral("sketchMirrorClearElementsButton"));
+  elementsRow->addWidget(selectElements, 1);
+  elementsRow->addWidget(clearElements);
+  sketchMirrorLayout->addLayout(elementsRow);
+  sketchMirrorElementsValue_ =
+      new QLabel(QString::fromUtf8("Элементы: не выбраны"), sketchMirrorPanel);
+  sketchMirrorElementsValue_->setObjectName(
+      QStringLiteral("sketchMirrorElementsValue"));
+  sketchMirrorLayout->addWidget(sketchMirrorElementsValue_);
+
+  auto* sketchMirrorAxisRow = new QHBoxLayout;
+  auto* selectAxis =
+      new QPushButton(QString::fromUtf8("Выбрать ось"), sketchMirrorPanel);
+  selectAxis->setObjectName(QStringLiteral("sketchMirrorSelectAxisButton"));
+  auto* clearAxis =
+      new QPushButton(QString::fromUtf8("Сбросить"), sketchMirrorPanel);
+  clearAxis->setObjectName(QStringLiteral("sketchMirrorClearAxisButton"));
+  sketchMirrorAxisRow->addWidget(selectAxis, 1);
+  sketchMirrorAxisRow->addWidget(clearAxis);
+  sketchMirrorLayout->addLayout(sketchMirrorAxisRow);
+  sketchMirrorAxisValue_ =
+      new QLabel(QString::fromUtf8("Ось: не выбрана"), sketchMirrorPanel);
+  sketchMirrorAxisValue_->setObjectName(QStringLiteral("sketchMirrorAxisValue"));
+  sketchMirrorLayout->addWidget(sketchMirrorAxisValue_);
+
+  sketchMirrorApplyButton_ =
+      new QPushButton(QString::fromUtf8("Создать зеркало"), sketchMirrorPanel);
+  sketchMirrorApplyButton_->setObjectName(
+      QStringLiteral("sketchMirrorApplyButton"));
+  sketchMirrorApplyButton_->setEnabled(false);
+  sketchMirrorLayout->addWidget(sketchMirrorApplyButton_);
+  auto* closeSketchMirror =
+      new QPushButton(QString::fromUtf8("Закрыть"), sketchMirrorPanel);
+  closeSketchMirror->setObjectName(QStringLiteral("sketchMirrorCancelButton"));
+  sketchMirrorLayout->addWidget(closeSketchMirror);
+  sketchMirrorLayout->addStretch();
+
+  sketchMirrorDock_->setWidget(sketchMirrorPanel);
+  sketchMirrorDock_->setMinimumWidth(270);
+  addDockWidget(Qt::LeftDockWidgetArea, sketchMirrorDock_);
+  sketchMirrorDock_->hide();
+
+  connect(selectElements, &QPushButton::clicked, sketchCanvas_,
+          &SketchCanvas::beginMirrorElementSelection);
+  connect(clearElements, &QPushButton::clicked, sketchCanvas_,
+          &SketchCanvas::clearMirrorElementSelection);
+  connect(selectAxis, &QPushButton::clicked, sketchCanvas_,
+          &SketchCanvas::beginMirrorAxisSelection);
+  connect(clearAxis, &QPushButton::clicked, sketchCanvas_,
+          &SketchCanvas::clearMirrorAxisSelection);
+  connect(sketchMirrorApplyButton_, &QPushButton::clicked, sketchCanvas_,
+          &SketchCanvas::applyMirrorSelection);
+  connect(closeSketchMirror, &QPushButton::clicked, sketchCanvas_, [this] {
+    sketchCanvas_->clearMirrorElementSelection();
+    sketchCanvas_->setTool(SketchCanvas::Tool::Select);
+  });
+  connect(sketchCanvas_, &SketchCanvas::mirrorSelectionChanged, this,
+          [this](int elementCount, bool axisSelected, bool selectingAxis) {
+            sketchMirrorElementsValue_->setText(
+                elementCount > 0
+                    ? QString::fromUtf8("Элементы: выбрано %1")
+                          .arg(elementCount)
+                    : QString::fromUtf8("Элементы: не выбраны"));
+            sketchMirrorAxisValue_->setText(
+                axisSelected
+                    ? QString::fromUtf8("Ось: выбрана")
+                    : selectingAxis
+                          ? QString::fromUtf8("Ось: выберите на холсте")
+                          : QString::fromUtf8("Ось: не выбрана"));
+            sketchMirrorApplyButton_->setEnabled(elementCount > 0 &&
+                                                 axisSelected);
+          });
   connect(gridCheck, &QCheckBox::toggled, sketchCanvas_,
           &SketchCanvas::setGridVisible);
   connect(snapCheck, &QCheckBox::toggled, sketchCanvas_,
@@ -2960,6 +3058,11 @@ void MainWindow::buildUi() {
                 tool == SketchCanvas::Tool::Circle);
             rectanglePropertiesSection->setVisible(
                 tool == SketchCanvas::Tool::Rectangle);
+            if (sketchMirrorDock_) {
+              sketchMirrorDock_->setVisible(tool == SketchCanvas::Tool::Mirror);
+              if (tool == SketchCanvas::Tool::Mirror)
+                sketchMirrorDock_->raise();
+            }
             if (tool != SketchCanvas::Tool::Select) {
               sketchLineTypeCombo_->setEnabled(false);
               sketchSettingsDock_->show();
@@ -3217,6 +3320,12 @@ void MainWindow::buildUi() {
       sketchSettingsDock_->setVisible(sketchMode);
       if (sketchMode) sketchSettingsDock_->raise();
     }
+    if (sketchMirrorDock_) {
+      const bool mirrorVisible =
+          sketchMode && sketchCanvas_->tool() == SketchCanvas::Tool::Mirror;
+      sketchMirrorDock_->setVisible(mirrorVisible);
+      if (mirrorVisible) sketchMirrorDock_->raise();
+    }
     if (auto* modelTreeDock =
             findChild<QDockWidget*>(QStringLiteral("modelTreeDock"))) {
       modelTreeDock->setVisible(!sketchMode);
@@ -3434,7 +3543,8 @@ void MainWindow::buildUi() {
             viewport_->beginMirrorPlaneSelection();
             updateMirrorToolPreview();
             statusBar()->showMessage(
-                QString::fromUtf8("2/2 Выберите базовую плоскость в 3D-виде"));
+                QString::fromUtf8(
+                    "2/2 Выберите базовую плоскость или плоскую грань в 3D-виде"));
           });
   connect(viewport_, &Viewport::mirrorPlanePicked, this,
           [this](int planeIndex) {
@@ -3453,6 +3563,25 @@ void MainWindow::buildUi() {
             updateMirrorToolPreview();
             statusBar()->showMessage(
                 QString::fromUtf8("Предпросмотр зеркала построен"), 3000);
+          });
+  connect(viewport_, &Viewport::mirrorPlaneFacePicked, this,
+          [this](const FaceReference& face) {
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror)
+                    .lifecycle == ToolLifecycle::Inactive)
+              return;
+            invalidatePreviewUpdates();
+            partDesignCoordinator_.setMirrorPlaneFace(face);
+            partDesignCoordinator_.finishReselection();
+            mirrorPlaneValue_->setText(
+                QString::fromUtf8("Грань #%1").arg(face.faceIndex + 1));
+            updateMirrorToolPreview();
+            statusBar()->showMessage(
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror)
+                        .lifecycle == ToolLifecycle::PreviewValid
+                    ? QString::fromUtf8("Предпросмотр зеркала построен")
+                    : QString::fromUtf8(
+                          "Выбранная грань не может быть плоскостью зеркала"),
+                3000);
           });
   connect(viewport_, &Viewport::linearPatternBodyPicked, this,
           [this](BodyId bodyId) {
@@ -4633,26 +4762,38 @@ void MainWindow::editPatternFeature(FeatureId featureId,
           return;
         partDesignCoordinator_.setMirrorBody(body.id(), body.features()[index - 1]->id(),
                                    source);
-        partDesignCoordinator_.setMirrorPlane(mirror->plane());
+        if (mirror->planeFace())
+          partDesignCoordinator_.setMirrorPlaneFace(*mirror->planeFace());
+        else
+          partDesignCoordinator_.setMirrorPlane(mirror->plane());
         mirrorBodyValue_->setText(QString::fromStdString(body.name()));
-        mirrorPlaneValue_->setText(
-            mirror->plane() == MirrorPlane::XY
-                ? QStringLiteral("XY")
-                : mirror->plane() == MirrorPlane::XZ ? QStringLiteral("XZ")
-                                                     : QStringLiteral("YZ"));
+        if (mirror->planeFace())
+          mirrorPlaneValue_->setText(QString::fromUtf8("Грань #%1")
+                                         .arg(mirror->planeFace()->faceIndex + 1));
+        else
+          mirrorPlaneValue_->setText(
+              mirror->plane() == MirrorPlane::XY
+                  ? QStringLiteral("XY")
+                  : mirror->plane() == MirrorPlane::XZ
+                        ? QStringLiteral("XZ")
+                        : QStringLiteral("YZ"));
         // A Mirror feature belongs to its Body; editing changes the reference
         // plane only. Body re-selection is intentionally available on creation
         // and disabled here to avoid moving a history feature across Bodies.
         mirrorBodySelectButton_->setEnabled(false);
         mirrorPlaneSelectButton_->setEnabled(true);
         viewport_->setSelectedBodies({body.id()});
-        viewport_->showMirrorPlaneSelection(
-            static_cast<int>(mirror->plane()));
+        if (mirror->planeFace())
+          viewport_->showMirrorFaceSelection(*mirror->planeFace());
+        else
+          viewport_->showMirrorPlaneSelection(
+              static_cast<int>(mirror->plane()));
         updateMirrorToolPreview();
         mirrorDock_->show();
         mirrorDock_->raise();
         statusBar()->showMessage(
-            QString::fromUtf8("Редактирование зеркала: выберите плоскость в 3D-виде"));
+            QString::fromUtf8(
+                "Редактирование зеркала: выберите плоскость или плоскую грань в 3D-виде"));
         return;
       }
       if (route == FeatureEditorRoute::LinearPattern) {
@@ -4976,36 +5117,46 @@ void MainWindow::cancelMirrorTool() {
 
 void MainWindow::acceptMirrorTool() {
   flushPreviewUpdate();
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).lifecycle != ToolLifecycle::PreviewValid ||
-      !partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).mirrorPlane)
+  const auto snapshot =
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror);
+  if (snapshot.lifecycle != ToolLifecycle::PreviewValid ||
+      (!snapshot.mirrorPlane && !snapshot.mirrorPlaneFace))
     return;
   auto commit = partDesignCoordinator_.startCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).bodyId);
+  Body* body = document_.findBody(snapshot.bodyId);
   if (!body) return;
   Document previous = document_;
   const HistorySelectionState previousSelection = captureHistorySelection();
-  if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).editingFeatureId) {
+  if (const auto editingId = snapshot.editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
       auto* mirror =
           dynamic_cast<MirrorFeature*>(body->features()[index].get());
       if (!mirror || mirror->id() != *editingId) continue;
-      mirror->setPlane(*partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).mirrorPlane);
+      if (snapshot.mirrorPlaneFace)
+        mirror->setPlaneFace(*snapshot.mirrorPlaneFace);
+      else
+        mirror->setPlane(*snapshot.mirrorPlane);
       body->markDirtyFrom(index);
       break;
     }
   } else {
     if (!body->activeFeature() ||
-        body->activeFeature()->id() != partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).sourceFeatureId) {
+        body->activeFeature()->id() != snapshot.sourceFeatureId) {
       mirrorStepHint_->setText(QString::fromUtf8(
           "Исходное тело изменилось. Выберите его заново."));
       mirrorStepHint_->setProperty("uiRole", "danger");
       return;
     }
-    body->addFeature(std::make_unique<MirrorFeature>(
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).sourceFeatureId, *partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).mirrorPlane,
-        "Mirror " + std::to_string(body->features().size() + 1)));
+    const std::string name =
+        "Mirror " + std::to_string(body->features().size() + 1);
+    if (snapshot.mirrorPlaneFace)
+      body->addFeature(std::make_unique<MirrorFeature>(
+          snapshot.sourceFeatureId, *snapshot.mirrorPlaneFace, name));
+    else
+      body->addFeature(std::make_unique<MirrorFeature>(
+          snapshot.sourceFeatureId, *snapshot.mirrorPlane, name));
   }
   if (!document_.recompute()) {
     const QString error = QString::fromStdString(document_.rebuildError());

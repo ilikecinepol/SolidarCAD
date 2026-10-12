@@ -181,8 +181,15 @@ std::size_t chamferBytes(const ShapeFeature& feature) {
 bool mirrorEqual(const ShapeFeature& left, const ShapeFeature& right) {
   return compareAs<MirrorFeature>(left, right, [](const auto& a, const auto& b) {
     return a.sourceFeatureId() == b.sourceFeatureId() &&
-           a.plane() == b.plane();
+           a.plane() == b.plane() && a.planeFace() == b.planeFace();
   });
+}
+std::size_t mirrorBytes(const ShapeFeature& feature) {
+  const auto* value = dynamic_cast<const MirrorFeature*>(&feature);
+  std::size_t bytes = baseFeatureBytes<MirrorFeature>(feature);
+  if (value && value->planeFace())
+    bytes += topologyReferenceBytes(*value->planeFace());
+  return bytes;
 }
 bool moveEqual(const ShapeFeature& left, const ShapeFeature& right) {
   return compareAs<MoveFeature>(left, right, [](const auto& a, const auto& b) {
@@ -271,7 +278,7 @@ historyFeatureRegistry() {
           {FeatureKind::Pocket, pocketEqual, baseFeatureBytes<PocketFeature>},
           {FeatureKind::Fillet, filletEqual, filletBytes},
           {FeatureKind::Chamfer, chamferEqual, chamferBytes},
-          {FeatureKind::Mirror, mirrorEqual, baseFeatureBytes<MirrorFeature>},
+          {FeatureKind::Mirror, mirrorEqual, mirrorBytes},
           {FeatureKind::Move, moveEqual, baseFeatureBytes<MoveFeature>},
           {FeatureKind::LinearPattern, linearPatternEqual,
            baseFeatureBytes<LinearPatternFeature>},

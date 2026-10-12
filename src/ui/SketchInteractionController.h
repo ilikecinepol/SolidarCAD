@@ -119,13 +119,14 @@ struct SketchDimensionInteractionState {
 struct SketchConstraintInteractionState {
   std::optional<sketch::GeometryId> pointOnLineCarrier;
   std::optional<sketch::GeometryId> pointOnCircleCarrier;
-  std::optional<sketch::GeometryId> perpendicularFirstLine;
-  std::optional<sketch::GeometryId> parallelFirstLine;
+  std::optional<SketchGeometryOperand> perpendicularFirst;
+  std::optional<SketchGeometryOperand> parallelFirst;
   std::optional<SketchGeometryOperand> equalFirst;
   std::optional<SketchGeometryOperand> tangentFirst;
   std::optional<SketchGeometryOperand> hoverOperand;
   std::optional<sketch::Point> hoverPoint;
   std::optional<sketch::PointReference> coincidentFirstPoint;
+  std::optional<SketchDatumReference> coincidentFirstDatum;
 };
 
 struct SketchLineCreationState {
@@ -153,6 +154,8 @@ struct SketchMirrorGeometryRef {
 };
 struct SketchMirrorInteractionState {
   std::vector<SketchMirrorGeometryRef> source;
+  std::optional<sketch::GeometryId> axis;
+  bool selectingAxis{};
 };
 
 enum class SketchTrimGeometryKind { Line, Circle, Arc, Bezier };
@@ -285,10 +288,16 @@ class SketchInteractionController final {
       std::optional<sketch::GeometryId> line) noexcept;
   void setParallelFirstLine(
       std::optional<sketch::GeometryId> line) noexcept;
+  void setPerpendicularFirst(
+      std::optional<SketchGeometryOperand> operand) noexcept;
+  void setParallelFirst(
+      std::optional<SketchGeometryOperand> operand) noexcept;
   void setEqualFirst(std::optional<SketchGeometryOperand> operand) noexcept;
   void setTangentFirst(std::optional<SketchGeometryOperand> operand) noexcept;
   void setCoincidentFirstPoint(
       std::optional<sketch::PointReference> point) noexcept;
+  void setCoincidentFirstDatum(
+      std::optional<SketchDatumReference> datum) noexcept;
   void completeConstraintOperands() noexcept;
   void cancelConstraintOperands() noexcept;
 

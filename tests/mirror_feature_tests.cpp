@@ -8,6 +8,7 @@
 #include "model/ExtrudeFeature.h"
 #include "model/MirrorFeature.h"
 #include "model/MirrorToolSession.h"
+#include "model/TopologyReferenceResolver.h"
 int main() {
   solidar::Document document;
   auto& sketch = document.addSketch("profile");
@@ -65,5 +66,53 @@ int main() {
   solidar::sketch::Sketch wider; wider.addRectangle({10, 0}, {25, 10});
   CHECK(document.replaceSketchGeometry(sketch.id, wider)); CHECK(document.recompute());
   CHECK(mirrorPtr->id() == mirrorId);
+
+  // A planar face of the source geometry is also a stable mirror plane. The
+  // face is resolved through its persistent topology reference both in the
+  // interactive preview and during the committed document recompute.
+  solidar::Document faceDocument;
+  auto& faceSketch = faceDocument.addSketch("face mirror profile");
+  faceSketch.geometry.addRectangle({10, 0}, {20, 10});
+  auto& faceBody = faceDocument.addBody();
+  auto faceExtrusion =
+      std::make_unique<solidar::ExtrudeFeature>(faceSketch.id, 5.0);
+  const auto faceExtrusionId = faceExtrusion->id();
+  faceBody.addFeature(std::move(faceExtrusion));
+  CHECK(faceDocument.recompute());
+  const auto faceSource = faceBody.resultShape();
+  CHECK(faceSource);
+  const auto topFace = solidar::test::topPlanarFace(*faceSource, 5.0);
+  CHECK(topFace.has_value());
+  const auto planeFace = solidar::makeFaceReference(
+      *faceSource, faceBody.id(), faceExtrusionId, *topFace);
+  CHECK(planeFace.signature.has_value());
+
+  solidar::MirrorToolSession faceSession;
+  faceSession.begin();
+  faceSession.setBody(faceBody.id(), faceExtrusionId, faceSource);
+  faceSession.setPlaneFace(planeFace);
+  CHECK(faceSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(faceSession.previewShape());
+  const auto previewBounds =
+      solidar::test::boundsOf(*faceSession.previewShape());
+  CHECK(solidar::test::near(previewBounds.minZ, 0.0));
+  CHECK(solidar::test::near(previewBounds.maxZ, 10.0));
+  CHECK(solidar::test::solidCount(*faceSession.previewShape()) == 2);
+
+  auto faceMirror =
+      std::make_unique<solidar::MirrorFeature>(faceExtrusionId, planeFace);
+  auto* faceMirrorPtr = faceMirror.get();
+  faceBody.addFeature(std::move(faceMirror));
+  CHECK(faceDocument.recompute());
+  CHECK(faceMirrorPtr->planeFace() == planeFace);
+  const auto committedBounds = solidar::test::boundsOf(*faceBody.resultShape());
+  CHECK(solidar::test::near(committedBounds.minZ, 0.0));
+  CHECK(solidar::test::near(committedBounds.maxZ, 10.0));
+
+  auto foreignFace = planeFace;
+  foreignFace.bodyId = faceBody.id() + 1;
+  faceSession.setPlaneFace(foreignFace);
+  CHECK(faceSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!faceSession.previewShape());
   return EXIT_SUCCESS;
 }

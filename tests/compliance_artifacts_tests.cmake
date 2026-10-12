@@ -71,6 +71,18 @@ if(launcher_target_position EQUAL -1)
   message(FATAL_ERROR "Linux launcher does not use the packaged executable")
 endif()
 
+foreach(linux_script
+        packaging/linux/postinst
+        packaging/linux/postrm
+        packaging/linux/solidar)
+  file(READ "${SOURCE_DIR}/${linux_script}" linux_script_content)
+  string(FIND "${linux_script_content}" "\r" carriage_return_position)
+  if(NOT carriage_return_position EQUAL -1)
+    message(FATAL_ERROR
+            "Linux script must use LF line endings: ${linux_script}")
+  endif()
+endforeach()
+
 file(READ "${SOURCE_DIR}/vcpkg.json" vcpkg_manifest)
 string(JSON baseline GET "${vcpkg_manifest}" builtin-baseline)
 string(JSON manifest_project_version GET "${vcpkg_manifest}" version-string)

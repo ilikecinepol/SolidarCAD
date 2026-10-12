@@ -14,11 +14,13 @@ class MirrorToolSession final : public ToolSession {
                ShapeFeature::ShapePtr sourceShape);
   void clearBody();
   void setPlane(MirrorPlane plane);
+  void setPlaneFace(FaceReference planeFace);
   void clearPlane();
 
   [[nodiscard]] BodyId bodyId() const noexcept;
   [[nodiscard]] FeatureId sourceFeatureId() const noexcept;
   [[nodiscard]] const std::optional<MirrorPlane>& plane() const noexcept;
+  [[nodiscard]] const std::optional<FaceReference>& planeFace() const noexcept;
   [[nodiscard]] std::optional<FeatureId> editingFeatureId() const noexcept override;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -34,6 +36,7 @@ class MirrorToolSession final : public ToolSession {
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   ShapeFeature::ShapePtr sourceShape_;
   std::optional<MirrorPlane> plane_;
+  std::optional<FaceReference> planeFace_;
   std::optional<FeatureId> editingFeatureId_;
   ToolLifecycle lifecycle_{ToolLifecycle::Inactive};
   ShapeFeature::ShapePtr previewShape_;

@@ -79,6 +79,7 @@ struct PartDesignToolSnapshot {
   std::optional<PrincipalAxis> principalAxis;
   std::optional<PrincipalAxis> principalDirection;
   std::optional<MirrorPlane> mirrorPlane;
+  std::optional<FaceReference> mirrorPlaneFace;
   std::optional<PlaneReference> neutralPlane;
   std::optional<AxisReference> pullDirection;
   std::optional<EdgeReference> rotationEdge;
@@ -248,6 +249,7 @@ class PartDesignCoordinator final {
   void setMirrorBody(BodyId, FeatureId, ShapeFeature::ShapePtr);
   void clearMirrorBody();
   void setMirrorPlane(MirrorPlane);
+  void setMirrorPlaneFace(FaceReference);
   void clearMirrorPlane();
   PartDesignTransitionOutcome beginMove(Vector3d = {}, std::optional<FeatureId> = std::nullopt);
   void setMoveBody(BodyId, FeatureId, ShapeFeature::ShapePtr);
