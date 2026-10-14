@@ -40,6 +40,7 @@ struct SketchCommandResult {
   std::vector<sketch::ConstraintId> changedConstraintIds;
   std::vector<sketch::DimensionId> changedDimensionIds;
   std::optional<sketch::ConstraintApplyResult> constraintApplyResult;
+  std::optional<sketch::SketchMutationResult> mutationResult;
 };
 
 struct SketchTransactionToken {
@@ -182,6 +183,11 @@ struct SetDimensionDrivingCommand {
   sketch::DimensionId id{sketch::kInvalidDimensionId};
   bool driving{};
 };
+struct SetConstraintModeCommand {
+  sketch::ConstraintId id{sketch::kInvalidConstraintId};
+  sketch::ConstraintMode mode{sketch::ConstraintMode::Driving};
+  std::optional<double> drivingValue;
+};
 struct SetLineDashedCommand {
   sketch::GeometryId id{sketch::kInvalidGeometryId};
   bool dashed{};
@@ -279,6 +285,7 @@ using SketchCommand = std::variant<
     UpsertDrivingDimensionCommand,
     RemoveDimensionCommand, SetDimensionValueCommand,
     SetDimensionPlacementCommand, SetDimensionDrivingCommand,
+    SetConstraintModeCommand,
     SetLineDashedCommand,
     SetCircleDashedCommand, SetArcDashedCommand, SetBezierDashedCommand,
     SetElementDashedCommand,

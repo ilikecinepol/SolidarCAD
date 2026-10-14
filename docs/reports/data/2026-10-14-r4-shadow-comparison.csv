@@ -1,0 +1,13 @@
+entity_count,mode,samples,v1_p95_ms,v2_p95_ms,semantic_hash_match,status_match,residual_delta,classification
+100,localized_drag,21,2.227500,0.081700,true,true,0.000000,match
+100,connected_drag,21,6.307300,4.654700,true,true,0.000000,match
+100,unchanged_solve,21,1.952100,0.003400,true,true,0.000000,match
+100,full_diagnostics,21,1.306500,0.919000,true,true,0.000000,match
+500,localized_drag,21,33.923100,0.395300,true,true,0.000000,match
+500,connected_drag,21,117.921600,84.587100,true,true,0.000000,match
+500,unchanged_solve,21,33.293400,0.015500,true,true,0.000000,match
+500,full_diagnostics,21,5.807300,5.656400,true,true,0.000000,match
+1000,localized_drag,21,124.961800,1.006400,true,true,0.000000,match
+1000,connected_drag,21,806.789700,561.110300,true,true,0.000000,match
+1000,unchanged_solve,21,136.796400,0.032100,true,true,0.000000,match
+1000,full_diagnostics,21,12.936100,12.850000,true,true,0.000000,match

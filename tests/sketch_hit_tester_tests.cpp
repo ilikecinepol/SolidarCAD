@@ -290,7 +290,7 @@ void adapterDerivesProjectedStateFromDashedLockContract() {
     sketch::SketchTestAccess::installConstraints(
         malformed, {twoGeometryLock});
     const auto classified = classificationFor(malformed, first);
-    CHECK(classified && !classified->projected && classified->construction);
+    CHECK(classified && classified->projected && !classified->construction);
   }
   {
     sketch::Sketch malformed;
@@ -305,12 +305,12 @@ void adapterDerivesProjectedStateFromDashedLockContract() {
     pointLock.firstPoint = {malformed.lineId(1), true};
     sketch::SketchTestAccess::installConstraints(malformed, {pointLock});
     auto classified = classificationFor(malformed, first);
-    CHECK(classified && !classified->projected && classified->construction);
+    CHECK(classified && classified->projected && !classified->construction);
     pointLock.firstPoint = {};
     pointLock.secondPoint.origin = true;
     sketch::SketchTestAccess::installConstraints(malformed, {pointLock});
     classified = classificationFor(malformed, first);
-    CHECK(classified && !classified->projected && classified->construction);
+    CHECK(classified && classified->projected && !classified->construction);
   }
   {
     sketch::Sketch malformed;
@@ -325,7 +325,7 @@ void adapterDerivesProjectedStateFromDashedLockContract() {
     sketch::SketchTestAccess::installConstraints(
         malformed, {nonfiniteLock});
     const auto classified = classificationFor(malformed, first);
-    CHECK(classified && !classified->projected && classified->construction);
+    CHECK(classified && classified->projected && !classified->construction);
   }
   {
     sketch::Sketch malformed;

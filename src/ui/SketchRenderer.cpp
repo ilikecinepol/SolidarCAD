@@ -61,24 +61,12 @@ std::optional<SketchRenderGeometry> captureRenderGeometry(
   return result;
 }
 
-bool isDefaultPointReference(const sketch::PointReference& point) noexcept {
-  return point.lineId == sketch::kInvalidGeometryId && point.start &&
-         point.circleId == sketch::kInvalidGeometryId &&
-         point.elementCenterId == 0 &&
-         point.arcId == sketch::kInvalidGeometryId &&
-         point.bezierId == sketch::kInvalidGeometryId && !point.origin;
-}
-
 bool isCanonicalProjectedLock(const sketch::Constraint& constraint,
                               sketch::GeometryId id) noexcept {
   return id != sketch::kInvalidGeometryId &&
          constraint.id != sketch::kInvalidConstraintId &&
-         constraint.type == sketch::ConstraintType::Lock &&
-         constraint.firstGeometry == id &&
-         constraint.secondGeometry == sketch::kInvalidGeometryId &&
-         isDefaultPointReference(constraint.firstPoint) &&
-         isDefaultPointReference(constraint.secondPoint) &&
-         std::isfinite(constraint.value);
+         std::holds_alternative<sketch::LockConstraint>(constraint.payload()) &&
+         std::get<sketch::LockConstraint>(constraint.payload()).geometryId == id;
 }
 
 }  // namespace
@@ -2458,26 +2446,12 @@ class SketchFrameRecorder final {
             mapPoint({circle.center.xMm + dx, circle.center.yMm + dy});
       }
     } else if (target == SketchAutoDimensionTarget::Points) {
-      sketch::PointReference firstReference{
-          static_cast<sketch::GeometryId>(
-              interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).lineId),
-          interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).start,
-          static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).elementCenterId)};
-      firstReference.origin =
-          interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).origin;
-      sketch::PointReference secondReference{
-          static_cast<sketch::GeometryId>(
-              interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).lineId),
-          interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).start,
-          static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).elementCenterId)};
-      secondReference.origin =
-          interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).origin;
+      const sketch::PointReference firstReference =
+          interactionState().autoDimension.firstPoint.value_or(
+              sketch::PointReference{});
+      const sketch::PointReference secondReference =
+          interactionState().autoDimension.secondPoint.value_or(
+              sketch::PointReference{});
 
       const auto firstPoint =
           sketch_.referencedPoint(firstReference);
@@ -2544,14 +2518,9 @@ class SketchFrameRecorder final {
   }  if (tool() == Tool::AutoDimension &&
       interactionState().autoDimension.firstPoint.has_value() &&
       interactionState().autoDimension.target == SketchAutoDimensionTarget::None) {
-    sketch::PointReference first{
-          static_cast<sketch::GeometryId>(
-              interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).lineId),
-          interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).start,
-          static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).elementCenterId)};
+    const sketch::PointReference first =
+        interactionState().autoDimension.firstPoint.value_or(
+            sketch::PointReference{});
     if (const auto point = sketch_.referencedPoint(first)) {
       painter.setPen(QPen(palette().transient, 2.0));
       painter.setBrush(withAlpha(palette().transient, 55));

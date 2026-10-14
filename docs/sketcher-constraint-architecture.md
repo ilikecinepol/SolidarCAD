@@ -1,17 +1,19 @@
 # Архитектура ограничений Sketcher
 
-## Solver v1
+## Production Solver v2
 
-Текущий `BasicSketchSolver` — последовательный mutator-based solver. Он
-обрабатывает типы ограничений проходами и не решает единую систему уравнений.
-Поэтому порядок ограничений в persisted vector пока может менять результат.
-Это известное ограничение Solver v1, а не контракт CAD.
+Единственный production-путь проходит через `SketchSolver` и
+`productionSketchSolver()`. Последовательный mutator-based Solver v1 и его
+автоматический fallback удалены. Backend получает immutable snapshot и
+возвращает candidate parameter vector; публикация выполняется одной
+транзакцией только после residual/schema/geometry audit всей затронутой
+компоненты.
 
-Неявное соединение геометрии по совпадающим координатам сохранено только для
-совместимости. Новые функции не должны считать его публичной моделью topology;
-snapping должен постепенно переходить к явным `Coincident` constraints.
+Связность задают только явные constraints и composite ownership. Совпадение
+координат не создаёт topology и не распространяет drag; snapping обязан
+материализовать `Coincident` constraint.
 
-## Контракт P0
+## Транзакционный контракт
 
 Интерактивное добавление проходит через `Sketch::tryApplyConstraint()` и
 возвращает `ConstraintApplyResult` со статусом `Accepted`, `Redundant`,
@@ -26,7 +28,7 @@ rank-dependent, но валидное уравнение и возвращает
 semantic fingerprint. Старые ограничения не удаляются автоматически: явная
 замена остаётся будущей пользовательской операцией.
 
-Diagnostics включает линии, окружности и дуги, считает две скалярные строки для
+Diagnostics включает линии, окружности, дуги и Bezier, считает две скалярные строки для
 `Midpoint` и публикует global DOF вместе со списком component-level DOF. UI
 показывает fully-constrained только как статус всего эскиза; достоверный
 per-geometry nullspace state пока не заявляется.
@@ -34,7 +36,7 @@ per-geometry nullspace state пока не заявляется.
 Все hard constraints равноправны. Тип ограничения и порядок кликов не задают
 приоритет.
 
-## Цель Solver v2
+## Поток данных
 
 ```text
 Sketch
@@ -46,8 +48,8 @@ Sketch
 → SketchPresentationState
 ```
 
-Solver v2 должен убрать зависимость от порядка, заменить раздельные type-pass
-эвристики единой системой, сделать explicit connectivity основой графа и уметь
-выдавать доказуемое состояние отдельных geometry. P0 пока не строит minimal
-conflict set: `relatedConstraintIds` содержит coarse набор из затронутой
-компоненты или очевидную конфликтующую связь.
+Residuals, forward-AD Jacobian, rank/DOF и conflict diagnostics собираются из
+одного `ConstraintEquationRegistry`. Constraint vector сначала канонизируется
+по стабильным ID, поэтому его persisted-порядок не выбирает ветвь решения.
+Для недоопределённой системы ближайшая поза задаётся последним валидным
+candidate и transient drag hints.

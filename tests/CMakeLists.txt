@@ -248,6 +248,17 @@ solidar_add_test(persistent_topology_tests
   LIBRARIES solidar_model LABELS regression topology)
 solidar_add_test(sketch_constraint_integrity_tests
   LIBRARIES solidar_model LABELS regression)
+solidar_add_test(sketch_schema_tests
+  LIBRARIES solidar_model LABELS unit regression)
+solidar_add_test(sketch_equation_kernel_tests
+  LIBRARIES solidar_model LABELS unit regression)
+solidar_add_test(sketch_nonlinear_solver_tests
+  LIBRARIES solidar_model LABELS unit regression)
+solidar_add_test(sketch_solver_cutover_compliance_tests
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/sketch_solver_cutover_compliance_tests.cmake
+  LABELS compliance regression)
 
 solidar_add_test(compliance_artifacts_tests
   COMMAND ${CMAKE_COMMAND}

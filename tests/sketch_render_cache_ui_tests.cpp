@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QImage>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPixmap>
 
@@ -114,6 +115,62 @@ int main(int argc, char** argv) {
   CHECK(rectangle.sketch().semanticFingerprint() == duringFingerprint);
   CHECK(rectangle.committedRenderSceneBuildCount() == beforeDrag + 2);
 
+  // Repeated move samples are absolute from the press-time reference and the
+  // release publishes exactly one undo delta. No transient constraints enter
+  // the permanent graph.
+  solidar::sketch::Sketch freeLineSketch;
+  freeLineSketch.addLine({-10.0, 0.0}, {10.0, 0.0});
+  solidar::SketchCanvas freeLine;
+  freeLine.resize(640, 460);
+  freeLine.loadSketch(freeLineSketch);
+  freeLine.setTool(solidar::SketchCanvas::Tool::Select);
+  freeLine.show();
+  QApplication::processEvents();
+  const auto freeBefore = freeLine.sketch().semanticFingerprint();
+  const auto constraintCount = freeLine.sketch().constraints().size();
+  const QPointF freePress = screenPoint(freeLine, {0.0, 0.0});
+  press(freeLine, freePress);
+  dragMove(freeLine, screenPoint(freeLine, {5.0, 4.0}));
+  dragMove(freeLine, screenPoint(freeLine, {8.0, 6.0}));
+  release(freeLine, screenPoint(freeLine, {8.0, 6.0}));
+  CHECK(std::abs(freeLine.sketch().lines()[0].start.xMm + 2.0) < 1e-7);
+  CHECK(std::abs(freeLine.sketch().lines()[0].start.yMm - 6.0) < 1e-7);
+  CHECK(std::abs(freeLine.sketch().lines()[0].end.xMm - 18.0) < 1e-7);
+  CHECK(std::abs(freeLine.sketch().lines()[0].end.yMm - 6.0) < 1e-7);
+  CHECK(freeLine.sketch().constraints().size() == constraintCount);
+  const auto freeAfter = freeLine.sketch().semanticFingerprint();
+  CHECK(freeLine.undoHistorySize() == 1);
+  freeLine.undo();
+  CHECK(freeLine.sketch().semanticFingerprint() == freeBefore);
+  freeLine.redo();
+  CHECK(freeLine.sketch().semanticFingerprint() == freeAfter);
+
+  // Escape and an explicit tool switch both cancel the open live transaction,
+  // not merely its transient interaction state.
+  solidar::SketchCanvas canceledDrag;
+  canceledDrag.resize(640, 460);
+  canceledDrag.loadSketch(freeLineSketch);
+  canceledDrag.setTool(solidar::SketchCanvas::Tool::Select);
+  canceledDrag.show();
+  QApplication::processEvents();
+  const auto canceledBefore =
+      canceledDrag.sketch().semanticFingerprint();
+  const QPointF canceledPress = screenPoint(canceledDrag, {0.0, 0.0});
+  press(canceledDrag, canceledPress);
+  dragMove(canceledDrag, screenPoint(canceledDrag, {4.0, 3.0}));
+  CHECK(canceledDrag.sketch().semanticFingerprint() != canceledBefore);
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(&canceledDrag, &escape);
+  CHECK(canceledDrag.sketch().semanticFingerprint() == canceledBefore);
+  CHECK(canceledDrag.undoHistorySize() == 0);
+
+  press(canceledDrag, canceledPress);
+  dragMove(canceledDrag, screenPoint(canceledDrag, {-3.0, 2.0}));
+  CHECK(canceledDrag.sketch().semanticFingerprint() != canceledBefore);
+  canceledDrag.setTool(solidar::SketchCanvas::Tool::Line);
+  CHECK(canceledDrag.sketch().semanticFingerprint() == canceledBefore);
+  CHECK(canceledDrag.undoHistorySize() == 0);
+
   // Stored dimension line placement is committed model state. Label placement
   // is intentionally a small transient annotation delta; both update through
   // real mouse paths and remain visible after release.
@@ -124,7 +181,13 @@ int main(int argc, char** argv) {
   dimension.geometryId = dimensionSketch.lineId(0);
   dimension.valueMm = 20.0;
   dimension.offsetMm = 4.0;
-  dimensionSketch.storeDimension(dimension);
+  dimension.constraintId = dimensionSketch.addConstraint(
+      solidar::sketch::Constraint{
+          solidar::sketch::LengthConstraint{dimension.geometryId,
+                                            std::nullopt},
+          solidar::sketch::ConstraintMode::Reference});
+  CHECK(dimension.constraintId != solidar::sketch::kInvalidConstraintId);
+  CHECK(dimensionSketch.storeDimension(dimension));
 
   solidar::SketchCanvas dimensions;
   dimensions.resize(640, 460);
@@ -203,6 +266,74 @@ int main(int argc, char** argv) {
   CHECK(replacement.committedRenderSceneBuildCount() ==
         replacementEmptyBuilds + 2);
   CHECK(replacement.sketch().circles().empty());
+
+  // Full diagnostics preserve the typed machine status and the selectable
+  // constraint IDs behind the localized Russian presentation.
+  solidar::sketch::Sketch redundant;
+  redundant.addLine({0.0, 0.0}, {10.0, 0.0});
+  const auto redundantLine = redundant.lineId(0);
+  CHECK(redundant.restoreConstraints({
+      solidar::sketch::Constraint{
+          solidar::sketch::HorizontalConstraint{redundantLine},
+          solidar::sketch::ConstraintMode::Driving, 501},
+      solidar::sketch::Constraint{
+          solidar::sketch::HorizontalConstraint{redundantLine},
+          solidar::sketch::ConstraintMode::Driving, 502}}));
+  solidar::SketchCanvas diagnostics;
+  diagnostics.resize(640, 460);
+  diagnostics.loadSketch(redundant);
+  diagnostics.flushConstraintDiagnostics();
+  CHECK(diagnostics.lastSolveStatus() ==
+        solidar::sketch::SolveStatus::Redundant);
+  CHECK(diagnostics.diagnosticConstraintIds() ==
+        std::vector<solidar::sketch::ConstraintId>({501, 502}));
+
+  // The constraint panel exposes all three persisted modes. Switching mode is
+  // a transactional edit and never deletes the constraint implicitly.
+  CHECK(diagnostics.setConstraintModeById(
+      501, solidar::sketch::ConstraintMode::Disabled));
+  CHECK(diagnostics.sketch().constraints()[
+            *diagnostics.sketch().constraintIndex(501)].mode ==
+        solidar::sketch::ConstraintMode::Disabled);
+  CHECK(diagnostics.setConstraintModeById(
+      501, solidar::sketch::ConstraintMode::Driving));
+  CHECK(diagnostics.sketch().constraintIndex(501).has_value());
+  CHECK(diagnostics.sketch().constraints()[
+            *diagnostics.sketch().constraintIndex(501)].mode ==
+        solidar::sketch::ConstraintMode::Driving);
+
+  solidar::sketch::Sketch modeSketch;
+  modeSketch.addLine({0.0, 0.0}, {10.0, 0.0});
+  const auto modeLine = modeSketch.lineId(0);
+  constexpr solidar::sketch::ConstraintId modeConstraint = 601;
+  CHECK(modeSketch.restoreConstraints({solidar::sketch::Constraint{
+      solidar::sketch::LengthConstraint{modeLine, std::nullopt},
+      solidar::sketch::ConstraintMode::Reference, modeConstraint}}));
+  solidar::sketch::Dimension modeDimension;
+  modeDimension.kind = solidar::sketch::DimensionKind::LineLength;
+  modeDimension.geometryId = modeLine;
+  modeDimension.valueMm = 10.0;
+  modeDimension.constraintId = modeConstraint;
+  CHECK(modeSketch.storeDimension(modeDimension));
+  solidar::SketchCanvas modeCanvas;
+  modeCanvas.loadSketch(modeSketch);
+  CHECK(modeCanvas.setDimensionDriving(0, true));
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Driving);
+  CHECK(modeCanvas.setDimensionDriving(0, false));
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Reference);
+  CHECK(modeCanvas.setConstraintModeById(
+      modeConstraint, solidar::sketch::ConstraintMode::Disabled));
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Disabled);
+  CHECK(modeCanvas.setDimensionDriving(0, true));
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Driving);
 
   return EXIT_SUCCESS;
 }

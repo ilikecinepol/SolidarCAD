@@ -54,6 +54,11 @@
 #include "sketch/Sketch.h"
 #include "sketch/SketchConstraintDiagnostics.h"
 #include "sketch/SketchSolver.h"
+#include "sketch/ConstraintGraph.h"
+#include "sketch/ParameterLayout.h"
+#include "sketch/ConstraintEquationRegistry.h"
+#include "sketch/EquationSystem.h"
+#include "sketch/EquationDiagnostics.h"
 
 #include <cstdlib>
 

@@ -1,6 +1,7 @@
 #include "sketch/Sketch.h"
 
 #include "sketch/SketchConstraintDiagnostics.h"
+#include "sketch/SketchSchema.h"
 #include "sketch/SketchSolver.h"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <numbers>
 #include <queue>
 #include <stdexcept>
 #include <type_traits>
@@ -18,10 +20,543 @@
 
 namespace solidar::sketch {
 
+PointReference::PointReference() noexcept = default;
+PointReference::PointReference(GeometryId id, bool isStart) noexcept
+    : payload_(LineEndpointReference{
+          id, isStart ? Endpoint::Start : Endpoint::End}) {}
+PointReference::PointReference(DatumOriginReference source) noexcept
+    : payload_(source) {}
+PointReference::PointReference(LineEndpointReference source) noexcept
+    : payload_(source) {}
+PointReference::PointReference(CircleCenterReference source) noexcept
+    : payload_(source) {}
+PointReference::PointReference(ArcEndpointReference source) noexcept
+    : payload_(source) {}
+PointReference::PointReference(BezierPointReference source) noexcept
+    : payload_(source) {}
+PointReference::PointReference(CompositeCenterReference source) noexcept
+    : payload_(source) {}
+PointReference::PointReference(const PointReference& other) noexcept
+    : payload_(other.payload_) {}
+PointReference::PointReference(PointReference&& other) noexcept
+    : payload_(std::move(other.payload_)) {}
+PointReference& PointReference::operator=(const PointReference& other) noexcept {
+  if (this != &other) payload_ = other.payload_;
+  return *this;
+}
+PointReference& PointReference::operator=(PointReference&& other) noexcept {
+  if (this != &other) payload_ = std::move(other.payload_);
+  return *this;
+}
+
+PointReference::GeometryIdView& PointReference::GeometryIdView::operator=(
+    GeometryId id) noexcept {
+  if (id == kInvalidGeometryId) return *this;
+  switch (kind_) {
+    case IdViewKind::Line:
+      owner_->payload_ = LineEndpointReference{id, Endpoint::Start};
+      break;
+    case IdViewKind::Circle:
+      owner_->payload_ = CircleCenterReference{id};
+      break;
+    case IdViewKind::Arc:
+      owner_->payload_ = ArcEndpointReference{id, Endpoint::Start};
+      break;
+    case IdViewKind::Bezier:
+      owner_->payload_ = BezierPointReference{id, 0};
+      break;
+  }
+  return *this;
+}
+
+PointReference::GeometryIdView::operator GeometryId() const noexcept {
+  switch (kind_) {
+    case IdViewKind::Line:
+      if (const auto* value =
+              std::get_if<LineEndpointReference>(&owner_->payload_))
+        return value->lineId;
+      break;
+    case IdViewKind::Circle:
+      if (const auto* value =
+              std::get_if<CircleCenterReference>(&owner_->payload_))
+        return value->circleId;
+      break;
+    case IdViewKind::Arc:
+      if (const auto* value =
+              std::get_if<ArcEndpointReference>(&owner_->payload_))
+        return value->arcId;
+      break;
+    case IdViewKind::Bezier:
+      if (const auto* value =
+              std::get_if<BezierPointReference>(&owner_->payload_))
+        return value->bezierId;
+      break;
+  }
+  return kInvalidGeometryId;
+}
+
+PointReference::BoolView& PointReference::BoolView::operator=(
+    bool value) noexcept {
+  if (kind_ == BoolViewKind::Origin) {
+    if (value) owner_->payload_ = DatumOriginReference{};
+    return *this;
+  }
+  const Endpoint endpoint = value ? Endpoint::Start : Endpoint::End;
+  if (auto* line = std::get_if<LineEndpointReference>(&owner_->payload_))
+    line->endpoint = endpoint;
+  else if (auto* arc =
+               std::get_if<ArcEndpointReference>(&owner_->payload_))
+    arc->endpoint = endpoint;
+  return *this;
+}
+
+PointReference::BoolView::operator bool() const noexcept {
+  if (kind_ == BoolViewKind::Origin)
+    return std::holds_alternative<DatumOriginReference>(owner_->payload_);
+  if (const auto* line =
+          std::get_if<LineEndpointReference>(&owner_->payload_))
+    return line->endpoint == Endpoint::Start;
+  if (const auto* arc = std::get_if<ArcEndpointReference>(&owner_->payload_))
+    return arc->endpoint == Endpoint::Start;
+  return true;
+}
+
+PointReference::ElementIdView& PointReference::ElementIdView::operator=(
+    std::size_t id) noexcept {
+  if (id != 0) owner_->payload_ = CompositeCenterReference{id};
+  return *this;
+}
+PointReference::ElementIdView::operator std::size_t() const noexcept {
+  if (const auto* value =
+          std::get_if<CompositeCenterReference>(&owner_->payload_))
+    return static_cast<std::size_t>(value->elementId);
+  return 0;
+}
+
+PointReference::BezierPointView&
+PointReference::BezierPointView::operator=(std::uint8_t index) noexcept {
+  if (auto* value = std::get_if<BezierPointReference>(&owner_->payload_))
+    value->pointIndex = index;
+  return *this;
+}
+PointReference::BezierPointView::operator std::uint8_t() const noexcept {
+  if (const auto* value =
+          std::get_if<BezierPointReference>(&owner_->payload_))
+    return value->pointIndex;
+  return 0;
+}
+
+namespace {
+
+ConstraintPayload defaultPayload(ConstraintType type) {
+  switch (type) {
+    case ConstraintType::Horizontal: return HorizontalConstraint{};
+    case ConstraintType::Vertical: return VerticalConstraint{};
+    case ConstraintType::Coincident: return CoincidentConstraint{};
+    case ConstraintType::PointOnLine: return PointOnLineConstraint{};
+    case ConstraintType::Distance: return DistanceConstraint{};
+    case ConstraintType::Length: return LengthConstraint{};
+    case ConstraintType::Radius: return RadiusConstraint{};
+    case ConstraintType::Diameter: return DiameterConstraint{};
+    case ConstraintType::Parallel: return ParallelConstraint{};
+    case ConstraintType::Perpendicular: return PerpendicularConstraint{};
+    case ConstraintType::Equal: return EqualConstraint{};
+    case ConstraintType::Angle: return AngleConstraint{};
+    case ConstraintType::DistanceX: return DistanceXConstraint{};
+    case ConstraintType::DistanceY: return DistanceYConstraint{};
+    case ConstraintType::PointOnCircle: return PointOnCircleConstraint{};
+    case ConstraintType::Tangent: return TangentConstraint{};
+    case ConstraintType::LineDistance: return LineDistanceConstraint{};
+    case ConstraintType::Lock: return LockConstraint{};
+    case ConstraintType::PointOnArc: return PointOnArcConstraint{};
+    case ConstraintType::Midpoint: return MidpointConstraint{};
+    case ConstraintType::PointOnXAxis: return PointOnXAxisConstraint{};
+    case ConstraintType::PointOnYAxis: return PointOnYAxisConstraint{};
+  }
+  return HorizontalConstraint{};
+}
+
+ConstraintType payloadType(const ConstraintPayload& payload) noexcept {
+  return static_cast<ConstraintType>(payload.index());
+}
+
+template <typename T>
+void setOptionalValue(T& payload, double value) {
+  payload.drivingValue = value;
+}
+
+template <typename T>
+double optionalValue(const T& payload) noexcept {
+  return payload.drivingValue.value_or(0.0);
+}
+
+bool assignDrivingValue(ConstraintPayload& value,
+                        std::optional<double> drivingValue) {
+  return std::visit([&](auto& payload) {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, DistanceConstraint> ||
+                  std::is_same_v<T, LengthConstraint> ||
+                  std::is_same_v<T, RadiusConstraint> ||
+                  std::is_same_v<T, DiameterConstraint> ||
+                  std::is_same_v<T, AngleConstraint> ||
+                  std::is_same_v<T, DistanceXConstraint> ||
+                  std::is_same_v<T, DistanceYConstraint> ||
+                  std::is_same_v<T, LineDistanceConstraint>) {
+      payload.drivingValue = drivingValue;
+      return true;
+    } else {
+      return false;
+    }
+  }, value);
+}
+
+bool hasDrivingValue(const ConstraintPayload& value) noexcept {
+  return std::visit([](const auto& payload) {
+    using T = std::decay_t<decltype(payload)>;
+    return std::is_same_v<T, DistanceConstraint> ||
+           std::is_same_v<T, LengthConstraint> ||
+           std::is_same_v<T, RadiusConstraint> ||
+           std::is_same_v<T, DiameterConstraint> ||
+           std::is_same_v<T, AngleConstraint> ||
+           std::is_same_v<T, DistanceXConstraint> ||
+           std::is_same_v<T, DistanceYConstraint> ||
+           std::is_same_v<T, LineDistanceConstraint>;
+  }, value);
+}
+
+std::optional<double> drivingValueOf(
+    const ConstraintPayload& value) noexcept {
+  return std::visit([](const auto& payload) -> std::optional<double> {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, DistanceConstraint> ||
+                  std::is_same_v<T, LengthConstraint> ||
+                  std::is_same_v<T, RadiusConstraint> ||
+                  std::is_same_v<T, DiameterConstraint> ||
+                  std::is_same_v<T, AngleConstraint> ||
+                  std::is_same_v<T, DistanceXConstraint> ||
+                  std::is_same_v<T, DistanceYConstraint> ||
+                  std::is_same_v<T, LineDistanceConstraint>)
+      return payload.drivingValue;
+    return std::nullopt;
+  }, value);
+}
+
+}  // namespace
+
+Constraint::Constraint() noexcept = default;
+Constraint::Constraint(ConstraintPayload payload, ConstraintMode constraintMode,
+                       ConstraintId constraintId) noexcept
+    : id(constraintId), mode(constraintMode), payload_(std::move(payload)) {}
+Constraint::Constraint(const Constraint& other) noexcept
+    : id(other.id), mode(other.mode), payload_(other.payload_) {}
+Constraint::Constraint(Constraint&& other) noexcept
+    : id(other.id), mode(other.mode), payload_(std::move(other.payload_)) {}
+Constraint& Constraint::operator=(const Constraint& other) noexcept {
+  if (this != &other) {
+    id = other.id;
+    mode = other.mode;
+    payload_ = other.payload_;
+  }
+  return *this;
+}
+Constraint& Constraint::operator=(Constraint&& other) noexcept {
+  if (this != &other) {
+    id = other.id;
+    mode = other.mode;
+    payload_ = std::move(other.payload_);
+  }
+  return *this;
+}
+
+Constraint::TypeView& Constraint::TypeView::operator=(
+    ConstraintType type) noexcept {
+  const GeometryId first = owner_->firstGeometry;
+  const GeometryId second = owner_->secondGeometry;
+  const PointReference oldFirstPoint = owner_->firstPoint;
+  const PointReference oldSecondPoint = owner_->secondPoint;
+  const auto oldDrivingValue = drivingValueOf(owner_->payload_);
+  owner_->payload_ = defaultPayload(type);
+  owner_->firstGeometry = first;
+  owner_->secondGeometry = second;
+  owner_->firstPoint = oldFirstPoint;
+  owner_->secondPoint = oldSecondPoint;
+  if (oldDrivingValue) assignDrivingValue(owner_->payload_, oldDrivingValue);
+  return *this;
+}
+Constraint::TypeView::operator ConstraintType() const noexcept {
+  return payloadType(owner_->payload_);
+}
+
+Constraint::GeometryView& Constraint::GeometryView::operator=(
+    GeometryId id) noexcept {
+  const bool first = first_;
+  std::visit([&](auto& payload) {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, HorizontalConstraint> ||
+                  std::is_same_v<T, VerticalConstraint> ||
+                  std::is_same_v<T, LengthConstraint> ||
+                  std::is_same_v<T, PointOnLineConstraint> ||
+                  std::is_same_v<T, MidpointConstraint>) {
+      if (first) payload.lineId = id;
+    } else if constexpr (std::is_same_v<T, RadiusConstraint> ||
+                         std::is_same_v<T, DiameterConstraint> ||
+                         std::is_same_v<T, PointOnCircleConstraint>) {
+      if (first) payload.circleId = id;
+    } else if constexpr (std::is_same_v<T, PointOnArcConstraint>) {
+      if (first) payload.arcId = id;
+    } else if constexpr (std::is_same_v<T, LockConstraint>) {
+      if (first) payload.geometryId = id;
+    } else if constexpr (std::is_same_v<T, ParallelConstraint> ||
+                         std::is_same_v<T, PerpendicularConstraint> ||
+                         std::is_same_v<T, AngleConstraint> ||
+                         std::is_same_v<T, LineDistanceConstraint>) {
+      (first ? payload.firstLineId : payload.secondLineId) = id;
+    } else if constexpr (std::is_same_v<T, EqualConstraint> ||
+                         std::is_same_v<T, TangentConstraint>) {
+      (first ? payload.firstGeometryId : payload.secondGeometryId) = id;
+    }
+  }, owner_->payload_);
+  return *this;
+}
+
+Constraint::GeometryView::operator GeometryId() const noexcept {
+  const bool first = first_;
+  return std::visit([&](const auto& payload) -> GeometryId {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, HorizontalConstraint> ||
+                  std::is_same_v<T, VerticalConstraint> ||
+                  std::is_same_v<T, LengthConstraint> ||
+                  std::is_same_v<T, PointOnLineConstraint> ||
+                  std::is_same_v<T, MidpointConstraint>) {
+      return first ? payload.lineId : kInvalidGeometryId;
+    } else if constexpr (std::is_same_v<T, RadiusConstraint> ||
+                         std::is_same_v<T, DiameterConstraint> ||
+                         std::is_same_v<T, PointOnCircleConstraint>) {
+      return first ? payload.circleId : kInvalidGeometryId;
+    } else if constexpr (std::is_same_v<T, PointOnArcConstraint>) {
+      return first ? payload.arcId : kInvalidGeometryId;
+    } else if constexpr (std::is_same_v<T, LockConstraint>) {
+      return first ? payload.geometryId : kInvalidGeometryId;
+    } else if constexpr (std::is_same_v<T, ParallelConstraint> ||
+                         std::is_same_v<T, PerpendicularConstraint> ||
+                         std::is_same_v<T, AngleConstraint> ||
+                         std::is_same_v<T, LineDistanceConstraint>) {
+      return first ? payload.firstLineId : payload.secondLineId;
+    } else if constexpr (std::is_same_v<T, EqualConstraint> ||
+                         std::is_same_v<T, TangentConstraint>) {
+      return first ? payload.firstGeometryId : payload.secondGeometryId;
+    } else {
+      return kInvalidGeometryId;
+    }
+  }, owner_->payload_);
+}
+
+Constraint::PointView& Constraint::PointView::operator=(
+    const PointReference& point) noexcept {
+  const bool first = first_;
+  std::visit([&](auto& payload) {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, CoincidentConstraint> ||
+                  std::is_same_v<T, DistanceConstraint> ||
+                  std::is_same_v<T, DistanceXConstraint> ||
+                  std::is_same_v<T, DistanceYConstraint>) {
+      (first ? payload.first : payload.second) = point;
+    } else if constexpr (std::is_same_v<T, PointOnLineConstraint> ||
+                         std::is_same_v<T, PointOnCircleConstraint> ||
+                         std::is_same_v<T, PointOnArcConstraint> ||
+                         std::is_same_v<T, MidpointConstraint> ||
+                         std::is_same_v<T, PointOnXAxisConstraint> ||
+                         std::is_same_v<T, PointOnYAxisConstraint>) {
+      if (!first) payload.point = point;
+    }
+  }, owner_->payload_);
+  return *this;
+}
+
+Constraint::PointView::operator PointReference() const noexcept {
+  const bool first = first_;
+  return std::visit([&](const auto& payload) -> PointReference {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, CoincidentConstraint> ||
+                  std::is_same_v<T, DistanceConstraint> ||
+                  std::is_same_v<T, DistanceXConstraint> ||
+                  std::is_same_v<T, DistanceYConstraint>) {
+      return first ? payload.first : payload.second;
+    } else if constexpr (std::is_same_v<T, PointOnLineConstraint> ||
+                         std::is_same_v<T, PointOnCircleConstraint> ||
+                         std::is_same_v<T, PointOnArcConstraint> ||
+                         std::is_same_v<T, MidpointConstraint> ||
+                         std::is_same_v<T, PointOnXAxisConstraint> ||
+                         std::is_same_v<T, PointOnYAxisConstraint>) {
+      if (!first) return payload.point;
+    }
+    return PointReference{DatumOriginReference{}};
+  }, owner_->payload_);
+}
+
+Constraint::PointView::GeometryIdMember&
+Constraint::PointView::GeometryIdMember::operator=(GeometryId id) noexcept {
+  PointReference point = static_cast<PointReference>(*owner_);
+  switch (kind_) {
+    case PointReference::IdViewKind::Line: point.lineId = id; break;
+    case PointReference::IdViewKind::Circle: point.circleId = id; break;
+    case PointReference::IdViewKind::Arc: point.arcId = id; break;
+    case PointReference::IdViewKind::Bezier: point.bezierId = id; break;
+  }
+  *owner_ = point;
+  return *this;
+}
+Constraint::PointView::GeometryIdMember::operator GeometryId() const noexcept {
+  const PointReference point = static_cast<PointReference>(*owner_);
+  switch (kind_) {
+    case PointReference::IdViewKind::Line: return point.lineId;
+    case PointReference::IdViewKind::Circle: return point.circleId;
+    case PointReference::IdViewKind::Arc: return point.arcId;
+    case PointReference::IdViewKind::Bezier: return point.bezierId;
+  }
+  return kInvalidGeometryId;
+}
+
+Constraint::PointView::BoolMember&
+Constraint::PointView::BoolMember::operator=(bool value) noexcept {
+  PointReference point = static_cast<PointReference>(*owner_);
+  if (kind_ == PointReference::BoolViewKind::Start)
+    point.start = value;
+  else
+    point.origin = value;
+  *owner_ = point;
+  return *this;
+}
+Constraint::PointView::BoolMember::operator bool() const noexcept {
+  const PointReference point = static_cast<PointReference>(*owner_);
+  return kind_ == PointReference::BoolViewKind::Start
+      ? static_cast<bool>(point.start)
+      : static_cast<bool>(point.origin);
+}
+
+Constraint::PointView::ElementIdMember&
+Constraint::PointView::ElementIdMember::operator=(std::size_t id) noexcept {
+  PointReference point = static_cast<PointReference>(*owner_);
+  point.elementCenterId = id;
+  *owner_ = point;
+  return *this;
+}
+Constraint::PointView::ElementIdMember::operator std::size_t() const noexcept {
+  const PointReference point = static_cast<PointReference>(*owner_);
+  return point.elementCenterId;
+}
+
+Constraint::PointView::BezierPointMember&
+Constraint::PointView::BezierPointMember::operator=(
+    std::uint8_t index) noexcept {
+  PointReference point = static_cast<PointReference>(*owner_);
+  point.bezierPoint = index;
+  *owner_ = point;
+  return *this;
+}
+Constraint::PointView::BezierPointMember::operator std::uint8_t() const
+    noexcept {
+  const PointReference point = static_cast<PointReference>(*owner_);
+  return point.bezierPoint;
+}
+
+Constraint::ValueView& Constraint::ValueView::operator=(double value) noexcept {
+  std::visit([&](auto& payload) {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, DistanceConstraint> ||
+                  std::is_same_v<T, LengthConstraint> ||
+                  std::is_same_v<T, RadiusConstraint> ||
+                  std::is_same_v<T, DiameterConstraint> ||
+                  std::is_same_v<T, AngleConstraint> ||
+                  std::is_same_v<T, DistanceXConstraint> ||
+                  std::is_same_v<T, DistanceYConstraint> ||
+                  std::is_same_v<T, LineDistanceConstraint>)
+      setOptionalValue(payload, value);
+  }, owner_->payload_);
+  return *this;
+}
+
+Constraint::ValueView::operator double() const noexcept {
+  return std::visit([](const auto& payload) -> double {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, DistanceConstraint> ||
+                  std::is_same_v<T, LengthConstraint> ||
+                  std::is_same_v<T, RadiusConstraint> ||
+                  std::is_same_v<T, DiameterConstraint> ||
+                  std::is_same_v<T, AngleConstraint> ||
+                  std::is_same_v<T, DistanceXConstraint> ||
+                  std::is_same_v<T, DistanceYConstraint> ||
+                  std::is_same_v<T, LineDistanceConstraint>)
+      return optionalValue(payload);
+    return 0.0;
+  }, owner_->payload_);
+}
+
 namespace {
 std::atomic_size_t fullSketchCopyCount{};
 std::atomic_size_t deltaJournalBeginCount{};
 std::atomic_bool failNextNestedConstraintJournal{};
+
+SketchMutationResult mutationResult(
+    const Sketch& sketch, const std::vector<GeometryId>& seeds,
+    SketchMutationStatus status, SketchMutationDiagnosticCode code,
+    SolveResult solve = {}) {
+  SketchMutationResult result;
+  result.status = status;
+  result.diagnosticCode = code;
+  result.solveResult = solve;
+  result.component = sketch.connectedComponent(seeds);
+  result.relatedConstraintIds = result.component.constraintIds;
+  return result;
+}
+
+SketchMutationResult mutationFromSolve(
+    const Sketch& sketch, const std::vector<GeometryId>& seeds,
+    const SolveResult& solve) {
+  if (solve.invalidReferences != 0)
+    return mutationResult(sketch, seeds,
+                          SketchMutationStatus::InvalidReference,
+                          SketchMutationDiagnosticCode::InvalidGeometryReference,
+                          solve);
+  if (solve.unsupported != 0)
+    return mutationResult(sketch, seeds, SketchMutationStatus::Unsupported,
+                          SketchMutationDiagnosticCode::UnsupportedConstraint,
+                          solve);
+  if (solve.deferredByActiveSolve)
+    return mutationResult(sketch, seeds,
+                          SketchMutationStatus::DeferredByActiveSolve,
+                          SketchMutationDiagnosticCode::ActiveSolve, solve);
+  if (solve.nonFiniteGeometry != 0)
+    return mutationResult(sketch, seeds, SketchMutationStatus::InternalError,
+                          SketchMutationDiagnosticCode::NonFiniteGeometry,
+                          solve);
+  if (solve.degenerateGeometry != 0)
+    return mutationResult(sketch, seeds, SketchMutationStatus::Conflicting,
+                          SketchMutationDiagnosticCode::DegenerateGeometry,
+                          solve);
+  if (solve.violatedConstraints != 0)
+    return mutationResult(
+        sketch, seeds, SketchMutationStatus::Conflicting,
+        SketchMutationDiagnosticCode::ConstraintResidualViolation, solve);
+  if (!solve.converged)
+    return mutationResult(sketch, seeds, SketchMutationStatus::NonConverged,
+                          SketchMutationDiagnosticCode::SolverDidNotConverge,
+                          solve);
+  return mutationResult(sketch, seeds, SketchMutationStatus::Applied,
+                        SketchMutationDiagnosticCode::None, solve);
+}
+
+SketchMutationResult noMutation(const Sketch& sketch,
+                                const std::vector<GeometryId>& seeds = {}) {
+  return mutationResult(sketch, seeds, SketchMutationStatus::NoChange,
+                        SketchMutationDiagnosticCode::None);
+}
+
+SketchMutationResult rejectedMutation(
+    const Sketch& sketch, const std::vector<GeometryId>& seeds,
+    SketchMutationStatus status, SketchMutationDiagnosticCode code) {
+  return mutationResult(sketch, seeds, status, code);
+}
 
 int pointReferenceSourceCount(PointReference reference) noexcept {
   return (reference.origin ? 1 : 0) +
@@ -87,76 +622,17 @@ bool equivalentConstraint(const Constraint& first,
 
 bool supportedConstraintSchema(const Sketch& sketch,
                                const Constraint& constraint) {
-  const auto first = sketch.geometryLocation(constraint.firstGeometry);
-  const auto second = sketch.geometryLocation(constraint.secondGeometry);
-  const bool firstPoint = !emptyPointReference(constraint.firstPoint);
-  const bool secondPoint = !emptyPointReference(constraint.secondPoint);
-  const bool noPoints = !firstPoint && !secondPoint;
-  const bool distinct = first && second &&
-                        constraint.firstGeometry != constraint.secondGeometry;
-  const auto firstIs = [&](GeometryKind kind) {
-    return first && first->kind == kind;
-  };
-  const auto secondIs = [&](GeometryKind kind) {
-    return second && second->kind == kind;
-  };
+  return validateConstraintSchema(sketch, constraint).valid();
+}
 
-  switch (constraint.type) {
-    case ConstraintType::Horizontal:
-    case ConstraintType::Vertical:
-      return firstIs(GeometryKind::Line) && !second && noPoints;
-    case ConstraintType::Length:
-      return firstIs(GeometryKind::Line) && !second && noPoints &&
-             constraint.value > 0.0;
-    case ConstraintType::Radius:
-    case ConstraintType::Diameter:
-      return firstIs(GeometryKind::Circle) && !second && noPoints &&
-             constraint.value > 0.0;
-    case ConstraintType::Lock:
-      return first.has_value() && !second && noPoints;
-    case ConstraintType::Parallel:
-    case ConstraintType::Perpendicular:
-      return firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line) &&
-             distinct && noPoints;
-    case ConstraintType::Angle:
-      return firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line) &&
-             distinct && noPoints && constraint.value > 0.0 &&
-             constraint.value < 180.0;
-    case ConstraintType::LineDistance:
-      return firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line) &&
-             distinct && noPoints && constraint.value > 0.0;
-    case ConstraintType::Equal:
-      return distinct && noPoints &&
-             ((firstIs(GeometryKind::Line) && secondIs(GeometryKind::Line)) ||
-              (firstIs(GeometryKind::Circle) &&
-               secondIs(GeometryKind::Circle)));
-    case ConstraintType::Tangent:
-      // Every sketch primitive represents a differentiable curve. The
-      // solver handles line/circle/arc pairs analytically and endpoint
-      // tangency for Bezier-involving pairs.
-      return distinct && noPoints;
-    case ConstraintType::Coincident:
-      return !first && !second && firstPoint && secondPoint;
-    case ConstraintType::Distance:
-    case ConstraintType::DistanceX:
-    case ConstraintType::DistanceY:
-      return !first && !second && firstPoint && secondPoint &&
-             constraint.value > 0.0;
-    case ConstraintType::Midpoint:
-    case ConstraintType::PointOnLine:
-      return firstIs(GeometryKind::Line) && !second && !firstPoint &&
-             secondPoint;
-    case ConstraintType::PointOnCircle:
-      return firstIs(GeometryKind::Circle) && !second && !firstPoint &&
-             secondPoint;
-    case ConstraintType::PointOnArc:
-      return firstIs(GeometryKind::Arc) && !second && !firstPoint &&
-             secondPoint;
-    case ConstraintType::PointOnXAxis:
-    case ConstraintType::PointOnYAxis:
-      return !first && !second && !firstPoint && secondPoint;
-  }
-  return false;
+bool annotatableConstraintType(ConstraintType type) noexcept {
+  return type == ConstraintType::Distance ||
+         type == ConstraintType::Length ||
+         type == ConstraintType::Diameter ||
+         type == ConstraintType::Angle ||
+         type == ConstraintType::DistanceX ||
+         type == ConstraintType::DistanceY ||
+         type == ConstraintType::LineDistance;
 }
 
 std::vector<GeometryId> referencedGeometryIds(const Sketch& sketch,
@@ -364,7 +840,8 @@ Sketch::Sketch(const Sketch& other)
       lastSolveViolatedConstraints_(other.lastSolveViolatedConstraints_),
       lastSolveMaxNormalizedResidual_(other.lastSolveMaxNormalizedResidual_),
       lastSolveUnsupported_(other.lastSolveUnsupported_),
-      lastSolveInvalidReferences_(other.lastSolveInvalidReferences_) {
+      lastSolveInvalidReferences_(other.lastSolveInvalidReferences_),
+      lastSolveResult_(other.lastSolveResult_) {
   ++fullSketchCopyCount;
 }
 
@@ -395,6 +872,7 @@ Sketch& Sketch::operator=(const Sketch& other) {
   lastSolveMaxNormalizedResidual_ = other.lastSolveMaxNormalizedResidual_;
   lastSolveUnsupported_ = other.lastSolveUnsupported_;
   lastSolveInvalidReferences_ = other.lastSolveInvalidReferences_;
+  lastSolveResult_ = other.lastSolveResult_;
   deltaJournals_.clear();
   return *this;
 }
@@ -517,6 +995,16 @@ void Sketch::beginDeltaJournal() {
   journal.beforeNextDimensionId = nextDimensionId_;
   journal.beforeSemanticFingerprint = semanticFingerprint();
   journal.beforeInvalidConstraintIds = invalidReferenceConstraintIds();
+  journal.beforeLastSolvedFingerprint = lastSolvedFingerprint_;
+  journal.beforeHasLastSolvedFingerprint = hasLastSolvedFingerprint_;
+  journal.beforeLastSolveConverged = lastSolveConverged_;
+  journal.beforeLastSolveViolatedConstraints =
+      lastSolveViolatedConstraints_;
+  journal.beforeLastSolveMaxNormalizedResidual =
+      lastSolveMaxNormalizedResidual_;
+  journal.beforeLastSolveUnsupported = lastSolveUnsupported_;
+  journal.beforeLastSolveInvalidReferences = lastSolveInvalidReferences_;
+  journal.beforeLastSolveResult = lastSolveResult_;
 }
 
 void Sketch::clear() {
@@ -1149,18 +1637,26 @@ const std::vector<std::size_t>&
 Sketch::centerNodeElementIds() const noexcept {
   return centerNodeElementIds_;
 }
-void Sketch::translateElement(std::size_t elementId, double dxMm,
-                              double dyMm) {
+SketchMutationResult Sketch::translateElement(std::size_t elementId,
+                                              double dxMm, double dyMm) {
   // LOCK CONSTRAINT: direct drag may never move a locked element.
   if (isElementLocked(elementId))
-    return;
-  if (dxMm == 0.0 && dyMm == 0.0) return;
+    return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::LockedGeometry);
+  if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this);
 
   std::vector<GeometryId> movedIds;
   for (std::size_t index = 0; index < lines_.size(); ++index) {
     if (lines_[index].elementId == elementId)
       movedIds.push_back(lineIds_[index]);
   }
+  if (movedIds.empty())
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents(movedIds);
 
   const auto isMoved = [&movedIds](GeometryId id) {
@@ -1196,11 +1692,9 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
       connectedExternalPoints.push_back(external);
   }
 
-  // Capture the old coordinates of those external endpoint clusters before
-  // the selected element is moved.
+  // Capture explicit external references before the selected element moves.
   struct ConnectedPointMove {
     PointReference reference;
-    Point oldPoint;
     Point newPoint;
   };
   std::vector<ConnectedPointMove> connectedMoves;
@@ -1209,8 +1703,7 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
     const auto point = referencedPoint(reference);
     if (!point) continue;
     connectedMoves.push_back(
-        {reference, *point,
-         {point->xMm + dxMm, point->yMm + dyMm}});
+        {reference, {point->xMm + dxMm, point->yMm + dyMm}});
   }
 
   // Points constrained to a moved carrier line belong to that moving frame.
@@ -1272,36 +1765,38 @@ void Sketch::translateElement(std::size_t elementId, double dxMm,
     followerPoint.yMm += dyMm;
   }
 
-  const auto same = [](Point first, Point second) {
-    return std::hypot(first.xMm - second.xMm,
-                      first.yMm - second.yMm) <= 1e-7;
-  };
-
-  // Move only the connected endpoint cluster of the neighbouring geometry.
-  // The rest of that neighbouring line stays where it was, so it stretches /
-  // rotates naturally while remaining connected.
+  // Move only the explicitly referenced neighbour. Equal raw coordinates do
+  // not extend this relationship to additional geometry.
   for (const auto& move : connectedMoves) {
     if (move.reference.circleId != kInvalidGeometryId) {
       const auto circle = circleIndex(move.reference.circleId);
-      if (circle && same(circles_[*circle].center, move.oldPoint))
-        circles_[*circle].center = move.newPoint;
+      if (circle) circles_[*circle].center = move.newPoint;
       continue;
     }
-
-    for (std::size_t index = 0; index < lines_.size(); ++index) {
-      if (isMoved(lineIds_[index])) continue;
-      auto& line = lines_[index];
-      if (same(line.start, move.oldPoint)) line.start = move.newPoint;
-      if (same(line.end, move.oldPoint)) line.end = move.newPoint;
-    }
+    const auto line = lineIndex(move.reference.lineId);
+    if (!line || isMoved(move.reference.lineId)) continue;
+    if (move.reference.start)
+      lines_[*line].start = move.newPoint;
+    else
+      lines_[*line].end = move.newPoint;
   }
 
   // Re-apply all active constraints after interactive geometry movement.
-  (void)BasicSketchSolver::solveStableComponent(*this, movedIds);
+  const auto mutation = mutationFromSolve(
+      *this, movedIds,
+      SketchSolver::solveStableComponent(
+          *this, movedIds, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
   updateBounds();
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
 
-void Sketch::translateSelection(
+SketchMutationResult Sketch::translateSelection(
     const std::vector<std::size_t>& elementIds,
     const std::vector<GeometryId>& circleIds,
     const std::vector<GeometryId>& arcIds,
@@ -1312,22 +1807,50 @@ void Sketch::translateSelection(
     if (std::find(elementIds.begin(), elementIds.end(),
                   lines_[index].elementId) != elementIds.end() &&
         isGeometryLocked(lineIds_[index]))
-      return;
+      return rejectedMutation(*this, {lineIds_[index]},
+                              SketchMutationStatus::Conflicting,
+                              SketchMutationDiagnosticCode::LockedGeometry);
   }
   for (const auto id : circleIds) {
+    if (!circleIndex(id))
+      return rejectedMutation(
+          *this, {id}, SketchMutationStatus::InvalidReference,
+          SketchMutationDiagnosticCode::InvalidGeometryReference);
     if (isGeometryLocked(id))
-      return;
+      return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                              SketchMutationDiagnosticCode::LockedGeometry);
   }
   for (const auto id : arcIds) {
+    if (!arcIndex(id))
+      return rejectedMutation(
+          *this, {id}, SketchMutationStatus::InvalidReference,
+          SketchMutationDiagnosticCode::InvalidGeometryReference);
     if (isGeometryLocked(id))
-      return;
+      return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                              SketchMutationDiagnosticCode::LockedGeometry);
   }
-  for (const auto id : bezierIds)
-    if (isGeometryLocked(id)) return;
-  if (dxMm == 0.0 && dyMm == 0.0) return;
+  for (const auto id : bezierIds) {
+    if (!bezierIndex(id))
+      return rejectedMutation(
+          *this, {id}, SketchMutationStatus::InvalidReference,
+          SketchMutationDiagnosticCode::InvalidGeometryReference);
+    if (isGeometryLocked(id))
+      return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                              SketchMutationDiagnosticCode::LockedGeometry);
+  }
+  for (const auto elementId : elementIds)
+    if (std::none_of(lines_.begin(), lines_.end(), [elementId](const Line& line) {
+          return line.elementId == elementId;
+        }))
+      return rejectedMutation(
+          *this, {}, SketchMutationStatus::InvalidReference,
+          SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this);
   if (elementIds.empty() && circleIds.empty() && arcIds.empty() &&
       bezierIds.empty())
-    return;
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
   std::vector<GeometryId> journalSeeds = circleIds;
   journalSeeds.insert(journalSeeds.end(), arcIds.begin(), arcIds.end());
   journalSeeds.insert(journalSeeds.end(), bezierIds.begin(), bezierIds.end());
@@ -1335,6 +1858,9 @@ void Sketch::translateSelection(
     if (std::find(elementIds.begin(), elementIds.end(),
                   lines_[index].elementId) != elementIds.end())
       journalSeeds.push_back(lineIds_[index]);
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents(journalSeeds);
 
   const auto elementSelected =
@@ -1549,8 +2075,14 @@ void Sketch::translateSelection(
           movedReferences.begin(), movedReferences.end(),
           [this](PointReference reference) {
             return isPointReferenceLocked(reference);
-          }))
-    return;
+          })) {
+    const auto rejected = rejectedMutation(
+        *this, journalSeeds, SketchMutationStatus::Conflicting,
+        SketchMutationDiagnosticCode::LockedGeometry);
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return rejected;
+  }
 
   const auto referenceMoves =
       [&movedReferences,
@@ -1692,15 +2224,39 @@ void Sketch::translateSelection(
   dirtyIds.insert(dirtyIds.end(), circleIds.begin(), circleIds.end());
   dirtyIds.insert(dirtyIds.end(), arcIds.begin(), arcIds.end());
   dirtyIds.insert(dirtyIds.end(), bezierIds.begin(), bezierIds.end());
-  (void)BasicSketchSolver::solveStableComponent(*this, dirtyIds);
+  const auto mutation = mutationFromSolve(
+      *this, dirtyIds,
+      SketchSolver::solveStableComponent(
+          *this, dirtyIds, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
   updateBounds();
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
 
-void Sketch::translateLinesByIds(const std::vector<GeometryId>& lineIds,
-                                 double dxMm, double dyMm) {
-  if (lineIds.empty() || (dxMm == 0.0 && dyMm == 0.0)) return;
+SketchMutationResult Sketch::translateLinesByIds(
+    const std::vector<GeometryId>& lineIds, double dxMm, double dyMm) {
+  if (lineIds.empty())
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this, lineIds);
   for (const auto id : lineIds)
-    if (isGeometryLocked(id)) return;
+    if (!lineIndex(id))
+      return rejectedMutation(
+          *this, lineIds, SketchMutationStatus::InvalidReference,
+          SketchMutationDiagnosticCode::InvalidGeometryReference);
+    else if (isGeometryLocked(id))
+      return rejectedMutation(*this, lineIds,
+                              SketchMutationStatus::Conflicting,
+                              SketchMutationDiagnosticCode::LockedGeometry);
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents(lineIds);
 
   bool changed = false;
@@ -1714,9 +2270,23 @@ void Sketch::translateLinesByIds(const std::vector<GeometryId>& lineIds,
     lines_[index].end.yMm += dyMm;
     changed = true;
   }
-  if (!changed) return;
-  (void)BasicSketchSolver::solveStableComponent(*this, lineIds);
+  if (!changed) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return noMutation(*this, lineIds);
+  }
+  const auto mutation = mutationFromSolve(
+      *this, lineIds,
+      SketchSolver::solveStableComponent(
+          *this, lineIds, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
   updateBounds();
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
 
 void Sketch::setElementDashed(std::size_t elementId, bool dashed) {
@@ -1748,15 +2318,13 @@ void Sketch::setCircleDashed(std::size_t index, bool dashed) {
   }
 }
 
-void Sketch::translateCircle(std::size_t index, double dxMm, double dyMm) {
-  if (index < circleIds_.size() &&
-      isGeometryLocked(circleIds_[index]))
-    return;
-  if (index >= circles_.size()) return;
-  journalCaptureComponents({circleIds_[index]});
-  circles_[index].center.xMm += dxMm;
-  circles_[index].center.yMm += dyMm;
-  updateBounds();
+SketchMutationResult Sketch::translateCircle(std::size_t index, double dxMm,
+                                             double dyMm) {
+  if (index >= circleIds_.size())
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  return translateCircleById(circleIds_[index], dxMm, dyMm);
 }
 
 void Sketch::setCircleDashedById(GeometryId id, bool dashed) {
@@ -1778,882 +2346,119 @@ void Sketch::setBezierDashedById(GeometryId id, bool dashed) {
   beziers_[*index].dashed = dashed;
 }
 
-void Sketch::translateCircleById(GeometryId id, double dxMm, double dyMm) {
-  if (id == kInvalidGeometryId || !circleIndex(id)) return;
+SketchMutationResult Sketch::translateCircleById(GeometryId id, double dxMm,
+                                                 double dyMm) {
+  if (id == kInvalidGeometryId || !circleIndex(id))
+    return rejectedMutation(
+        *this, {id}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
 
   PointReference centerReference;
   centerReference.circleId = id;
 
   // Move the circle center together with every Coincident-connected
   // endpoint/center. This also re-runs the active solver afterwards.
-  (void)translatePoint(centerReference, dxMm, dyMm);
+  return translatePoint(centerReference, dxMm, dyMm);
 }
 
-void Sketch::translateArcById(GeometryId id, double dxMm, double dyMm) {
+SketchMutationResult Sketch::translateArcById(GeometryId id, double dxMm,
+                                              double dyMm) {
   const auto index = arcIndex(id);
-  if (!index || isGeometryLocked(id)) return;
+  if (!index)
+    return rejectedMutation(
+        *this, {id}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (isGeometryLocked(id))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::LockedGeometry);
+  if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this, {id});
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents({id});
   arcs_[*index].center.xMm += dxMm;
   arcs_[*index].center.yMm += dyMm;
-  (void)BasicSketchSolver::solveStableComponent(*this, {id});
+  const auto mutation = mutationFromSolve(
+      *this, {id}, SketchSolver::solveStableComponent(
+                       *this, {id}, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
   updateBounds();
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
 
-void Sketch::translateBezierById(GeometryId id, double dxMm, double dyMm) {
+SketchMutationResult Sketch::translateBezierById(GeometryId id, double dxMm,
+                                                 double dyMm) {
   const auto index = bezierIndex(id);
-  if (!index || isGeometryLocked(id) || (dxMm == 0.0 && dyMm == 0.0)) return;
+  if (!index)
+    return rejectedMutation(
+        *this, {id}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (isGeometryLocked(id))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::LockedGeometry);
+  if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this, {id});
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents({id});
   for (auto& point : beziers_[*index].points) {
     point.xMm += dxMm;
     point.yMm += dyMm;
   }
-  (void)BasicSketchSolver::solveStableComponent(*this, {id});
+  const auto mutation = mutationFromSolve(
+      *this, {id}, SketchSolver::solveStableComponent(
+                       *this, {id}, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
   updateBounds();
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
 
-bool Sketch::moveArcEndpointReshapeById(GeometryId id, bool start,
-                                        Point target) {
+SketchMutationResult Sketch::moveArcEndpointReshapeById(
+    GeometryId id, bool start, Point target) {
   const auto index = arcIndex(id);
-  if (!index || isGeometryLocked(id)) return false;
+  if (!index)
+    return rejectedMutation(
+        *this, {id}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (isGeometryLocked(id))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::LockedGeometry);
+  if (!std::isfinite(target.xMm) || !std::isfinite(target.yMm))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents({id});
-  if (!moveArcEndpointReshape(arcs_[*index], start, target)) return false;
-  (void)BasicSketchSolver::solveStableComponent(*this, {id});
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setLineLengthById(GeometryId id, double lengthMm) {
-  const auto index = lineIndex(id);
-  if (!index || lengthMm <= 0.0) return false;
-  journalCaptureComponents({id});
-  // LOCK CONSTRAINT: locked line length is immutable.
-  // Re-applying the already satisfied value remains idempotently successful.
-  if (isGeometryLocked(id)) {
-    const auto& locked = lines_[*index];
-    const double current =
-        std::hypot(locked.end.xMm - locked.start.xMm,
-                   locked.end.yMm - locked.start.yMm);
-    return std::abs(current - lengthMm) <= 1e-7;
+  if (!moveArcEndpointReshape(arcs_[*index], start, target)) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::DegenerateGeometry);
   }
-
-  const std::size_t elementId = lines_[*index].elementId;
-
-  std::vector<std::size_t> elementLines;
-  for (std::size_t lineIndexValue = 0;
-       lineIndexValue < lines_.size(); ++lineIndexValue) {
-    if (lines_[lineIndexValue].elementId == elementId)
-      elementLines.push_back(lineIndexValue);
-  }
-
-  // A four-line composite element is a rectangle in the current Sketch
-  // model. Resize the whole rectangle instead of stretching one primitive.
-  if (elementLines.size() == 4) {
-    const auto found =
-        std::find(elementLines.begin(), elementLines.end(), *index);
-    if (found == elementLines.end()) return false;
-
-    const std::size_t side =
-        static_cast<std::size_t>(
-            std::distance(elementLines.begin(), found));
-
-    const std::size_t i0 = elementLines[side];
-    const std::size_t i1 = elementLines[(side + 1) % 4];
-    const std::size_t i2 = elementLines[(side + 2) % 4];
-    const std::size_t i3 = elementLines[(side + 3) % 4];
-
-    const Line& selected = lines_[i0];
-    const Line& adjacent = lines_[i1];
-
-    double ux = selected.end.xMm - selected.start.xMm;
-    double uy = selected.end.yMm - selected.start.yMm;
-    const double selectedLength = std::hypot(ux, uy);
-    if (selectedLength <= 1e-9) return false;
-
-    ux /= selectedLength;
-    uy /= selectedLength;
-
-    double vx = adjacent.end.xMm - adjacent.start.xMm;
-    double vy = adjacent.end.yMm - adjacent.start.yMm;
-
-    // Orthogonalize the second rectangle axis. This also repairs a slightly
-    // distorted rectangle instead of preserving its accumulated skew.
-    const double projection = vx * ux + vy * uy;
-    vx -= projection * ux;
-    vy -= projection * uy;
-
-    double adjacentLength = std::hypot(vx, vy);
-    if (adjacentLength <= 1e-9) {
-      // Preserve the handedness using the raw adjacent direction.
-      const double rawX = adjacent.end.xMm - adjacent.start.xMm;
-      const double rawY = adjacent.end.yMm - adjacent.start.yMm;
-      const double cross = ux * rawY - uy * rawX;
-      vx = cross < 0.0 ? uy : -uy;
-      vy = cross < 0.0 ? -ux : ux;
-      adjacentLength = std::hypot(
-          adjacent.end.xMm - adjacent.start.xMm,
-          adjacent.end.yMm - adjacent.start.yMm);
-    } else {
-      vx /= adjacentLength;
-      vy /= adjacentLength;
-
-      // Use the actual adjacent side length, not the orthogonal projection
-      // length, as the preserved second rectangle dimension.
-      adjacentLength = std::hypot(
-          adjacent.end.xMm - adjacent.start.xMm,
-          adjacent.end.yMm - adjacent.start.yMm);
-    }
-
-    if (adjacentLength <= 1e-9) return false;
-
-    // Compute the element centre from all eight stored endpoints. Averaging
-    // makes the operation stable even if Coincident is off by a tiny epsilon.
-    Point center{};
-    for (const auto lineIndexValue : elementLines) {
-      center.xMm += lines_[lineIndexValue].start.xMm;
-      center.yMm += lines_[lineIndexValue].start.yMm;
-      center.xMm += lines_[lineIndexValue].end.xMm;
-      center.yMm += lines_[lineIndexValue].end.yMm;
-    }
-    center.xMm /= 8.0;
-    center.yMm /= 8.0;
-
-    const double halfU = lengthMm * 0.5;
-    const double halfV = adjacentLength * 0.5;
-
-    const Point p0{center.xMm - ux * halfU - vx * halfV,
-                   center.yMm - uy * halfU - vy * halfV};
-    const Point p1{center.xMm + ux * halfU - vx * halfV,
-                   center.yMm + uy * halfU - vy * halfV};
-    const Point p2{center.xMm + ux * halfU + vx * halfV,
-                   center.yMm + uy * halfU + vy * halfV};
-    const Point p3{center.xMm - ux * halfU + vx * halfV,
-                   center.yMm - uy * halfU + vy * halfV};
-
-    lines_[i0].start = p0;
-    lines_[i0].end = p1;
-    lines_[i1].start = p1;
-    lines_[i1].end = p2;
-    lines_[i2].start = p2;
-    lines_[i2].end = p3;
-    lines_[i3].start = p3;
-    lines_[i3].end = p0;
-
-    updateBounds();
-    return true;
-  }
-
-  return setLineLength(*index, lengthMm);
-}
-
-bool Sketch::setCircleDiameterById(GeometryId id, double diameterMm) {
-  journalCaptureComponents({id});
-  // LOCK CONSTRAINT: locked circle diameter is immutable.
-  if (const auto lockedIndex = circleIndex(id);
-      lockedIndex && isGeometryLocked(id)) {
-    return std::abs(circles_[*lockedIndex].radiusMm * 2.0 -
-                    diameterMm) <= 1e-7;
-  }
-
-  const auto index = circleIndex(id);
-  return index ? setCircleDiameter(*index, diameterMm) : false;
-}
-
-bool Sketch::setLineHorizontalById(GeometryId id) {
-  // LOCK CONSTRAINT: locked H/V geometry is immutable.
-  if (isGeometryLocked(id)) {
-    const auto lockedIndex = lineIndex(id);
-    if (!lockedIndex) return false;
-    return std::abs(lines_[*lockedIndex].end.yMm - lines_[*lockedIndex].start.yMm) <= 1e-7;
-  }
-
-  const auto index = lineIndex(id);
-  if (!index) return false;
-
-  const Point oldEnd = lines_[*index].end;
-  const Point newEnd{oldEnd.xMm, lines_[*index].start.yMm};
-
-  const auto same = [](Point first, Point second) {
-    return std::hypot(first.xMm - second.xMm, first.yMm - second.yMm) <= 1e-7;
-  };
-
-  for (std::size_t candidate = 0; candidate < lines_.size(); ++candidate)
-    if (same(lines_[candidate].start, oldEnd) ||
-        same(lines_[candidate].end, oldEnd))
-      journalCaptureGeometry(lineIds_[candidate]);
-
-  for (auto& line : lines_) {
-    if (same(line.start, oldEnd)) line.start = newEnd;
-    if (same(line.end, oldEnd)) line.end = newEnd;
+  const auto mutation = mutationFromSolve(
+      *this, {id}, SketchSolver::solveStableComponent(
+                       *this, {id}, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
   }
   updateBounds();
-  return true;
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
 
-bool Sketch::setLineVerticalById(GeometryId id) {
-  // LOCK CONSTRAINT: locked H/V geometry is immutable.
-  if (isGeometryLocked(id)) {
-    const auto lockedIndex = lineIndex(id);
-    if (!lockedIndex) return false;
-    return std::abs(lines_[*lockedIndex].end.xMm - lines_[*lockedIndex].start.xMm) <= 1e-7;
-  }
-
-  const auto index = lineIndex(id);
-  if (!index) return false;
-
-  const Point oldEnd = lines_[*index].end;
-  const Point newEnd{lines_[*index].start.xMm, oldEnd.yMm};
-
-  const auto same = [](Point first, Point second) {
-    return std::hypot(first.xMm - second.xMm, first.yMm - second.yMm) <= 1e-7;
-  };
-
-  for (std::size_t candidate = 0; candidate < lines_.size(); ++candidate)
-    if (same(lines_[candidate].start, oldEnd) ||
-        same(lines_[candidate].end, oldEnd))
-      journalCaptureGeometry(lineIds_[candidate]);
-
-  for (auto& line : lines_) {
-    if (same(line.start, oldEnd)) line.start = newEnd;
-    if (same(line.end, oldEnd)) line.end = newEnd;
-  }
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setLinesParallelByIds(GeometryId firstId,
-                                   GeometryId secondId) {
-  journalCaptureComponents({firstId, secondId});
-  const auto firstIndex = lineIndex(firstId);
-  const auto secondIndex = lineIndex(secondId);
-  // LOCK CONSTRAINT: locked parallel operand is always the reference.
-  if (isGeometryLocked(secondId)) {
-    if (isGeometryLocked(firstId))
-      return false;
-    return setLinesParallelByIds(secondId, firstId);
-  }
-
-  if (!firstIndex || !secondIndex || firstId == secondId)
-    return false;
-
-  // CRASH-FREE 11: COMPOSITE-SAFE PARALLEL DISPATCH
-  //
-  // Parallel is a relative orientation constraint. Rotating only one side of
-  // a rectangle tears the composite apart. If exactly one operand is a
-  // composite, always rotate the standalone operand. If both operands belong
-  // to different composites, reject this primitive operation rather than
-  // deform either element.
-  const auto elementLineCount =
-      [this](std::size_t lineIndexValue) {
-        if (lineIndexValue >= lines_.size())
-          return std::size_t{0};
-
-        const std::size_t elementId =
-            lines_[lineIndexValue].elementId;
-
-        std::size_t count = 0;
-
-        for (const auto& line : lines_) {
-          if (line.elementId == elementId)
-            ++count;
-        }
-
-        return count;
-      };
-
-  const std::size_t firstElementCount =
-      elementLineCount(*firstIndex);
-  const std::size_t secondElementCount =
-      elementLineCount(*secondIndex);
-
-  const bool firstComposite =
-      firstElementCount > 1;
-  const bool secondComposite =
-      secondElementCount > 1;
-
-  const std::size_t firstElementId =
-      lines_[*firstIndex].elementId;
-  const std::size_t secondElementId =
-      lines_[*secondIndex].elementId;
-
-  if (firstElementId != secondElementId) {
-    if (!firstComposite && secondComposite) {
-      // Reverse the relationship: keep the rectangle side as reference and
-      // rotate the standalone line instead.
-      return setLinesParallelByIds(
-          secondId,
-          firstId);
-    }
-
-    if (firstComposite && secondComposite) {
-      // Rotating one side of either composite would destroy its shape.
-      return false;
-    }
-  }
-
-  const auto& first = lines_[*firstIndex];
-  auto& second = lines_[*secondIndex];
-
-  const double firstDx = first.end.xMm - first.start.xMm;
-  const double firstDy = first.end.yMm - first.start.yMm;
-  const double firstLength = std::hypot(firstDx, firstDy);
-
-  const double secondDx = second.end.xMm - second.start.xMm;
-  const double secondDy = second.end.yMm - second.start.yMm;
-  const double secondLength = std::hypot(secondDx, secondDy);
-
-  if (firstLength <= 1e-9 || secondLength <= 1e-9)
-    return false;
-
-  const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm,
-                      a.yMm - b.yMm) <= 1e-7;
-  };
-
-  // Preserve a shared CAD vertex when the two lines are connected.
-  bool pivotAtStart = true;
-  Point pivot = second.start;
-
-  if (same(second.start, first.start) ||
-      same(second.start, first.end)) {
-    pivotAtStart = true;
-    pivot = second.start;
-  } else if (same(second.end, first.start) ||
-             same(second.end, first.end)) {
-    pivotAtStart = false;
-    pivot = second.end;
-  }
-
-  double ux = firstDx / firstLength;
-  double uy = firstDy / firstLength;
-
-  // Choose the parallel direction closest to the current orientation of the
-  // moving line, avoiding an unnecessary 180-degree flip.
-  const double dot = secondDx * ux + secondDy * uy;
-  if (dot < 0.0) {
-    ux = -ux;
-    uy = -uy;
-  }
-
-  const Point oldMovingPoint =
-      pivotAtStart ? second.end : second.start;
-
-  const Point newMovingPoint =
-      pivotAtStart
-          ? Point{pivot.xMm + ux * secondLength,
-                  pivot.yMm + uy * secondLength}
-          : Point{pivot.xMm - ux * secondLength,
-                  pivot.yMm - uy * secondLength};
-
-  if (pivotAtStart)
-    second.end = newMovingPoint;
-  else
-    second.start = newMovingPoint;
-
-  // Preserve legacy behaviour for endpoint clusters that currently share the
-  // same coordinate, including geometry without an explicit Coincident yet.
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    if (index == *secondIndex) continue;
-
-    auto& line = lines_[index];
-    if (same(line.start, oldMovingPoint))
-      line.start = newMovingPoint;
-    if (same(line.end, oldMovingPoint))
-      line.end = newMovingPoint;
-  }
-
-  updateBounds();
-  return true;
-}
-bool Sketch::setParallelLineDistanceByIds(
-    GeometryId referenceId, GeometryId movingId, double distanceMm) {
-  journalCaptureComponents({referenceId, movingId});
-  if (referenceId == kInvalidGeometryId ||
-      movingId == kInvalidGeometryId ||
-      referenceId == movingId ||
-      !std::isfinite(distanceMm) || distanceMm <= 0.0)
-    return false;
-
-  // LOCK CONSTRAINT: locked spacing operand is the reference.
-  if (isGeometryLocked(movingId)) {
-    if (isGeometryLocked(referenceId))
-      return false;
-    return setParallelLineDistanceByIds(
-        movingId, referenceId, distanceMm);
-  }
-
-  const auto referenceIndex = lineIndex(referenceId);
-  const auto movingIndex = lineIndex(movingId);
-  if (!referenceIndex || !movingIndex) return false;
-
-  const Line reference = lines_[*referenceIndex];
-  const Line moving = lines_[*movingIndex];
-  const double rx = reference.end.xMm - reference.start.xMm;
-  const double ry = reference.end.yMm - reference.start.yMm;
-  const double mx = moving.end.xMm - moving.start.xMm;
-  const double my = moving.end.yMm - moving.start.yMm;
-  const double rl = std::hypot(rx, ry);
-  const double ml = std::hypot(mx, my);
-  if (rl <= 1e-9 || ml <= 1e-9) return false;
-
-  const double parallelResidual =
-      std::abs(rx * my - ry * mx) / (rl * ml);
-  if (parallelResidual > 1e-6) return false;
-
-  const double nx = -ry / rl;
-  const double ny = rx / rl;
-  const double currentSigned =
-      (moving.start.xMm - reference.start.xMm) * nx +
-      (moving.start.yMm - reference.start.yMm) * ny;
-  const double targetSigned =
-      currentSigned < 0.0 ? -distanceMm : distanceMm;
-  const double delta = targetSigned - currentSigned;
-  if (std::abs(delta) <= 1e-10) return true;
-
-  const std::size_t movingElement = moving.elementId;
-  for (auto& line : lines_) {
-    if (line.elementId != movingElement) continue;
-    line.start.xMm += nx * delta;
-    line.start.yMm += ny * delta;
-    line.end.xMm += nx * delta;
-    line.end.yMm += ny * delta;
-  }
-
-  // Preserve Coincident neighbours of a moving loose line. This is important
-  // for profiles such as the user's internal horizontal segment connected to
-  // a vertical and a diagonal: changing its spacing stretches those neighbour
-  // segments instead of opening gaps.
-  const auto belongsToMoving =
-      [this, movingElement](PointReference reference) {
-        if (reference.lineId == kInvalidGeometryId) return false;
-        const auto index = lineIndex(reference.lineId);
-        return index && lines_[*index].elementId == movingElement;
-      };
-
-  const auto setLooseExternalPoint =
-      [this](PointReference reference, Point target) {
-        if (reference.lineId == kInvalidGeometryId) return;
-        const auto index = lineIndex(reference.lineId);
-        if (!index) return;
-        const std::size_t element = lines_[*index].elementId;
-        const auto members = static_cast<std::size_t>(std::count_if(
-            lines_.begin(), lines_.end(),
-            [element](const Line& line) {
-              return line.elementId == element;
-            }));
-        // Never deform a rectangle/composite to satisfy spacing of a loose line.
-        if (members != 1) return;
-        Point& point = reference.start ? lines_[*index].start
-                                       : lines_[*index].end;
-        point = target;
-      };
-
-  for (const auto& constraint : constraints_) {
-    if (constraint.type != ConstraintType::Coincident) continue;
-    const bool firstMoves = belongsToMoving(constraint.firstPoint);
-    const bool secondMoves = belongsToMoving(constraint.secondPoint);
-    if (firstMoves == secondMoves) continue;
-    const auto movedReference =
-        firstMoves ? constraint.firstPoint : constraint.secondPoint;
-    const auto externalReference =
-        firstMoves ? constraint.secondPoint : constraint.firstPoint;
-    if (const auto point = referencedPoint(movedReference))
-      setLooseExternalPoint(externalReference, *point);
-  }
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setLineAngleByIds(GeometryId firstId, GeometryId secondId,
-                               double angleDegrees) {
-  journalCaptureComponents({firstId, secondId});
-  const auto firstIndex = lineIndex(firstId);
-  const auto secondIndex = lineIndex(secondId);
-  // LOCK CONSTRAINT: locked angle operand is always the reference.
-  if (isGeometryLocked(secondId)) {
-    if (isGeometryLocked(firstId))
-      return false;
-    return setLineAngleByIds(secondId, firstId, angleDegrees);
-  }
-
-  if (!firstIndex || !secondIndex || firstId == secondId ||
-      angleDegrees <= 0.0 || angleDegrees >= 180.0)
-    return false;
-  // COMPOSITE-SAFE ANGLE DISPATCH
-  //
-  // This primitive rotates only the SECOND line. That is safe for a
-  // standalone line, but rotating one side of a rectangle as if it were an
-  // independent primitive tears the composite apart.
-  //
-  // If exactly one operand belongs to a multi-line element, always rotate
-  // the standalone/smaller operand. If both operands are different composite
-  // elements, reject the primitive operation instead of corrupting geometry.
-  const auto elementLineCount =
-      [this](std::size_t lineIndexValue) {
-        if (lineIndexValue >= lines_.size())
-          return std::size_t{0};
-
-        const std::size_t elementId =
-            lines_[lineIndexValue].elementId;
-
-        std::size_t count = 0;
-        for (const auto& line : lines_) {
-          if (line.elementId == elementId)
-            ++count;
-        }
-
-        return count;
-      };
-
-  const std::size_t firstElementLineCount =
-      elementLineCount(*firstIndex);
-  const std::size_t secondElementLineCount =
-      elementLineCount(*secondIndex);
-
-  const bool firstComposite =
-      firstElementLineCount > 1;
-  const bool secondComposite =
-      secondElementLineCount > 1;
-
-  const std::size_t firstElementId =
-      lines_[*firstIndex].elementId;
-  const std::size_t secondElementId =
-      lines_[*secondIndex].elementId;
-
-  // Internal rectangle constraints (two sides of the SAME composite) still
-  // use the normal primitive implementation below.
-  if (firstElementId != secondElementId) {
-    if (!firstComposite && secondComposite) {
-      // Solver chose the rectangle side as the moving operand. Reverse the
-      // relationship so the standalone line rotates instead.
-      return setLineAngleByIds(secondId, firstId, angleDegrees);
-    }
-
-    if (firstComposite && secondComposite) {
-      // Rotating one primitive of either composite would be destructive.
-      return false;
-    }
-  }
-
-  const Line& first = lines_[*firstIndex];
-  Line& second = lines_[*secondIndex];
-
-  const Point oldStart = second.start;
-  const Point oldEnd = second.end;
-
-  const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm,
-                      a.yMm - b.yMm) <= 1e-7;
-  };
-
-  // Determine the real shared CAD vertex when the lines touch.
-  //
-  // The shared vertex is the hinge. It must stay fixed; only the opposite
-  // endpoint of the moving line is allowed to rotate.
-  bool pivotAtStart = true;
-  bool hasSharedPivot = false;
-  bool pivotOnFirstBody = false;
-  Point pivot = oldStart;
-  Point firstRayEnd = first.end;
-
-  if (same(oldStart, first.start)) {
-    pivotAtStart = true;
-    hasSharedPivot = true;
-    pivot = oldStart;
-    firstRayEnd = first.end;
-  } else if (same(oldStart, first.end)) {
-    pivotAtStart = true;
-    hasSharedPivot = true;
-    pivot = oldStart;
-    firstRayEnd = first.start;
-  } else if (same(oldEnd, first.start)) {
-    pivotAtStart = false;
-    hasSharedPivot = true;
-    pivot = oldEnd;
-    firstRayEnd = first.end;
-  } else if (same(oldEnd, first.end)) {
-    pivotAtStart = false;
-    hasSharedPivot = true;
-    pivot = oldEnd;
-    firstRayEnd = first.start;
-  }
-
-  // CRASH-FREE 16: FIX ANGLE ENDPOINT PIVOT
-  //
-  // A CAD angle is frequently created where an endpoint of one line touches
-  // the BODY of another line. That is a real angular vertex even though the
-  // two primitives do not share endpoint coordinates. Keep that endpoint
-  // fixed and rotate only the opposite/free endpoint.
-  if (!hasSharedPivot) {
-    const auto pointOnFiniteSegment =
-        [](Point point, const Line& carrier) {
-          const double dx =
-              carrier.end.xMm -
-              carrier.start.xMm;
-          const double dy =
-              carrier.end.yMm -
-              carrier.start.yMm;
-          const double lengthSquared =
-              dx * dx + dy * dy;
-
-          if (lengthSquared <= 1e-12)
-            return false;
-
-          const double t =
-              ((point.xMm - carrier.start.xMm) * dx +
-               (point.yMm - carrier.start.yMm) * dy) /
-              lengthSquared;
-
-          constexpr double parameterTolerance =
-              1e-7;
-
-          if (t < -parameterTolerance ||
-              t > 1.0 + parameterTolerance)
-            return false;
-
-          const double clampedT =
-              std::clamp(t, 0.0, 1.0);
-
-          const Point projected{
-              carrier.start.xMm +
-                  clampedT * dx,
-              carrier.start.yMm +
-                  clampedT * dy};
-
-          const double carrierLength =
-              std::sqrt(lengthSquared);
-
-          // Scale tolerance slightly with geometry size, while keeping a
-          // strict absolute floor for normal millimetre-sized sketches.
-          const double distanceTolerance =
-              std::max(
-                  1e-7,
-                  carrierLength * 1e-8);
-
-          return std::hypot(
-                     point.xMm - projected.xMm,
-                     point.yMm - projected.yMm) <=
-                 distanceTolerance;
-        };
-
-    const bool startOnFirst =
-        pointOnFiniteSegment(
-            oldStart,
-            first);
-    const bool endOnFirst =
-        pointOnFiniteSegment(
-            oldEnd,
-            first);
-
-    if (startOnFirst != endOnFirst) {
-      pivotAtStart =
-          startOnFirst;
-
-      pivot =
-          pivotAtStart
-              ? oldStart
-              : oldEnd;
-
-      hasSharedPivot = true;
-      pivotOnFirstBody = true;
-
-      // The reference line may continue on both sides of an interior pivot.
-      // Use the endpoint that points most strongly toward the current moving
-      // ray. This keeps the visible angular branch stable instead of flipping
-      // by 180 degrees when the carrier is crossed.
-      const Point movingEnd =
-          pivotAtStart
-              ? oldEnd
-              : oldStart;
-
-      const double movingDx =
-          movingEnd.xMm -
-          pivot.xMm;
-      const double movingDy =
-          movingEnd.yMm -
-          pivot.yMm;
-
-      const double startDx =
-          first.start.xMm -
-          pivot.xMm;
-      const double startDy =
-          first.start.yMm -
-          pivot.yMm;
-      const double endDx =
-          first.end.xMm -
-          pivot.xMm;
-      const double endDy =
-          first.end.yMm -
-          pivot.yMm;
-
-      const double startLength =
-          std::hypot(startDx, startDy);
-      const double endLength =
-          std::hypot(endDx, endDy);
-
-      double startScore =
-          -std::numeric_limits<double>::infinity();
-      double endScore =
-          -std::numeric_limits<double>::infinity();
-
-      if (startLength > 1e-9) {
-        startScore =
-            (movingDx * startDx +
-             movingDy * startDy) /
-            startLength;
-      }
-
-      if (endLength > 1e-9) {
-        endScore =
-            (movingDx * endDx +
-             movingDy * endDy) /
-            endLength;
-      }
-
-      firstRayEnd =
-          endScore >= startScore
-              ? first.end
-              : first.start;
-    }
-  }
-
-  // Truly disconnected lines have no CAD hinge. Preserve the historical
-  // fallback only for that case.
-  if (!hasSharedPivot) {
-    pivotAtStart = true;
-    pivot = oldStart;
-    firstRayEnd = {
-        pivot.xMm +
-            (first.end.xMm -
-             first.start.xMm),
-        pivot.yMm +
-            (first.end.yMm -
-             first.start.yMm)};
-  }
-
-  // When the angular vertex lies on the BODY of the reference line, that
-  // endpoint is allowed to slide along its PointOnLine carrier. For a
-  // perpendicular relation, project the opposite endpoint onto the carrier
-  // instead of rotating the opposite endpoint around a frozen foot. This is
-  // essential for the common projected-geometry chain:
-  // circle -> sized line -> projected straight edge.
-  if (pivotOnFirstBody && std::abs(angleDegrees - 90.0) <= 1e-9) {
-    const Point freePoint = pivotAtStart ? oldEnd : oldStart;
-    const double carrierDx = first.end.xMm - first.start.xMm;
-    const double carrierDy = first.end.yMm - first.start.yMm;
-    const double carrierLengthSquared =
-        carrierDx * carrierDx + carrierDy * carrierDy;
-    if (carrierLengthSquared <= 1e-12) return false;
-    const double parameter =
-        ((freePoint.xMm - first.start.xMm) * carrierDx +
-         (freePoint.yMm - first.start.yMm) * carrierDy) /
-        carrierLengthSquared;
-    const Point newPivot{
-        first.start.xMm + parameter * carrierDx,
-        first.start.yMm + parameter * carrierDy};
-
-    if (pivotAtStart)
-      second.start = newPivot;
-    else
-      second.end = newPivot;
-
-    for (std::size_t lineIndexValue = 0;
-         lineIndexValue < lines_.size(); ++lineIndexValue) {
-      if (lineIndexValue == *secondIndex) continue;
-      auto& line = lines_[lineIndexValue];
-      if (same(line.start, pivot)) line.start = newPivot;
-      if (same(line.end, pivot)) line.end = newPivot;
-    }
-    updateBounds();
-    return true;
-  }
-
-  const Point secondRayEnd =
-      pivotAtStart ? oldEnd : oldStart;
-
-  const double firstDx = firstRayEnd.xMm - pivot.xMm;
-  const double firstDy = firstRayEnd.yMm - pivot.yMm;
-  const double secondDx = secondRayEnd.xMm - pivot.xMm;
-  const double secondDy = secondRayEnd.yMm - pivot.yMm;
-
-  const double firstLength = std::hypot(firstDx, firstDy);
-  const double secondLength = std::hypot(secondDx, secondDy);
-
-  if (firstLength <= 1e-9 || secondLength <= 1e-9)
-    return false;
-
-  constexpr double pi = 3.14159265358979323846;
-  const double targetOffset = angleDegrees * pi / 180.0;
-
-  const double referenceAngle =
-      std::atan2(firstDy, firstDx);
-  const double currentAngle =
-      std::atan2(secondDy, secondDx);
-
-  // Both +angle and -angle satisfy an unsigned CAD angle. Pick the solution
-  // that is nearest to the line's current orientation. This prevents a small
-  // correction from unexpectedly turning into a ~180-degree flip.
-  const auto wrappedDelta = [pi](double from, double to) {
-    double delta = to - from;
-
-    while (delta > pi)
-      delta -= 2.0 * pi;
-    while (delta < -pi)
-      delta += 2.0 * pi;
-
-    return delta;
-  };
-
-  const double candidatePositive =
-      referenceAngle + targetOffset;
-  const double candidateNegative =
-      referenceAngle - targetOffset;
-
-  const double positiveMove =
-      std::abs(wrappedDelta(currentAngle, candidatePositive));
-  const double negativeMove =
-      std::abs(wrappedDelta(currentAngle, candidateNegative));
-
-  const double targetAngle =
-      positiveMove <= negativeMove
-          ? candidatePositive
-          : candidateNegative;
-
-  const Point oldMoving =
-      pivotAtStart ? oldEnd : oldStart;
-
-  const Point newMoving{
-      pivot.xMm + std::cos(targetAngle) * secondLength,
-      pivot.yMm + std::sin(targetAngle) * secondLength};
-
-  // Move only the free endpoint. The pivot/opposite endpoint is deliberately
-  // untouched. Existing geometry coincident with the moving endpoint follows
-  // that endpoint as one CAD vertex cluster.
-  if (pivotAtStart)
-    second.end = newMoving;
-  else
-    second.start = newMoving;
-
-  for (std::size_t index = 0; index < lines_.size(); ++index) {
-    if (index == *secondIndex)
-      continue;
-
-    auto& line = lines_[index];
-
-    if (same(line.start, oldMoving))
-      line.start = newMoving;
-    if (same(line.end, oldMoving))
-      line.end = newMoving;
-  }
-
-  for (auto& circle : circles_) {
-    if (same(circle.center, oldMoving))
-      circle.center = newMoving;
-  }
-
-  updateBounds();
-  return true;
-}
 GeometryId Sketch::lineId(std::size_t index) const noexcept {
   return index < lineIds_.size() ? lineIds_[index] : kInvalidGeometryId;
 }
@@ -2837,45 +2642,6 @@ void Sketch::rebuildStructureIndexes() const {
       connect(members.front(), members[i]);
   }
 
-  // Several interactive mutators preserve an existing CAD junction by
-  // moving every point that is coincident within the model tolerance.  That
-  // implicit coupling is part of the solve component too; otherwise a local
-  // solve can mutate geometry that was omitted from its journal/snapshot.
-  struct PointOwner {
-    Point point;
-    GeometryId id{kInvalidGeometryId};
-  };
-  std::vector<PointOwner> points;
-  points.reserve(lines_.size() * 2 + circles_.size() + beziers_.size() * 4);
-  for (std::size_t i = 0; i < lines_.size() && i < lineIds_.size(); ++i) {
-    points.push_back({lines_[i].start, lineIds_[i]});
-    points.push_back({lines_[i].end, lineIds_[i]});
-  }
-  for (std::size_t i = 0; i < circles_.size() && i < circleIds_.size(); ++i)
-    points.push_back({circles_[i].center, circleIds_[i]});
-  for (std::size_t i = 0; i < beziers_.size() && i < bezierIds_.size(); ++i)
-    for (const auto point : beziers_[i].points)
-      points.push_back({point, bezierIds_[i]});
-  std::sort(points.begin(), points.end(), [](const auto& first,
-                                             const auto& second) {
-    if (first.point.xMm != second.point.xMm)
-      return first.point.xMm < second.point.xMm;
-    if (first.point.yMm != second.point.yMm)
-      return first.point.yMm < second.point.yMm;
-    return first.id < second.id;
-  });
-  constexpr double kJunctionTolerance = 1e-7;
-  for (std::size_t i = 0; i < points.size(); ++i) {
-    for (std::size_t j = i + 1; j < points.size(); ++j) {
-      if (points[j].point.xMm - points[i].point.xMm > kJunctionTolerance)
-        break;
-      if (std::hypot(points[j].point.xMm - points[i].point.xMm,
-                     points[j].point.yMm - points[i].point.yMm) <=
-          kJunctionTolerance)
-        connect(points[i].id, points[j].id);
-    }
-  }
-
   const auto appendReference = [&elementMembers](
                                    std::vector<GeometryId>& ids,
                                    const PointReference& reference) {
@@ -2950,8 +2716,8 @@ ConstraintComponent Sketch::connectedComponent(
     }
   }
   std::sort(result.geometryIds.begin(), result.geometryIds.end());
-  // Constraint order is persisted and may select a deterministic branch in
-  // an underconstrained sequential solve.  IDs are membership keys only.
+  // Preserve persistence order for delta journals. The equation graph sorts
+  // IDs independently, so solve status and pose never depend on this vector.
   for (const auto& constraint : constraints_)
     if (componentConstraints.contains(constraint.id))
       result.constraintIds.push_back(constraint.id);
@@ -3326,14 +3092,18 @@ SketchDelta Sketch::finishDeltaJournal() {
              a.bezierPoint == b.bezierPoint;
     };
     if (item.before && after && item.before->id == after->id &&
-        item.before->kind == after->kind &&
-        item.before->geometryId == after->geometryId &&
-        pointEqual(item.before->firstPoint, after->firstPoint) &&
-        pointEqual(item.before->secondPoint, after->secondPoint) &&
-        item.before->valueMm == after->valueMm &&
+        item.before->constraintId == after->constraintId &&
         item.before->offsetMm == after->offsetMm &&
-        item.before->angleRad == after->angleRad)
-      continue;
+        item.before->angleRad == after->angleRad) {
+      const bool linked = item.before->constraintId != kInvalidConstraintId;
+      if (linked ||
+          (item.before->kind == after->kind &&
+           item.before->geometryId == after->geometryId &&
+           pointEqual(item.before->firstPoint, after->firstPoint) &&
+           pointEqual(item.before->secondPoint, after->secondPoint) &&
+           item.before->valueMm == after->valueMm))
+        continue;
+    }
     const auto oldIndex = item.beforeIndex.value_or(afterIndex.value_or(0));
     delta.dimensions.push_back(
         {oldIndex, afterIndex.value_or(oldIndex), item.before, after});
@@ -3387,11 +3157,30 @@ SketchDelta Sketch::finishDeltaJournal() {
 
 SketchDelta Sketch::cancelDeltaJournal() {
   if (deltaJournals_.empty()) return {};
-  const auto parentDimensionTokens =
-      deltaJournals_.back().parentDimensionTokensBefore;
+  const auto& journal = deltaJournals_.back();
+  const auto parentDimensionTokens = journal.parentDimensionTokensBefore;
+  const auto lastSolvedFingerprint = journal.beforeLastSolvedFingerprint;
+  const bool hasLastSolvedFingerprint = journal.beforeHasLastSolvedFingerprint;
+  const bool lastSolveConverged = journal.beforeLastSolveConverged;
+  const auto lastSolveViolatedConstraints =
+      journal.beforeLastSolveViolatedConstraints;
+  const double lastSolveMaxNormalizedResidual =
+      journal.beforeLastSolveMaxNormalizedResidual;
+  const auto lastSolveUnsupported = journal.beforeLastSolveUnsupported;
+  const auto lastSolveInvalidReferences =
+      journal.beforeLastSolveInvalidReferences;
+  const auto lastSolveResult = journal.beforeLastSolveResult;
   auto delta = finishDeltaJournal();
   if (!delta.empty() && !applyDelta(delta, false))
     throw std::logic_error("Sketch delta journal rollback failed");
+  lastSolvedFingerprint_ = lastSolvedFingerprint;
+  hasLastSolvedFingerprint_ = hasLastSolvedFingerprint;
+  lastSolveConverged_ = lastSolveConverged;
+  lastSolveViolatedConstraints_ = lastSolveViolatedConstraints;
+  lastSolveMaxNormalizedResidual_ = lastSolveMaxNormalizedResidual;
+  lastSolveUnsupported_ = lastSolveUnsupported;
+  lastSolveInvalidReferences_ = lastSolveInvalidReferences;
+  lastSolveResult_ = lastSolveResult;
   if (parentDimensionTokens.size() != deltaJournals_.size())
     throw std::logic_error("Sketch delta journal parent mismatch");
   for (std::size_t index = 0; index < deltaJournals_.size(); ++index)
@@ -3463,16 +3252,18 @@ SketchDelta Sketch::makeDelta(const Sketch& before, const Sketch& after) {
          delta.centerNodeElementIds, sameId);
   append(before.dimensions_, after.dimensions_, delta.dimensions,
          [&pointEqual](const Dimension& a, const Dimension& b) {
-            return a.id == b.id && a.kind == b.kind &&
-                   a.geometryId == b.geometryId &&
+           if (a.id != b.id || a.constraintId != b.constraintId ||
+               a.offsetMm != b.offsetMm || a.angleRad != b.angleRad)
+             return false;
+           if (a.constraintId != kInvalidConstraintId) return true;
+           return a.kind == b.kind && a.geometryId == b.geometryId &&
                   pointEqual(a.firstPoint, b.firstPoint) &&
                   pointEqual(a.secondPoint, b.secondPoint) &&
-                  a.valueMm == b.valueMm && a.offsetMm == b.offsetMm &&
-                  a.angleRad == b.angleRad;
+                  a.valueMm == b.valueMm;
          });
   append(before.constraints_, after.constraints_, delta.constraints,
          [&pointEqual](const Constraint& a, const Constraint& b) {
-           return a.id == b.id && a.type == b.type &&
+           return a.id == b.id && a.mode == b.mode && a.type == b.type &&
                   a.firstGeometry == b.firstGeometry &&
                   a.secondGeometry == b.secondGeometry &&
                   pointEqual(a.firstPoint, b.firstPoint) &&
@@ -3660,16 +3451,18 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
   };
   const auto dimensionEqual = [&pointEqual](const Dimension& a,
                                              const Dimension& b) {
-    return a.id == b.id && a.kind == b.kind &&
-           a.geometryId == b.geometryId &&
+    if (a.id != b.id || a.constraintId != b.constraintId ||
+        a.offsetMm != b.offsetMm || a.angleRad != b.angleRad)
+      return false;
+    if (a.constraintId != kInvalidConstraintId) return true;
+    return a.kind == b.kind && a.geometryId == b.geometryId &&
            pointEqual(a.firstPoint, b.firstPoint) &&
            pointEqual(a.secondPoint, b.secondPoint) &&
-           a.valueMm == b.valueMm && a.offsetMm == b.offsetMm &&
-           a.angleRad == b.angleRad;
+           a.valueMm == b.valueMm;
   };
   const auto constraintEqual = [&pointEqual](const Constraint& a,
                                               const Constraint& b) {
-    return a.id == b.id && a.type == b.type &&
+    return a.id == b.id && a.mode == b.mode && a.type == b.type &&
            a.firstGeometry == b.firstGeometry &&
            a.secondGeometry == b.secondGeometry &&
            pointEqual(a.firstPoint, b.firstPoint) &&
@@ -3834,7 +3627,7 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     constraintIds.reserve(finalConstraints.size());
     for (const auto& item : finalConstraints) {
       if (item.id == kInvalidConstraintId ||
-          static_cast<unsigned>(item.type) >
+          static_cast<unsigned>(static_cast<ConstraintType>(item.type)) >
               static_cast<unsigned>(ConstraintType::PointOnYAxis) ||
           !std::isfinite(item.value))
         return false;
@@ -3970,16 +3763,23 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
       mix(finalDimensions.size());
       for (const auto& dimension : finalDimensions) {
         mix(dimension.id);
-        mix(static_cast<std::uint64_t>(dimension.kind));
-        mix(dimension.geometryId); mixPoint(dimension.firstPoint);
-        mixPoint(dimension.secondPoint); mixDouble(dimension.valueMm);
+        mix(dimension.constraintId);
         mixDouble(dimension.offsetMm); mixDouble(dimension.angleRad);
+        if (dimension.constraintId == kInvalidConstraintId) {
+          mix(static_cast<std::uint64_t>(dimension.kind));
+          mix(dimension.geometryId); mixPoint(dimension.firstPoint);
+          mixPoint(dimension.secondPoint); mixDouble(dimension.valueMm);
+        }
       }
       mix(finalConstraints.size());
       for (const auto& constraint : finalConstraints) {
-        mix(constraint.id); mix(static_cast<std::uint64_t>(constraint.type));
+        mix(constraint.id);
+        mix(static_cast<std::uint64_t>(constraint.mode));
+        mix(static_cast<std::uint64_t>(
+            static_cast<ConstraintType>(constraint.type)));
         mix(constraint.firstGeometry); mix(constraint.secondGeometry);
-        mixPoint(constraint.firstPoint); mixPoint(constraint.secondPoint);
+        mixPoint(constraint.firstPoint);
+        mixPoint(constraint.secondPoint);
         mixDouble(constraint.value);
       }
       mix(finalNextElement); mix(finalNextGeometry); mix(finalNextConstraint);
@@ -3989,7 +3789,8 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     const auto expectedTargetFingerprint =
         forward ? delta.afterSemanticFingerprint
                 : delta.beforeSemanticFingerprint;
-    if (projectedFingerprint() != expectedTargetFingerprint) return false;
+    const auto projected = projectedFingerprint();
+    if (projected != expectedTargetFingerprint) return false;
 
     if (lines) lines_.swap(*lines);
     if (circles) circles_.swap(*circles);
@@ -4042,16 +3843,18 @@ bool Sketch::semanticallyEqual(const Sketch& other) const noexcept {
   };
   const auto dimensionEqual = [&pointEqual](const Dimension& a,
                                              const Dimension& b) {
-    return a.id == b.id && a.kind == b.kind &&
-           a.geometryId == b.geometryId &&
+    if (a.id != b.id || a.constraintId != b.constraintId ||
+        a.offsetMm != b.offsetMm || a.angleRad != b.angleRad)
+      return false;
+    if (a.constraintId != kInvalidConstraintId) return true;
+    return a.kind == b.kind && a.geometryId == b.geometryId &&
            pointEqual(a.firstPoint, b.firstPoint) &&
            pointEqual(a.secondPoint, b.secondPoint) &&
-           a.valueMm == b.valueMm && a.offsetMm == b.offsetMm &&
-           a.angleRad == b.angleRad;
+           a.valueMm == b.valueMm;
   };
   const auto constraintEqual = [&pointEqual](const Constraint& a,
                                               const Constraint& b) {
-    return a.id == b.id && a.type == b.type &&
+    return a.id == b.id && a.mode == b.mode && a.type == b.type &&
            a.firstGeometry == b.firstGeometry &&
            a.secondGeometry == b.secondGeometry &&
            pointEqual(a.firstPoint, b.firstPoint) &&
@@ -4149,18 +3952,23 @@ std::uint64_t Sketch::semanticFingerprint() const noexcept {
   mix(dimensions_.size());
   for (const auto& dimension : dimensions_) {
     mix(dimension.id);
-    mix(static_cast<std::uint64_t>(dimension.kind));
-    mix(dimension.geometryId);
-    mixPoint(dimension.firstPoint);
-    mixPoint(dimension.secondPoint);
-    mixDouble(dimension.valueMm);
+    mix(dimension.constraintId);
     mixDouble(dimension.offsetMm);
     mixDouble(dimension.angleRad);
+    if (dimension.constraintId == kInvalidConstraintId) {
+      mix(static_cast<std::uint64_t>(dimension.kind));
+      mix(dimension.geometryId);
+      mixPoint(dimension.firstPoint);
+      mixPoint(dimension.secondPoint);
+      mixDouble(dimension.valueMm);
+    }
   }
   mix(constraints_.size());
   for (const auto& constraint : constraints_) {
     mix(constraint.id);
-    mix(static_cast<std::uint64_t>(constraint.type));
+    mix(static_cast<std::uint64_t>(constraint.mode));
+    mix(static_cast<std::uint64_t>(
+        static_cast<ConstraintType>(constraint.type)));
     mix(constraint.firstGeometry);
     mix(constraint.secondGeometry);
     mixPoint(constraint.firstPoint);
@@ -4222,12 +4030,14 @@ std::uint64_t Sketch::solverFingerprint() const noexcept {
   };
   for (const auto& constraint : constraints_) {
     mix(constraint.id);
-    mix(static_cast<std::uint64_t>(constraint.type));
+    mix(static_cast<std::uint64_t>(
+        static_cast<ConstraintType>(constraint.type)));
     mix(constraint.firstGeometry);
     mix(constraint.secondGeometry);
     mixPoint(constraint.firstPoint);
     mixPoint(constraint.secondPoint);
-    mix(std::bit_cast<std::uint64_t>(constraint.value));
+    mix(std::bit_cast<std::uint64_t>(
+        static_cast<double>(constraint.value)));
   }
   return hash;
 }
@@ -4367,1261 +4177,26 @@ std::optional<Point> Sketch::referencedPoint(
   const auto& line = lines_[*index];
   return reference.start ? line.start : line.end;
 }
-bool Sketch::setPointsCoincident(PointReference firstReference,
-                                 PointReference secondReference) {
-  journalCapturePoint(firstReference);
-  journalCapturePoint(secondReference);
-  const auto first = referencedPoint(firstReference);
-  const auto second = referencedPoint(secondReference);
-  if (!first || !second) return false;
-  // LOCK CONSTRAINT: locked Coincident reference is the anchor.
-  const bool firstLocked =
-      isPointReferenceLocked(firstReference);
-  const bool secondLocked =
-      isPointReferenceLocked(secondReference);
-
-  if (secondLocked) {
-    if (firstLocked) {
-      return std::hypot(first->xMm - second->xMm,
-                        first->yMm - second->yMm) <= 1e-7;
-    }
-    return setPointsCoincident(
-        secondReference, firstReference);
-  }
-
-  const auto sameReference =
-      [](PointReference a, PointReference b) {
-        if (a.elementCenterId != 0 || b.elementCenterId != 0)
-          return a.elementCenterId != 0 &&
-                 a.elementCenterId == b.elementCenterId;
-
-        if (a.circleId != kInvalidGeometryId ||
-            b.circleId != kInvalidGeometryId)
-          return a.circleId != kInvalidGeometryId &&
-                 a.circleId == b.circleId;
-
-        if (a.arcId != kInvalidGeometryId ||
-            b.arcId != kInvalidGeometryId)
-          return a.arcId != kInvalidGeometryId &&
-                 b.arcId != kInvalidGeometryId &&
-                 a.arcId == b.arcId && a.start == b.start;
-
-        if (a.bezierId != kInvalidGeometryId ||
-            b.bezierId != kInvalidGeometryId)
-          return a.bezierId != kInvalidGeometryId &&
-                 b.bezierId != kInvalidGeometryId &&
-                 a.bezierId == b.bezierId &&
-                 a.bezierPoint == b.bezierPoint;
-
-        return a.lineId == b.lineId &&
-               a.start == b.start;
-      };
-
-  if (sameReference(firstReference, secondReference))
-    return true;
-
-  // Coinciding both ends of one line would collapse it.
-  if (firstReference.elementCenterId == 0 &&
-      secondReference.elementCenterId == 0 &&
-      firstReference.circleId == kInvalidGeometryId &&
-      secondReference.circleId == kInvalidGeometryId &&
-      firstReference.lineId != kInvalidGeometryId &&
-      firstReference.lineId == secondReference.lineId)
-    return false;
-
-  // Never collapse both endpoints of one Arc onto each other.
-  if (firstReference.arcId != kInvalidGeometryId &&
-      firstReference.arcId == secondReference.arcId &&
-      firstReference.start != secondReference.start)
-    return false;
-
-  const Point target = *first;
-  const Point oldSecond = *second;
-
-  if (std::hypot(target.xMm - oldSecond.xMm,
-                 target.yMm - oldSecond.yMm) <= 1e-9)
-    return true;
-
-  // A virtual rectangle center is not an independently movable coordinate.
-  // Moving it means translating the complete owning rectangle.
-  if (secondReference.elementCenterId != 0) {
-    const double dx = target.xMm - oldSecond.xMm;
-    const double dy = target.yMm - oldSecond.yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != secondReference.elementCenterId)
-        continue;
-
-      line.start.xMm += dx;
-      line.start.yMm += dy;
-      line.end.xMm += dx;
-      line.end.yMm += dy;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  if (secondReference.circleId != kInvalidGeometryId) {
-    const auto index = circleIndex(secondReference.circleId);
-    if (!index) return false;
-    circles_[*index].center = target;
-  } else if (secondReference.arcId != kInvalidGeometryId) {
-    const auto index = arcIndex(secondReference.arcId);
-    if (!index) return false;
-    if (!moveArcEndpointForConstraint(arcs_[*index], secondReference.start,
-                                      target))
-      return false;
-  } else if (secondReference.bezierId != kInvalidGeometryId) {
-    const auto index = bezierIndex(secondReference.bezierId);
-    if (!index || secondReference.bezierPoint >= 4) return false;
-    beziers_[*index].points[secondReference.bezierPoint] = target;
-  } else {
-    const auto same = [](Point a, Point b) {
-      return std::hypot(a.xMm - b.xMm,
-                        a.yMm - b.yMm) <= 1e-7;
-    };
-
-    // Preserve the existing behavior for endpoint clusters that currently
-    // share the same geometric coordinate.
-    for (auto& line : lines_) {
-      if (same(line.start, oldSecond)) line.start = target;
-      if (same(line.end, oldSecond)) line.end = target;
-    }
-  }
-
-  updateBounds();
-  return true;
-}
-bool Sketch::setPointOnLine(GeometryId lineIdValue,
-                            PointReference pointReference) {
-  journalCaptureComponents({lineIdValue});
-  journalCapturePoint(pointReference);
-  const auto carrierIndex = lineIndex(lineIdValue);
-  const auto point = referencedPoint(pointReference);
-
-  // LOCK CONSTRAINT: the constrained point itself is locked.
-  // A locked carrier remains a valid reference.
-  if (isPointReferenceLocked(pointReference))
-    return false;
-
-  if (!carrierIndex || !point) return false;
-
-  // A line endpoint cannot be constrained onto its own carrier segment:
-  // that would be tautological and interferes with normal endpoint editing.
-  if (pointReference.circleId == kInvalidGeometryId &&
-      pointReference.lineId == lineIdValue)
-    return false;
-
-  const auto& carrier = lines_[*carrierIndex];
-  const double dx = carrier.end.xMm - carrier.start.xMm;
-  const double dy = carrier.end.yMm - carrier.start.yMm;
-  const double lengthSquared = dx * dx + dy * dy;
-
-  if (lengthSquared <= 1e-12) return false;
-
-  const double rawT =
-      ((point->xMm - carrier.start.xMm) * dx +
-       (point->yMm - carrier.start.yMm) * dy) /
-      lengthSquared;
-
-  // PointOnLine means point on the finite CAD segment, not on an infinite
-  // mathematical line. Clamp to the two endpoints.
-  const double t = std::clamp(rawT, 0.0, 1.0);
-
-  const Point target{
-      carrier.start.xMm + dx * t,
-      carrier.start.yMm + dy * t};
-
-  const Point oldPoint = *point;
-
-  if (pointReference.elementCenterId != 0) {
-    const double moveX = target.xMm - oldPoint.xMm;
-    const double moveY = target.yMm - oldPoint.yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != pointReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-  } else if (pointReference.circleId != kInvalidGeometryId) {
-    const auto circle = circleIndex(pointReference.circleId);
-    if (!circle) return false;
-    circles_[*circle].center = target;
-  } else if (pointReference.arcId != kInvalidGeometryId) {
-    const auto arc = arcIndex(pointReference.arcId);
-    if (!arc) return false;
-    if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target)) return false;
-  } else if (pointReference.bezierId != kInvalidGeometryId) {
-    const auto bezier = bezierIndex(pointReference.bezierId);
-    if (!bezier || pointReference.bezierPoint >= 4) return false;
-    beziers_[*bezier].points[pointReference.bezierPoint] = target;
-  } else {
-    const auto same = [](Point first, Point second) {
-      return std::hypot(first.xMm - second.xMm,
-                        first.yMm - second.yMm) <= 1e-7;
-    };
-
-    // Keep the complete coincident CAD vertex cluster together.
-    for (auto& line : lines_) {
-      if (same(line.start, oldPoint)) line.start = target;
-      if (same(line.end, oldPoint)) line.end = target;
-    }
-
-    for (auto& circle : circles_) {
-      if (same(circle.center, oldPoint))
-        circle.center = target;
-    }
-  }
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setPointToMidpoint(GeometryId lineIdValue,
-                                PointReference pointReference) {
-  journalCaptureComponents({lineIdValue});
-  journalCapturePoint(pointReference);
-  const auto carrierIndex = lineIndex(lineIdValue);
-  const auto point = referencedPoint(pointReference);
-
-  // LOCK CONSTRAINT: the constrained point itself is locked.
-  if (isPointReferenceLocked(pointReference))
-    return false;
-
-  if (!carrierIndex || !point) return false;
-
-  const auto& carrier = lines_[*carrierIndex];
-  const Point target{
-      (carrier.start.xMm + carrier.end.xMm) * 0.5,
-      (carrier.start.yMm + carrier.end.yMm) * 0.5};
-
-  const Point oldPoint = *point;
-
-  if (pointReference.elementCenterId != 0) {
-    const double moveX = target.xMm - oldPoint.xMm;
-    const double moveY = target.yMm - oldPoint.yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != pointReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-  } else if (pointReference.circleId != kInvalidGeometryId) {
-    const auto circle = circleIndex(pointReference.circleId);
-    if (!circle) return false;
-    circles_[*circle].center = target;
-  } else if (pointReference.arcId != kInvalidGeometryId) {
-    const auto arc = arcIndex(pointReference.arcId);
-    if (!arc) return false;
-    if (!moveArcEndpointRigid(arcs_[*arc], pointReference.start, target))
-      return false;
-  } else if (pointReference.bezierId != kInvalidGeometryId) {
-    const auto bezier = bezierIndex(pointReference.bezierId);
-    if (!bezier || pointReference.bezierPoint >= 4) return false;
-    beziers_[*bezier].points[pointReference.bezierPoint] = target;
-  } else {
-    const auto same = [](Point first, Point second) {
-      return std::hypot(first.xMm - second.xMm,
-                        first.yMm - second.yMm) <= 1e-7;
-    };
-
-    // Keep the complete coincident CAD vertex cluster together.
-    for (auto& line : lines_) {
-      if (same(line.start, oldPoint)) line.start = target;
-      if (same(line.end, oldPoint)) line.end = target;
-    }
-
-    for (auto& circle : circles_) {
-      if (same(circle.center, oldPoint))
-        circle.center = target;
-    }
-  }
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setPointOnXAxis(PointReference pointReference) {
-  journalCapturePoint(pointReference);
-  const auto point = referencedPoint(pointReference);
-  if (!point) return false;
-  return translatePoint(pointReference, 0.0, -point->yMm);
-}
-
-bool Sketch::setPointOnYAxis(PointReference pointReference) {
-  journalCapturePoint(pointReference);
-  const auto point = referencedPoint(pointReference);
-  if (!point) return false;
-  return translatePoint(pointReference, -point->xMm, 0.0);
-}
-
-bool Sketch::setPointOnCircle(GeometryId circleIdValue,
-                              PointReference pointReference) {
-  journalCaptureComponents({circleIdValue});
-  journalCapturePoint(pointReference);
-  const auto carrierIndex = circleIndex(circleIdValue);
-  const auto point = referencedPoint(pointReference);
-
-  // LOCK CONSTRAINT: the constrained point itself is locked.
-  // A locked carrier remains a valid reference.
-  if (isPointReferenceLocked(pointReference))
-    return false;
-
-  if (!carrierIndex || !point) return false;
-
-  // The centre of a circle cannot belong to its own circumference.
-  if (pointReference.circleId == circleIdValue)
-    return false;
-
-  const Circle& carrier = circles_[*carrierIndex];
-  if (carrier.radiusMm <= 1e-9) return false;
-
-  const Point oldPoint = *point;
-
-  double dx = oldPoint.xMm - carrier.center.xMm;
-  double dy = oldPoint.yMm - carrier.center.yMm;
-  double length = std::hypot(dx, dy);
-
-  // There is no radial direction if the point is exactly at the centre.
-  // Choose +X deterministically for that degenerate initial case.
-  if (length <= 1e-9) {
-    dx = 1.0;
-    dy = 0.0;
-    length = 1.0;
-  }
-
-  const Point target{
-      carrier.center.xMm + dx / length * carrier.radiusMm,
-      carrier.center.yMm + dy / length * carrier.radiusMm};
-
-  const double moveX = target.xMm - oldPoint.xMm;
-  const double moveY = target.yMm - oldPoint.yMm;
-
-  if (pointReference.elementCenterId != 0) {
-    // Rectangle centre is derived geometry: translate the whole rectangle.
-    for (auto& line : lines_) {
-      if (line.elementId != pointReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-  } else if (pointReference.circleId != kInvalidGeometryId) {
-    const auto movingCircle =
-        circleIndex(pointReference.circleId);
-    if (!movingCircle) return false;
-
-    circles_[*movingCircle].center = target;
-  } else if (pointReference.arcId != kInvalidGeometryId) {
-    const auto movingArc = arcIndex(pointReference.arcId);
-    if (!movingArc) return false;
-    if (!moveArcEndpointRigid(arcs_[*movingArc], pointReference.start, target)) return false;
-  } else if (pointReference.bezierId != kInvalidGeometryId) {
-    const auto movingBezier = bezierIndex(pointReference.bezierId);
-    if (!movingBezier || pointReference.bezierPoint >= 4) return false;
-    beziers_[*movingBezier].points[pointReference.bezierPoint] = target;
-  } else {
-    const auto same = [](Point first, Point second) {
-      return std::hypot(first.xMm - second.xMm,
-                        first.yMm - second.yMm) <= 1e-7;
-    };
-
-    // Keep a geometrically shared vertex together.
-    for (auto& line : lines_) {
-      if (same(line.start, oldPoint)) line.start = target;
-      if (same(line.end, oldPoint)) line.end = target;
-    }
-
-    for (auto& circle : circles_) {
-      if (same(circle.center, oldPoint))
-        circle.center = target;
-    }
-  }
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setPointOnArc(GeometryId arcIdValue,
-                           PointReference pointReference) {
-  journalCaptureComponents({arcIdValue});
-  journalCapturePoint(pointReference);
-  const auto carrierIndex = arcIndex(arcIdValue);
-  const auto point = referencedPoint(pointReference);
-  if (!carrierIndex || !point) return false;
-
-  const Arc& carrier = arcs_[*carrierIndex];
-  constexpr double kTwoPi = 6.28318530717958647692;
-  if (!std::isfinite(carrier.center.xMm) ||
-      !std::isfinite(carrier.center.yMm) ||
-      !std::isfinite(carrier.radiusMm) ||
-      !std::isfinite(carrier.startAngleRad) ||
-      !std::isfinite(carrier.sweepAngleRad) ||
-      carrier.radiusMm <= 1e-9 ||
-      carrier.sweepAngleRad <= 1e-9 ||
-      carrier.sweepAngleRad >= kTwoPi - 1e-9)
-    return false;
-
-  // An endpoint already belonging to the carrier is tautologically valid.
-  if (pointReference.arcId == arcIdValue)
-    return true;
-
-  const auto normalizeAngle = [](double angle) {
-    constexpr double twoPi = 6.28318530717958647692;
-    angle = std::fmod(angle, twoPi);
-    if (angle < 0.0) angle += twoPi;
-    return angle;
-  };
-
-  const Point oldPoint = *point;
-  const Point startPoint = arcStartPoint(carrier);
-  const Point endPoint = arcEndPoint(carrier);
-
-  double dx = oldPoint.xMm - carrier.center.xMm;
-  double dy = oldPoint.yMm - carrier.center.yMm;
-  const double radialLength = std::hypot(dx, dy);
-
-  Point target = startPoint;
-
-  if (radialLength > 1e-9) {
-    const double candidateAngle =
-        normalizeAngle(std::atan2(dy, dx));
-    const double startAngle =
-        normalizeAngle(carrier.startAngleRad);
-    const double delta =
-        normalizeAngle(candidateAngle - startAngle);
-
-    if (delta <= carrier.sweepAngleRad + 1e-12) {
-      target = {
-          carrier.center.xMm +
-              dx / radialLength * carrier.radiusMm,
-          carrier.center.yMm +
-              dy / radialLength * carrier.radiusMm};
-    } else {
-      const double startDistance =
-          std::hypot(oldPoint.xMm - startPoint.xMm,
-                     oldPoint.yMm - startPoint.yMm);
-      const double endDistance =
-          std::hypot(oldPoint.xMm - endPoint.xMm,
-                     oldPoint.yMm - endPoint.yMm);
-      target = startDistance <= endDistance
-                   ? startPoint
-                   : endPoint;
-    }
-  }
-
-  const double moveX = target.xMm - oldPoint.xMm;
-  const double moveY = target.yMm - oldPoint.yMm;
-
-  // A locked point may satisfy the relation, but must never be moved.
-  if (isPointReferenceLocked(pointReference))
-    return std::hypot(moveX, moveY) <= 1e-7;
-
-  if (pointReference.elementCenterId != 0) {
-    for (auto& line : lines_) {
-      if (line.elementId != pointReference.elementCenterId)
-        continue;
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-  } else if (pointReference.circleId != kInvalidGeometryId) {
-    const auto movingCircle = circleIndex(pointReference.circleId);
-    if (!movingCircle) return false;
-    circles_[*movingCircle].center = target;
-  } else if (pointReference.arcId != kInvalidGeometryId) {
-    // Move the other arc rigidly. Do not reshape either arc from PointOnArc.
-    const auto movingArc = arcIndex(pointReference.arcId);
-    if (!movingArc) return false;
-    arcs_[*movingArc].center.xMm += moveX;
-    arcs_[*movingArc].center.yMm += moveY;
-  } else if (pointReference.bezierId != kInvalidGeometryId) {
-    const auto movingBezier = bezierIndex(pointReference.bezierId);
-    if (!movingBezier || pointReference.bezierPoint >= 4) return false;
-    beziers_[*movingBezier].points[pointReference.bezierPoint] = target;
-  } else {
-    const auto same = [](Point first, Point second) {
-      return std::hypot(first.xMm - second.xMm,
-                        first.yMm - second.yMm) <= 1e-7;
-    };
-
-    // Preserve the existing endpoint-cluster behaviour used by PointOnCircle.
-    for (auto& line : lines_) {
-      if (same(line.start, oldPoint)) line.start = target;
-      if (same(line.end, oldPoint)) line.end = target;
-    }
-
-    for (auto& circle : circles_) {
-      if (same(circle.center, oldPoint))
-        circle.center = target;
-    }
-  }
-
-  // IMPORTANT: do not call translatePoint() here. translatePoint() invokes
-  // solveStable(), while this mutator is itself called from the solver.
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setCircleTangentToLine(GeometryId lineIdValue,
-                                    GeometryId circleIdValue) {
-  journalCaptureComponents({lineIdValue, circleIdValue});
-  const auto lineIndexValue = lineIndex(lineIdValue);
-  const auto circleIndexValue = circleIndex(circleIdValue);
-
-  if (!lineIndexValue || !circleIndexValue)
-    return false;
-
-  const Line line = lines_[*lineIndexValue];
-  Circle& circle = circles_[*circleIndexValue];
-
-  if (!std::isfinite(circle.radiusMm) ||
-      circle.radiusMm <= 1e-9)
-    return false;
-
-  const double dx = line.end.xMm - line.start.xMm;
-  const double dy = line.end.yMm - line.start.yMm;
-  const double lengthSquared = dx * dx + dy * dy;
-
-  if (lengthSquared <= 1e-12)
-    return false;
-
-  const double length = std::sqrt(lengthSquared);
-  const double nx = -dy / length;
-  const double ny = dx / length;
-
-  const double signedDistance =
-      (circle.center.xMm - line.start.xMm) * nx +
-      (circle.center.yMm - line.start.yMm) * ny;
-
-  const double side =
-      signedDistance < 0.0 ? -1.0 : 1.0;
-
-  const auto referencesCircleCenter =
-      [circleIdValue](PointReference reference) {
-        return !reference.origin && reference.elementCenterId == 0 &&
-               reference.circleId == circleIdValue;
-      };
-  const bool circleCenterAnchored =
-      std::any_of(constraints_.begin(), constraints_.end(),
-                  [&referencesCircleCenter](const Constraint& constraint) {
-                    return referencesCircleCenter(constraint.firstPoint) ||
-                           referencesCircleCenter(constraint.secondPoint);
-                  });
-
-  // A projected circle and a circle whose centre already has a positional
-  // constraint are reference geometry for a later tangency. Moving such a
-  // circle only makes a following datum/point pass move it back, leaving a
-  // visible Tangent entry whose geometry is no longer tangent. Reconstruct
-  // the line instead and preserve the earlier centre constraint.
-  if (isGeometryLocked(circleIdValue) || circleCenterAnchored) {
-    const auto referencesLineEndpoint =
-        [lineIdValue](PointReference reference) {
-          return !reference.origin && reference.elementCenterId == 0 &&
-                 reference.circleId == kInvalidGeometryId &&
-                 reference.arcId == kInvalidGeometryId &&
-                 reference.lineId == lineIdValue;
-        };
-    std::optional<bool> attachedEndpoint;
-    std::optional<bool> straightEndpoint;
-    GeometryId straightCarrierId = kInvalidGeometryId;
-    std::optional<double> drivingLength;
-
-    for (const auto& constraint : constraints_) {
-      if (constraint.type == ConstraintType::PointOnCircle &&
-          constraint.firstGeometry == circleIdValue &&
-          referencesLineEndpoint(constraint.secondPoint)) {
-        attachedEndpoint = constraint.secondPoint.start;
-      } else if (constraint.type == ConstraintType::PointOnLine &&
-                 constraint.firstGeometry != kInvalidGeometryId &&
-                 referencesLineEndpoint(constraint.secondPoint)) {
-        straightEndpoint = constraint.secondPoint.start;
-        straightCarrierId = constraint.firstGeometry;
-      } else if (constraint.type == ConstraintType::Length &&
-                 constraint.firstGeometry == lineIdValue &&
-                 std::isfinite(constraint.value) && constraint.value > 0.0) {
-        drivingLength = constraint.value;
-      } else if (constraint.type == ConstraintType::Distance &&
-                 referencesLineEndpoint(constraint.firstPoint) &&
-                 referencesLineEndpoint(constraint.secondPoint) &&
-                 constraint.firstPoint.start != constraint.secondPoint.start &&
-                 std::isfinite(constraint.value) && constraint.value > 0.0) {
-        drivingLength = constraint.value;
-      }
-    }
-
-    bool requiresPerpendicular = false;
-    if (straightCarrierId != kInvalidGeometryId) {
-      for (const auto& constraint : constraints_) {
-        const bool samePair =
-            (constraint.firstGeometry == straightCarrierId &&
-             constraint.secondGeometry == lineIdValue) ||
-            (constraint.secondGeometry == straightCarrierId &&
-             constraint.firstGeometry == lineIdValue);
-        if (!samePair)
-          continue;
-        if (constraint.type == ConstraintType::Perpendicular ||
-            (constraint.type == ConstraintType::Angle &&
-             std::abs(constraint.value - 90.0) <= 1e-7)) {
-          requiresPerpendicular = true;
-          break;
-        }
-      }
-    }
-
-    // LENGTH + TANGENCY ON PROJECTED REFERENCES
-    //
-    // Let Q be the endpoint on the straight carrier and P the tangent point.
-    // |QP| = L and CP = r imply |CQ| = sqrt(L^2 + r^2). Intersect that
-    // auxiliary circle with the straight projection, then construct the two
-    // tangent points from every valid Q. This solves the coupled constraints
-    // in one step instead of making the sequential passes overwrite each
-    // other. If a 90-degree relation already exists, keep only that branch.
-    if (drivingLength && attachedEndpoint && straightEndpoint &&
-        *attachedEndpoint != *straightEndpoint &&
-        straightCarrierId != kInvalidGeometryId &&
-        isGeometryLocked(straightCarrierId)) {
-      const auto straightIndex = lineIndex(straightCarrierId);
-      if (straightIndex) {
-        const Line straight = lines_[*straightIndex];
-        const double sx = straight.end.xMm - straight.start.xMm;
-        const double sy = straight.end.yMm - straight.start.yMm;
-        const double straightLength = std::hypot(sx, sy);
-        const double tangentLength = *drivingLength;
-        const double auxiliaryRadius =
-            std::hypot(tangentLength, circle.radiusMm);
-
-        if (straightLength > 1e-9 && auxiliaryRadius > circle.radiusMm) {
-          const double ux = sx / straightLength;
-          const double uy = sy / straightLength;
-          const double centerDx = circle.center.xMm - straight.start.xMm;
-          const double centerDy = circle.center.yMm - straight.start.yMm;
-          const double centerAlong = centerDx * ux + centerDy * uy;
-          const double centerNormal = -centerDx * uy + centerDy * ux;
-          double remaining = auxiliaryRadius * auxiliaryRadius -
-                             centerNormal * centerNormal;
-
-          struct TangentLineCandidate {
-            Point start;
-            Point end;
-            double movement{};
-          };
-          std::optional<TangentLineCandidate> best;
-
-          if (remaining >= -1e-8) {
-            remaining = std::max(0.0, remaining);
-            const double alongDelta = std::sqrt(remaining);
-            const double auxiliarySquared =
-                auxiliaryRadius * auxiliaryRadius;
-            const double alongFactor =
-                tangentLength * tangentLength / auxiliarySquared;
-            const double perpendicularFactor =
-                circle.radiusMm * tangentLength / auxiliarySquared;
-
-            for (const double alongSide : {-1.0, 1.0}) {
-              const double along = centerAlong + alongSide * alongDelta;
-              if (along < -1e-7 || along > straightLength + 1e-7)
-                continue;
-              const Point onStraight{
-                  straight.start.xMm + ux * along,
-                  straight.start.yMm + uy * along};
-              const double vx = circle.center.xMm - onStraight.xMm;
-              const double vy = circle.center.yMm - onStraight.yMm;
-
-              for (const double tangentSide : {-1.0, 1.0}) {
-                const Point onCircle{
-                    onStraight.xMm + alongFactor * vx -
-                        tangentSide * perpendicularFactor * vy,
-                    onStraight.yMm + alongFactor * vy +
-                        tangentSide * perpendicularFactor * vx};
-                const double candidateDx = onCircle.xMm - onStraight.xMm;
-                const double candidateDy = onCircle.yMm - onStraight.yMm;
-                if (requiresPerpendicular &&
-                    std::abs(candidateDx * ux + candidateDy * uy) > 1e-5)
-                  continue;
-
-                const Point candidateStart =
-                    *straightEndpoint ? onStraight : onCircle;
-                const Point candidateEnd =
-                    *straightEndpoint ? onCircle : onStraight;
-                const double movement =
-                    std::hypot(candidateStart.xMm - line.start.xMm,
-                               candidateStart.yMm - line.start.yMm) +
-                    std::hypot(candidateEnd.xMm - line.end.xMm,
-                               candidateEnd.yMm - line.end.yMm);
-                if (!best || movement < best->movement) {
-                  best = TangentLineCandidate{
-                      candidateStart, candidateEnd, movement};
-                }
-              }
-            }
-          }
-
-          if (best) {
-            lines_[*lineIndexValue].start = best->start;
-            lines_[*lineIndexValue].end = best->end;
-            updateBounds();
-            return true;
-          }
-        }
-      }
-    }
-
-    // TANGENCY WITH AN ENDPOINT ON A STRAIGHT CARRIER
-    //
-    // Keep the endpoint Q on its earlier PointOnLine carrier and construct
-    // the tangent point P analytically. This is the common edit path when a
-    // user drags the base of an already tangent line. A simple normal shift
-    // would pull Q off the carrier; the next PointOnLine pass would then undo
-    // the tangency while the constraint remained listed in the UI.
-    if (!drivingLength && attachedEndpoint && straightEndpoint &&
-        *attachedEndpoint != *straightEndpoint &&
-        straightCarrierId != kInvalidGeometryId) {
-      const auto straightIndex = lineIndex(straightCarrierId);
-      if (straightIndex) {
-        const Line straight = lines_[*straightIndex];
-        const double sx = straight.end.xMm - straight.start.xMm;
-        const double sy = straight.end.yMm - straight.start.yMm;
-        const double straightLength = std::hypot(sx, sy);
-        if (straightLength > 1e-9) {
-          const double ux = sx / straightLength;
-          const double uy = sy / straightLength;
-          const Point currentBase =
-              *straightEndpoint ? line.start : line.end;
-          const Point currentContact =
-              *attachedEndpoint ? line.start : line.end;
-          const double baseAlong = std::clamp(
-              (currentBase.xMm - straight.start.xMm) * ux +
-                  (currentBase.yMm - straight.start.yMm) * uy,
-              0.0, straightLength);
-          Point onStraight{straight.start.xMm + ux * baseAlong,
-                           straight.start.yMm + uy * baseAlong};
-          std::optional<Point> onCircle;
-
-          if (requiresPerpendicular) {
-            const double centerDx =
-                circle.center.xMm - straight.start.xMm;
-            const double centerDy =
-                circle.center.yMm - straight.start.yMm;
-            const double centerAlong = centerDx * ux + centerDy * uy;
-            double bestMovement = std::numeric_limits<double>::infinity();
-            for (const double branch : {-1.0, 1.0}) {
-              const double along = centerAlong + branch * circle.radiusMm;
-              if (along < -1e-7 || along > straightLength + 1e-7)
-                continue;
-              const Point candidateBase{
-                  straight.start.xMm + ux * along,
-                  straight.start.yMm + uy * along};
-              const Point candidateContact{
-                  circle.center.xMm + branch * circle.radiusMm * ux,
-                  circle.center.yMm + branch * circle.radiusMm * uy};
-              const double movement =
-                  std::hypot(candidateBase.xMm - currentBase.xMm,
-                             candidateBase.yMm - currentBase.yMm) +
-                  std::hypot(candidateContact.xMm - currentContact.xMm,
-                             candidateContact.yMm - currentContact.yMm);
-              if (movement < bestMovement) {
-                bestMovement = movement;
-                onStraight = candidateBase;
-                onCircle = candidateContact;
-              }
-            }
-          } else {
-            const double vx = circle.center.xMm - onStraight.xMm;
-            const double vy = circle.center.yMm - onStraight.yMm;
-            const double distanceSquared = vx * vx + vy * vy;
-            const double radiusSquared = circle.radiusMm * circle.radiusMm;
-            if (distanceSquared > radiusSquared + 1e-9) {
-              const double tangentLength =
-                  std::sqrt(distanceSquared - radiusSquared);
-              const double alongFactor =
-                  (distanceSquared - radiusSquared) / distanceSquared;
-              const double perpendicularFactor =
-                  circle.radiusMm * tangentLength / distanceSquared;
-              const Point candidates[2]{
-                  {onStraight.xMm + alongFactor * vx -
-                       perpendicularFactor * vy,
-                   onStraight.yMm + alongFactor * vy +
-                       perpendicularFactor * vx},
-                  {onStraight.xMm + alongFactor * vx +
-                       perpendicularFactor * vy,
-                   onStraight.yMm + alongFactor * vy -
-                       perpendicularFactor * vx}};
-              onCircle =
-                  std::hypot(candidates[0].xMm - currentContact.xMm,
-                             candidates[0].yMm - currentContact.yMm) <=
-                          std::hypot(candidates[1].xMm - currentContact.xMm,
-                                     candidates[1].yMm - currentContact.yMm)
-                      ? candidates[0]
-                      : candidates[1];
-            }
-          }
-
-          if (onCircle) {
-            Line& solvedLine = lines_[*lineIndexValue];
-            solvedLine.start = *straightEndpoint ? onStraight : *onCircle;
-            solvedLine.end = *straightEndpoint ? *onCircle : onStraight;
-            updateBounds();
-            return true;
-          }
-        }
-      }
-    }
-
-    const double targetSignedDistance = side * circle.radiusMm;
-    const double normalShift =
-        signedDistance - targetSignedDistance;
-
-    if (isGeometryLocked(lineIdValue))
-      return std::abs(normalShift) <= 1e-7;
-
-    const std::size_t elementId = line.elementId;
-    bool moved = false;
-
-    for (std::size_t index = 0; index < lines_.size(); ++index) {
-      if (lines_[index].elementId != elementId)
-        continue;
-      if (isGeometryLocked(lineIds_[index]))
-        return false;
-
-      lines_[index].start.xMm += nx * normalShift;
-      lines_[index].start.yMm += ny * normalShift;
-      lines_[index].end.xMm += nx * normalShift;
-      lines_[index].end.yMm += ny * normalShift;
-      moved = true;
-    }
-
-    if (!moved)
-      return false;
-
-    // If one endpoint is explicitly attached to this projected circle, put
-    // that endpoint on the exact tangent foot immediately. Letting the normal
-    // PointOnCircle pass project it radially makes the line non-tangent again
-    // and the two sequential passes otherwise chase each other indefinitely.
-    if (attachedEndpoint) {
-      Line& movedLine = lines_[*lineIndexValue];
-      const double movedDx = movedLine.end.xMm - movedLine.start.xMm;
-      const double movedDy = movedLine.end.yMm - movedLine.start.yMm;
-      const double movedLengthSquared =
-          movedDx * movedDx + movedDy * movedDy;
-      if (movedLengthSquared <= 1e-12)
-        return false;
-      const double contactParameter =
-          ((circle.center.xMm - movedLine.start.xMm) * movedDx +
-           (circle.center.yMm - movedLine.start.yMm) * movedDy) /
-          movedLengthSquared;
-      const Point contact{
-          movedLine.start.xMm + movedDx * contactParameter,
-          movedLine.start.yMm + movedDy * contactParameter};
-      if (*attachedEndpoint)
-        movedLine.start = contact;
-      else
-        movedLine.end = contact;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  // CRASH-FREE 04: FINITE SEGMENT TANGENCY
-  //
-  // Tangency belongs to the finite CAD segment. Project the circle centre
-  // onto the carrier and clamp the contact parameter to [0, 1]. This keeps
-  // the contact at the endpoint instead of letting the circle continue along
-  // an imaginary extension of the line.
-  const double rawT =
-      ((circle.center.xMm - line.start.xMm) * dx +
-       (circle.center.yMm - line.start.yMm) * dy) /
-      lengthSquared;
-
-  const double t =
-      std::clamp(rawT, 0.0, 1.0);
-
-  const Point contact{
-      line.start.xMm + dx * t,
-      line.start.yMm + dy * t};
-
-  circle.center.xMm =
-      contact.xMm + side * nx * circle.radiusMm;
-  circle.center.yMm =
-      contact.yMm + side * ny * circle.radiusMm;
-
-  updateBounds();
-  return true;
-}
-bool Sketch::setArcTangentToLine(GeometryId lineIdValue,
-                                 GeometryId arcIdValue) {
-  journalCaptureComponents({lineIdValue, arcIdValue});
-  if (isGeometryLocked(arcIdValue)) return false;
-  const auto lineIndexValue = lineIndex(lineIdValue);
-  const auto arcIndexValue = arcIndex(arcIdValue);
-  if (!lineIndexValue || !arcIndexValue) return false;
-
-  const Line& line = lines_[*lineIndexValue];
-  Arc& arc = arcs_[*arcIndexValue];
-  if (!std::isfinite(arc.radiusMm) || arc.radiusMm <= 1e-9 ||
-      !std::isfinite(arc.startAngleRad) ||
-      !std::isfinite(arc.sweepAngleRad) || arc.sweepAngleRad <= 1e-9)
-    return false;
-
-  const double dx = line.end.xMm - line.start.xMm;
-  const double dy = line.end.yMm - line.start.yMm;
-  const double lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared <= 1e-12) return false;
-
-  const double length = std::sqrt(lengthSquared);
-  const double nx = -dy / length;
-  const double ny = dx / length;
-  const double rawT =
-      ((arc.center.xMm - line.start.xMm) * dx +
-       (arc.center.yMm - line.start.yMm) * dy) /
-      lengthSquared;
-  const double t = std::clamp(rawT, 0.0, 1.0);
-  const Point contact{line.start.xMm + dx * t,
-                      line.start.yMm + dy * t};
-  const double signedDistance =
-      (arc.center.xMm - line.start.xMm) * nx +
-      (arc.center.yMm - line.start.yMm) * ny;
-  const double side = signedDistance < 0.0 ? -1.0 : 1.0;
-
-  arc.center.xMm = contact.xMm + side * nx * arc.radiusMm;
-  arc.center.yMm = contact.yMm + side * ny * arc.radiusMm;
-
-  // Tangency belongs to the finite Arc span. Preserve its sweep and rotate
-  // the rigid curve only when the contact direction is currently outside it.
-  constexpr double kTwoPi = 6.28318530717958647692;
-  const auto normalize = [kTwoPi](double angle) {
-    angle = std::fmod(angle, kTwoPi);
-    if (angle < 0.0) angle += kTwoPi;
-    return angle;
-  };
-  const double contactAngle =
-      std::atan2(contact.yMm - arc.center.yMm,
-                 contact.xMm - arc.center.xMm);
-  const double offset = normalize(contactAngle - arc.startAngleRad);
-  if (offset > arc.sweepAngleRad + 1e-9)
-    arc.startAngleRad = contactAngle - arc.sweepAngleRad * 0.5;
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setGeometriesTangentByIds(GeometryId firstId,
-                                       GeometryId secondId) {
-  if (firstId == kInvalidGeometryId || secondId == kInvalidGeometryId ||
-      firstId == secondId)
-    return false;
-  const auto firstLocation = geometryLocation(firstId);
-  const auto secondLocation = geometryLocation(secondId);
-  if (!firstLocation || !secondLocation) return false;
-
-  // Keep the mature finite line-circle/arc implementations as the canonical
-  // path, independent of the user's selection order.
-  if (firstLocation->kind == GeometryKind::Line &&
-      secondLocation->kind == GeometryKind::Circle)
-    return setCircleTangentToLine(firstId, secondId);
-  if (secondLocation->kind == GeometryKind::Line &&
-      firstLocation->kind == GeometryKind::Circle)
-    return setCircleTangentToLine(secondId, firstId);
-  if (firstLocation->kind == GeometryKind::Line &&
-      secondLocation->kind == GeometryKind::Arc)
-    return setArcTangentToLine(firstId, secondId);
-  if (secondLocation->kind == GeometryKind::Line &&
-      firstLocation->kind == GeometryKind::Arc)
-    return setArcTangentToLine(secondId, firstId);
-
-  journalCaptureComponents({firstId, secondId});
-
-  const auto radial = [this](GeometryId id)
-      -> std::optional<std::pair<Point, double>> {
-    if (const auto index = circleIndex(id))
-      return std::pair{circles_[*index].center, circles_[*index].radiusMm};
-    if (const auto index = arcIndex(id))
-      return std::pair{arcs_[*index].center, arcs_[*index].radiusMm};
-    return std::nullopt;
-  };
-  const auto setRadialCenter = [this](GeometryId id, Point center) {
-    if (const auto index = circleIndex(id)) {
-      circles_[*index].center = center;
-      return true;
-    }
-    if (const auto index = arcIndex(id)) {
-      arcs_[*index].center = center;
-      return true;
-    }
-    return false;
-  };
-
-  const auto firstRadial = radial(firstId);
-  const auto secondRadial = radial(secondId);
-  if (firstRadial && secondRadial) {
-    GeometryId fixedId = firstId;
-    GeometryId movingId = secondId;
-    auto fixed = *firstRadial;
-    auto moving = *secondRadial;
-    if (isGeometryLocked(movingId)) {
-      if (isGeometryLocked(fixedId)) return false;
-      std::swap(fixedId, movingId);
-      std::swap(fixed, moving);
-    }
-    double dx = moving.first.xMm - fixed.first.xMm;
-    double dy = moving.first.yMm - fixed.first.yMm;
-    double distance = std::hypot(dx, dy);
-    if (distance <= 1e-12) {
-      dx = 1.0;
-      dy = 0.0;
-      distance = 1.0;
-    }
-    const double external = fixed.second + moving.second;
-    const double internal = std::abs(fixed.second - moving.second);
-    const double target =
-        internal > 1e-9 && std::abs(distance - internal) <
-                                std::abs(distance - external)
-            ? internal
-            : external;
-    const bool internalBranch = target == internal && internal > 1e-9;
-    if (!setRadialCenter(
-            movingId, {fixed.first.xMm + dx * target / distance,
-                       fixed.first.yMm + dy * target / distance}))
-      return false;
-
-    const double ux = dx / distance;
-    const double uy = dy / distance;
-    Point contact;
-    if (!internalBranch) {
-      contact = {fixed.first.xMm + ux * fixed.second,
-                 fixed.first.yMm + uy * fixed.second};
-    } else if (fixed.second >= moving.second) {
-      contact = {fixed.first.xMm + ux * fixed.second,
-                 fixed.first.yMm + uy * fixed.second};
-    } else {
-      contact = {fixed.first.xMm - ux * fixed.second,
-                 fixed.first.yMm - uy * fixed.second};
-    }
-    const auto includeArcContact = [this, contact](GeometryId id) {
-      const auto index = arcIndex(id);
-      if (!index) return;
-      auto& arc = arcs_[*index];
-      constexpr double kTwoPi = 6.28318530717958647692;
-      const auto normalize = [](double angle) {
-        constexpr double twoPi = 6.28318530717958647692;
-        angle = std::fmod(angle, twoPi);
-        return angle < 0.0 ? angle + twoPi : angle;
-      };
-      const double contactAngle = std::atan2(
-          contact.yMm - arc.center.yMm, contact.xMm - arc.center.xMm);
-      const double offset = normalize(contactAngle - arc.startAngleRad);
-      if (arc.sweepAngleRad < kTwoPi - 1e-9 &&
-          offset > arc.sweepAngleRad + 1e-9)
-        arc.startAngleRad = contactAngle - arc.sweepAngleRad * 0.5;
-    };
-    includeArcContact(fixedId);
-    includeArcContact(movingId);
-    updateBounds();
-    return true;
-  }
-
-  const auto alignBezierHandle = [this](std::size_t index, bool start,
-                                         Point contact, double tx,
-                                         double ty) {
-    auto& curve = beziers_[index];
-    const std::size_t endpointIndex = start ? 0 : 3;
-    const std::size_t handleIndex = start ? 1 : 2;
-    const Point oldHandle = curve.points[handleIndex];
-    const double handleLength = std::max(
-        1e-6, std::hypot(oldHandle.xMm - curve.points[endpointIndex].xMm,
-                         oldHandle.yMm - curve.points[endpointIndex].yMm));
-    const double tangentLength = std::hypot(tx, ty);
-    if (tangentLength <= 1e-12) return false;
-    tx /= tangentLength;
-    ty /= tangentLength;
-    const Point candidateA{contact.xMm + tx * handleLength,
-                           contact.yMm + ty * handleLength};
-    const Point candidateB{contact.xMm - tx * handleLength,
-                           contact.yMm - ty * handleLength};
-    const auto distanceSquared = [oldHandle](Point point) {
-      const double dx = point.xMm - oldHandle.xMm;
-      const double dy = point.yMm - oldHandle.yMm;
-      return dx * dx + dy * dy;
-    };
-    curve.points[endpointIndex] = contact;
-    curve.points[handleIndex] =
-        distanceSquared(candidateA) <= distanceSquared(candidateB)
-            ? candidateA
-            : candidateB;
-    return true;
-  };
-
-  const auto lineBezier = [&](GeometryId lineIdValue,
-                              GeometryId bezierIdValue) {
-    if (isGeometryLocked(bezierIdValue)) return false;
-    const auto lineIndexValue = lineIndex(lineIdValue);
-    const auto bezierIndexValue = bezierIndex(bezierIdValue);
-    if (!lineIndexValue || !bezierIndexValue) return false;
-    const auto& line = lines_[*lineIndexValue];
-    const double dx = line.end.xMm - line.start.xMm;
-    const double dy = line.end.yMm - line.start.yMm;
-    const double lengthSquared = dx * dx + dy * dy;
-    if (lengthSquared <= 1e-12) return false;
-    const auto& curve = beziers_[*bezierIndexValue];
-    const auto projected = [&](Point point) {
-      const double parameter = std::clamp(
-          ((point.xMm - line.start.xMm) * dx +
-           (point.yMm - line.start.yMm) * dy) /
-              lengthSquared,
-          0.0, 1.0);
-      return Point{line.start.xMm + parameter * dx,
-                   line.start.yMm + parameter * dy};
-    };
-    const Point startContact = projected(curve.points[0]);
-    const Point endContact = projected(curve.points[3]);
-    const double startDistance = std::hypot(
-        startContact.xMm - curve.points[0].xMm,
-        startContact.yMm - curve.points[0].yMm);
-    const double endDistance = std::hypot(endContact.xMm - curve.points[3].xMm,
-                                          endContact.yMm - curve.points[3].yMm);
-    const bool start = startDistance <= endDistance;
-    return alignBezierHandle(*bezierIndexValue, start,
-                             start ? startContact : endContact, dx, dy);
-  };
-  if (firstLocation->kind == GeometryKind::Line &&
-      secondLocation->kind == GeometryKind::Bezier) {
-    const bool applied = lineBezier(firstId, secondId);
-    if (applied) updateBounds();
-    return applied;
-  }
-  if (secondLocation->kind == GeometryKind::Line &&
-      firstLocation->kind == GeometryKind::Bezier) {
-    const bool applied = lineBezier(secondId, firstId);
-    if (applied) updateBounds();
-    return applied;
-  }
-
-  const auto radialBezier = [&](GeometryId radialId,
-                                GeometryId bezierIdValue) {
-    if (isGeometryLocked(bezierIdValue)) return false;
-    const auto carrier = radial(radialId);
-    const auto bezierIndexValue = bezierIndex(bezierIdValue);
-    if (!carrier || !bezierIndexValue || carrier->second <= 1e-12)
-      return false;
-    const auto& curve = beziers_[*bezierIndexValue];
-    const double startError =
-        std::abs(std::hypot(curve.points[0].xMm - carrier->first.xMm,
-                            curve.points[0].yMm - carrier->first.yMm) -
-                 carrier->second);
-    const double endError =
-        std::abs(std::hypot(curve.points[3].xMm - carrier->first.xMm,
-                            curve.points[3].yMm - carrier->first.yMm) -
-                 carrier->second);
-    const bool start = startError <= endError;
-    const Point current = beziers_[*bezierIndexValue].points[start ? 0 : 3];
-    double dx = current.xMm - carrier->first.xMm;
-    double dy = current.yMm - carrier->first.yMm;
-    double length = std::hypot(dx, dy);
-    if (length <= 1e-12) {
-      dx = 1.0;
-      dy = 0.0;
-      length = 1.0;
-    }
-    Point contact{carrier->first.xMm + dx * carrier->second / length,
-                  carrier->first.yMm + dy * carrier->second / length};
-    if (const auto arcIndexValue = arcIndex(radialId)) {
-      const auto& arc = arcs_[*arcIndexValue];
-      constexpr double kTwoPi = 6.28318530717958647692;
-      const auto normalize = [](double angle) {
-        constexpr double twoPi = 6.28318530717958647692;
-        angle = std::fmod(angle, twoPi);
-        return angle < 0.0 ? angle + twoPi : angle;
-      };
-      const double angle = normalize(std::atan2(dy, dx));
-      const double offset = normalize(angle - normalize(arc.startAngleRad));
-      if (arc.sweepAngleRad >= kTwoPi - 1e-9 ||
-          offset > arc.sweepAngleRad + 1e-9) {
-        const Point first = arcStartPoint(arc);
-        const Point last = arcEndPoint(arc);
-        contact = std::hypot(current.xMm - first.xMm,
-                             current.yMm - first.yMm) <=
-                          std::hypot(current.xMm - last.xMm,
-                                     current.yMm - last.yMm)
-                      ? first
-                      : last;
-        dx = contact.xMm - carrier->first.xMm;
-        dy = contact.yMm - carrier->first.yMm;
-      }
-    }
-    return alignBezierHandle(*bezierIndexValue, start, contact, -dy, dx);
-  };
-  if (firstRadial && secondLocation->kind == GeometryKind::Bezier) {
-    const bool applied = radialBezier(firstId, secondId);
-    if (applied) updateBounds();
-    return applied;
-  }
-  if (secondRadial && firstLocation->kind == GeometryKind::Bezier) {
-    const bool applied = radialBezier(secondId, firstId);
-    if (applied) updateBounds();
-    return applied;
-  }
-
-  if (firstLocation->kind == GeometryKind::Bezier &&
-      secondLocation->kind == GeometryKind::Bezier) {
-    if (isGeometryLocked(secondId)) {
-      if (isGeometryLocked(firstId)) return false;
-      return setGeometriesTangentByIds(secondId, firstId);
-    }
-    const auto firstIndex = bezierIndex(firstId);
-    const auto secondIndex = bezierIndex(secondId);
-    if (!firstIndex || !secondIndex) return false;
-    const auto& firstCurve = beziers_[*firstIndex];
-    const auto& secondCurve = beziers_[*secondIndex];
-    double best = std::numeric_limits<double>::max();
-    bool firstStart = true;
-    bool secondStart = true;
-    for (const bool aStart : {true, false}) {
-      for (const bool bStart : {true, false}) {
-        const Point a = firstCurve.points[aStart ? 0 : 3];
-        const Point b = secondCurve.points[bStart ? 0 : 3];
-        const double distance = std::hypot(a.xMm - b.xMm, a.yMm - b.yMm);
-        if (distance < best) {
-          best = distance;
-          firstStart = aStart;
-          secondStart = bStart;
-        }
-      }
-    }
-    const std::size_t firstEndpoint = firstStart ? 0 : 3;
-    const std::size_t firstHandle = firstStart ? 1 : 2;
-    const Point contact = firstCurve.points[firstEndpoint];
-    const Point handle = firstCurve.points[firstHandle];
-    const bool applied = alignBezierHandle(
-        *secondIndex, secondStart, contact, handle.xMm - contact.xMm,
-        handle.yMm - contact.yMm);
-    if (applied) updateBounds();
-    return applied;
-  }
-
-  // Collinear straight segments are represented by the existing parallel
-  // relation; Tangent is intentionally reserved for at least one curve.
-  return false;
-}
-bool Sketch::translatePoint(PointReference reference, double dxMm,
-                            double dyMm) {
-  journalCapturePoint(reference);
-  if (!referencedPoint(reference)) return false;
+SketchMutationResult Sketch::translatePoint(PointReference reference,
+                                            double dxMm, double dyMm) {
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  if (!referencedPoint(reference))
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
   if (reference.origin)
-    return std::abs(dxMm) <= 1e-12 && std::abs(dyMm) <= 1e-12;
-  if (dxMm == 0.0 && dyMm == 0.0) return true;
+    return (std::abs(dxMm) <= 1e-12 && std::abs(dyMm) <= 1e-12)
+               ? noMutation(*this)
+               : rejectedMutation(
+                     *this, {}, SketchMutationStatus::Conflicting,
+                     SketchMutationDiagnosticCode::LockedGeometry);
+  if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this);
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
+  journalCapturePoint(reference);
 
   // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY
   //
@@ -5717,74 +4292,19 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
     }
   }
 
-  // Coordinate-equal line endpoints and circle centres are an implicit CAD
-  // junction in the connectivity graph. Expand the same cluster here before
-  // applying an interactive point translation; otherwise component capture
-  // would correctly include a circle while the mutator left its centre (or
-  // its neighbouring line endpoint) behind.
-  const auto appendRawJunction = [&connectedPoints, &sameReference](
-                                     PointReference candidate) {
-    if (std::none_of(connectedPoints.begin(), connectedPoints.end(),
-                     [candidate, &sameReference](PointReference item) {
-                       return sameReference(item, candidate);
-                     }))
-      connectedPoints.push_back(candidate);
-  };
-  constexpr double kJunctionTolerance = 1e-7;
-  for (std::size_t connectedIndex = 0;
-       connectedIndex < connectedPoints.size(); ++connectedIndex) {
-    const PointReference currentReference = connectedPoints[connectedIndex];
-    if (currentReference.origin || currentReference.elementCenterId != 0 ||
-        currentReference.arcId != kInvalidGeometryId)
-      continue;
-    const auto current = referencedPoint(currentReference);
-    if (!current) continue;
-    const auto coincides = [current](Point candidate) {
-      return std::hypot(candidate.xMm - current->xMm,
-                        candidate.yMm - current->yMm) <=
-             kJunctionTolerance;
-    };
-    for (std::size_t lineIndexValue = 0;
-         lineIndexValue < lines_.size(); ++lineIndexValue) {
-      if (coincides(lines_[lineIndexValue].start)) {
-        PointReference candidate;
-        candidate.lineId = lineIds_[lineIndexValue];
-        candidate.start = true;
-        appendRawJunction(candidate);
-      }
-      if (coincides(lines_[lineIndexValue].end)) {
-        PointReference candidate;
-        candidate.lineId = lineIds_[lineIndexValue];
-        candidate.start = false;
-        appendRawJunction(candidate);
-      }
-    }
-    for (std::size_t circleIndexValue = 0;
-         circleIndexValue < circles_.size(); ++circleIndexValue) {
-      if (!coincides(circles_[circleIndexValue].center)) continue;
-      PointReference candidate;
-      candidate.circleId = circleIds_[circleIndexValue];
-      appendRawJunction(candidate);
-    }
-    for (std::size_t bezierIndexValue = 0;
-         bezierIndexValue < beziers_.size(); ++bezierIndexValue) {
-      for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
-        if (!coincides(beziers_[bezierIndexValue].points[pointIndex])) continue;
-        PointReference candidate;
-        candidate.bezierId = bezierIds_[bezierIndexValue];
-        candidate.bezierPoint = pointIndex;
-        appendRawJunction(candidate);
-      }
-    }
-  }
-
   // LOCK CONSTRAINT: connected point cluster contains a lock.
   if (std::any_of(
           connectedPoints.begin(), connectedPoints.end(),
           [this](PointReference item) {
             return isPointReferenceLocked(item);
-          }))
-    return false;
+          })) {
+    auto rejected = rejectedMutation(
+        *this, {}, SketchMutationStatus::Conflicting,
+        SketchMutationDiagnosticCode::LockedGeometry);
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return rejected;
+  }
 
   // CRASH-FREE 04: VIRTUAL CENTER MOVEMENT
   //
@@ -5928,170 +4448,6 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
       movedLineIds.push_back(id);
   }
 
-  const auto hasDrivingSize =
-      [this](GeometryId lineIdValue) {
-        const auto lineIndexValue =
-            lineIndex(lineIdValue);
-
-        if (!lineIndexValue)
-          return false;
-
-        for (const auto& item : constraints_) {
-          if (item.value <= 0.0)
-            continue;
-
-          if (item.type ==
-                  ConstraintType::Length &&
-              item.firstGeometry ==
-                  lineIdValue)
-            return true;
-
-          if (item.firstPoint.circleId !=
-                  kInvalidGeometryId ||
-              item.secondPoint.circleId !=
-                  kInvalidGeometryId ||
-              item.firstPoint.elementCenterId != 0 ||
-              item.secondPoint.elementCenterId != 0)
-            continue;
-
-          if (item.firstPoint.lineId !=
-                  lineIdValue ||
-              item.secondPoint.lineId !=
-                  lineIdValue ||
-              item.firstPoint.start ==
-                  item.secondPoint.start)
-            continue;
-
-          if (item.type ==
-                  ConstraintType::Distance ||
-              item.type ==
-                  ConstraintType::DistanceX ||
-              item.type ==
-                  ConstraintType::DistanceY)
-            return true;
-        }
-
-        return false;
-      };
-
-  for (const auto sourceId : movedLineIds) {
-    const auto sourceIndex =
-        lineIndex(sourceId);
-
-    if (!sourceIndex)
-      continue;
-
-    if (hasDrivingSize(sourceId))
-      continue;
-
-    std::vector<GeometryId> equalGroup{
-        sourceId};
-
-    bool expandedEqual = true;
-
-    while (expandedEqual) {
-      expandedEqual = false;
-
-      for (const auto& item : constraints_) {
-        if (item.type !=
-            ConstraintType::Equal)
-          continue;
-
-        if (!lineIndex(item.firstGeometry) ||
-            !lineIndex(item.secondGeometry))
-          continue;
-
-        const bool hasFirst =
-            std::find(
-                equalGroup.begin(),
-                equalGroup.end(),
-                item.firstGeometry) !=
-            equalGroup.end();
-
-        const bool hasSecond =
-            std::find(
-                equalGroup.begin(),
-                equalGroup.end(),
-                item.secondGeometry) !=
-            equalGroup.end();
-
-        if (hasFirst && !hasSecond) {
-          equalGroup.push_back(
-              item.secondGeometry);
-          expandedEqual = true;
-        }
-        else if (!hasFirst && hasSecond) {
-          equalGroup.push_back(
-              item.firstGeometry);
-          expandedEqual = true;
-        }
-      }
-    }
-
-    if (equalGroup.size() <= 1)
-      continue;
-
-    bool groupHasDriving = false;
-
-    for (const auto groupId : equalGroup) {
-      if (hasDrivingSize(groupId)) {
-        groupHasDriving = true;
-        break;
-      }
-    }
-
-    if (groupHasDriving)
-      continue;
-
-    const auto& sourceLine =
-        lines_[*sourceIndex];
-
-    const double targetLength =
-        std::hypot(
-            sourceLine.end.xMm -
-                sourceLine.start.xMm,
-            sourceLine.end.yMm -
-                sourceLine.start.yMm);
-
-    if (targetLength <= 1e-9)
-      continue;
-
-    const std::size_t sourceElementId =
-        sourceLine.elementId;
-
-    for (const auto targetId :
-         equalGroup) {
-      if (targetId == sourceId)
-        continue;
-
-      const auto targetIndex =
-          lineIndex(targetId);
-
-      if (!targetIndex)
-        continue;
-
-      if (lines_[*targetIndex].elementId ==
-          sourceElementId)
-        continue;
-
-      const double currentLength =
-          std::hypot(
-              lines_[*targetIndex].end.xMm -
-                  lines_[*targetIndex].start.xMm,
-              lines_[*targetIndex].end.yMm -
-                  lines_[*targetIndex].start.yMm);
-
-      if (std::abs(
-              currentLength -
-              targetLength) <= 1e-7)
-        continue;
-
-      (void)setLineLengthById(
-          targetId,
-          targetLength);
-    }
-  }
-
   std::vector<GeometryId> dirtyIds = movedLineIds;
   for (const auto pointReference : connectedPoints) {
     if (pointReference.circleId != kInvalidGeometryId)
@@ -6106,1893 +4462,53 @@ bool Sketch::translatePoint(PointReference reference, double dxMm,
           dirtyIds.push_back(lineIds_[index]);
     }
   }
-  (void)BasicSketchSolver::solveStableComponent(*this, dirtyIds);
+  const auto mutation = mutationFromSolve(
+      *this, dirtyIds,
+      SketchSolver::solveStableComponent(
+          *this, dirtyIds, 16, kInvalidConstraintId, true));
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
   updateBounds();
-  return true;
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  return mutation;
 }
-bool Sketch::setLineLength(std::size_t index, double lengthMm) {
-  if (index < lineIds_.size()) journalCaptureComponents({lineIds_[index]});
-  if (index >= lines_.size() || lengthMm <= 0.0) return false;
-  // LOCK CONSTRAINT: direct indexed length edit is blocked.
-  if (index < lineIds_.size() &&
-      isGeometryLocked(lineIds_[index])) {
-    const auto& locked = lines_[index];
-    const double current =
-        std::hypot(locked.end.xMm - locked.start.xMm,
-                   locked.end.yMm - locked.start.yMm);
-    return std::abs(current - lengthMm) <= 1e-7;
-  }
-  const Point start = lines_[index].start;
-  const Point oldEnd = lines_[index].end;
-  const double dx = oldEnd.xMm - start.xMm;
-  const double dy = oldEnd.yMm - start.yMm;
-  const double oldLength = std::hypot(dx, dy);
-  if (oldLength <= 1e-9) return false;
-  const GeometryId lineIdValue = lineIds_[index];
-  const auto referencesEndpoint =
-      [lineIdValue](PointReference reference, bool startPoint) {
-        return !reference.origin && reference.elementCenterId == 0 &&
-               reference.circleId == kInvalidGeometryId &&
-               reference.arcId == kInvalidGeometryId &&
-               reference.lineId == lineIdValue &&
-               reference.start == startPoint;
-      };
-
-  // PROJECTED CARRIER + PROJECTED CIRCLE DIMENSION
-  //
-  // With a perpendicular relation already present, changing the length of a
-  // line between a straight projection and a circular projection generally
-  // requires sliding the WHOLE line along the straight carrier. Resizing one
-  // endpoint and projecting it back cannot find that valid branch and makes
-  // the transactional dimension appear to do nothing.
-  struct ProjectedAnchor {
-    GeometryId geometryId{kInvalidGeometryId};
-    bool atStart{};
-  };
-  std::optional<ProjectedAnchor> straightAnchor;
-  std::optional<ProjectedAnchor> circleAnchor;
-
-  for (const auto& constraint : constraints_) {
-    if (constraint.type == ConstraintType::PointOnLine &&
-        constraint.firstGeometry != kInvalidGeometryId &&
-        (referencesEndpoint(constraint.secondPoint, true) ||
-         referencesEndpoint(constraint.secondPoint, false))) {
-      straightAnchor = ProjectedAnchor{
-          constraint.firstGeometry, constraint.secondPoint.start};
-    } else if (constraint.type == ConstraintType::PointOnCircle &&
-               constraint.firstGeometry != kInvalidGeometryId &&
-               (referencesEndpoint(constraint.secondPoint, true) ||
-                referencesEndpoint(constraint.secondPoint, false))) {
-      circleAnchor = ProjectedAnchor{
-          constraint.firstGeometry, constraint.secondPoint.start};
-    }
-  }
-
-  // TANGENT + PERPENDICULAR + LENGTH WITH A DATUM-CONSTRAINED CIRCLE
-  //
-  // A centre on only one datum axis is not fully fixed: it may still slide
-  // along that axis. When the line already has PointOnLine, PointOnCircle,
-  // Tangent and Perpendicular constraints, a new length must consume that
-  // remaining degree of freedom instead of moving one endpoint and letting
-  // the older constraints undo the size on the following solver pass.
-  if (straightAnchor && circleAnchor &&
-      straightAnchor->atStart != circleAnchor->atStart &&
-      isGeometryLocked(straightAnchor->geometryId) &&
-      !isGeometryLocked(circleAnchor->geometryId)) {
-    const auto carrierIndex = lineIndex(straightAnchor->geometryId);
-    const auto movableCircleIndex = circleIndex(circleAnchor->geometryId);
-    const bool perpendicular = std::any_of(
-        constraints_.begin(), constraints_.end(),
-        [lineIdValue, &straightAnchor](const Constraint& constraint) {
-          const bool samePair =
-              (constraint.firstGeometry == straightAnchor->geometryId &&
-               constraint.secondGeometry == lineIdValue) ||
-              (constraint.secondGeometry == straightAnchor->geometryId &&
-               constraint.firstGeometry == lineIdValue);
-          return samePair &&
-                 (constraint.type == ConstraintType::Perpendicular ||
-                  (constraint.type == ConstraintType::Angle &&
-                   std::abs(constraint.value - 90.0) <= 1e-7));
-        });
-    const bool tangent = std::any_of(
-        constraints_.begin(), constraints_.end(),
-        [lineIdValue, &circleAnchor](const Constraint& constraint) {
-          if (constraint.type != ConstraintType::Tangent)
-            return false;
-          return (constraint.firstGeometry == lineIdValue &&
-                  constraint.secondGeometry == circleAnchor->geometryId) ||
-                 (constraint.secondGeometry == lineIdValue &&
-                  constraint.firstGeometry == circleAnchor->geometryId);
-        });
-
-    bool centerOnXAxis = false;
-    bool centerOnYAxis = false;
-    bool otherCenterPosition = false;
-    std::vector<GeometryId> centerCarrierIds;
-    const auto referencesCircleCenter =
-        [&circleAnchor](PointReference reference) {
-          return !reference.origin && reference.elementCenterId == 0 &&
-                 reference.circleId == circleAnchor->geometryId;
-        };
-    for (const auto& constraint : constraints_) {
-      if (!referencesCircleCenter(constraint.firstPoint) &&
-          !referencesCircleCenter(constraint.secondPoint))
-        continue;
-      if (constraint.type == ConstraintType::PointOnXAxis)
-        centerOnXAxis = true;
-      else if (constraint.type == ConstraintType::PointOnYAxis)
-        centerOnYAxis = true;
-      else if (constraint.type == ConstraintType::PointOnLine &&
-               constraint.firstGeometry != kInvalidGeometryId &&
-               referencesCircleCenter(constraint.secondPoint))
-        centerCarrierIds.push_back(constraint.firstGeometry);
-      else
-        otherCenterPosition = true;
-    }
-
-    const bool exactlyOneFreeAxis =
-        centerOnXAxis != centerOnYAxis && !otherCenterPosition;
-    if (carrierIndex && movableCircleIndex && perpendicular && tangent &&
-        exactlyOneFreeAxis) {
-      const Line carrier = lines_[*carrierIndex];
-      const Circle oldCircle = circles_[*movableCircleIndex];
-      const double carrierDx = carrier.end.xMm - carrier.start.xMm;
-      const double carrierDy = carrier.end.yMm - carrier.start.yMm;
-      const double carrierLength = std::hypot(carrierDx, carrierDy);
-      if (carrierLength > 1e-9 && oldCircle.radiusMm > 1e-9) {
-        const double ux = carrierDx / carrierLength;
-        const double uy = carrierDy / carrierLength;
-        const double nx = -uy;
-        const double ny = ux;
-        const Point currentBase =
-            straightAnchor->atStart ? start : oldEnd;
-        const Point currentContact =
-            circleAnchor->atStart ? start : oldEnd;
-        const double currentAlong = std::clamp(
-            (currentBase.xMm - carrier.start.xMm) * ux +
-                (currentBase.yMm - carrier.start.yMm) * uy,
-            0.0, carrierLength);
-
-        struct AxisCandidate {
-          Point base;
-          Point contact;
-          Point center;
-          double movement{};
-        };
-        std::optional<AxisCandidate> best;
-
-        for (const double normalSide : {-1.0, 1.0}) {
-          for (const double tangentSide : {-1.0, 1.0}) {
-            double along = currentAlong;
-            const double axisDirection = centerOnYAxis ? ux : uy;
-            const double axisConstant =
-                (centerOnYAxis ? carrier.start.xMm : carrier.start.yMm) +
-                (centerOnYAxis ? nx : ny) * normalSide * lengthMm +
-                (centerOnYAxis ? ux : uy) * tangentSide *
-                    oldCircle.radiusMm;
-            if (std::abs(axisDirection) > 1e-9)
-              along = -axisConstant / axisDirection;
-            else if (std::abs(axisConstant) > 1e-7)
-              continue;
-
-            if (along < -1e-7 || along > carrierLength + 1e-7)
-              continue;
-            along = std::clamp(along, 0.0, carrierLength);
-
-            const Point base{carrier.start.xMm + ux * along,
-                             carrier.start.yMm + uy * along};
-            const Point contact{
-                base.xMm + nx * normalSide * lengthMm,
-                base.yMm + ny * normalSide * lengthMm};
-            const Point center{
-                contact.xMm + ux * tangentSide * oldCircle.radiusMm,
-                contact.yMm + uy * tangentSide * oldCircle.radiusMm};
-            if ((centerOnYAxis && std::abs(center.xMm) > 1e-6) ||
-                (centerOnXAxis && std::abs(center.yMm) > 1e-6))
-              continue;
-
-            const bool onEveryCenterCarrier = std::all_of(
-                centerCarrierIds.begin(), centerCarrierIds.end(),
-                [this, center](GeometryId carrierId) {
-                  const auto centerCarrierIndex = lineIndex(carrierId);
-                  if (!centerCarrierIndex) return false;
-                  const Line& centerCarrier = lines_[*centerCarrierIndex];
-                  const double dx =
-                      centerCarrier.end.xMm - centerCarrier.start.xMm;
-                  const double dy =
-                      centerCarrier.end.yMm - centerCarrier.start.yMm;
-                  const double lengthSquared = dx * dx + dy * dy;
-                  if (lengthSquared <= 1e-12) return false;
-                  const double parameter =
-                      ((center.xMm - centerCarrier.start.xMm) * dx +
-                       (center.yMm - centerCarrier.start.yMm) * dy) /
-                      lengthSquared;
-                  if (parameter < -1e-7 || parameter > 1.0 + 1e-7)
-                    return false;
-                  const Point projected{
-                      centerCarrier.start.xMm + parameter * dx,
-                      centerCarrier.start.yMm + parameter * dy};
-                  return std::hypot(center.xMm - projected.xMm,
-                                    center.yMm - projected.yMm) <= 1e-6;
-                });
-            if (!onEveryCenterCarrier)
-              continue;
-
-            const double movement =
-                std::hypot(base.xMm - currentBase.xMm,
-                           base.yMm - currentBase.yMm) +
-                std::hypot(contact.xMm - currentContact.xMm,
-                           contact.yMm - currentContact.yMm) +
-                std::hypot(center.xMm - oldCircle.center.xMm,
-                           center.yMm - oldCircle.center.yMm);
-            if (!best || movement < best->movement)
-              best = AxisCandidate{base, contact, center, movement};
-          }
-        }
-
-        if (best) {
-          lines_[index].start =
-              straightAnchor->atStart ? best->base : best->contact;
-          lines_[index].end =
-              straightAnchor->atStart ? best->contact : best->base;
-          circles_[*movableCircleIndex].center = best->center;
-          updateBounds();
-          return true;
-        }
-      }
-    }
-  }
-
-  if (straightAnchor && circleAnchor &&
-      straightAnchor->atStart != circleAnchor->atStart &&
-      isGeometryLocked(straightAnchor->geometryId) &&
-      isGeometryLocked(circleAnchor->geometryId)) {
-    const auto carrierIndex = lineIndex(straightAnchor->geometryId);
-    const auto projectedCircleIndex =
-        circleIndex(circleAnchor->geometryId);
-    const bool perpendicular = std::any_of(
-        constraints_.begin(), constraints_.end(),
-        [lineIdValue, &straightAnchor](const Constraint& constraint) {
-          if (constraint.type != ConstraintType::Perpendicular)
-            return false;
-          return (constraint.firstGeometry == straightAnchor->geometryId &&
-                  constraint.secondGeometry == lineIdValue) ||
-                 (constraint.secondGeometry == straightAnchor->geometryId &&
-                  constraint.firstGeometry == lineIdValue);
-        });
-
-    if (carrierIndex && projectedCircleIndex && perpendicular) {
-      const Line carrier = lines_[*carrierIndex];
-      const Circle projectedCircle = circles_[*projectedCircleIndex];
-      const double carrierDx = carrier.end.xMm - carrier.start.xMm;
-      const double carrierDy = carrier.end.yMm - carrier.start.yMm;
-      const double carrierLength = std::hypot(carrierDx, carrierDy);
-
-      if (carrierLength > 1e-9 && projectedCircle.radiusMm > 1e-9) {
-        const double ux = carrierDx / carrierLength;
-        const double uy = carrierDy / carrierLength;
-        const double nx = -uy;
-        const double ny = ux;
-        const double centerDx =
-            projectedCircle.center.xMm - carrier.start.xMm;
-        const double centerDy =
-            projectedCircle.center.yMm - carrier.start.yMm;
-        const double centerAlong = centerDx * ux + centerDy * uy;
-        const double centerNormal = centerDx * nx + centerDy * ny;
-
-        struct Candidate {
-          Point start;
-          Point end;
-          double movement{};
-        };
-        std::optional<Candidate> best;
-
-        for (const double normalSide : {-1.0, 1.0}) {
-          const double endpointNormal = normalSide * lengthMm;
-          const double normalDelta = endpointNormal - centerNormal;
-          double remaining = projectedCircle.radiusMm *
-                                 projectedCircle.radiusMm -
-                             normalDelta * normalDelta;
-          if (remaining < -1e-8)
-            continue;
-          remaining = std::max(0.0, remaining);
-          const double alongDelta = std::sqrt(remaining);
-
-          for (const double alongSide : {-1.0, 1.0}) {
-            const double along = centerAlong + alongSide * alongDelta;
-            if (along < -1e-7 || along > carrierLength + 1e-7)
-              continue;
-
-            const Point onStraight{
-                carrier.start.xMm + ux * along,
-                carrier.start.yMm + uy * along};
-            const Point onCircle{
-                onStraight.xMm + nx * endpointNormal,
-                onStraight.yMm + ny * endpointNormal};
-            const Point candidateStart =
-                straightAnchor->atStart ? onStraight : onCircle;
-            const Point candidateEnd =
-                straightAnchor->atStart ? onCircle : onStraight;
-            const double movement =
-                std::hypot(candidateStart.xMm - start.xMm,
-                           candidateStart.yMm - start.yMm) +
-                std::hypot(candidateEnd.xMm - oldEnd.xMm,
-                           candidateEnd.yMm - oldEnd.yMm);
-
-            if (!best || movement < best->movement)
-              best = Candidate{candidateStart, candidateEnd, movement};
-          }
-        }
-
-        if (best) {
-          lines_[index].start = best->start;
-          lines_[index].end = best->end;
-          updateBounds();
-          return true;
-        }
-      }
-    }
-  }
-
-  const auto endpointAnchorRank =
-      [this, &referencesEndpoint](bool startPoint) {
-        int rank = 0;
-        for (const auto& constraint : constraints_) {
-          if (!referencesEndpoint(constraint.secondPoint, startPoint) &&
-              !referencesEndpoint(constraint.firstPoint, startPoint))
-            continue;
-
-          if (constraint.type == ConstraintType::PointOnLine)
-            rank = std::max(rank, 30);
-          else if (constraint.type == ConstraintType::PointOnXAxis ||
-                   constraint.type == ConstraintType::PointOnYAxis ||
-                   constraint.type == ConstraintType::Midpoint)
-            rank = std::max(rank, 35);
-          else if (constraint.type == ConstraintType::PointOnCircle ||
-                   constraint.type == ConstraintType::PointOnArc)
-            rank = std::max(rank, 20);
-          else if (constraint.type == ConstraintType::Coincident) {
-            const PointReference other =
-                referencesEndpoint(constraint.firstPoint, startPoint)
-                    ? constraint.secondPoint
-                    : constraint.firstPoint;
-            rank = std::max(rank,
-                            isPointReferenceLocked(other) ? 40 : 10);
-          }
-        }
-        return rank;
-      };
-
-  // A projected straight carrier is a stronger positional anchor than a
-  // point that may slide around a circle/arc. Preserve that carrier endpoint
-  // and resize the opposite end. The previous unconditional start pivot made
-  // Length and PointOnLine fight forever and the transactional add was
-  // correctly rejected as unsatisfied.
-  const bool moveStart =
-      endpointAnchorRank(false) > endpointAnchorRank(true);
-  const Point oldMoving = moveStart ? start : oldEnd;
-  const Point newMoving =
-      moveStart
-          ? Point{oldEnd.xMm - dx / oldLength * lengthMm,
-                  oldEnd.yMm - dy / oldLength * lengthMm}
-          : Point{start.xMm + dx / oldLength * lengthMm,
-                  start.yMm + dy / oldLength * lengthMm};
-  const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
-  };
-  const double moveX = newMoving.xMm - oldMoving.xMm;
-  const double moveY = newMoving.yMm - oldMoving.yMm;
-
-  struct JunctionMove {
-    Point from;
-    Point to;
-  };
-
-  std::vector<JunctionMove> junctionMoves{{oldMoving, newMoving}};
-  const auto addJunctionMove = [&junctionMoves](Point from, Point to) {
-    const auto existing = std::find_if(
-        junctionMoves.begin(), junctionMoves.end(),
-        [from](const JunctionMove& item) {
-          return std::hypot(item.from.xMm - from.xMm,
-                            item.from.yMm - from.yMm) <= 1e-12;
-        });
-    if (existing == junctionMoves.end())
-      junctionMoves.push_back({from, to});
-  };
-  const auto preservesTranslationAxis =
-      [this, moveX, moveY](GeometryId id) {
-        constexpr double tolerance = 1e-9;
-        const bool horizontalMove =
-            std::abs(moveX) > tolerance && std::abs(moveY) <= tolerance;
-        const bool verticalMove =
-            std::abs(moveY) > tolerance && std::abs(moveX) <= tolerance;
-        return std::any_of(
-            constraints_.begin(), constraints_.end(),
-            [id, horizontalMove, verticalMove](const Constraint& item) {
-              return item.firstGeometry == id &&
-                     ((horizontalMove &&
-                       item.type == ConstraintType::Vertical) ||
-                      (verticalMove &&
-                       item.type == ConstraintType::Horizontal));
-            });
-      };
-
-  // Moving one end of a dimensioned horizontal segment must translate an
-  // attached Vertical line in X (and symmetrically for Vertical/Horizontal).
-  // Otherwise the next sequential H/V pass anchors that neighbour at its
-  // stored start point and silently moves the junction back. Which end was
-  // drawn first must not decide whether the dimension can be applied.
-  for (std::size_t moveIndex = 0; moveIndex < junctionMoves.size();
-       ++moveIndex) {
-    const auto movement = junctionMoves[moveIndex];
-    for (std::size_t lineIndexValue = 0; lineIndexValue < lines_.size();
-         ++lineIndexValue) {
-      const auto& line = lines_[lineIndexValue];
-      if (same(line.start, movement.from))
-        addJunctionMove(line.start, movement.to);
-      if (same(line.end, movement.from))
-        addJunctionMove(line.end, movement.to);
-      if (lineIds_[lineIndexValue] == lineIdValue ||
-          !preservesTranslationAxis(lineIds_[lineIndexValue]))
-        continue;
-      if (same(line.start, movement.from)) {
-        addJunctionMove(
-            line.end,
-            Point{line.end.xMm + moveX, line.end.yMm + moveY});
-      } else if (same(line.end, movement.from)) {
-        addJunctionMove(
-            line.start,
-            Point{line.start.xMm + moveX, line.start.yMm + moveY});
-      }
-    }
-    for (const auto& circle : circles_)
-      if (same(circle.center, movement.from))
-        addJunctionMove(circle.center, movement.to);
-  }
-
-  const auto movedPoint = [&junctionMoves, &same](Point candidate) {
-    const auto found = std::find_if(
-        junctionMoves.begin(), junctionMoves.end(),
-        [candidate, &same](const JunctionMove& item) {
-          return same(item.from, candidate);
-        });
-    return found == junctionMoves.end() ? candidate : found->to;
-  };
-
-  for (auto& line : lines_) {
-    line.start = movedPoint(line.start);
-    line.end = movedPoint(line.end);
-  }
-  for (auto& circle : circles_)
-    circle.center = movedPoint(circle.center);
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setPointDistance(PointReference firstReference,
-                              PointReference secondReference,
-                              double distanceMm) {
-  journalCapturePoint(firstReference);
-  journalCapturePoint(secondReference);
-  const auto isPlainLineEndpoint = [](PointReference reference) {
-    return !reference.origin && reference.elementCenterId == 0 &&
-           reference.circleId == kInvalidGeometryId &&
-           reference.arcId == kInvalidGeometryId &&
-           reference.lineId != kInvalidGeometryId;
-  };
-  // AutoDimension represents a direct line-length click as the distance
-  // between that line's two endpoints. Route it through the line-length
-  // primitive so endpoint mobility (notably projected carrier vs circle/arc)
-  // is handled consistently with an explicit Length constraint.
-  if (distanceMm > 0.0 && isPlainLineEndpoint(firstReference) &&
-      isPlainLineEndpoint(secondReference) &&
-      firstReference.lineId == secondReference.lineId &&
-      firstReference.start != secondReference.start)
-    return setLineLengthById(firstReference.lineId, distanceMm);
-
-  const auto rectangleElementForPoint =
-      [this](PointReference reference) -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index) return std::nullopt;
-
-    const std::size_t elementId = lines_[*index].elementId;
-    const std::size_t count = static_cast<std::size_t>(std::count_if(
-        lines_.begin(), lines_.end(), [elementId](const Line& line) {
-          return line.elementId == elementId;
-        }));
-    return count == 4 ? std::optional<std::size_t>{elementId}
-                      : std::nullopt;
-  };
-
-  const auto firstRectangle = rectangleElementForPoint(firstReference);
-  const auto secondRectangle = rectangleElementForPoint(secondReference);
-
-  // Click order is not a mobility rule. When an unconstrained standalone
-  // endpoint is paired with a composite rectangle point, keep the composite
-  // as the reference and move the endpoint with the smaller CAD footprint.
-  if (!isPointReferenceLocked(firstReference) &&
-      !isPointReferenceLocked(secondReference) && !firstRectangle &&
-      secondRectangle) {
-    return setPointDistance(secondReference, firstReference, distanceMm);
-  }
-
-  const auto first = referencedPoint(firstReference);
-  const auto second = referencedPoint(secondReference);
-  // LOCK CONSTRAINT: keep the locked point as the reference.
-  if (isPointReferenceLocked(secondReference)) {
-    if (isPointReferenceLocked(firstReference))
-      return false;
-    return setPointDistance(secondReference, firstReference, distanceMm);
-  }
-  if (!first || !second || distanceMm <= 0.0) return false;
-
-  const double dx = second->xMm - first->xMm;
-  const double dy = second->yMm - first->yMm;
-  const double oldDistance = std::hypot(dx, dy);
-  if (oldDistance <= 1e-9) return false;
-
-  const Point moved{first->xMm + dx / oldDistance * distanceMm,
-                    first->yMm + dy / oldDistance * distanceMm};
-
-  const double moveX = moved.xMm - second->xMm;
-  const double moveY = moved.yMm - second->yMm;
-
-  // SAME-RECTANGLE POINT DISTANCE
-  // If both selected endpoints belong to the same four-line rectangle,
-  // translating the whole element cannot change their internal distance.
-  // Resize the rectangle instead: move the vertex column/row that contains
-  // the second point while keeping the first side anchored.
-  if (firstRectangle && secondRectangle &&
-      *firstRectangle == *secondRectangle) {
-    const double oldSecondX = second->xMm;
-    const double oldSecondY = second->yMm;
-
-    const auto resizePoint =
-        [oldSecondX, oldSecondY, moveX, moveY](Point& point) {
-      if (std::abs(point.xMm - oldSecondX) <= 1e-7)
-        point.xMm += moveX;
-      if (std::abs(point.yMm - oldSecondY) <= 1e-7)
-        point.yMm += moveY;
-    };
-
-    for (auto& line : lines_) {
-      if (line.elementId != *secondRectangle)
-        continue;
-
-      resizePoint(line.start);
-      resizePoint(line.end);
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  // Two aligned distances from the opposite endpoints of one locked
-  // reference line to opposite vertices of a free axis-aligned rectangle
-  // determine that rectangle's position and size. A sole external distance
-  // continues through the existing rigid-translation path below.
-  if (isPointReferenceLocked(firstReference) && secondRectangle &&
-      !isElementLocked(*secondRectangle) &&
-      firstReference.elementCenterId == 0 &&
-      firstReference.circleId == kInvalidGeometryId &&
-      firstReference.lineId != kInvalidGeometryId) {
-    constexpr double tolerance = 1e-7;
-    const bool xAxis = std::abs(dy) <= tolerance &&
-                       std::abs(dx) > tolerance;
-    const bool yAxis = std::abs(dx) <= tolerance &&
-                       std::abs(dy) > tolerance;
-    const auto externalLine = lineIndex(firstReference.lineId);
-
-    bool referenceAligned = false;
-    if (externalLine) {
-      const Line& line = lines_[*externalLine];
-      const double lineDx = std::abs(line.end.xMm - line.start.xMm);
-      const double lineDy = std::abs(line.end.yMm - line.start.yMm);
-      referenceAligned = (xAxis && lineDy <= tolerance &&
-                          lineDx > tolerance) ||
-                         (yAxis && lineDx <= tolerance &&
-                          lineDy > tolerance);
-    }
-
-    std::vector<std::size_t> rectangleLines;
-    bool rectangleAxisAligned = xAxis || yAxis;
-    for (std::size_t index = 0; index < lines_.size(); ++index) {
-      if (lines_[index].elementId != *secondRectangle)
-        continue;
-      rectangleLines.push_back(index);
-      const double lineDx =
-          std::abs(lines_[index].end.xMm - lines_[index].start.xMm);
-      const double lineDy =
-          std::abs(lines_[index].end.yMm - lines_[index].start.yMm);
-      if (lineDx > tolerance && lineDy > tolerance)
-        rectangleAxisAligned = false;
-    }
-
-    const auto pointBelongsToRectangle =
-        [this, elementId = *secondRectangle](PointReference reference) {
-      if (reference.elementCenterId != 0 ||
-          reference.circleId != kInvalidGeometryId ||
-          reference.lineId == kInvalidGeometryId)
-        return false;
-      const auto index = lineIndex(reference.lineId);
-      return index && lines_[*index].elementId == elementId;
-    };
-
-    bool axisSizeDriven = false;
-    for (const auto& constraint : constraints_) {
-      const auto constrainedLine = lineIndex(constraint.firstGeometry);
-      if (constraint.type == ConstraintType::Length && constrainedLine &&
-          lines_[*constrainedLine].elementId == *secondRectangle) {
-        const Line& line = lines_[*constrainedLine];
-        const double lineDx = std::abs(line.end.xMm - line.start.xMm);
-        const double lineDy = std::abs(line.end.yMm - line.start.yMm);
-        if ((xAxis && lineDx > lineDy + tolerance) ||
-            (yAxis && lineDy > lineDx + tolerance)) {
-          axisSizeDriven = true;
-          break;
-        }
-      }
-
-      if (!pointBelongsToRectangle(constraint.firstPoint) ||
-          !pointBelongsToRectangle(constraint.secondPoint))
-        continue;
-
-      const auto constrainedFirst = referencedPoint(constraint.firstPoint);
-      const auto constrainedSecond = referencedPoint(constraint.secondPoint);
-      if (!constrainedFirst || !constrainedSecond)
-        continue;
-
-      const double internalDx =
-          std::abs(constrainedSecond->xMm - constrainedFirst->xMm);
-      const double internalDy =
-          std::abs(constrainedSecond->yMm - constrainedFirst->yMm);
-      if ((xAxis &&
-           (constraint.type == ConstraintType::DistanceX ||
-            (constraint.type == ConstraintType::Distance &&
-             internalDx > tolerance && internalDy <= tolerance))) ||
-          (yAxis &&
-           (constraint.type == ConstraintType::DistanceY ||
-            (constraint.type == ConstraintType::Distance &&
-             internalDy > tolerance && internalDx <= tolerance)))) {
-        axisSizeDriven = true;
-        break;
-      }
-    }
-
-    struct AxisTarget {
-      double oldCoordinate{};
-      double newCoordinate{};
-    };
-    std::vector<AxisTarget> targets;
-    bool hasOppositeGap = false;
-    const double currentRectangleCoordinate =
-        xAxis ? second->xMm : second->yMm;
-
-    if (referenceAligned && rectangleAxisAligned &&
-        rectangleLines.size() == 4 && !axisSizeDriven) {
-      for (const auto& constraint : constraints_) {
-        if (constraint.type != ConstraintType::Distance ||
-            !std::isfinite(constraint.value) || constraint.value <= 0.0)
-          continue;
-
-        const bool firstIsRectangle =
-            pointBelongsToRectangle(constraint.firstPoint);
-        const bool secondIsRectangle =
-            pointBelongsToRectangle(constraint.secondPoint);
-        if (firstIsRectangle == secondIsRectangle)
-          continue;
-
-        const PointReference rectangleReference =
-            firstIsRectangle ? constraint.firstPoint : constraint.secondPoint;
-        const PointReference externalReference =
-            firstIsRectangle ? constraint.secondPoint : constraint.firstPoint;
-        if (externalReference.elementCenterId != 0 ||
-            externalReference.circleId != kInvalidGeometryId ||
-            externalReference.lineId != firstReference.lineId ||
-            !isPointReferenceLocked(externalReference))
-          continue;
-
-        const auto rectanglePoint = referencedPoint(rectangleReference);
-        const auto externalPoint = referencedPoint(externalReference);
-        if (!rectanglePoint || !externalPoint)
-          continue;
-
-        const double gapDx = rectanglePoint->xMm - externalPoint->xMm;
-        const double gapDy = rectanglePoint->yMm - externalPoint->yMm;
-        if ((xAxis && (std::abs(gapDy) > tolerance ||
-                       std::abs(gapDx) <= tolerance)) ||
-            (yAxis && (std::abs(gapDx) > tolerance ||
-                       std::abs(gapDy) <= tolerance)))
-          continue;
-
-        const double oldCoordinate =
-            xAxis ? rectanglePoint->xMm : rectanglePoint->yMm;
-        const double externalCoordinate =
-            xAxis ? externalPoint->xMm : externalPoint->yMm;
-        const double signedGap = oldCoordinate - externalCoordinate;
-        const double newCoordinate =
-            externalCoordinate + std::copysign(constraint.value, signedGap);
-
-        if (externalReference.start != firstReference.start &&
-            std::abs(oldCoordinate - currentRectangleCoordinate) > tolerance)
-          hasOppositeGap = true;
-
-        const auto existing = std::find_if(
-            targets.begin(), targets.end(),
-            [oldCoordinate](const AxisTarget& target) {
-              return std::abs(target.oldCoordinate - oldCoordinate) <=
-                     tolerance;
-            });
-        if (existing != targets.end()) {
-          if (std::abs(existing->newCoordinate - newCoordinate) > tolerance)
-            return false;
-        } else {
-          targets.push_back({oldCoordinate, newCoordinate});
-        }
-      }
-    }
-
-    if (hasOppositeGap && targets.size() >= 2) {
-      for (const std::size_t index : rectangleLines) {
-        auto& line = lines_[index];
-        for (const auto& target : targets) {
-          double& startCoordinate = xAxis ? line.start.xMm : line.start.yMm;
-          double& endCoordinate = xAxis ? line.end.xMm : line.end.yMm;
-          if (std::abs(startCoordinate - target.oldCoordinate) <= tolerance)
-            startCoordinate = target.newCoordinate;
-          if (std::abs(endCoordinate - target.oldCoordinate) <= tolerance)
-            endCoordinate = target.newCoordinate;
-        }
-      }
-      updateBounds();
-      return true;
-    }
-
-    // Once a rectangle is already positioned by multiple external driving
-    // dimensions, another aligned gap must use the remaining row/column DOF
-    // instead of translating the complete composite and disturbing its
-    // established placement. The stored constraint remains Euclidean
-    // Distance; the axis-specific mutator is only a motion candidate.
-    std::size_t externalDrivingCount = 0;
-    for (const auto& constraint : constraints_) {
-      if (constraint.type != ConstraintType::Distance &&
-          constraint.type != ConstraintType::DistanceX &&
-          constraint.type != ConstraintType::DistanceY)
-        continue;
-      const bool firstIsRectangle =
-          pointBelongsToRectangle(constraint.firstPoint);
-      const bool secondIsRectangle =
-          pointBelongsToRectangle(constraint.secondPoint);
-      if (firstIsRectangle != secondIsRectangle)
-        ++externalDrivingCount;
-    }
-
-    if (rectangleAxisAligned && rectangleLines.size() == 4 &&
-        !axisSizeDriven && externalDrivingCount >= 3) {
-      if (xAxis)
-        return setPointDistanceX(firstReference, secondReference, distanceMm);
-      if (yAxis)
-        return setPointDistanceY(firstReference, secondReference, distanceMm);
-    }
-  }
-
-  // A point-distance attached to a rectangle must move the complete
-  // composite element. Moving only one corner destroys the rectangle and
-  // makes the dimension appear to drift during subsequent solver passes.
-  // CRASH-FREE 07: MOVABLE NON-LINE POINT REFERENCES
-  //
-  // PointReference may denote a circle centre or a virtual composite centre,
-  // not only a line endpoint. A driving point-distance must move whichever
-  // CAD point is the SECOND reference.
-  if (secondReference.elementCenterId != 0) {
-    for (auto& line : lines_) {
-      if (line.elementId != secondReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveX;
-      line.start.yMm += moveY;
-      line.end.xMm += moveX;
-      line.end.yMm += moveY;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  if (secondReference.circleId != kInvalidGeometryId) {
-    const auto circle =
-        circleIndex(secondReference.circleId);
-
-    if (!circle)
-      return false;
-
-    circles_[*circle].center = moved;
-    updateBounds();
-    return true;
-  }
-  if (secondReference.circleId == kInvalidGeometryId) {
-    const auto secondLineIndex = lineIndex(secondReference.lineId);
-
-    if (secondLineIndex) {
-      const std::size_t elementId =
-          lines_[*secondLineIndex].elementId;
-
-      std::size_t elementLineCount = 0;
-      for (const auto& line : lines_) {
-        if (line.elementId == elementId)
-          ++elementLineCount;
-      }
-
-      if (elementLineCount == 4) {
-        for (auto& line : lines_) {
-          if (line.elementId != elementId) continue;
-
-          line.start.xMm += moveX;
-          line.start.yMm += moveY;
-          line.end.xMm += moveX;
-          line.end.yMm += moveY;
-        }
-
-        updateBounds();
-        return true;
-      }
-    }
-  }
-
-  const auto same = [](Point a, Point b) {
-    return std::hypot(a.xMm - b.xMm, a.yMm - b.yMm) <= 1e-7;
-  };
-
-  for (auto& line : lines_) {
-    if (same(line.start, *second)) line.start = moved;
-    if (same(line.end, *second)) line.end = moved;
-  }
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setPointDistanceX(
-    PointReference firstReference,
-    PointReference secondReference,
-    double distanceMm) {
-  journalCapturePoint(firstReference);
-  journalCapturePoint(secondReference);
-  const auto first = referencedPoint(firstReference);
-  const auto second = referencedPoint(secondReference);
-
-  if (!first || !second ||
-      !std::isfinite(distanceMm) ||
-      distanceMm <= 0.0)
+bool Sketch::storeDimension(const Dimension& dimension) {
+  const auto linkedIndex = constraintIndex(dimension.constraintId);
+  if (dimension.constraintId == kInvalidConstraintId || !linkedIndex ||
+      !annotatableConstraintType(static_cast<ConstraintType>(
+          constraints_[*linkedIndex].type)) ||
+      !std::isfinite(dimension.offsetMm) ||
+      !std::isfinite(dimension.angleRad) ||
+      std::any_of(dimensions_.begin(), dimensions_.end(),
+                  [&](const Dimension& existing) {
+                    return existing.constraintId == dimension.constraintId;
+                  }))
     return false;
 
-  // A horizontal segment dimensioned between its own endpoints is also its
-  // line length. Route it through the length mutator so endpoint mobility is
-  // resolved from PointOnLine/Coincident anchors instead of always moving the
-  // second endpoint (which can be attached to a locked projected carrier).
-  const bool ownLineEndpoints =
-      !firstReference.origin && !secondReference.origin &&
-      firstReference.elementCenterId == 0 &&
-      secondReference.elementCenterId == 0 &&
-      firstReference.circleId == kInvalidGeometryId &&
-      secondReference.circleId == kInvalidGeometryId &&
-      firstReference.arcId == kInvalidGeometryId &&
-      secondReference.arcId == kInvalidGeometryId &&
-      firstReference.lineId != kInvalidGeometryId &&
-      firstReference.lineId == secondReference.lineId &&
-      firstReference.start != secondReference.start;
-  if (ownLineEndpoints &&
-      std::abs(second->yMm - first->yMm) <= 1e-7)
-    return setLineLengthById(firstReference.lineId, distanceMm);
-
-  const auto rectangleElementForPoint =
-      [this](PointReference reference)
-          -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index)
-      return std::nullopt;
-
-    const std::size_t elementId =
-        lines_[*index].elementId;
-
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    return count == 4
-               ? std::optional<std::size_t>{elementId}
-               : std::nullopt;
-  };
-
-  const auto pointBelongsToElement =
-      [this](PointReference reference,
-             std::size_t elementId) {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return false;
-
-    const auto index = lineIndex(reference.lineId);
-    return index &&
-           lines_[*index].elementId == elementId;
-  };
-
-  const auto firstRectangle =
-      rectangleElementForPoint(firstReference);
-  const auto secondRectangle =
-      rectangleElementForPoint(secondReference);
-
-  const double dx = second->xMm - first->xMm;
-  const double direction = dx < 0.0 ? -1.0 : 1.0;
-  const Point movedSecond{
-      first->xMm + direction * distanceMm,
-      second->yMm};
-  const double moveSecondX =
-      movedSecond.xMm - second->xMm;
-
-  // Internal dimension of one rectangle = explicit driving width.
-  if (firstRectangle && secondRectangle &&
-      *firstRectangle == *secondRectangle) {
-    if (isElementLocked(*secondRectangle))
-      return false;
-
-    const double oldSecondX = second->xMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != *secondRectangle)
-        continue;
-
-      if (std::abs(line.start.xMm - oldSecondX) <= 1e-7)
-        line.start.xMm += moveSecondX;
-
-      if (std::abs(line.end.xMm - oldSecondX) <= 1e-7)
-        line.end.xMm += moveSecondX;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  // COUPLED EXTERNAL RECTANGLE X GAPS V4
-  //
-  // AutoDimension can present either operand order. More importantly, when a
-  // second external gap is entered, the NEW constraint has not yet been
-  // appended to constraints_. Solve the existing gaps + the current request
-  // together before addConstraint() validates the complete system.
-  if (static_cast<bool>(firstRectangle) !=
-      static_cast<bool>(secondRectangle)) {
-    const std::size_t elementId =
-        firstRectangle ? *firstRectangle
-                       : *secondRectangle;
-
-    const PointReference currentRectangleReference =
-        firstRectangle ? firstReference
-                       : secondReference;
-    const PointReference currentExternalReference =
-        firstRectangle ? secondReference
-                       : firstReference;
-
-    if (isPointReferenceLocked(currentExternalReference) &&
-        !isElementLocked(elementId)) {
-      std::vector<std::size_t> members;
-      for (std::size_t index = 0;
-           index < lines_.size(); ++index) {
-        if (lines_[index].elementId == elementId)
-          members.push_back(index);
-      }
-
-      bool axisAligned = members.size() == 4;
-      for (const auto index : members) {
-        const double lineDx =
-            std::abs(lines_[index].end.xMm -
-                     lines_[index].start.xMm);
-        const double lineDy =
-            std::abs(lines_[index].end.yMm -
-                     lines_[index].start.yMm);
-
-        if (lineDx > 1e-7 && lineDy > 1e-7) {
-          axisAligned = false;
-          break;
-        }
-      }
-
-      const auto lineBelongsToElement =
-          [this, elementId](GeometryId id) {
-        const auto index = lineIndex(id);
-        return index &&
-               lines_[*index].elementId == elementId;
-      };
-
-      bool widthDriven = false;
-
-      for (const auto& constraint : constraints_) {
-        if (constraint.type == ConstraintType::Length &&
-            lineBelongsToElement(
-                constraint.firstGeometry)) {
-          const auto index =
-              lineIndex(constraint.firstGeometry);
-
-          if (index) {
-            const double lineDx =
-                std::abs(lines_[*index].end.xMm -
-                         lines_[*index].start.xMm);
-            const double lineDy =
-                std::abs(lines_[*index].end.yMm -
-                         lines_[*index].start.yMm);
-
-            if (lineDx > lineDy + 1e-7) {
-              widthDriven = true;
-              break;
-            }
-          }
-        }
-
-        if (constraint.type != ConstraintType::DistanceX &&
-            constraint.type != ConstraintType::Distance)
-          continue;
-
-        if (!pointBelongsToElement(
-                constraint.firstPoint, elementId) ||
-            !pointBelongsToElement(
-                constraint.secondPoint, elementId))
-          continue;
-
-        const auto p1 =
-            referencedPoint(constraint.firstPoint);
-        const auto p2 =
-            referencedPoint(constraint.secondPoint);
-
-        if (!p1 || !p2)
-          continue;
-
-        const double internalDx =
-            std::abs(p2->xMm - p1->xMm);
-        const double internalDy =
-            std::abs(p2->yMm - p1->yMm);
-
-        if ((constraint.type ==
-                 ConstraintType::DistanceX &&
-             internalDx > 1e-7) ||
-            (constraint.type ==
-                 ConstraintType::Distance &&
-             internalDx > 1e-7 &&
-             internalDy <= 1e-7)) {
-          widthDriven = true;
-          break;
-        }
-      }
-
-      const auto targetForGap =
-          [](double rectangleX,
-             double externalX,
-             double gap) {
-        return rectangleX >= externalX
-                   ? externalX + gap
-                   : externalX - gap;
-      };
-
-      // Explicit width means the rectangle is rigid in X. Satisfy the
-      // current gap by translating it as a whole; a conflicting second gap
-      // will then be rejected transactionally.
-      if (widthDriven || !axisAligned) {
-        const auto rectanglePoint =
-            referencedPoint(
-                currentRectangleReference);
-        const auto externalPoint =
-            referencedPoint(
-                currentExternalReference);
-
-        if (!rectanglePoint || !externalPoint)
-          return false;
-
-        const double targetX =
-            targetForGap(
-                rectanglePoint->xMm,
-                externalPoint->xMm,
-                distanceMm);
-
-        const double moveX =
-            targetX - rectanglePoint->xMm;
-
-        for (const auto index : members) {
-          lines_[index].start.xMm += moveX;
-          lines_[index].end.xMm += moveX;
-        }
-
-        updateBounds();
-        return true;
-      }
-
-      struct GapTarget {
-        double oldX{};
-        double targetX{};
-      };
-
-      std::vector<GapTarget> targets;
-
-      const auto addGapTarget =
-          [this, elementId, &targets,
-           &pointBelongsToElement,
-           &targetForGap](
-              PointReference a,
-              PointReference b,
-              double gap) {
-        const bool aRectangle =
-            pointBelongsToElement(a, elementId);
-        const bool bRectangle =
-            pointBelongsToElement(b, elementId);
-
-        if (aRectangle == bRectangle)
-          return true;
-
-        const PointReference rectangleRef =
-            aRectangle ? a : b;
-        const PointReference externalRef =
-            aRectangle ? b : a;
-
-        if (!isPointReferenceLocked(externalRef))
-          return true;
-
-        const auto rectanglePoint =
-            referencedPoint(rectangleRef);
-        const auto externalPoint =
-            referencedPoint(externalRef);
-
-        if (!rectanglePoint || !externalPoint)
-          return false;
-
-        const double oldX =
-            rectanglePoint->xMm;
-        const double targetX =
-            targetForGap(
-                oldX,
-                externalPoint->xMm,
-                gap);
-
-        for (const auto& existing : targets) {
-          if (std::abs(existing.oldX - oldX) > 1e-7)
-            continue;
-
-          // Two dimensions attempting different positions for the SAME
-          // rectangle column are a real overconstraint.
-          return std::abs(
-                     existing.targetX -
-                     targetX) <= 1e-7;
-        }
-
-        targets.push_back({oldX, targetX});
-        return true;
-      };
-
-      // Existing driving gaps.
-      for (const auto& constraint : constraints_) {
-        if (constraint.type != ConstraintType::DistanceX ||
-            !std::isfinite(constraint.value) ||
-            constraint.value <= 0.0)
-          continue;
-
-        const bool touchesRectangle =
-            pointBelongsToElement(
-                constraint.firstPoint, elementId) ||
-            pointBelongsToElement(
-                constraint.secondPoint, elementId);
-
-        if (!touchesRectangle)
-          continue;
-
-        if (!addGapTarget(
-                constraint.firstPoint,
-                constraint.secondPoint,
-                constraint.value))
-          return false;
-      }
-
-      // Current request is intentionally included even before it becomes a
-      // stored Constraint. This is what makes 7 mm + free width + 7 mm work.
-      if (!addGapTarget(
-              firstReference,
-              secondReference,
-              distanceMm))
-        return false;
-
-      if (!targets.empty()) {
-        // A single datum/external gap positions the rectangle; it must not
-        // consume the still-free width degree of freedom.  Only two distinct
-        // constrained columns are allowed to resize it (for example left and
-        // right clearances to a reference line).
-        if (targets.size() == 1) {
-          const double moveX =
-              targets.front().targetX - targets.front().oldX;
-
-          for (const auto index : members) {
-            lines_[index].start.xMm += moveX;
-            lines_[index].end.xMm += moveX;
-          }
-
-          updateBounds();
-          return true;
-        }
-
-        struct EndpointSnapshot {
-          double startX{};
-          double endX{};
-        };
-
-        std::vector<EndpointSnapshot> before;
-        before.reserve(members.size());
-
-        for (const auto index : members) {
-          before.push_back({
-              lines_[index].start.xMm,
-              lines_[index].end.xMm});
-        }
-
-        for (std::size_t member = 0;
-             member < members.size();
-             ++member) {
-          auto& line =
-              lines_[members[member]];
-
-          for (const auto& target : targets) {
-            if (std::abs(
-                    before[member].startX -
-                    target.oldX) <= 1e-7)
-              line.start.xMm =
-                  target.targetX;
-
-            if (std::abs(
-                    before[member].endX -
-                    target.oldX) <= 1e-7)
-              line.end.xMm =
-                  target.targetX;
-          }
-        }
-
-        updateBounds();
-        return true;
-      }
-    }
-  }
-
-  // Generic locked reference: move the unlocked operand instead.
-  if (isPointReferenceLocked(secondReference)) {
-    if (isPointReferenceLocked(firstReference)) {
-      return std::abs(
-                 std::abs(dx) -
-                 distanceMm) <= 1e-7;
-    }
-
-    return setPointDistanceX(
-        secondReference,
-        firstReference,
-        distanceMm);
-  }
-
-  if (secondReference.elementCenterId != 0) {
-    if (isElementLocked(
-            secondReference.elementCenterId))
-      return false;
-
-    for (auto& line : lines_) {
-      if (line.elementId !=
-          secondReference.elementCenterId)
-        continue;
-
-      line.start.xMm += moveSecondX;
-      line.end.xMm += moveSecondX;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  if (secondReference.circleId !=
-      kInvalidGeometryId) {
-    if (isGeometryLocked(
-            secondReference.circleId))
-      return false;
-
-    const auto circle =
-        circleIndex(
-            secondReference.circleId);
-
-    if (!circle)
-      return false;
-
-    circles_[*circle].center.xMm =
-        movedSecond.xMm;
-    updateBounds();
-    return true;
-  }
-
-  const auto secondLineIndex =
-      lineIndex(secondReference.lineId);
-
-  if (secondLineIndex) {
-    const std::size_t elementId =
-        lines_[*secondLineIndex].elementId;
-
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    if (count == 4) {
-      if (isElementLocked(elementId))
-        return false;
-
-      for (auto& line : lines_) {
-        if (line.elementId != elementId)
-          continue;
-
-        line.start.xMm += moveSecondX;
-        line.end.xMm += moveSecondX;
-      }
-
-      updateBounds();
-      return true;
-    }
-  }
-
-  const auto same = [](Point a, Point b) {
-    return std::hypot(
-               a.xMm - b.xMm,
-               a.yMm - b.yMm) <= 1e-7;
-  };
-
-  for (auto& line : lines_) {
-    if (same(line.start, *second))
-      line.start = movedSecond;
-
-    if (same(line.end, *second))
-      line.end = movedSecond;
-  }
-
-  updateBounds();
-  return true;
-}
-
-bool Sketch::setPointDistanceY(
-    PointReference firstReference,
-    PointReference secondReference,
-    double distanceMm) {
-  journalCapturePoint(firstReference);
-  journalCapturePoint(secondReference);
-  const auto first = referencedPoint(firstReference);
-  const auto second = referencedPoint(secondReference);
-
-  if (!first || !second ||
-      !std::isfinite(distanceMm) ||
-      distanceMm <= 0.0)
+  Dimension stored = dimension;
+  if (stored.id != kInvalidDimensionId && dimensionIndex(stored.id))
     return false;
-
-  // Vertical own-endpoint dimensions use the same anchor-aware path as an
-  // explicit line length. This preserves an endpoint constrained to a locked
-  // carrier and moves the free end regardless of selection order.
-  const bool ownLineEndpoints =
-      !firstReference.origin && !secondReference.origin &&
-      firstReference.elementCenterId == 0 &&
-      secondReference.elementCenterId == 0 &&
-      firstReference.circleId == kInvalidGeometryId &&
-      secondReference.circleId == kInvalidGeometryId &&
-      firstReference.arcId == kInvalidGeometryId &&
-      secondReference.arcId == kInvalidGeometryId &&
-      firstReference.lineId != kInvalidGeometryId &&
-      firstReference.lineId == secondReference.lineId &&
-      firstReference.start != secondReference.start;
-  if (ownLineEndpoints &&
-      std::abs(second->xMm - first->xMm) <= 1e-7)
-    return setLineLengthById(firstReference.lineId, distanceMm);
-
-  const auto rectangleElementForPoint =
-      [this](PointReference reference)
-          -> std::optional<std::size_t> {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return std::nullopt;
-
-    const auto index = lineIndex(reference.lineId);
-    if (!index)
-      return std::nullopt;
-
-    const std::size_t elementId =
-        lines_[*index].elementId;
-
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    return count == 4
-               ? std::optional<std::size_t>{elementId}
-               : std::nullopt;
-  };
-
-  const auto pointBelongsToElement =
-      [this](PointReference reference,
-             std::size_t elementId) {
-    if (reference.elementCenterId != 0 ||
-        reference.circleId != kInvalidGeometryId ||
-        reference.lineId == kInvalidGeometryId)
-      return false;
-
-    const auto index = lineIndex(reference.lineId);
-    return index &&
-           lines_[*index].elementId == elementId;
-  };
-
-  const auto firstRectangle =
-      rectangleElementForPoint(firstReference);
-  const auto secondRectangle =
-      rectangleElementForPoint(secondReference);
-
-  const double dy = second->yMm - first->yMm;
-  const double direction = dy < 0.0 ? -1.0 : 1.0;
-  const Point movedSecond{
-      second->xMm,
-      first->yMm + direction * distanceMm};
-  const double moveSecondY =
-      movedSecond.yMm - second->yMm;
-
-  // Internal dimension of one rectangle = explicit driving height.
-  if (firstRectangle && secondRectangle &&
-      *firstRectangle == *secondRectangle) {
-    if (isElementLocked(*secondRectangle))
-      return false;
-
-    const double oldSecondY = second->yMm;
-
-    for (auto& line : lines_) {
-      if (line.elementId != *secondRectangle)
-        continue;
-
-      if (std::abs(line.start.yMm - oldSecondY) <= 1e-7)
-        line.start.yMm += moveSecondY;
-
-      if (std::abs(line.end.yMm - oldSecondY) <= 1e-7)
-        line.end.yMm += moveSecondY;
-    }
-
-    updateBounds();
-    return true;
+  if (stored.id == kInvalidDimensionId) {
+    const auto generated = firstFreeDimensionId(dimensions_, nextDimensionId_);
+    if (!generated) return false;
+    stored.id = *generated;
   }
-
-  // COUPLED EXTERNAL RECTANGLE Y GAPS V4
-  if (static_cast<bool>(firstRectangle) !=
-      static_cast<bool>(secondRectangle)) {
-    const std::size_t elementId =
-        firstRectangle ? *firstRectangle
-                       : *secondRectangle;
-
-    const PointReference currentRectangleReference =
-        firstRectangle ? firstReference
-                       : secondReference;
-    const PointReference currentExternalReference =
-        firstRectangle ? secondReference
-                       : firstReference;
-
-    if (isPointReferenceLocked(currentExternalReference) &&
-        !isElementLocked(elementId)) {
-      std::vector<std::size_t> members;
-      for (std::size_t index = 0;
-           index < lines_.size(); ++index) {
-        if (lines_[index].elementId == elementId)
-          members.push_back(index);
-      }
-
-      bool axisAligned = members.size() == 4;
-      for (const auto index : members) {
-        const double lineDx =
-            std::abs(lines_[index].end.xMm -
-                     lines_[index].start.xMm);
-        const double lineDy =
-            std::abs(lines_[index].end.yMm -
-                     lines_[index].start.yMm);
-
-        if (lineDx > 1e-7 && lineDy > 1e-7) {
-          axisAligned = false;
-          break;
-        }
-      }
-
-      const auto lineBelongsToElement =
-          [this, elementId](GeometryId id) {
-        const auto index = lineIndex(id);
-        return index &&
-               lines_[*index].elementId == elementId;
-      };
-
-      bool heightDriven = false;
-
-      for (const auto& constraint : constraints_) {
-        if (constraint.type == ConstraintType::Length &&
-            lineBelongsToElement(
-                constraint.firstGeometry)) {
-          const auto index =
-              lineIndex(constraint.firstGeometry);
-
-          if (index) {
-            const double lineDx =
-                std::abs(lines_[*index].end.xMm -
-                         lines_[*index].start.xMm);
-            const double lineDy =
-                std::abs(lines_[*index].end.yMm -
-                         lines_[*index].start.yMm);
-
-            if (lineDy > lineDx + 1e-7) {
-              heightDriven = true;
-              break;
-            }
-          }
-        }
-
-        if (constraint.type != ConstraintType::DistanceY &&
-            constraint.type != ConstraintType::Distance)
-          continue;
-
-        if (!pointBelongsToElement(
-                constraint.firstPoint, elementId) ||
-            !pointBelongsToElement(
-                constraint.secondPoint, elementId))
-          continue;
-
-        const auto p1 =
-            referencedPoint(constraint.firstPoint);
-        const auto p2 =
-            referencedPoint(constraint.secondPoint);
-
-        if (!p1 || !p2)
-          continue;
-
-        const double internalDx =
-            std::abs(p2->xMm - p1->xMm);
-        const double internalDy =
-            std::abs(p2->yMm - p1->yMm);
-
-        if ((constraint.type ==
-                 ConstraintType::DistanceY &&
-             internalDy > 1e-7) ||
-            (constraint.type ==
-                 ConstraintType::Distance &&
-             internalDy > 1e-7 &&
-             internalDx <= 1e-7)) {
-          heightDriven = true;
-          break;
-        }
-      }
-
-      const auto targetForGap =
-          [](double rectangleY,
-             double externalY,
-             double gap) {
-        return rectangleY >= externalY
-                   ? externalY + gap
-                   : externalY - gap;
-      };
-
-      if (heightDriven || !axisAligned) {
-        const auto rectanglePoint =
-            referencedPoint(
-                currentRectangleReference);
-        const auto externalPoint =
-            referencedPoint(
-                currentExternalReference);
-
-        if (!rectanglePoint || !externalPoint)
-          return false;
-
-        const double targetY =
-            targetForGap(
-                rectanglePoint->yMm,
-                externalPoint->yMm,
-                distanceMm);
-
-        const double moveY =
-            targetY - rectanglePoint->yMm;
-
-        for (const auto index : members) {
-          lines_[index].start.yMm += moveY;
-          lines_[index].end.yMm += moveY;
-        }
-
-        updateBounds();
-        return true;
-      }
-
-      struct GapTarget {
-        double oldY{};
-        double targetY{};
-      };
-
-      std::vector<GapTarget> targets;
-
-      const auto addGapTarget =
-          [this, elementId, &targets,
-           &pointBelongsToElement,
-           &targetForGap](
-              PointReference a,
-              PointReference b,
-              double gap) {
-        const bool aRectangle =
-            pointBelongsToElement(a, elementId);
-        const bool bRectangle =
-            pointBelongsToElement(b, elementId);
-
-        if (aRectangle == bRectangle)
-          return true;
-
-        const PointReference rectangleRef =
-            aRectangle ? a : b;
-        const PointReference externalRef =
-            aRectangle ? b : a;
-
-        if (!isPointReferenceLocked(externalRef))
-          return true;
-
-        const auto rectanglePoint =
-            referencedPoint(rectangleRef);
-        const auto externalPoint =
-            referencedPoint(externalRef);
-
-        if (!rectanglePoint || !externalPoint)
-          return false;
-
-        const double oldY =
-            rectanglePoint->yMm;
-        const double targetY =
-            targetForGap(
-                oldY,
-                externalPoint->yMm,
-                gap);
-
-        for (const auto& existing : targets) {
-          if (std::abs(existing.oldY - oldY) > 1e-7)
-            continue;
-
-          return std::abs(
-                     existing.targetY -
-                     targetY) <= 1e-7;
-        }
-
-        targets.push_back({oldY, targetY});
-        return true;
-      };
-
-      for (const auto& constraint : constraints_) {
-        if (constraint.type != ConstraintType::DistanceY ||
-            !std::isfinite(constraint.value) ||
-            constraint.value <= 0.0)
-          continue;
-
-        const bool touchesRectangle =
-            pointBelongsToElement(
-                constraint.firstPoint, elementId) ||
-            pointBelongsToElement(
-                constraint.secondPoint, elementId);
-
-        if (!touchesRectangle)
-          continue;
-
-        if (!addGapTarget(
-                constraint.firstPoint,
-                constraint.secondPoint,
-                constraint.value))
-          return false;
-      }
-
-      if (!addGapTarget(
-              firstReference,
-              secondReference,
-              distanceMm))
-        return false;
-
-      if (!targets.empty()) {
-        // One external Y gap defines position, not height.  Keep the whole
-        // rectangle rigid until distinct constraints address both rows.
-        if (targets.size() == 1) {
-          const double moveY =
-              targets.front().targetY - targets.front().oldY;
-
-          for (const auto index : members) {
-            lines_[index].start.yMm += moveY;
-            lines_[index].end.yMm += moveY;
-          }
-
-          updateBounds();
-          return true;
-        }
-
-        struct EndpointSnapshot {
-          double startY{};
-          double endY{};
-        };
-
-        std::vector<EndpointSnapshot> before;
-        before.reserve(members.size());
-
-        for (const auto index : members) {
-          before.push_back({
-              lines_[index].start.yMm,
-              lines_[index].end.yMm});
-        }
-
-        for (std::size_t member = 0;
-             member < members.size();
-             ++member) {
-          auto& line =
-              lines_[members[member]];
-
-          for (const auto& target : targets) {
-            if (std::abs(
-                    before[member].startY -
-                    target.oldY) <= 1e-7)
-              line.start.yMm =
-                  target.targetY;
-
-            if (std::abs(
-                    before[member].endY -
-                    target.oldY) <= 1e-7)
-              line.end.yMm =
-                  target.targetY;
-          }
-        }
-
-        updateBounds();
-        return true;
-      }
-    }
+  DimensionId nextStart = nextDimensionId_;
+  if (stored.id >= nextStart) {
+    nextStart = stored.id == std::numeric_limits<DimensionId>::max()
+        ? DimensionId{1}
+        : stored.id + 1;
   }
-
-  if (isPointReferenceLocked(secondReference)) {
-    if (isPointReferenceLocked(firstReference)) {
-      return std::abs(
-                 std::abs(dy) -
-                 distanceMm) <= 1e-7;
-    }
-
-    return setPointDistanceY(
-        secondReference,
-        firstReference,
-        distanceMm);
-  }
-
-  if (secondReference.elementCenterId != 0) {
-    if (isElementLocked(
-            secondReference.elementCenterId))
-      return false;
-
-    for (auto& line : lines_) {
-      if (line.elementId !=
-          secondReference.elementCenterId)
-        continue;
-
-      line.start.yMm += moveSecondY;
-      line.end.yMm += moveSecondY;
-    }
-
-    updateBounds();
-    return true;
-  }
-
-  if (secondReference.circleId !=
-      kInvalidGeometryId) {
-    if (isGeometryLocked(
-            secondReference.circleId))
-      return false;
-
-    const auto circle =
-        circleIndex(
-            secondReference.circleId);
-
-    if (!circle)
-      return false;
-
-    circles_[*circle].center.yMm =
-        movedSecond.yMm;
-    updateBounds();
-    return true;
-  }
-
-  const auto secondLineIndex =
-      lineIndex(secondReference.lineId);
-
-  if (secondLineIndex) {
-    const std::size_t elementId =
-        lines_[*secondLineIndex].elementId;
-
-    std::size_t count = 0;
-    for (const auto& line : lines_) {
-      if (line.elementId == elementId)
-        ++count;
-    }
-
-    if (count == 4) {
-      if (isElementLocked(elementId))
-        return false;
-
-      for (auto& line : lines_) {
-        if (line.elementId != elementId)
-          continue;
-
-        line.start.yMm += moveSecondY;
-        line.end.yMm += moveSecondY;
-      }
-
-      updateBounds();
-      return true;
-    }
-  }
-
-  const auto same = [](Point a, Point b) {
-    return std::hypot(
-               a.xMm - b.xMm,
-               a.yMm - b.yMm) <= 1e-7;
-  };
-
-  for (auto& line : lines_) {
-    if (same(line.start, *second))
-      line.start = movedSecond;
-
-    if (same(line.end, *second))
-      line.end = movedSecond;
-  }
-
-  updateBounds();
+  const auto next = firstFreeDimensionId(dimensions_, nextStart, stored.id);
+  if (!next) return false;
+  journalRecordAddedDimension(dimensions_.size());
+  dimensions_.push_back(std::move(stored));
+  nextDimensionId_ = *next;
+  static_cast<void>(dimensions());
   return true;
-}
-bool Sketch::setCircleDiameter(std::size_t index, double diameterMm) {
-  if (index < circleIds_.size())
-    journalCaptureComponents({circleIds_[index]});
-  if (index >= circles_.size() || diameterMm <= 0.0) return false;
-  // LOCK CONSTRAINT: direct indexed diameter edit is blocked.
-  if (index < circleIds_.size() &&
-      isGeometryLocked(circleIds_[index]))
-    return std::abs(circles_[index].radiusMm * 2.0 -
-                    diameterMm) <= 1e-7;
-  circles_[index].radiusMm = diameterMm * 0.5;
-  updateBounds();
-  return true;
-}
-
-void Sketch::addDimension(Dimension dimension) { storeDimension(dimension); }
-
-void Sketch::storeDimension(const Dimension& dimension) {
-  if (dimension.valueMm > 0.0) {
-    Dimension stored = dimension;
-    const bool needsGeneratedId =
-        stored.id == kInvalidDimensionId || dimensionIndex(stored.id);
-    if (needsGeneratedId) {
-      const auto generated = firstFreeDimensionId(dimensions_, nextDimensionId_);
-      if (!generated) return;
-      stored.id = *generated;
-    }
-    DimensionId nextStart = nextDimensionId_;
-    if (stored.id >= nextStart) {
-      nextStart = stored.id == std::numeric_limits<DimensionId>::max()
-          ? DimensionId{1}
-          : stored.id + 1;
-    }
-    const auto next = firstFreeDimensionId(dimensions_, nextStart, stored.id);
-    if (!next) return;
-    journalRecordAddedDimension(dimensions_.size());
-    dimensions_.push_back(std::move(stored));
-    nextDimensionId_ = *next;
-  }
 }
 
 void Sketch::clearDimensions() {
@@ -8024,10 +4540,119 @@ bool Sketch::setDimensionPlacement(std::size_t index, double offsetMm,
 }
 
 bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
-  auto& dimensions = dimensions_;
-  if (index >= dimensions.size() || valueMm <= 0.0) return false;
+  if (index >= dimensions_.size() || !std::isfinite(valueMm) ||
+      valueMm <= 0.0)
+    return false;
+  const auto constraintId = dimensions_[index].constraintId;
+  const auto constraint = constraintIndex(constraintId);
+  if (!constraint || constraints_[*constraint].mode != ConstraintMode::Driving)
+    return false;
+  return setConstraintValue(constraintId, valueMm).committed();
+}
+
+bool Sketch::setDimensionConstraint(std::size_t index,
+                                    ConstraintId constraintId) {
+  const auto linkedIndex = constraintIndex(constraintId);
+  if (index >= dimensions_.size() || constraintId == kInvalidConstraintId ||
+      !linkedIndex ||
+      !annotatableConstraintType(static_cast<ConstraintType>(
+          constraints_[*linkedIndex].type)) ||
+      std::any_of(dimensions_.begin(), dimensions_.end(),
+                  [&](const Dimension& existing) {
+                    return &existing != &dimensions_[index] &&
+                           existing.constraintId == constraintId;
+                  }))
+    return false;
   journalCaptureDimension(index);
-  dimensions[index].valueMm = valueMm;
+  dimensions_[index].constraintId = constraintId;
+  static_cast<void>(dimensions());
+  return true;
+}
+
+bool Sketch::restoreGeometryIds(std::vector<GeometryId> lineIds,
+                                std::vector<GeometryId> circleIds,
+                                std::vector<GeometryId> arcIds,
+                                std::vector<GeometryId> bezierIds) {
+  if (lineIds.size() != lines_.size() ||
+      circleIds.size() != circles_.size() || arcIds.size() != arcs_.size() ||
+      bezierIds.size() != beziers_.size())
+    return false;
+  std::unordered_set<GeometryId> unique;
+  GeometryId maximum = kInvalidGeometryId;
+  const auto consume = [&](const std::vector<GeometryId>& ids) {
+    for (const auto id : ids) {
+      if (id == kInvalidGeometryId || !unique.insert(id).second) return false;
+      maximum = std::max(maximum, id);
+    }
+    return true;
+  };
+  if (!consume(lineIds) || !consume(circleIds) || !consume(arcIds) ||
+      !consume(bezierIds))
+    return false;
+  lineIds_ = std::move(lineIds);
+  circleIds_ = std::move(circleIds);
+  arcIds_ = std::move(arcIds);
+  bezierIds_ = std::move(bezierIds);
+  nextGeometryId_ = maximum == std::numeric_limits<GeometryId>::max()
+      ? GeometryId{1}
+      : maximum + 1;
+  invalidateStructureIndexes();
+  hasLastSolvedFingerprint_ = false;
+  return true;
+}
+
+GeometryId Sketch::nextGeometryId() const noexcept { return nextGeometryId_; }
+
+ConstraintId Sketch::nextConstraintId() const noexcept {
+  return nextConstraintId_;
+}
+
+DimensionId Sketch::nextDimensionId() const noexcept {
+  return nextDimensionId_;
+}
+
+std::size_t Sketch::nextElementId() const noexcept { return nextElementId_; }
+
+bool Sketch::restoreIdAllocators(std::size_t nextElementId,
+                                 GeometryId nextGeometryId,
+                                 ConstraintId nextConstraintId,
+                                 DimensionId nextDimensionId) {
+  std::size_t maximumElementId = 0;
+  for (const auto& line : lines_)
+    maximumElementId = std::max(maximumElementId, line.elementId);
+  for (const auto elementId : centerNodeElementIds_)
+    maximumElementId = std::max(maximumElementId, elementId);
+
+  GeometryId maximumGeometryId = kInvalidGeometryId;
+  const auto accountGeometryIds = [&](const auto& ids) {
+    for (const auto id : ids)
+      maximumGeometryId = std::max(maximumGeometryId, id);
+  };
+  accountGeometryIds(lineIds_);
+  accountGeometryIds(circleIds_);
+  accountGeometryIds(arcIds_);
+  accountGeometryIds(bezierIds_);
+
+  ConstraintId maximumConstraintId = kInvalidConstraintId;
+  for (const auto& constraint : constraints_)
+    maximumConstraintId = std::max(maximumConstraintId, constraint.id);
+  DimensionId maximumDimensionId = kInvalidDimensionId;
+  for (const auto& dimension : dimensions_)
+    maximumDimensionId = std::max(maximumDimensionId, dimension.id);
+
+  if (nextElementId == 0 || nextGeometryId == kInvalidGeometryId ||
+      nextConstraintId == kInvalidConstraintId ||
+      nextDimensionId == kInvalidDimensionId ||
+      nextElementId <= maximumElementId ||
+      nextGeometryId <= maximumGeometryId ||
+      nextConstraintId <= maximumConstraintId ||
+      nextDimensionId <= maximumDimensionId)
+    return false;
+  nextElementId_ = nextElementId;
+  nextGeometryId_ = nextGeometryId;
+  nextConstraintId_ = nextConstraintId;
+  nextDimensionId_ = nextDimensionId;
+  hasLastSolvedFingerprint_ = false;
   return true;
 }
 
@@ -8039,35 +4664,33 @@ ConstraintId Sketch::addConstraint(
   // previously-satisfied constraint false. If the complete system cannot be
   // solved, restore both geometry and the old constraint set.
   //
-  // Explicit IDs are used by project loading; that path stays permissive so
-  // old files can still be opened and diagnosed.
-  const bool transactional =
-      constraint.id == kInvalidConstraintId;
+  // Explicit identities belong exclusively to restoreConstraints().  Keeping
+  // that persistence path separate prevents a caller-selected ID from
+  // bypassing schema validation or transactional rollback.
+  if (constraint.id != kInvalidConstraintId ||
+      !validateConstraintSchema(*this, constraint) ||
+      nextConstraintId_ == kInvalidConstraintId ||
+      nextConstraintId_ == std::numeric_limits<ConstraintId>::max() ||
+      constraintIndex(nextConstraintId_))
+    return kInvalidConstraintId;
 
   ConstraintDiagnostics before;
   std::vector<ConstraintId> previouslySatisfied;
 
-  if (transactional) {
-    beginDeltaJournal();
-    if (failNextNestedConstraintJournal.exchange(false))
-      throw std::runtime_error("injected nested journal failure");
-    before = analyzeConstraintSystem(*this, false);
-    for (const auto& old : constraints_)
-      if (!hasConstraintViolation(before, old.id))
-        previouslySatisfied.push_back(old.id);
-  }
+  beginDeltaJournal();
+  if (failNextNestedConstraintJournal.exchange(false))
+    throw std::runtime_error("injected nested journal failure");
+  before = analyzeConstraintSystem(*this, false);
+  for (const auto& old : constraints_)
+    if (!hasConstraintViolation(before, old.id))
+      previouslySatisfied.push_back(old.id);
 
   journalCaptureComponents(
       {constraint.firstGeometry, constraint.secondGeometry});
   journalCapturePoint(constraint.firstPoint);
   journalCapturePoint(constraint.secondPoint);
 
-  if (constraint.id == kInvalidConstraintId)
-    constraint.id = nextConstraintId_++;
-  else
-    nextConstraintId_ =
-        std::max(nextConstraintId_,
-                 constraint.id + 1);
+  constraint.id = nextConstraintId_++;
 
   const ConstraintId addedId =
       constraint.id;
@@ -8075,29 +4698,26 @@ ConstraintId Sketch::addConstraint(
   constraints_.push_back(constraint);
   journalRecordAddedConstraint(addedId, constraints_.size() - 1);
   invalidateStructureIndexes();
-  (void)BasicSketchSolver::solveStable(*this);
+  static_cast<void>(SketchSolver::solveStableComponent(
+      *this, referencedGeometryIds(*this, constraint), 16, addedId));
 
-  if (transactional) {
-    const auto after =
-        analyzeConstraintSystem(*this, false);
+  const auto after =
+      analyzeConstraintSystem(*this, false);
 
-    bool oldConstraintBroken = false;
+  bool oldConstraintBroken = false;
 
-    for (const auto oldId : previouslySatisfied) {
-      if (hasConstraintViolation(after, oldId)) {
-        oldConstraintBroken = true;
-        break;
-      }
+  for (const auto oldId : previouslySatisfied) {
+    if (hasConstraintViolation(after, oldId)) {
+      oldConstraintBroken = true;
+      break;
     }
-
-    if (hasConstraintViolation(
-            after, addedId) ||
-        oldConstraintBroken) {
-      static_cast<void>(cancelDeltaJournal());
-      return kInvalidConstraintId;
-    }
-    static_cast<void>(finishDeltaJournal());
   }
+
+  if (hasConstraintViolation(after, addedId) || oldConstraintBroken) {
+    static_cast<void>(cancelDeltaJournal());
+    return kInvalidConstraintId;
+  }
+  static_cast<void>(finishDeltaJournal());
 
   return addedId;
 }
@@ -8106,17 +4726,21 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
                                                  bool commitRedundant) {
   ConstraintApplyResult result;
   const auto reject = [&result](ConstraintApplyStatus status,
+                                SketchMutationDiagnosticCode code,
                                 std::string diagnostic) {
     result.status = status;
+    result.diagnosticCode = code;
     result.diagnostic = std::move(diagnostic);
     return result;
   };
 
-  const int type = static_cast<int>(constraint.type);
+  const int type =
+      static_cast<int>(static_cast<ConstraintType>(constraint.type));
   if (type < static_cast<int>(ConstraintType::Horizontal) ||
       type > static_cast<int>(ConstraintType::PointOnYAxis) ||
       !std::isfinite(constraint.value))
     return reject(ConstraintApplyStatus::Unsupported,
+                  SketchMutationDiagnosticCode::UnsupportedConstraint,
                   "Unsupported constraint type or value");
 
   if ((constraint.firstGeometry != kInvalidGeometryId &&
@@ -8130,16 +4754,23 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
       (constraint.id != kInvalidConstraintId &&
        constraintIndex(constraint.id)))
     return reject(ConstraintApplyStatus::InvalidReference,
+                  SketchMutationDiagnosticCode::InvalidGeometryReference,
                   "Constraint contains a stale or malformed reference");
 
   if (!supportedConstraintSchema(*this, constraint))
     return reject(ConstraintApplyStatus::Unsupported,
+                  SketchMutationDiagnosticCode::UnsupportedConstraint,
                   "Constraint geometry combination is not supported");
 
   const auto seeds = referencedGeometryIds(*this, constraint);
   if (seeds.empty())
     return reject(ConstraintApplyStatus::InvalidReference,
+                  SketchMutationDiagnosticCode::InvalidGeometryReference,
                   "Constraint does not reference sketch geometry");
+
+  const auto affectedBefore = connectedComponent(seeds);
+  result.component = affectedBefore;
+  result.relatedConstraintIds = affectedBefore.constraintIds;
 
   const auto duplicate = std::find_if(
       constraints_.begin(), constraints_.end(),
@@ -8148,13 +4779,12 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
       });
   if (duplicate != constraints_.end()) {
     result.status = ConstraintApplyStatus::Redundant;
+    result.diagnosticCode = SketchMutationDiagnosticCode::None;
     result.relatedConstraintIds = {duplicate->id};
     result.diagnostic = "Equivalent constraint already exists";
     return result;
   }
 
-  const auto affectedBefore = connectedComponent(seeds);
-  result.relatedConstraintIds = affectedBefore.constraintIds;
   const auto sameGeometryPair = [&constraint](const Constraint& old) {
     return (old.firstGeometry == constraint.firstGeometry &&
             old.secondGeometry == constraint.secondGeometry) ||
@@ -8190,6 +4820,8 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
     }
     if (conflicts) {
       result.status = ConstraintApplyStatus::Conflicting;
+      result.diagnosticCode =
+          SketchMutationDiagnosticCode::ConstraintResidualViolation;
       result.relatedConstraintIds = {old.id};
       result.diagnostic =
           "Constraint conflicts with an existing orientation relationship";
@@ -8220,7 +4852,9 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
   invalidateStructureIndexes();
 
   const SolveResult solved =
-      BasicSketchSolver::solveStableComponent(*this, seeds);
+      SketchSolver::solveStableComponent(*this, seeds, 16,
+                                              constraint.id);
+  result.solveResult = solved;
   const auto after = analyzeConstraintSystem(*this, true);
   bool oldConstraintBroken = false;
   for (const auto id : previouslySatisfied) {
@@ -8234,19 +4868,28 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
   std::string diagnostic;
   if (solved.invalidReferences != 0) {
     failure = ConstraintApplyStatus::InvalidReference;
+    result.diagnosticCode =
+        SketchMutationDiagnosticCode::InvalidGeometryReference;
     diagnostic = "Solver rejected a constraint reference";
   } else if (solved.unsupported != 0) {
     failure = ConstraintApplyStatus::Unsupported;
+    result.diagnosticCode =
+        SketchMutationDiagnosticCode::UnsupportedConstraint;
     diagnostic = "Solver does not support this constraint";
   } else if (hasConstraintViolation(after, constraint.id) ||
              oldConstraintBroken) {
     failure = ConstraintApplyStatus::Conflicting;
+    result.diagnosticCode =
+        SketchMutationDiagnosticCode::ConstraintResidualViolation;
     diagnostic = "Constraint conflicts with existing dependencies";
   } else if (!solved.converged) {
     failure = ConstraintApplyStatus::SolverFailed;
+    result.diagnosticCode =
+        SketchMutationDiagnosticCode::SolverDidNotConverge;
     diagnostic = "Constraint solver did not converge";
   } else if (after.equationRank <= before.equationRank) {
     failure = ConstraintApplyStatus::Redundant;
+    result.diagnosticCode = SketchMutationDiagnosticCode::None;
     diagnostic = "Constraint does not add an independent equation";
   }
 
@@ -8271,54 +4914,83 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
   static_cast<void>(finishDeltaJournal());
   updateBounds();
   result.status = ConstraintApplyStatus::Accepted;
+  result.diagnosticCode = SketchMutationDiagnosticCode::None;
   result.diagnostic = "Constraint accepted";
   return result;
 }
 
 bool Sketch::restoreConstraints(std::vector<Constraint> constraints) {
+  std::unordered_set<ConstraintId> ids;
+  std::unordered_map<ConstraintId, ConstraintType> candidateTypes;
   for (const auto& constraint : constraints) {
-    const int type = static_cast<int>(constraint.type);
+    const int type =
+        static_cast<int>(static_cast<ConstraintType>(constraint.type));
     if (type < static_cast<int>(ConstraintType::Horizontal) ||
         type > static_cast<int>(ConstraintType::PointOnYAxis))
       return false;
+    if (constraint.id == kInvalidConstraintId ||
+        !ids.insert(constraint.id).second ||
+        !validateConstraintSchema(*this, constraint))
+      return false;
+    candidateTypes.emplace(constraint.id,
+                           static_cast<ConstraintType>(constraint.type));
   }
-  Sketch geometrySnapshot = *this;
+  for (const auto& dimension : dimensions_) {
+    if (dimension.constraintId == kInvalidConstraintId) return false;
+    const auto candidate = candidateTypes.find(dimension.constraintId);
+    if (candidate == candidateTypes.end() ||
+        !annotatableConstraintType(candidate->second))
+      return false;
+  }
+  // Persistence restores the serialized pose verbatim. A solve is deliberately
+  // not committed here: older files may contain a valid but currently
+  // unsatisfied system, and first open must never become an implicit geometry
+  // migration. Validate a disposable candidate so constraints that can only
+  // produce non-finite or degenerate geometry remain rejected.
+  Sketch validationCandidate = *this;
+  validationCandidate.constraints_ = constraints;
+  validationCandidate.invalidateStructureIndexes();
+  validationCandidate.nextConstraintId_ = 1;
+  for (const auto& constraint : validationCandidate.constraints_)
+    validationCandidate.nextConstraintId_ = std::max(
+        validationCandidate.nextConstraintId_, constraint.id + 1);
+  const SolveResult validation = SketchSolver::solveStable(validationCandidate);
+  if (validation.nonFiniteGeometry != 0 || validation.degenerateGeometry != 0)
+    return false;
   constraints_ = std::move(constraints);
   invalidateStructureIndexes();
-  nextConstraintId_ = 1;
-  for (const auto& constraint : constraints_)
-    nextConstraintId_ = std::max(nextConstraintId_, constraint.id + 1);
-  const SolveResult solved = BasicSketchSolver::solveStable(*this);
+  nextConstraintId_ = validationCandidate.nextConstraintId_;
+  // Diagnostics and the next explicit edit use the same equation kernel later.
   updateBounds();
-  // The persistence boundary validates every reference before this call.
-  // Solver counters also cover valid diagnostic states: locked no-ops and
-  // incompatible known relationships. Preserve such sketches without a
-  // partially applied solve; the editor can surface their diagnostics.
-  if (!solved.converged || solved.violatedConstraints != 0 ||
-      solved.unsupported != 0 || solved.invalidReferences != 0) {
-    // A conflicting/over-constrained sketch is still valid editable CAD data:
-    // preserve its serialized geometry and constraints for diagnostics instead
-    // of committing a partially converged solver state.
-    auto unresolvedConstraints = std::move(constraints_);
-    const ConstraintId restoredNextConstraintId = nextConstraintId_;
-    *this = std::move(geometrySnapshot);
-    constraints_ = std::move(unresolvedConstraints);
-    invalidateStructureIndexes();
-    nextConstraintId_ = restoredNextConstraintId;
-    updateBounds();
-  }
   return true;
 }
 
-bool Sketch::setConstraintValue(ConstraintId id, double value) {
-  if (id == kInvalidConstraintId || !std::isfinite(value) || value <= 0.0)
-    return false;
+SketchMutationResult Sketch::setConstraintValue(ConstraintId id,
+                                                double value) {
+  if (id == kInvalidConstraintId)
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (!std::isfinite(value) || value <= 0.0)
+    return rejectedMutation(*this, {}, SketchMutationStatus::Unsupported,
+                            SketchMutationDiagnosticCode::UnsupportedConstraint);
   const auto found = std::find_if(
       constraints_.begin(), constraints_.end(),
       [id](const Constraint& constraint) { return constraint.id == id; });
-  if (found == constraints_.end()) return false;
+  if (found == constraints_.end())
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (found->mode != ConstraintMode::Driving)
+    return rejectedMutation(*this, {}, SketchMutationStatus::Unsupported,
+                            SketchMutationDiagnosticCode::UnsupportedConstraint);
+  const auto seeds = referencedGeometryIds(*this, *found);
+  if (std::abs(found->value - value) <= 1e-12)
+    return noMutation(*this, seeds);
 
-  beginDeltaJournal();
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents(
       {found->firstGeometry, found->secondGeometry});
   journalCapturePoint(found->firstPoint);
@@ -8331,7 +5003,8 @@ bool Sketch::setConstraintValue(ConstraintId id, double value) {
       previouslySatisfied.push_back(old.id);
   found->value = value;
   hasLastSolvedFingerprint_ = false;
-  (void)BasicSketchSolver::solveStable(*this);
+  const auto solved = SketchSolver::solveStable(*this);
+  auto mutation = mutationFromSolve(*this, seeds, solved);
   const auto after = analyzeConstraintSystem(*this, false);
 
   bool previouslyValidConstraintBroke = false;
@@ -8342,25 +5015,108 @@ bool Sketch::setConstraintValue(ConstraintId id, double value) {
     }
   }
   if (hasConstraintViolation(after, id) || previouslyValidConstraintBroke) {
-    static_cast<void>(cancelDeltaJournal());
-    return false;
+    mutation.status = SketchMutationStatus::Conflicting;
+    mutation.diagnosticCode =
+        SketchMutationDiagnosticCode::ConstraintResidualViolation;
   }
-  static_cast<void>(finishDeltaJournal());
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
   updateBounds();
-  return true;
+  return mutation;
+}
+
+SketchMutationResult Sketch::setConstraintMode(
+    ConstraintId id, ConstraintMode mode,
+    std::optional<double> drivingValue) {
+  const auto found = std::find_if(
+      constraints_.begin(), constraints_.end(),
+      [id](const Constraint& constraint) { return constraint.id == id; });
+  if (found == constraints_.end())
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+
+  Constraint candidate = *found;
+  candidate.mode = mode;
+  if (mode == ConstraintMode::Reference) {
+    if (hasDrivingValue(candidate.payload()) &&
+        !assignDrivingValue(candidate.payload(), std::nullopt))
+      return rejectedMutation(
+          *this, {}, SketchMutationStatus::Unsupported,
+          SketchMutationDiagnosticCode::UnsupportedConstraint);
+  } else if (mode == ConstraintMode::Driving) {
+    if (hasDrivingValue(candidate.payload()) &&
+        (!drivingValue || !std::isfinite(*drivingValue) ||
+         *drivingValue <= 0.0 ||
+         !assignDrivingValue(candidate.payload(), drivingValue)))
+      return rejectedMutation(
+          *this, {}, SketchMutationStatus::Unsupported,
+          SketchMutationDiagnosticCode::UnsupportedConstraint);
+  }
+  if (!validateConstraintSchema(*this, candidate))
+    return rejectedMutation(
+        *this, referencedGeometryIds(*this, candidate),
+        SketchMutationStatus::Unsupported,
+        SketchMutationDiagnosticCode::UnsupportedConstraint);
+  if (found->mode == candidate.mode &&
+      static_cast<double>(found->value) ==
+          static_cast<double>(candidate.value))
+    return noMutation(*this, referencedGeometryIds(*this, candidate));
+
+  const auto seeds = referencedGeometryIds(*this, candidate);
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
+  journalCaptureComponents(seeds);
+  journalCaptureConstraint(id);
+  *found = candidate;
+  hasLastSolvedFingerprint_ = false;
+
+  SketchMutationResult mutation =
+      mutationResult(*this, seeds, SketchMutationStatus::Applied,
+                     SketchMutationDiagnosticCode::None);
+  if (mode == ConstraintMode::Driving) {
+    const auto solved = SketchSolver::solveStable(*this);
+    mutation = mutationFromSolve(*this, seeds, solved);
+    const auto diagnostics = analyzeConstraintSystem(*this, false);
+    if (hasConstraintViolation(diagnostics, id)) {
+      mutation.status = SketchMutationStatus::Conflicting;
+      mutation.diagnosticCode =
+          SketchMutationDiagnosticCode::ConstraintResidualViolation;
+    }
+  }
+  if (!mutation.committed()) {
+    if (ownsJournal)
+      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
+    return mutation;
+  }
+  if (ownsJournal) static_cast<void>(finishDeltaJournal());
+  updateBounds();
+  return mutation;
 }
 
 bool Sketch::removeConstraint(ConstraintId id) {
+  const auto found = constraintIndex(id);
+  if (!found) return false;
+  for (std::size_t index = dimensions_.size(); index > 0; --index) {
+    if (dimensions_[index - 1].constraintId == id &&
+        !removeDimension(index - 1))
+      return false;
+  }
   journalCaptureConstraint(id);
-  const auto oldSize = constraints_.size();
   std::erase_if(constraints_, [id](const Constraint& constraint) {
     return constraint.id == id;
   });
-  if (constraints_.size() != oldSize) invalidateStructureIndexes();
-  return constraints_.size() != oldSize;
+  invalidateStructureIndexes();
+  return true;
 }
 
 void Sketch::clearConstraints() {
+  clearDimensions();
   for (const auto& item : constraints_) journalCaptureConstraint(item.id);
   constraints_.clear();
   invalidateStructureIndexes();
@@ -8377,7 +5133,109 @@ const std::vector<Circle>& Sketch::circles() const noexcept { return circles_; }
 const std::vector<Arc>& Sketch::arcs() const noexcept { return arcs_; }
 const std::vector<Bezier>& Sketch::beziers() const noexcept { return beziers_; }
 const std::vector<Dimension>& Sketch::dimensions() const {
+  for (auto& dimension : dimensions_) {
+    if (dimension.constraintId == kInvalidConstraintId) continue;
+    const auto linked = constraintIndex(dimension.constraintId);
+    if (!linked) continue;
+    const auto& constraint = constraints_[*linked];
+    const auto type = static_cast<ConstraintType>(constraint.type);
+    dimension.geometryId = kInvalidGeometryId;
+    dimension.firstPoint = PointReference{DatumOriginReference{}};
+    dimension.secondPoint = PointReference{DatumOriginReference{}};
+    const auto lineLength = [this](GeometryId id) -> std::optional<double> {
+      const auto index = lineIndex(id);
+      if (!index) return std::nullopt;
+      const auto& line = lines_[*index];
+      return std::hypot(line.end.xMm - line.start.xMm,
+                        line.end.yMm - line.start.yMm);
+    };
+    std::optional<double> measured;
+    switch (type) {
+      case ConstraintType::Length:
+        dimension.kind = DimensionKind::LineLength;
+        dimension.geometryId = constraint.firstGeometry;
+        measured = lineLength(constraint.firstGeometry);
+        break;
+      case ConstraintType::Diameter: {
+        dimension.kind = DimensionKind::CircleDiameter;
+        dimension.geometryId = constraint.firstGeometry;
+        const auto index = circleIndex(constraint.firstGeometry);
+        if (index) measured = circles_[*index].radiusMm * 2.0;
+        break;
+      }
+      case ConstraintType::Distance:
+      case ConstraintType::DistanceX:
+      case ConstraintType::DistanceY: {
+        dimension.kind = type == ConstraintType::DistanceX
+            ? DimensionKind::PointDistanceX
+            : type == ConstraintType::DistanceY
+                  ? DimensionKind::PointDistanceY
+                  : DimensionKind::PointDistance;
+        dimension.firstPoint = constraint.firstPoint;
+        dimension.secondPoint = constraint.secondPoint;
+        const auto first = referencedPoint(dimension.firstPoint);
+        const auto second = referencedPoint(dimension.secondPoint);
+        if (first && second) {
+          if (type == ConstraintType::DistanceX)
+            measured = std::abs(second->xMm - first->xMm);
+          else if (type == ConstraintType::DistanceY)
+            measured = std::abs(second->yMm - first->yMm);
+          else
+            measured = std::hypot(second->xMm - first->xMm,
+                                  second->yMm - first->yMm);
+        }
+        break;
+      }
+      case ConstraintType::Angle:
+      case ConstraintType::LineDistance: {
+        dimension.kind = type == ConstraintType::Angle
+            ? DimensionKind::LineAngle : DimensionKind::LineDistance;
+        dimension.geometryId = constraint.firstGeometry;
+        dimension.secondPoint = PointReference{
+            LineEndpointReference{constraint.secondGeometry,
+                                  Endpoint::Start}};
+        const auto first = lineIndex(constraint.firstGeometry);
+        const auto second = lineIndex(constraint.secondGeometry);
+        if (first && second) {
+          const auto& a = lines_[*first];
+          const auto& b = lines_[*second];
+          const double ax = a.end.xMm - a.start.xMm;
+          const double ay = a.end.yMm - a.start.yMm;
+          const double bx = b.end.xMm - b.start.xMm;
+          const double by = b.end.yMm - b.start.yMm;
+          if (type == ConstraintType::Angle) {
+            const double lengths = std::hypot(ax, ay) * std::hypot(bx, by);
+            if (lengths > 1e-12)
+              measured = std::acos(std::clamp((ax * bx + ay * by) / lengths,
+                                              -1.0, 1.0)) *
+                         180.0 / std::numbers::pi;
+          } else {
+            const double length = std::hypot(ax, ay);
+            if (length > 1e-12)
+              measured = std::abs(
+                  ax * (b.start.yMm - a.start.yMm) -
+                  ay * (b.start.xMm - a.start.xMm)) / length;
+          }
+        }
+        break;
+      }
+      default:
+        continue;
+    }
+    if (constraint.mode == ConstraintMode::Driving)
+      dimension.valueMm = static_cast<double>(constraint.value);
+    else if (measured)
+      dimension.valueMm = *measured;
+  }
   return dimensions_;
+}
+
+std::optional<double> Sketch::dimensionValue(std::size_t index) const noexcept {
+  if (index >= dimensions_.size()) return std::nullopt;
+  static_cast<void>(dimensions());
+  const double value = dimensions_[index].valueMm;
+  return std::isfinite(value) && value >= 0.0
+      ? std::optional<double>{value} : std::nullopt;
 }
 
 void Sketch::updateBounds() noexcept {

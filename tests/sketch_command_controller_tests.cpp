@@ -157,7 +157,7 @@ void constraintsUseStrictSchemas() {
 
   sketch::Constraint malformedLock;
   malformedLock.type = sketch::ConstraintType::Lock;
-  malformedLock.firstGeometry = first;
+  malformedLock.firstGeometry = sketch::kInvalidGeometryId;
   malformedLock.secondGeometry = second;
   CHECK(!controller.execute(model, AddConstraintCommand{malformedLock})
              .accepted);
@@ -285,6 +285,50 @@ void drivingDimensionMayCommitRankRedundantConstraint() {
   CHECK(model.dimensions().size() == 1);
   CHECK(model.constraints().back().type == sketch::ConstraintType::Distance);
   CHECK(model.constraints().back().id != sketch::kInvalidConstraintId);
+}
+
+void similarDimensionsUseOnlyTheirExactConstraintLink() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  model.addLine({0.0, 0.0}, {10.0, 0.0});
+  const auto lineId = model.lineId(0);
+  constexpr sketch::ConstraintId firstConstraintId = 901;
+  constexpr sketch::ConstraintId secondConstraintId = 902;
+  CHECK(model.restoreConstraints({
+      sketch::Constraint{sketch::LengthConstraint{lineId, std::nullopt},
+                         sketch::ConstraintMode::Reference,
+                         firstConstraintId},
+      sketch::Constraint{sketch::LengthConstraint{lineId, std::nullopt},
+                         sketch::ConstraintMode::Reference,
+                         secondConstraintId}}));
+  sketch::Dimension first;
+  first.constraintId = firstConstraintId;
+  model.storeDimension(first);
+  sketch::Dimension second;
+  second.constraintId = secondConstraintId;
+  model.storeDimension(second);
+  CHECK(model.dimensions().size() == 2);
+  const auto firstDimensionId = model.dimensions()[0].id;
+  const auto secondDimensionId = model.dimensions()[1].id;
+
+  const auto switched = controller.execute(
+      model, SetDimensionDrivingCommand{firstDimensionId, true});
+  CHECK(switched.accepted);
+  CHECK(model.constraints()[*model.constraintIndex(firstConstraintId)].mode ==
+        sketch::ConstraintMode::Driving);
+  CHECK(model.constraints()[*model.constraintIndex(secondConstraintId)].mode ==
+        sketch::ConstraintMode::Reference);
+  CHECK(model.dimensions()[*model.dimensionIndex(secondDimensionId)].constraintId ==
+        secondConstraintId);
+
+  const auto removed = controller.execute(
+      model, RemoveDimensionCommand{firstDimensionId});
+  CHECK(removed.accepted);
+  CHECK(!model.constraintIndex(firstConstraintId).has_value());
+  CHECK(model.constraintIndex(secondConstraintId).has_value());
+  CHECK(model.dimensionIndex(secondDimensionId).has_value());
+  CHECK(model.dimensions()[*model.dimensionIndex(secondDimensionId)].constraintId ==
+        secondConstraintId);
 }
 
 void directLineDimensionMovesReversedOrthogonalJunction() {
@@ -485,6 +529,40 @@ void representativeCompoundCommandsPublishTypedEffects() {
   CHECK(trimmed.effects.dimensionsChanged);
 }
 
+void rejectedAutoSnapRollsBackPrimitiveAndJournal() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  const auto carrier = addLine(controller, model, {0.0, 0.0}, {10.0, 0.0});
+  (void)carrier;
+  const auto before = model.semanticFingerprint();
+  const auto token = controller.beginTransaction(model, 17);
+  CHECK(token.has_value());
+  const auto primitive = controller.execute(
+      model, AddLineCommand{{0.0, 0.0}, {1e-12, 0.0}, std::nullopt});
+  CHECK(primitive.accepted);
+  CHECK(primitive.changedGeometryIds.size() == 1);
+  const auto snapped = controller.execute(
+      model, AutoConstrainNewGeometryCommand{
+                 primitive.changedGeometryIds, 0.01});
+  CHECK(!snapped.accepted);
+  CHECK(snapped.error == SketchCommandError::Conflict ||
+        snapped.error == SketchCommandError::SolverFailed);
+  CHECK(snapped.constraintApplyResult.has_value());
+  CHECK(snapped.constraintApplyResult->diagnosticCode !=
+        sketch::SketchMutationDiagnosticCode::InternalInvariant);
+  CHECK(!snapped.constraintApplyResult->component.geometryIds.empty());
+  CHECK(model.deltaJournalDepth() == token->journalDepthBefore + 1);
+  CHECK(controller.cancelTransaction(model, *token, 17));
+  CHECK(model.semanticFingerprint() == before);
+  CHECK(model.deltaJournalDepth() == 0);
+  CHECK(model.lines().size() == 1);
+
+  const auto valid = controller.execute(
+      model, AddLineCommand{{20.0, 0.0}, {25.0, 0.0}, std::nullopt});
+  CHECK(valid.accepted);
+  CHECK(model.lines().size() == 2);
+}
+
 }  // namespace
 
 int main() {
@@ -496,11 +574,13 @@ int main() {
   constraintsUseStrictSchemas();
   constraintCommandsExposeTypedTransactionalFailures();
   drivingDimensionMayCommitRankRedundantConstraint();
+  similarDimensionsUseOnlyTheirExactConstraintLink();
   directLineDimensionMovesReversedOrthogonalJunction();
   stableIdsDriveAutoConstraints();
   arcStyleAndStaleDeltaAreSafe();
   lockedAndNoOpMutationsReportTruthfully();
   representativeCompoundCommandsPublishTypedEffects();
+  rejectedAutoSnapRollsBackPrimitiveAndJournal();
   std::cout << "Sketch command controller tests passed\n";
   return EXIT_SUCCESS;
 }

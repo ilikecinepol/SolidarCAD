@@ -20,3 +20,8 @@ add_executable(stage6_sketch_solver_benchmark
 target_compile_features(stage6_sketch_solver_benchmark PRIVATE cxx_std_20)
 target_link_libraries(stage6_sketch_solver_benchmark PRIVATE solidar_model)
 solidar_warnings(stage6_sketch_solver_benchmark)
+
+add_executable(equation_kernel_benchmark equation_kernel_benchmark.cpp)
+target_compile_features(equation_kernel_benchmark PRIVATE cxx_std_20)
+target_link_libraries(equation_kernel_benchmark PRIVATE solidar_model)
+solidar_warnings(equation_kernel_benchmark)

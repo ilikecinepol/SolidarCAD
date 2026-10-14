@@ -335,14 +335,26 @@ void SketchInteractionController::updateTrim(
 }
 
 void SketchInteractionController::beginPointDrag(
+    SketchPointDragTarget target) noexcept {
+  state_.pointDrag = std::move(target);
+  state_.drag.active = true;
+}
+
+void SketchInteractionController::beginPointDrag(
     SketchPointDragTarget target, sketch::Point current) noexcept {
   state_.pointDrag = std::move(target);
   state_.drag.active = true;
+  state_.drag.referenceSet = true;
+  state_.drag.reference = current;
   state_.drag.current = current;
 }
 
 void SketchInteractionController::updatePointDrag(
     sketch::Point current) noexcept {
+  if (!state_.drag.referenceSet) {
+    state_.drag.reference = current;
+    state_.drag.referenceSet = true;
+  }
   state_.drag.current = current;
 }
 

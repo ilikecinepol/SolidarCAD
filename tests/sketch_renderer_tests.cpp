@@ -62,7 +62,12 @@ SketchRenderSnapshot representativeSnapshot(const ThemeColors& theme) {
   dimension.geometryId = sketch.lineId(0);
   dimension.valueMm = 36.0;
   dimension.offsetMm = 7.0;
-  sketch.addDimension(dimension);
+  dimension.constraintId = sketch.addConstraint(sketch::Constraint{
+      sketch::LengthConstraint{dimension.geometryId, std::nullopt},
+      sketch::ConstraintMode::Reference});
+  if (dimension.constraintId == sketch::kInvalidConstraintId ||
+      !sketch.storeDimension(dimension))
+    std::abort();
 
   sketch::Sketch referenceProfile;
   std::vector<SketchSceneReference> sceneSketches;

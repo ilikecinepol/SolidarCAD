@@ -18,14 +18,6 @@ bool contains(const std::vector<sketch::GeometryId>& ids,
 // dashed+Lock contract. The Lock must name this exact persistent geometry ID:
 // Sketch::isGeometryLocked deliberately propagates through composite
 // elementIds for solver behaviour and would incorrectly project siblings.
-bool isDefaultPointReference(const sketch::PointReference& point) noexcept {
-  return point.lineId == sketch::kInvalidGeometryId && point.start &&
-      point.circleId == sketch::kInvalidGeometryId &&
-      point.elementCenterId == 0 &&
-      point.arcId == sketch::kInvalidGeometryId &&
-      point.bezierId == sketch::kInvalidGeometryId && !point.origin;
-}
-
 // Keep this exhaustive predicate in parity with ProjectFile's Lock semantic
 // validation. The adapter intentionally does not broaden model acceptance: it
 // only refuses malformed historical/in-memory constraints as projection tags.
@@ -33,12 +25,8 @@ bool isCanonicalProjectedLock(const sketch::Constraint& constraint,
                               sketch::GeometryId id) noexcept {
   return id != sketch::kInvalidGeometryId &&
       constraint.id != sketch::kInvalidConstraintId &&
-      constraint.type == sketch::ConstraintType::Lock &&
-      constraint.firstGeometry == id &&
-      constraint.secondGeometry == sketch::kInvalidGeometryId &&
-      isDefaultPointReference(constraint.firstPoint) &&
-      isDefaultPointReference(constraint.secondPoint) &&
-      std::isfinite(constraint.value);
+      std::holds_alternative<sketch::LockConstraint>(constraint.payload()) &&
+      std::get<sketch::LockConstraint>(constraint.payload()).geometryId == id;
 }
 
 bool isProjectedGeometry(const sketch::Sketch& sketch,

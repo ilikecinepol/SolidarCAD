@@ -1,4 +1,5 @@
 #include "ui/SketchCommandController.h"
+#include "sketch/SketchSchema.h"
 
 #include <algorithm>
 #include <cmath>
@@ -98,6 +99,42 @@ SketchCommandResult fromConstraintApply(
   return result;
 }
 
+SketchCommandResult fromMutation(sketch::SketchMutationResult mutation,
+                                 SketchCommandEffects effects) {
+  if (mutation.committed()) {
+    auto result = accepted(mutation.status == sketch::SketchMutationStatus::Applied
+                               ? effects
+                               : SketchCommandEffects{});
+    result.mutationResult = std::move(mutation);
+    return result;
+  }
+  SketchCommandError error = SketchCommandError::InternalFailure;
+  switch (mutation.status) {
+    case sketch::SketchMutationStatus::InvalidReference:
+      error = SketchCommandError::StaleReference;
+      break;
+    case sketch::SketchMutationStatus::Unsupported:
+      error = SketchCommandError::Unsupported;
+      break;
+    case sketch::SketchMutationStatus::Conflicting:
+      error = SketchCommandError::Conflict;
+      break;
+    case sketch::SketchMutationStatus::NonConverged:
+    case sketch::SketchMutationStatus::DeferredByActiveSolve:
+      error = SketchCommandError::SolverFailed;
+      break;
+    case sketch::SketchMutationStatus::InternalError:
+      error = SketchCommandError::InternalFailure;
+      break;
+    case sketch::SketchMutationStatus::Applied:
+    case sketch::SketchMutationStatus::NoChange:
+      break;
+  }
+  auto result = rejected(error);
+  result.mutationResult = std::move(mutation);
+  return result;
+}
+
 sketch::ConstraintId tryApplyConstraintId(sketch::Sketch& model,
                                           sketch::Constraint constraint,
                                           bool commitRedundant = false) {
@@ -144,88 +181,7 @@ bool validPointReference(const sketch::Sketch& model,
 
 bool validConstraintReferences(const sketch::Sketch& model,
                                const sketch::Constraint& constraint) {
-  const auto emptyPoint = [](sketch::PointReference point) {
-    return !point.origin && point.elementCenterId == 0 &&
-           point.lineId == sketch::kInvalidGeometryId &&
-           point.circleId == sketch::kInvalidGeometryId &&
-           point.arcId == sketch::kInvalidGeometryId &&
-           point.bezierId == sketch::kInvalidGeometryId;
-  };
-  if (!finite(constraint.value)) return false;
-  const auto first = model.geometryLocation(constraint.firstGeometry);
-  const auto second = model.geometryLocation(constraint.secondGeometry);
-  const bool firstPoint = !emptyPoint(constraint.firstPoint);
-  const bool secondPoint = !emptyPoint(constraint.secondPoint);
-  if ((firstPoint && !validPointReference(model, constraint.firstPoint)) ||
-      (secondPoint && !validPointReference(model, constraint.secondPoint)))
-    return false;
-  const bool noPoints = !firstPoint && !secondPoint;
-  const bool distinctGeometry =
-      first && second && constraint.firstGeometry != constraint.secondGeometry;
-  const auto firstIs = [&](sketch::GeometryKind kind) {
-    return first && first->kind == kind;
-  };
-  const auto secondIs = [&](sketch::GeometryKind kind) {
-    return second && second->kind == kind;
-  };
-  switch (constraint.type) {
-    case sketch::ConstraintType::Horizontal:
-    case sketch::ConstraintType::Vertical:
-      return firstIs(sketch::GeometryKind::Line) && !second && noPoints;
-    case sketch::ConstraintType::Length:
-      return firstIs(sketch::GeometryKind::Line) && !second && noPoints &&
-             constraint.value > 0.0;
-    case sketch::ConstraintType::Radius:
-    case sketch::ConstraintType::Diameter:
-      return firstIs(sketch::GeometryKind::Circle) && !second && noPoints &&
-             constraint.value > 0.0;
-    case sketch::ConstraintType::Lock:
-      return first.has_value() && !second && noPoints;
-    case sketch::ConstraintType::Parallel:
-    case sketch::ConstraintType::Perpendicular:
-      return firstIs(sketch::GeometryKind::Line) &&
-             secondIs(sketch::GeometryKind::Line) && distinctGeometry &&
-             noPoints;
-    case sketch::ConstraintType::Angle:
-      return firstIs(sketch::GeometryKind::Line) &&
-             secondIs(sketch::GeometryKind::Line) && distinctGeometry &&
-             noPoints && constraint.value > 0.0 && constraint.value < 180.0;
-    case sketch::ConstraintType::LineDistance:
-      return firstIs(sketch::GeometryKind::Line) &&
-             secondIs(sketch::GeometryKind::Line) && distinctGeometry &&
-             noPoints && constraint.value > 0.0;
-    case sketch::ConstraintType::Equal:
-      return distinctGeometry && noPoints &&
-             ((firstIs(sketch::GeometryKind::Line) &&
-               secondIs(sketch::GeometryKind::Line)) ||
-              (firstIs(sketch::GeometryKind::Circle) &&
-               secondIs(sketch::GeometryKind::Circle)));
-    case sketch::ConstraintType::Tangent:
-      return firstIs(sketch::GeometryKind::Line) && distinctGeometry &&
-             (secondIs(sketch::GeometryKind::Circle) ||
-              secondIs(sketch::GeometryKind::Arc)) && noPoints;
-    case sketch::ConstraintType::Coincident:
-      return !first && !second && firstPoint && secondPoint;
-    case sketch::ConstraintType::Distance:
-    case sketch::ConstraintType::DistanceX:
-    case sketch::ConstraintType::DistanceY:
-      return !first && !second && firstPoint && secondPoint &&
-             constraint.value > 0.0;
-    case sketch::ConstraintType::Midpoint:
-    case sketch::ConstraintType::PointOnLine:
-      return firstIs(sketch::GeometryKind::Line) && !second && !firstPoint &&
-             secondPoint;
-    case sketch::ConstraintType::PointOnCircle:
-      return firstIs(sketch::GeometryKind::Circle) && !second && !firstPoint &&
-             secondPoint;
-    case sketch::ConstraintType::PointOnArc:
-      return firstIs(sketch::GeometryKind::Arc) && !second && !firstPoint &&
-             secondPoint;
-    case sketch::ConstraintType::PointOnXAxis:
-    case sketch::ConstraintType::PointOnYAxis:
-      return !first && !second && !firstPoint && secondPoint;
-  }
-  return false;
+  return sketch::validateConstraintSchema(model, constraint).valid();
 }
 
 bool validDimensionReferences(const sketch::Sketch& model,
@@ -313,7 +269,7 @@ double parallelLineDistanceMm(const sketch::Line& first,
          length;
 }
 
-void autoCoincidentNewGeometry(
+std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
     sketch::Sketch& sketch,
     const std::vector<sketch::GeometryId>& newGeometryIds,
     double toleranceMm) {
@@ -610,7 +566,8 @@ void autoCoincidentNewGeometry(
     constraint.secondPoint =
         candidate.reference;
 
-    (void)sketch.tryApplyConstraint(constraint);
+    auto applied = sketch.tryApplyConstraint(constraint, true);
+    if (!applied.accepted()) return applied;
   }
 
   // BODY SNAP PERSISTENCE
@@ -781,7 +738,8 @@ void autoCoincidentNewGeometry(
         c.type = sketch::ConstraintType::PointOnLine;
         c.firstGeometry = bestLine;
         c.secondPoint = candidate.reference;
-        (void)sketch.tryApplyConstraint(c);
+        auto applied = sketch.tryApplyConstraint(c, true);
+        if (!applied.accepted()) return applied;
       }
 
       continue;
@@ -806,7 +764,8 @@ void autoCoincidentNewGeometry(
         c.type = sketch::ConstraintType::PointOnCircle;
         c.firstGeometry = bestCircle;
         c.secondPoint = candidate.reference;
-        (void)sketch.tryApplyConstraint(c);
+        auto applied = sketch.tryApplyConstraint(c, true);
+        if (!applied.accepted()) return applied;
       }
 
       continue;
@@ -826,7 +785,8 @@ void autoCoincidentNewGeometry(
         c.type = sketch::ConstraintType::PointOnArc;
         c.firstGeometry = bestArc;
         c.secondPoint = candidate.reference;
-        (void)sketch.tryApplyConstraint(c);
+        auto applied = sketch.tryApplyConstraint(c, true);
+        if (!applied.accepted()) return applied;
       }
     }
   }
@@ -850,18 +810,28 @@ void autoCoincidentNewGeometry(
                        sameReference(constraint.secondPoint,
                                      candidate.reference);
               });
-          if (duplicate) return;
+          if (duplicate)
+            return std::optional<sketch::ConstraintApplyResult>{};
           sketch::Constraint constraint;
           constraint.type = type;
           constraint.secondPoint = candidate.reference;
-          (void)sketch.tryApplyConstraint(constraint);
+          auto applied = sketch.tryApplyConstraint(constraint, true);
+          if (!applied.accepted())
+            return std::optional<sketch::ConstraintApplyResult>{
+                std::move(applied)};
+          return std::optional<sketch::ConstraintApplyResult>{};
         };
 
     if (std::abs(point->yMm) <= kAxisCoordinateToleranceMm)
-      addAxisConstraint(sketch::ConstraintType::PointOnXAxis);
+      if (auto failure =
+              addAxisConstraint(sketch::ConstraintType::PointOnXAxis))
+        return failure;
     if (std::abs(point->xMm) <= kAxisCoordinateToleranceMm)
-      addAxisConstraint(sketch::ConstraintType::PointOnYAxis);
+      if (auto failure =
+              addAxisConstraint(sketch::ConstraintType::PointOnYAxis))
+        return failure;
   }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -1279,7 +1249,6 @@ SketchCommandResult SketchCommandController::execute(
               }
             } else {
               sketch::Constraint constraint;
-              constraint.secondPoint = typed.movingPoint;
               switch (typed.kind) {
                 case SketchPointBindingKind::Coincident:
                   if (!validPointReference(model, typed.targetPoint) ||
@@ -1313,6 +1282,9 @@ SketchCommandResult SketchCommandController::execute(
                 case SketchPointBindingKind::Origin:
                   break;
               }
+              // Constraint payloads are typed: select the payload before
+              // assigning fields that only exist on that payload.
+              constraint.secondPoint = typed.movingPoint;
               if ((constraint.firstGeometry != sketch::kInvalidGeometryId &&
                    !model.geometryLocation(constraint.firstGeometry)) ||
                   !validConstraintReferences(model, constraint))
@@ -1337,8 +1309,9 @@ SketchCommandResult SketchCommandController::execute(
                 return rejected(SketchCommandError::StaleReference);
             }
             const auto beforeConstraintCount = model.constraints().size();
-            autoCoincidentNewGeometry(model, typed.newGeometryIds,
-                                      typed.toleranceMm);
+            if (auto failure = autoCoincidentNewGeometry(
+                    model, typed.newGeometryIds, typed.toleranceMm))
+              return fromConstraintApply(std::move(*failure));
             auto value = accepted(constraintEffects());
             for (std::size_t index = beforeConstraintCount;
                  index < model.constraints().size(); ++index)
@@ -1357,17 +1330,20 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::InvalidInput);
             if (!model.constraintIndex(typed.id))
               return rejected(SketchCommandError::StaleReference);
-            if (!model.setConstraintValue(typed.id, typed.value))
-              return rejected(SketchCommandError::Conflict);
-            auto value = accepted(constraintEffects());
+            auto value = fromMutation(
+                model.setConstraintValue(typed.id, typed.value),
+                constraintEffects());
+            if (!value.accepted) return value;
             value.changedConstraintIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, StoreDimensionCommand>) {
-            if (!validDimensionReferences(model, typed.dimension))
+            if (!finite(typed.dimension.offsetMm) ||
+                !finite(typed.dimension.angleRad) ||
+                typed.dimension.constraintId ==
+                    sketch::kInvalidConstraintId ||
+                !model.constraintIndex(typed.dimension.constraintId))
               return rejected(SketchCommandError::StaleReference);
-            const auto before = model.dimensions().size();
-            model.storeDimension(typed.dimension);
-            if (model.dimensions().size() != before + 1)
+            if (!model.storeDimension(typed.dimension))
               return rejected(SketchCommandError::MutationRejected);
             auto value = accepted(dimensionEffects());
             value.changedDimensionIds.push_back(model.dimensions().back().id);
@@ -1378,61 +1354,28 @@ SketchCommandResult SketchCommandController::execute(
                 !validConstraintReferences(model, typed.constraint) ||
                 !finite(typed.constraint.value) || typed.constraint.value <= 0.0)
               return rejected(SketchCommandError::StaleReference);
-            const auto samePointPair = [&typed](
-                                           const sketch::Constraint& value) {
-              return (samePointReference(value.firstPoint,
-                                         typed.constraint.firstPoint) &&
-                      samePointReference(value.secondPoint,
-                                         typed.constraint.secondPoint)) ||
-                     (samePointReference(value.firstPoint,
-                                         typed.constraint.secondPoint) &&
-                      samePointReference(value.secondPoint,
-                                         typed.constraint.firstPoint));
-            };
-            const auto matches = [&typed, &samePointPair](
-                                      const sketch::Constraint& value) {
-              if (value.type != typed.constraint.type) return false;
-              if (typed.constraint.type == sketch::ConstraintType::Distance ||
-                  typed.constraint.type == sketch::ConstraintType::DistanceX ||
-                  typed.constraint.type == sketch::ConstraintType::DistanceY)
-                return samePointPair(value);
-              if (typed.constraint.secondGeometry !=
-                  sketch::kInvalidGeometryId)
-                return (value.firstGeometry ==
-                            typed.constraint.firstGeometry &&
-                        value.secondGeometry ==
-                            typed.constraint.secondGeometry) ||
-                       (value.firstGeometry ==
-                            typed.constraint.secondGeometry &&
-                        value.secondGeometry ==
-                            typed.constraint.firstGeometry);
-              return value.firstGeometry == typed.constraint.firstGeometry;
-            };
-            std::vector<sketch::ConstraintId> existing;
-            for (const auto& value : model.constraints())
-              if (matches(value)) existing.push_back(value.id);
-
             auto result = accepted(dimensionEffects());
             result.effects.constraintsChanged = true;
             if (typed.existingDimensionId) {
               const auto dimensionIndex =
                   model.dimensionIndex(*typed.existingDimensionId);
-              if (!dimensionIndex || existing.size() != 1)
+              if (!dimensionIndex)
                 return rejected(SketchCommandError::StaleReference);
-              if (!model.setConstraintValue(existing.front(),
+              const auto constraintId =
+                  model.dimensions()[*dimensionIndex].constraintId;
+              if (constraintId == sketch::kInvalidConstraintId ||
+                  !model.constraintIndex(constraintId))
+                return rejected(SketchCommandError::StaleReference);
+              if (!model.setConstraintValue(constraintId,
                                             typed.constraint.value) ||
-                  !model.setDimensionValue(*dimensionIndex,
-                                           typed.dimension.valueMm) ||
                   !model.setDimensionPlacement(*dimensionIndex,
                                                typed.dimension.offsetMm,
                                                typed.dimension.angleRad))
                 return rejected(SketchCommandError::Conflict);
-              result.changedConstraintIds = existing;
+              result.changedConstraintIds.push_back(constraintId);
               result.changedDimensionIds.push_back(*typed.existingDimensionId);
               return result;
             }
-            if (!existing.empty())
-              return rejected(SketchCommandError::Duplicate);
             if (typed.ensureParallel) {
               const auto first = typed.constraint.firstGeometry;
               const auto second = typed.constraint.secondGeometry;
@@ -1460,8 +1403,9 @@ SketchCommandResult SketchCommandController::execute(
                 tryApplyConstraintId(model, typed.constraint, true);
             if (constraintId == sketch::kInvalidConstraintId)
               return rejected(SketchCommandError::Conflict);
-            model.storeDimension(typed.dimension);
-            if (model.dimensions().empty())
+            auto annotation = typed.dimension;
+            annotation.constraintId = constraintId;
+            if (!model.storeDimension(annotation))
               return rejected(SketchCommandError::MutationRejected);
             result.changedConstraintIds.push_back(constraintId);
             result.changedDimensionIds.push_back(model.dimensions().back().id);
@@ -1470,69 +1414,15 @@ SketchCommandResult SketchCommandController::execute(
             const auto index = model.dimensionIndex(typed.id);
             if (!index) return rejected(SketchCommandError::StaleReference);
             const auto dimension = model.dimensions()[*index];
-            const auto samePointPair = [&dimension](
-                                           const sketch::Constraint& value) {
-              return (samePointReference(value.firstPoint,
-                                         dimension.firstPoint) &&
-                      samePointReference(value.secondPoint,
-                                         dimension.secondPoint)) ||
-                     (samePointReference(value.firstPoint,
-                                         dimension.secondPoint) &&
-                      samePointReference(value.secondPoint,
-                                         dimension.firstPoint));
-            };
             std::vector<sketch::ConstraintId> dependencies;
-            for (const auto& constraint : model.constraints()) {
-              bool matches = false;
-              switch (dimension.kind) {
-                case sketch::DimensionKind::LineLength:
-                  matches = constraint.type == sketch::ConstraintType::Length &&
-                            constraint.firstGeometry == dimension.geometryId;
-                  break;
-                case sketch::DimensionKind::CircleDiameter:
-                  matches =
-                      constraint.type == sketch::ConstraintType::Diameter &&
-                      constraint.firstGeometry == dimension.geometryId;
-                  break;
-                case sketch::DimensionKind::PointDistance:
-                  matches = constraint.type == sketch::ConstraintType::Distance &&
-                            samePointPair(constraint);
-                  break;
-                case sketch::DimensionKind::PointDistanceX:
-                  matches = constraint.type == sketch::ConstraintType::DistanceX &&
-                            samePointPair(constraint);
-                  break;
-                case sketch::DimensionKind::PointDistanceY:
-                  matches = constraint.type == sketch::ConstraintType::DistanceY &&
-                            samePointPair(constraint);
-                  break;
-                case sketch::DimensionKind::LineAngle:
-                  matches = constraint.type == sketch::ConstraintType::Angle &&
-                            ((constraint.firstGeometry == dimension.geometryId &&
-                              constraint.secondGeometry ==
-                                  dimension.secondPoint.lineId) ||
-                             (constraint.secondGeometry == dimension.geometryId &&
-                              constraint.firstGeometry ==
-                                  dimension.secondPoint.lineId));
-                  break;
-                case sketch::DimensionKind::LineDistance:
-                  matches =
-                      constraint.type == sketch::ConstraintType::LineDistance &&
-                      ((constraint.firstGeometry == dimension.geometryId &&
-                        constraint.secondGeometry ==
-                            dimension.secondPoint.lineId) ||
-                       (constraint.secondGeometry == dimension.geometryId &&
-                        constraint.firstGeometry ==
-                            dimension.secondPoint.lineId));
-                  break;
-              }
-              if (matches) dependencies.push_back(constraint.id);
-            }
-            for (const auto constraintId : dependencies)
-              if (!model.removeConstraint(constraintId))
+            if (dimension.constraintId != sketch::kInvalidConstraintId) {
+              if (!model.constraintIndex(dimension.constraintId) ||
+                  !model.removeConstraint(dimension.constraintId))
                 return rejected(SketchCommandError::MutationRejected);
-            if (!model.removeDimension(*index))
+              dependencies.push_back(dimension.constraintId);
+            } else if (!model.removeDimension(*index)) {
               return rejected(SketchCommandError::MutationRejected);
+            }
             auto value = accepted(dimensionEffects());
             value.effects.constraintsChanged = !dependencies.empty();
             value.effects.selectionMayBeStale = true;
@@ -1544,9 +1434,13 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::InvalidInput);
             const auto index = model.dimensionIndex(typed.id);
             if (!index) return rejected(SketchCommandError::StaleReference);
-            if (!model.setDimensionValue(*index, typed.value))
+            const auto constraintId = model.dimensions()[*index].constraintId;
+            if (constraintId == sketch::kInvalidConstraintId ||
+                !model.setDimensionValue(*index, typed.value))
               return rejected(SketchCommandError::Conflict);
             auto value = accepted(dimensionEffects());
+            value.effects.constraintsChanged = true;
+            value.changedConstraintIds.push_back(constraintId);
             value.changedDimensionIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, SetDimensionPlacementCommand>) {
@@ -1565,62 +1459,28 @@ SketchCommandResult SketchCommandController::execute(
             if (!dimensionIndex)
               return rejected(SketchCommandError::StaleReference);
             const auto dimension = model.dimensions()[*dimensionIndex];
-            const auto samePointPair = [&dimension](
-                                           const sketch::Constraint& value) {
-              return (samePointReference(value.firstPoint,
-                                         dimension.firstPoint) &&
-                      samePointReference(value.secondPoint,
-                                         dimension.secondPoint)) ||
-                     (samePointReference(value.firstPoint,
-                                         dimension.secondPoint) &&
-                      samePointReference(value.secondPoint,
-                                         dimension.firstPoint));
-            };
-            const auto matchesDimension = [&dimension, &samePointPair](
-                                               const sketch::Constraint& value) {
-              switch (dimension.kind) {
-                case sketch::DimensionKind::LineLength:
-                  return value.type == sketch::ConstraintType::Length &&
-                         value.firstGeometry == dimension.geometryId;
-                case sketch::DimensionKind::CircleDiameter:
-                  return value.type == sketch::ConstraintType::Diameter &&
-                         value.firstGeometry == dimension.geometryId;
-                case sketch::DimensionKind::PointDistance:
-                  return value.type == sketch::ConstraintType::Distance &&
-                         samePointPair(value);
-                case sketch::DimensionKind::PointDistanceX:
-                  return value.type == sketch::ConstraintType::DistanceX &&
-                         samePointPair(value);
-                case sketch::DimensionKind::PointDistanceY:
-                  return value.type == sketch::ConstraintType::DistanceY &&
-                         samePointPair(value);
-                case sketch::DimensionKind::LineDistance:
-                  return value.type == sketch::ConstraintType::LineDistance &&
-                         ((value.firstGeometry == dimension.geometryId &&
-                           value.secondGeometry == dimension.secondPoint.lineId) ||
-                          (value.secondGeometry == dimension.geometryId &&
-                           value.firstGeometry == dimension.secondPoint.lineId));
-                case sketch::DimensionKind::LineAngle:
-                  return value.type == sketch::ConstraintType::Angle &&
-                         ((value.firstGeometry == dimension.geometryId &&
-                           value.secondGeometry == dimension.secondPoint.lineId) ||
-                          (value.secondGeometry == dimension.geometryId &&
-                           value.firstGeometry == dimension.secondPoint.lineId));
-              }
-              return false;
-            };
-            std::vector<sketch::ConstraintId> existing;
-            for (const auto& value : model.constraints())
-              if (matchesDimension(value)) existing.push_back(value.id);
+            if (dimension.constraintId == sketch::kInvalidConstraintId)
+              return rejected(SketchCommandError::StaleReference);
+            const auto constraintIndex =
+                model.constraintIndex(dimension.constraintId);
+            if (!constraintIndex)
+              return rejected(SketchCommandError::StaleReference);
+            const auto currentMode =
+                model.constraints()[*constraintIndex].mode;
             if (!typed.driving) {
-              for (const auto id : existing)
-                if (!model.removeConstraint(id))
-                  return rejected(SketchCommandError::MutationRejected);
+              if (currentMode == sketch::ConstraintMode::Reference)
+                return accepted({});
+              if (!model.setConstraintMode(dimension.constraintId,
+                                           sketch::ConstraintMode::Reference))
+                return rejected(SketchCommandError::MutationRejected);
               auto value = accepted(constraintEffects());
-              value.changedConstraintIds = std::move(existing);
+              value.effects.dimensionsChanged = true;
+              value.changedConstraintIds.push_back(dimension.constraintId);
+              value.changedDimensionIds.push_back(typed.id);
               return value;
             }
-            if (!existing.empty()) return accepted({});
+            if (currentMode == sketch::ConstraintMode::Driving)
+              return accepted({});
 
             sketch::Constraint constraint;
             double visibleValue{};
@@ -1701,15 +1561,28 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::InvalidInput);
             if (dimension.kind != sketch::DimensionKind::LineAngle)
               constraint.value = visibleValue;
-            const auto constraintId = tryApplyConstraintId(model, constraint);
-            if (constraintId == sketch::kInvalidConstraintId)
+            if (!model.setConstraintMode(dimension.constraintId,
+                                         sketch::ConstraintMode::Driving,
+                                         static_cast<double>(constraint.value)))
               return rejected(SketchCommandError::Conflict);
-            if (!model.setDimensionValue(*dimensionIndex, visibleValue))
-              return rejected(SketchCommandError::MutationRejected);
             auto value = accepted(constraintEffects());
             value.effects.dimensionsChanged = true;
-            value.changedConstraintIds.push_back(constraintId);
+            value.changedConstraintIds.push_back(dimension.constraintId);
             value.changedDimensionIds.push_back(typed.id);
+            return value;
+          } else if constexpr (std::is_same_v<T, SetConstraintModeCommand>) {
+            if (typed.id == sketch::kInvalidConstraintId ||
+                !model.constraintIndex(typed.id))
+              return rejected(SketchCommandError::StaleReference);
+            const auto result = model.setConstraintMode(
+                typed.id, typed.mode, typed.drivingValue);
+            if (!result.committed())
+              return rejected(result.status ==
+                                      sketch::SketchMutationStatus::Conflicting
+                                  ? SketchCommandError::Conflict
+                                  : SketchCommandError::MutationRejected);
+            auto value = accepted(constraintEffects());
+            value.changedConstraintIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, SetLineDashedCommand>) {
             const auto index = model.lineIndex(typed.id);
@@ -1866,16 +1739,17 @@ SketchCommandResult SketchCommandController::execute(
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
                 !validPointReference(model, typed.point))
               return rejected(SketchCommandError::StaleReference);
-            if (!model.translatePoint(typed.point, typed.dxMm, typed.dyMm))
-              return rejected(SketchCommandError::Conflict);
-            return accepted(geometryEffects());
+            return fromMutation(
+                model.translatePoint(typed.point, typed.dxMm, typed.dyMm),
+                geometryEffects());
           } else if constexpr (std::is_same_v<T, MoveArcEndpointCommand>) {
             if (!finite(typed.target) || !model.arcIndex(typed.arcId))
               return rejected(SketchCommandError::StaleReference);
-            if (!model.moveArcEndpointReshapeById(typed.arcId, typed.start,
-                                                  typed.target))
-              return rejected(SketchCommandError::Conflict);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.moveArcEndpointReshapeById(typed.arcId, typed.start,
+                                                 typed.target),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.arcId);
             return value;
           } else if constexpr (std::is_same_v<T, TranslateLinesCommand>) {
@@ -1893,8 +1767,11 @@ SketchCommandResult SketchCommandController::execute(
                               return model.isGeometryLocked(id);
                             }))
               return rejected(SketchCommandError::Conflict);
-            model.translateLinesByIds(typed.lineIds, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateLinesByIds(typed.lineIds, typed.dxMm,
+                                          typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds = typed.lineIds;
             return value;
           } else if constexpr (std::is_same_v<T, TranslateSelectionCommand>) {
@@ -1936,10 +1813,12 @@ SketchCommandResult SketchCommandController::execute(
                               return model.isGeometryLocked(id);
                             }))
               return rejected(SketchCommandError::Conflict);
-            model.translateSelection(typed.elementIds, typed.circleIds,
-                                     typed.arcIds, typed.bezierIds,
-                                     typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateSelection(typed.elementIds, typed.circleIds,
+                                         typed.arcIds, typed.bezierIds,
+                                         typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds =
                 elementGeometryIds(model, typed.elementIds);
             value.changedGeometryIds.insert(value.changedGeometryIds.end(),
@@ -1959,8 +1838,10 @@ SketchCommandResult SketchCommandController::execute(
             if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
-            model.translateCircleById(typed.id, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateCircleById(typed.id, typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, TranslateArcCommand>) {
@@ -1970,8 +1851,10 @@ SketchCommandResult SketchCommandController::execute(
             if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
-            model.translateArcById(typed.id, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateArcById(typed.id, typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, TranslateBezierCommand>) {
@@ -1981,8 +1864,10 @@ SketchCommandResult SketchCommandController::execute(
             if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
-            model.translateBezierById(typed.id, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateBezierById(typed.id, typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, MirrorGeometryCommand>) {
@@ -2326,16 +2211,17 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             if (!finite(typed.dxMm) || !finite(typed.dyMm) ||
                 !validPointReference(model, typed.point))
               return rejected(SketchCommandError::StaleReference);
-            if (!model.translatePoint(typed.point, typed.dxMm, typed.dyMm))
-              return rejected(SketchCommandError::Conflict);
-            return accepted(geometryEffects());
+            return fromMutation(
+                model.translatePoint(typed.point, typed.dxMm, typed.dyMm),
+                geometryEffects());
           } else if constexpr (std::is_same_v<T, MoveArcEndpointCommand>) {
             if (!finite(typed.target) || !model.arcIndex(typed.arcId))
               return rejected(SketchCommandError::StaleReference);
-            if (!model.moveArcEndpointReshapeById(typed.arcId, typed.start,
-                                                  typed.target))
-              return rejected(SketchCommandError::Conflict);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.moveArcEndpointReshapeById(typed.arcId, typed.start,
+                                                 typed.target),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.arcId);
             return value;
           } else if constexpr (std::is_same_v<T, TranslateLinesCommand>) {
@@ -2353,8 +2239,11 @@ SketchCommandResult SketchCommandController::executeInTransaction(
                               return model.isGeometryLocked(id);
                             }))
               return rejected(SketchCommandError::Conflict);
-            model.translateLinesByIds(typed.lineIds, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateLinesByIds(typed.lineIds, typed.dxMm,
+                                          typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds = typed.lineIds;
             return value;
           } else if constexpr (std::is_same_v<T, TranslateSelectionCommand>) {
@@ -2396,10 +2285,12 @@ SketchCommandResult SketchCommandController::executeInTransaction(
                               return model.isGeometryLocked(id);
                             }))
               return rejected(SketchCommandError::Conflict);
-            model.translateSelection(typed.elementIds, typed.circleIds,
-                                     typed.arcIds, typed.bezierIds,
-                                     typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateSelection(typed.elementIds, typed.circleIds,
+                                         typed.arcIds, typed.bezierIds,
+                                         typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds =
                 elementGeometryIds(model, typed.elementIds);
             value.changedGeometryIds.insert(value.changedGeometryIds.end(),
@@ -2419,8 +2310,10 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
-            model.translateCircleById(typed.id, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateCircleById(typed.id, typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, TranslateArcCommand>) {
@@ -2430,8 +2323,10 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
-            model.translateArcById(typed.id, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateArcById(typed.id, typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.id);
             return value;
           } else {
@@ -2441,8 +2336,10 @@ SketchCommandResult SketchCommandController::executeInTransaction(
             if (zeroTranslation(typed.dxMm, typed.dyMm)) return accepted();
             if (model.isGeometryLocked(typed.id))
               return rejected(SketchCommandError::Conflict);
-            model.translateBezierById(typed.id, typed.dxMm, typed.dyMm);
-            auto value = accepted(geometryEffects());
+            auto value = fromMutation(
+                model.translateBezierById(typed.id, typed.dxMm, typed.dyMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             value.changedGeometryIds.push_back(typed.id);
             return value;
           }

@@ -44,8 +44,10 @@ void lockedLineIsImmutable() {
               std::abs(sketch.lines()[0].start.yMm) <= 1e-9,
           "locked element must not translate");
 
-  require(!sketch.setLineLengthById(id, 30.0),
-          "locked length edit must be rejected");
+  const auto rejectedLength = sketch.tryApplyConstraint(
+      Constraint{solidar::sketch::LengthConstraint{id, 30.0}});
+  require(!rejectedLength.accepted(),
+          "locked length constraint must be rejected");
   require(std::abs(sketch.lines()[0].end.xMm - 20.0) <= 1e-9,
           "locked line length must remain unchanged");
 
@@ -192,35 +194,20 @@ void coupledExternalRectangleGapsBeforeConstraintInsert() {
   const PointReference leftRef{leftProjection, true};
   const PointReference rightRef{rightProjection, true};
 
-  require(sketch.setPointDistanceX(rightRef, rectRight, 7.0),
-          "first right gap setter");
-
   Constraint rightGap;
   rightGap.type = ConstraintType::DistanceX;
   rightGap.firstPoint = rightRef;
   rightGap.secondPoint = rectRight;
   rightGap.value = 7.0;
-  require(sketch.addConstraint(rightGap) != kInvalidConstraintId,
+  require(sketch.tryApplyConstraint(rightGap).accepted(),
           "first right gap constraint");
-
-  require(sketch.setPointDistanceX(rectLeft, leftRef, 7.0),
-          "second left gap setter before insert");
-
-  const auto leftAfterSetter = sketch.referencedPoint(rectLeft);
-  const auto rightAfterSetter = sketch.referencedPoint(rectRight);
-  require(leftAfterSetter && rightAfterSetter,
-          "rectangle references remain valid");
-  require(std::abs(leftAfterSetter->xMm - 7.0) <= 1e-7,
-          "left side must be 7 mm after second setter");
-  require(std::abs(rightAfterSetter->xMm - 93.0) <= 1e-7,
-          "right side must remain 7 mm after second setter");
 
   Constraint leftGap;
   leftGap.type = ConstraintType::DistanceX;
   leftGap.firstPoint = rectLeft;
   leftGap.secondPoint = leftRef;
   leftGap.value = 7.0;
-  require(sketch.addConstraint(leftGap) != kInvalidConstraintId,
+  require(sketch.tryApplyConstraint(leftGap).accepted(),
           "second left gap constraint must be accepted");
 
   const auto leftFinal = sketch.referencedPoint(rectLeft);
@@ -756,7 +743,7 @@ void midpointConstraintPinsPointToLineCenter() {
 
   // Moving the carrier re-applies the midpoint relation.
   sketch.translateElement(sketch.lines()[0].elementId, 20.0, 0.0);
-  (void)BasicSketchSolver::solveStable(sketch);
+  (void)SketchSolver::solveStable(sketch);
   const auto after = sketch.referencedPoint(PointReference{child, true});
   CHECK(after.has_value());
   CHECK(std::abs(after->xMm - 70.0) <= 1e-7);

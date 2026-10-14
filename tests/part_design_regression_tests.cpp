@@ -225,7 +225,11 @@ void selectedCircleExtrudeRecomputesAfterDiameterEdit() {
 
   auto* editedProfile = document.findSketch(profileId);
   CHECK(editedProfile);
-  CHECK(editedProfile->geometry.setCircleDiameterById(selectedCircleId, 20.0));
+  const auto diameterApplied = editedProfile->geometry.tryApplyConstraint(
+      solidar::sketch::Constraint{
+          solidar::sketch::DiameterConstraint{selectedCircleId, 20.0}});
+  CHECK(diameterApplied.accepted());
+  const auto diameterConstraintId = diameterApplied.constraintId;
   CHECK(document.markSketchDirty(profileId));
   CHECK(extrudePtr->isDirty());
 
@@ -260,8 +264,9 @@ void selectedCircleExtrudeRecomputesAfterDiameterEdit() {
       restoredBody->features().front().get());
   CHECK(restoredExtrude);
   CHECK(restoredExtrude->id() == extrudeId);
-  CHECK(restoredProfile->geometry.setCircleDiameterById(
-      restoredProfile->geometry.circleId(1), 24.0));
+  CHECK(restoredProfile->geometry
+            .setConstraintValue(diameterConstraintId, 24.0)
+            .committed());
   CHECK(restored.markSketchDirty(profileId));
   CHECK(restored.recompute());
   CHECK(restoredExtrude->shape());

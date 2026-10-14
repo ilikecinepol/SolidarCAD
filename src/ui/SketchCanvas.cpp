@@ -16,6 +16,7 @@
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QSignalBlocker>
+#include <QStringList>
 #include <QToolTip>
 #include <QTimer>
 #include <QVariant>
@@ -115,6 +116,55 @@ SketchPointDimensionMode pointDimensionMode(const QString& name) noexcept {
   if (name == QStringLiteral("x")) return SketchPointDimensionMode::X;
   if (name == QStringLiteral("y")) return SketchPointDimensionMode::Y;
   return SketchPointDimensionMode::Aligned;
+}
+
+QString commandFailureText(const SketchCommandResult& result) {
+  QString text;
+  switch (result.error) {
+    case SketchCommandError::Duplicate:
+      text = QString::fromUtf8("Ограничение уже существует или избыточно");
+      break;
+    case SketchCommandError::Conflict:
+      text = QString::fromUtf8("Операция отклонена: конфликт ограничений");
+      break;
+    case SketchCommandError::StaleReference:
+      text = QString::fromUtf8("Операция отклонена: некорректная ссылка");
+      break;
+    case SketchCommandError::Unsupported:
+      text = QString::fromUtf8("Операция отклонена: ограничение не поддерживается");
+      break;
+    case SketchCommandError::SolverFailed:
+      text = QString::fromUtf8("Операция отклонена: решатель не сошёлся");
+      break;
+    case SketchCommandError::InternalFailure:
+      text = QString::fromUtf8("Операция отклонена: внутренняя ошибка");
+      break;
+    case SketchCommandError::InvalidInput:
+      text = QString::fromUtf8("Операция отклонена: недопустимые данные");
+      break;
+    case SketchCommandError::TransactionMismatch:
+      text = QString::fromUtf8("Операция отменена: транзакция устарела");
+      break;
+    case SketchCommandError::MutationRejected:
+      text = QString::fromUtf8("Операция не применена");
+      break;
+    case SketchCommandError::None:
+      return {};
+  }
+
+  std::vector<sketch::ConstraintId> related;
+  if (result.constraintApplyResult)
+    related = result.constraintApplyResult->relatedConstraintIds;
+  else if (result.mutationResult)
+    related = result.mutationResult->relatedConstraintIds;
+  if (!related.empty()) {
+    QStringList ids;
+    ids.reserve(static_cast<qsizetype>(related.size()));
+    for (const auto id : related)
+      ids.push_back(QString::number(id));
+    text += QString::fromUtf8(" (ограничения: %1)").arg(ids.join(", "));
+  }
+  return text;
 }
 
 sketch::PointReference& ensurePointReference(
@@ -1174,6 +1224,10 @@ void SketchCanvas::setRectangle(double widthMm, double heightMm) {
 }
 
 void SketchCanvas::setTool(Tool tool) {
+  // Tool switches (including Escape) cancel an in-progress live preview.
+  // The interaction state and the model transaction must be torn down as one
+  // operation, otherwise preview geometry can leak into the semantic model.
+  cancelPendingUndo();
   interaction_.switchTool(interactionTool(tool));
   hoveredProjectionEdge_.reset();
   constructionHover_.reset();
@@ -1354,95 +1408,6 @@ SketchCanvas::selectedConstraintPanelEntries() const {
     return QString::fromUtf8("Ограничение");
   };
 
-  const auto samePoint = [](sketch::PointReference first,
-                            sketch::PointReference second) {
-    // CRASH-FREE 05: COMPLETE POINTREFERENCE IDENTITY
-    if (first.origin || second.origin)
-      return first.origin && second.origin;
-    if (first.elementCenterId != 0 ||
-        second.elementCenterId != 0) {
-      return first.elementCenterId != 0 &&
-             second.elementCenterId != 0 &&
-             first.elementCenterId == second.elementCenterId;
-    }
-
-    if (first.circleId != sketch::kInvalidGeometryId ||
-        second.circleId != sketch::kInvalidGeometryId) {
-      return first.circleId != sketch::kInvalidGeometryId &&
-             second.circleId != sketch::kInvalidGeometryId &&
-             first.circleId == second.circleId;
-    }
-    if (first.arcId != sketch::kInvalidGeometryId ||
-        second.arcId != sketch::kInvalidGeometryId)
-      return first.arcId != sketch::kInvalidGeometryId &&
-             second.arcId != sketch::kInvalidGeometryId &&
-             first.arcId == second.arcId && first.start == second.start;
-    if (first.bezierId != sketch::kInvalidGeometryId ||
-        second.bezierId != sketch::kInvalidGeometryId)
-      return first.bezierId != sketch::kInvalidGeometryId &&
-             second.bezierId != sketch::kInvalidGeometryId &&
-             first.bezierId == second.bezierId &&
-             first.bezierPoint == second.bezierPoint;
-
-    if (first.lineId == sketch::kInvalidGeometryId ||
-        second.lineId == sketch::kInvalidGeometryId)
-      return false;
-
-    return first.lineId == second.lineId &&
-           first.start == second.start;
-  };
-
-  const auto samePointPair = [&samePoint](
-                                 const sketch::Constraint& constraint,
-                                 const sketch::Dimension& dimension) {
-    const bool sameOrder =
-        samePoint(constraint.firstPoint, dimension.firstPoint) &&
-        samePoint(constraint.secondPoint, dimension.secondPoint);
-    const bool reverseOrder =
-        samePoint(constraint.firstPoint, dimension.secondPoint) &&
-        samePoint(constraint.secondPoint, dimension.firstPoint);
-    return sameOrder || reverseOrder;
-  };
-
-  const auto constraintMatchesDimension =
-      [&samePointPair](const sketch::Constraint& constraint,
-                       const sketch::Dimension& dimension) {
-        switch (dimension.kind) {
-          case sketch::DimensionKind::LineLength:
-            return constraint.type == sketch::ConstraintType::Length &&
-                   constraint.firstGeometry == dimension.geometryId;
-          case sketch::DimensionKind::CircleDiameter:
-            return constraint.type == sketch::ConstraintType::Diameter &&
-                   constraint.firstGeometry == dimension.geometryId;
-          case sketch::DimensionKind::PointDistance:
-            return constraint.type == sketch::ConstraintType::Distance &&
-                   samePointPair(constraint, dimension);
-          case sketch::DimensionKind::PointDistanceX:
-            return constraint.type == sketch::ConstraintType::DistanceX &&
-                   samePointPair(constraint, dimension);
-          case sketch::DimensionKind::PointDistanceY:
-            return constraint.type == sketch::ConstraintType::DistanceY &&
-                   samePointPair(constraint, dimension);
-          case sketch::DimensionKind::LineAngle: {
-            if (constraint.type != sketch::ConstraintType::Angle) return false;
-            const bool sameOrder =
-                constraint.firstGeometry == dimension.geometryId &&
-                constraint.secondGeometry == dimension.secondPoint.lineId;
-            const bool reverseOrder =
-                constraint.firstGeometry == dimension.secondPoint.lineId &&
-                constraint.secondGeometry == dimension.geometryId;
-            return sameOrder || reverseOrder;
-          }
-          case sketch::DimensionKind::LineDistance:
-            return constraint.type == sketch::ConstraintType::LineDistance &&
-                   ((constraint.firstGeometry == dimension.geometryId &&
-                     constraint.secondGeometry == dimension.secondPoint.lineId) ||
-                    (constraint.firstGeometry == dimension.secondPoint.lineId &&
-                     constraint.secondGeometry == dimension.geometryId));
-        }
-        return false;
-      };
-
   const auto dimensionReferencesSelected =
       [selectedId](const sketch::Dimension& dimension) {
         if (dimension.kind == sketch::DimensionKind::LineLength ||
@@ -1522,12 +1487,11 @@ SketchCanvas::selectedConstraintPanelEntries() const {
     if (!dimensionReferencesSelected(dimension)) continue;
 
     sketch::ConstraintId activeConstraint = sketch::kInvalidConstraintId;
-    for (const auto& constraint : sketch_.constraints()) {
-      if (constraintMatchesDimension(constraint, dimension)) {
-        activeConstraint = constraint.id;
-        dimensionConstraintIds.push_back(constraint.id);
-        break;
-      }
+    sketch::ConstraintMode constraintMode = sketch::ConstraintMode::Reference;
+    if (const auto linked = sketch_.constraintIndex(dimension.constraintId)) {
+      dimensionConstraintIds.push_back(dimension.constraintId);
+      activeConstraint = dimension.constraintId;
+      constraintMode = sketch_.constraints()[*linked].mode;
     }
 
     QString name;
@@ -1565,7 +1529,7 @@ SketchCanvas::selectedConstraintPanelEntries() const {
     entry.description = name;
     entry.constraintId = activeConstraint;
     entry.dimensionIndex = dimensionIndex;
-    entry.checked = activeConstraint != sketch::kInvalidConstraintId;
+    entry.mode = constraintMode;
     result.push_back(std::move(entry));
   }
 
@@ -1603,7 +1567,7 @@ SketchCanvas::selectedConstraintPanelEntries() const {
     ConstraintPanelEntry entry;
     entry.description = text;
     entry.constraintId = constraint.id;
-    entry.checked = true;
+    entry.mode = constraint.mode;
     result.push_back(std::move(entry));
   }
 
@@ -1630,6 +1594,25 @@ bool SketchCanvas::setDimensionDriving(std::size_t dimensionIndex,
   update();
   return true;
 }
+
+bool SketchCanvas::setConstraintModeById(sketch::ConstraintId id,
+                                         sketch::ConstraintMode mode) {
+  if (id == sketch::kInvalidConstraintId || !sketch_.constraintIndex(id))
+    return false;
+  pushUndoState();
+  const auto result = executeCommand(SetConstraintModeCommand{id, mode, {}});
+  if (!result.accepted) {
+    cancelPendingUndo();
+    emit undoAvailable(canUndo());
+    emit redoAvailable(canRedo());
+    update();
+    return false;
+  }
+  notifyGeometryChanged();
+  update();
+  return true;
+}
+
 bool SketchCanvas::removeConstraintById(sketch::ConstraintId id) {
   if (id == sketch::kInvalidConstraintId) return false;
 
@@ -4476,26 +4459,12 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
         }
       }
     } else if (target == SketchAutoDimensionTarget::Points) {
-      sketch::PointReference firstReference{
-          static_cast<sketch::GeometryId>(
-              interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).lineId),
-          interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).start,
-          static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).elementCenterId)};
-      firstReference.origin =
-          interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).origin;
-      sketch::PointReference secondReference{
-          static_cast<sketch::GeometryId>(
-              interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).lineId),
-          interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).start,
-          static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).elementCenterId)};
-      secondReference.origin =
-          interactionState().autoDimension.secondPoint.value_or(sketch::PointReference{}).origin;
+      const sketch::PointReference firstReference =
+          interactionState().autoDimension.firstPoint.value_or(
+              sketch::PointReference{});
+      const sketch::PointReference secondReference =
+          interactionState().autoDimension.secondPoint.value_or(
+              sketch::PointReference{});
 
       const auto firstPoint =
           sketch_.referencedPoint(firstReference);
@@ -4600,8 +4569,27 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     } else {
       constructionHover_.reset();
     }
-    const double dx = current.xMm - interactionState().drag.current.xMm;
-    const double dy = current.yMm - interactionState().drag.current.yMm;
+    // Every mouse sample is solved from the press-time reference state.  This
+    // prevents incremental drift and keeps the open drag as one undo delta.
+    // The canceled transaction rolls the previous preview back atomically;
+    // transient solver hints are then rebuilt for the absolute cursor target.
+    if (pendingUndoTransaction_) {
+      const auto token = *pendingUndoTransaction_;
+      if (commandController_.cancelTransaction(sketch_, token,
+                                               sketchGeneration_) ||
+          !commandController_.hasActiveTransaction())
+        pendingUndoTransaction_.reset();
+    }
+    commandSequenceFailed_ = false;
+    if (!pendingUndoTransaction_)
+      pendingUndoTransaction_ =
+          commandController_.beginTransaction(sketch_, sketchGeneration_);
+    if (!pendingUndoTransaction_) {
+      event->accept();
+      return;
+    }
+    const double dx = current.xMm - interactionState().drag.reference.xMm;
+    const double dy = current.yMm - interactionState().drag.reference.yMm;
     bool moved = false;
 
     if (const auto* circleTarget = std::get_if<SketchCircleCenterDrag>(
@@ -7723,14 +7711,9 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
       return;
     }
 
-    sketch::PointReference first{
-        static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).lineId),
-        interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).start,
-        static_cast<sketch::GeometryId>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).circleId),
-        static_cast<std::size_t>(
-            interactionState().autoDimension.firstPoint.value_or(sketch::PointReference{}).elementCenterId)};
+    const sketch::PointReference first =
+        interactionState().autoDimension.firstPoint.value_or(
+            sketch::PointReference{});
     (void)beginDatumDimension(first, *clickedDatum);
     return;
   }
@@ -9641,21 +9624,26 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
             circleDiameterMm_);
 
         if (addDrivingDiameter) {
+          sketch::Constraint constraint;
+          constraint.type = sketch::ConstraintType::Diameter;
+          constraint.firstGeometry = newCircleId;
+          constraint.value = circleDiameterMm_;
+          const auto constraintResult =
+              executeCommand(AddConstraintCommand{constraint});
+          if (!constraintResult.accepted ||
+              constraintResult.changedConstraintIds.size() != 1) {
+            cancelPendingUndo();
+            return false;
+          }
           sketch::Dimension dimension;
           dimension.kind = sketch::DimensionKind::CircleDiameter;
           dimension.geometryId = newCircleId;
           dimension.valueMm = circleDiameterMm_;
           dimension.offsetMm = 0.0;
           dimension.angleRad = 0.0;
+          dimension.constraintId =
+              constraintResult.changedConstraintIds.front();
           if (!executeCommand(StoreDimensionCommand{dimension}).accepted) {
-            cancelPendingUndo();
-            return false;
-          }
-          sketch::Constraint constraint;
-          constraint.type = sketch::ConstraintType::Diameter;
-          constraint.firstGeometry = newCircleId;
-          constraint.value = circleDiameterMm_;
-          if (!executeCommand(AddConstraintCommand{constraint}).accepted) {
             cancelPendingUndo();
             return false;
           }
@@ -10597,7 +10585,10 @@ void SketchCanvas::commitDimensionEditor() {
             constraint.firstPoint = {lineId, true};
             constraint.secondPoint = {lineId, false};
             constraint.value = valueMm;
-            if (!executeCommand(AddConstraintCommand{constraint}).accepted)
+            const auto constraintResult =
+                executeCommand(AddConstraintCommand{constraint});
+            if (!constraintResult.accepted ||
+                constraintResult.changedConstraintIds.size() != 1)
               return false;
 
             sketch::Dimension dimension;
@@ -10606,6 +10597,8 @@ void SketchCanvas::commitDimensionEditor() {
             dimension.secondPoint = constraint.secondPoint;
             dimension.valueMm = valueMm;
             dimension.offsetMm = offsetMm;
+            dimension.constraintId =
+                constraintResult.changedConstraintIds.front();
             if (!executeCommand(StoreDimensionCommand{dimension}).accepted)
               return false;
             return true;
@@ -10692,13 +10685,20 @@ SketchCommandResult SketchCanvas::executeCommand(const SketchCommand& command) {
   auto result = commandController_.execute(sketch_, command);
   if (result.accepted) {
     applyCommandEffects(result.effects);
-  } else if (pendingUndoTransaction_) {
-    const auto token = *pendingUndoTransaction_;
-    if (commandController_.cancelTransaction(sketch_, token,
-                                             sketchGeneration_) ||
-        !commandController_.hasActiveTransaction())
-      pendingUndoTransaction_.reset();
-    commandSequenceFailed_ = true;
+  } else {
+    const auto message = commandFailureText(result);
+    if (!message.isEmpty()) {
+      emit constraintStatusChanged(message);
+      emit selectionChanged(message);
+    }
+    if (pendingUndoTransaction_) {
+      const auto token = *pendingUndoTransaction_;
+      if (commandController_.cancelTransaction(sketch_, token,
+                                               sketchGeneration_) ||
+          !commandController_.hasActiveTransaction())
+        pendingUndoTransaction_.reset();
+      commandSequenceFailed_ = true;
+    }
   }
   return result;
 }
@@ -10713,6 +10713,11 @@ SketchCommandResult SketchCanvas::executeLiveCommand(
   if (result.accepted) {
     applyCommandEffects(result.effects);
   } else {
+    const auto message = commandFailureText(result);
+    if (!message.isEmpty()) {
+      emit constraintStatusChanged(message);
+      emit selectionChanged(message);
+    }
     const auto token = *pendingUndoTransaction_;
     if (commandController_.cancelTransaction(sketch_, token,
                                              sketchGeneration_) ||
@@ -10749,12 +10754,41 @@ std::size_t SketchCanvas::fullDiagnosticsCount() const noexcept {
   return fullDiagnosticsCount_;
 }
 
+sketch::SolveStatus SketchCanvas::lastSolveStatus() const noexcept {
+  return lastSolveStatus_;
+}
+
+const std::vector<sketch::ConstraintId>&
+SketchCanvas::diagnosticConstraintIds() const noexcept {
+  return diagnosticConstraintIds_;
+}
+
 void SketchCanvas::runConstraintDiagnostics() {
   ++fullDiagnosticsCount_;
 
   const auto constraintState =
       sketch::analyzeConstraintSystem(
           sketch_, true);
+  lastSolveStatus_ = constraintState.status;
+  diagnosticConstraintIds_.clear();
+  if (!constraintState.conflictingConstraintIds.empty())
+    diagnosticConstraintIds_ = constraintState.conflictingConstraintIds;
+  else if (!constraintState.partiallyRedundantConstraintIds.empty())
+    diagnosticConstraintIds_ =
+        constraintState.partiallyRedundantConstraintIds;
+  else if (!constraintState.redundantConstraintIds.empty())
+    diagnosticConstraintIds_ = constraintState.redundantConstraintIds;
+  else
+    for (const auto& violation : constraintState.violations)
+      diagnosticConstraintIds_.push_back(violation.id);
+
+  QStringList diagnosticIds;
+  for (const auto id : diagnosticConstraintIds_)
+    diagnosticIds.push_back(QString::number(id));
+  const QString idSuffix = diagnosticIds.empty()
+                               ? QString{}
+                               : QString::fromUtf8(" · ограничения: %1")
+                                     .arg(diagnosticIds.join(", "));
 
   QString constraintText;
 
@@ -10762,28 +10796,45 @@ void SketchCanvas::runConstraintDiagnostics() {
       sketch_.arcs().empty() && sketch_.beziers().empty()) {
     constraintText =
         QString::fromUtf8("Эскиз пуст");
-  } else if (constraintState.conflicting) {
-    constraintText =
-        QString::fromUtf8(
-            "Конфликт ограничений · нарушено: %1")
-            .arg(
-                constraintState.violations.size());
-  } else if (!constraintState.components.empty() &&
-             std::all_of(constraintState.components.begin(),
-                         constraintState.components.end(),
-                         [](const auto& component) {
-                           return component.degreesOfFreedom == 0 &&
-                                  !component.conflicting;
-                         })) {
-    constraintText =
-        QString::fromUtf8(
-            "Эскиз полностью определён · DOF: 0");
   } else {
-    constraintText =
-        QString::fromUtf8(
+    switch (constraintState.status) {
+      case sketch::SolveStatus::SolvedFullyConstrained:
+        constraintText = QString::fromUtf8(
+            "Эскиз полностью определён · DOF: 0");
+        break;
+      case sketch::SolveStatus::SolvedUnderConstrained:
+        constraintText = QString::fromUtf8(
             "Эскиз недоопределён · DOF: %1")
-            .arg(
-                constraintState.degreesOfFreedom);
+                             .arg(constraintState.degreesOfFreedom);
+        break;
+      case sketch::SolveStatus::Redundant:
+        constraintText = QString::fromUtf8("Избыточные ограничения") + idSuffix;
+        break;
+      case sketch::SolveStatus::PartiallyRedundant:
+        constraintText =
+            QString::fromUtf8("Частично избыточные ограничения") + idSuffix;
+        break;
+      case sketch::SolveStatus::Conflicting:
+        constraintText =
+            QString::fromUtf8("Конфликт ограничений") + idSuffix;
+        if (!constraintState.conflictSetComplete)
+          constraintText += QString::fromUtf8(" · набор неполный");
+        break;
+      case sketch::SolveStatus::Malformed:
+        constraintText = QString::fromUtf8("Некорректная система ограничений");
+        break;
+      case sketch::SolveStatus::Unsupported:
+        constraintText = QString::fromUtf8("Неподдерживаемое ограничение");
+        break;
+      case sketch::SolveStatus::NonConverged:
+        constraintText = QString::fromUtf8("Решатель не сошёлся") + idSuffix;
+        if (!constraintState.conflictSetComplete)
+          constraintText += QString::fromUtf8(" · набор причин неполный");
+        break;
+      case sketch::SolveStatus::BackendFailure:
+        constraintText = QString::fromUtf8("Ошибка численного backend");
+        break;
+    }
   }
 
   emit constraintStatusChanged(
@@ -10833,10 +10884,15 @@ bool SketchCanvas::finalizeUndoState() {
 void SketchCanvas::cancelPendingUndo() {
   if (!pendingUndoTransaction_) return;
   const auto token = *pendingUndoTransaction_;
-  if (commandController_.cancelTransaction(sketch_, token,
-                                           sketchGeneration_) ||
-      !commandController_.hasActiveTransaction())
+  const bool canceled = commandController_.cancelTransaction(
+      sketch_, token, sketchGeneration_);
+  if (canceled || !commandController_.hasActiveTransaction()) {
     pendingUndoTransaction_.reset();
+    if (canceled) {
+      markCommittedRenderSceneDirty();
+      if (constraintDiagnosticsTimer_) constraintDiagnosticsTimer_->start();
+    }
+  }
 }
 
 }  // namespace solidar

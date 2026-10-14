@@ -20,9 +20,12 @@
 #include <exception>
 #include <cmath>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <sstream>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -44,6 +47,7 @@
 #include "model/JoinBodiesFeature.h"
 #include "model/DraftFeature.h"
 #include "model/ShellFeature.h"
+#include "sketch/SketchSchema.h"
 
 namespace solidar::project {
 namespace {
@@ -600,6 +604,20 @@ bool objectField(const QJsonObject& object, const char* name,
     return invalid(error, QString::fromUtf8("поле %1 должно быть объектом.")
                               .arg(QString::fromLatin1(name)));
   *result = value.toObject();
+  return true;
+}
+
+bool exactObjectFields(const QJsonObject& object,
+                       std::initializer_list<const char*> fields,
+                       const QString& context, QString* error) {
+  if (object.size() != static_cast<qsizetype>(fields.size()))
+    return invalid(error, QString::fromUtf8("%1 содержит лишние или отсутствующие поля.")
+                              .arg(context));
+  for (const char* field : fields) {
+    if (!object.contains(QLatin1String(field)))
+      return invalid(error, QString::fromUtf8("%1 не содержит поле %2.")
+                                .arg(context, QString::fromLatin1(field)));
+  }
   return true;
 }
 
@@ -2812,6 +2830,17 @@ static bool loadLegacyRoot(const QJsonObject& root,
 static bool loadDocumentRoot(const QJsonObject& root,
                              const ProjectData& legacy, Document* document,
                              QString* error);
+static bool migrateLegacyDimensionLinks(
+    sketch::Sketch* geometry,
+    std::vector<sketch::Dimension> legacyDimensions,
+    QString* error);
+static double measuredConstraintValue(const sketch::Sketch& geometry,
+                                      const sketch::Constraint& constraint);
+static bool upgradeSketchSchemaToV3(QJsonObject* root,
+                                    const ProjectData& data,
+                                    QString* error);
+static bool loadV3Root(const QJsonObject& root, ProjectData* data,
+                       QString* error, bool* unsupported = nullptr);
 
 bool ProjectFile::create(const QString& path, QString* error) {
   // New projects must start in the canonical parametric format.  Creating a
@@ -2977,6 +3006,10 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
             static_cast<qint64>(dimension.secondPoint.elementCenterId);
       }
 
+      const bool pointDimension =
+          dimension.kind == sketch::DimensionKind::PointDistance ||
+          dimension.kind == sketch::DimensionKind::PointDistanceX ||
+          dimension.kind == sketch::DimensionKind::PointDistanceY;
       dimensions.append(QJsonObject{
           {"id", static_cast<qint64>(dimension.id)},
           {"kind", static_cast<int>(dimension.kind)},
@@ -2986,18 +3019,22 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
           {"firstCircle", firstCircle},
           {"firstArc", firstArc},
           {"firstBezier", firstBezier},
-          {"firstBezierPoint", dimension.firstPoint.bezierPoint},
+          {"firstBezierPoint",
+           static_cast<int>(dimension.firstPoint.bezierPoint)},
           {"firstElementCenter", firstElementCenter},
-          {"firstStart", dimension.firstPoint.start},
-          {"firstOrigin", dimension.firstPoint.origin},
+          {"firstStart", static_cast<bool>(dimension.firstPoint.start)},
+          {"firstOrigin",
+           pointDimension && static_cast<bool>(dimension.firstPoint.origin)},
           {"secondLine", secondLine},
           {"secondCircle", secondCircle},
           {"secondArc", secondArc},
           {"secondBezier", secondBezier},
-          {"secondBezierPoint", dimension.secondPoint.bezierPoint},
+          {"secondBezierPoint",
+           static_cast<int>(dimension.secondPoint.bezierPoint)},
           {"secondElementCenter", secondElementCenter},
-          {"secondStart", dimension.secondPoint.start},
-          {"secondOrigin", dimension.secondPoint.origin},
+          {"secondStart", static_cast<bool>(dimension.secondPoint.start)},
+          {"secondOrigin",
+           pointDimension && static_cast<bool>(dimension.secondPoint.origin)},
           {"value", dimension.valueMm},
           {"offset", dimension.offsetMm},
           {"angle", dimension.angleRad}});
@@ -3091,6 +3128,21 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
       if (constraint.secondPoint.bezierId != sketch::kInvalidGeometryId)
         secondPointBezier = bezierPosition(constraint.secondPoint.bezierId);
 
+      const auto constraintType =
+          static_cast<sketch::ConstraintType>(constraint.type);
+      const bool hasFirstPoint =
+          constraintType == sketch::ConstraintType::Coincident ||
+          constraintType == sketch::ConstraintType::Distance ||
+          constraintType == sketch::ConstraintType::DistanceX ||
+          constraintType == sketch::ConstraintType::DistanceY;
+      const bool hasSecondPoint =
+          hasFirstPoint ||
+          constraintType == sketch::ConstraintType::PointOnLine ||
+          constraintType == sketch::ConstraintType::PointOnCircle ||
+          constraintType == sketch::ConstraintType::PointOnArc ||
+          constraintType == sketch::ConstraintType::Midpoint ||
+          constraintType == sketch::ConstraintType::PointOnXAxis ||
+          constraintType == sketch::ConstraintType::PointOnYAxis;
       constraints.append(QJsonObject{
           {"id", static_cast<qint64>(constraint.id)},
           {"type", encodedConstraintType(constraint.type)},
@@ -3100,24 +3152,30 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
           {"secondGeometryKind", secondKind},
           {"secondGeometry", secondGeometry},
           {"firstPointLine", firstPointLine},
-          {"firstPointStart", constraint.firstPoint.start},
+          {"firstPointStart", static_cast<bool>(constraint.firstPoint.start)},
           {"firstPointCircle", firstPointCircle},
           {"firstPointArc", firstPointArc},
           {"firstPointBezier", firstPointBezier},
-          {"firstPointBezierPoint", constraint.firstPoint.bezierPoint},
+          {"firstPointBezierPoint",
+           static_cast<int>(constraint.firstPoint.bezierPoint)},
           {"firstPointElementCenter",
            static_cast<qint64>(constraint.firstPoint.elementCenterId)},
-          {"firstPointOrigin", constraint.firstPoint.origin},
+          {"firstPointOrigin",
+           hasFirstPoint && static_cast<bool>(constraint.firstPoint.origin)},
           {"secondPointLine", secondPointLine},
-          {"secondPointStart", constraint.secondPoint.start},
+          {"secondPointStart", static_cast<bool>(constraint.secondPoint.start)},
           {"secondPointCircle", secondPointCircle},
           {"secondPointArc", secondPointArc},
           {"secondPointBezier", secondPointBezier},
-          {"secondPointBezierPoint", constraint.secondPoint.bezierPoint},
+          {"secondPointBezierPoint",
+           static_cast<int>(constraint.secondPoint.bezierPoint)},
           {"secondPointElementCenter",
            static_cast<qint64>(constraint.secondPoint.elementCenterId)},
-          {"secondPointOrigin", constraint.secondPoint.origin},
-          {"value", constraint.value}});
+          {"secondPointOrigin",
+           hasSecondPoint && static_cast<bool>(constraint.secondPoint.origin)},
+          {"value", constraint.mode == sketch::ConstraintMode::Reference
+                        ? measuredConstraintValue(saved.geometry, constraint)
+                        : static_cast<double>(constraint.value)}});
     }
 
     QJsonArray centerNodeElementIds;
@@ -3207,12 +3265,20 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
   const auto saveOperation = [&]() -> bool {
     ProjectData legacy;
     legacy.box = document.box();
-    for (const auto& item : document.sketches())
+    for (const auto& item : document.sketches()) {
       legacy.sketches.push_back({item.geometry, QStringLiteral("XY")});
+      if (!sketch::validateSketchSchema(
+              legacy.sketches.back().geometry)) {
+        setError(error,
+                 QString::fromUtf8(
+                     "Эскиз документа нарушает typed schema contract."));
+        return false;
+      }
+    }
     QJsonObject root;
     if (!serializedProjectRoot(path, legacy, &root, error))
       return false;
-    root["version"] = 2;
+    root["version"] = 3;
     auto persistedSketches = root.value("sketches").toArray();
     for (qsizetype position = 0; position < persistedSketches.size();
          ++position) {
@@ -3303,11 +3369,12 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
                                  {"bodies", bodies},
                                  {"referenceImages", referenceImages}};
 
+    if (!upgradeSketchSchemaToV3(&root, legacy, error)) return false;
+
     if (!validateV2Root(root, legacy, error))
       return false;
     ProjectData restoredLegacy;
-    if (!loadLegacyRoot(root, ConstraintTypeEncoding::StableNameV1,
-                        &restoredLegacy, error))
+    if (!loadV3Root(root, &restoredLegacy, error))
       return false;
     Document restoredDocument;
     {
@@ -3569,6 +3636,881 @@ static bool validateMaterializedSketchGeometry(const sketch::Sketch& geometry,
   return true;
 }
 
+static bool constraintMatchesLegacyDimension(
+    const sketch::Constraint& constraint,
+    const sketch::Dimension& dimension) {
+  const auto samePoints = [&](const sketch::PointReference& first,
+                              const sketch::PointReference& second) {
+    return (constraint.firstPoint == first &&
+            constraint.secondPoint == second) ||
+           (constraint.firstPoint == second &&
+            constraint.secondPoint == first);
+  };
+  const auto sameGeometryPair = [&](sketch::GeometryId first,
+                                    sketch::GeometryId second) {
+    return (constraint.firstGeometry == first &&
+            constraint.secondGeometry == second) ||
+           (constraint.firstGeometry == second &&
+            constraint.secondGeometry == first);
+  };
+  switch (dimension.kind) {
+    case sketch::DimensionKind::LineLength:
+      return constraint.type == sketch::ConstraintType::Length &&
+             constraint.firstGeometry == dimension.geometryId;
+    case sketch::DimensionKind::CircleDiameter:
+      return constraint.type == sketch::ConstraintType::Diameter &&
+             constraint.firstGeometry == dimension.geometryId;
+    case sketch::DimensionKind::PointDistance:
+      return constraint.type == sketch::ConstraintType::Distance &&
+             samePoints(dimension.firstPoint, dimension.secondPoint);
+    case sketch::DimensionKind::PointDistanceX:
+      return constraint.type == sketch::ConstraintType::DistanceX &&
+             samePoints(dimension.firstPoint, dimension.secondPoint);
+    case sketch::DimensionKind::PointDistanceY:
+      return constraint.type == sketch::ConstraintType::DistanceY &&
+             samePoints(dimension.firstPoint, dimension.secondPoint);
+    case sketch::DimensionKind::LineAngle:
+      return constraint.type == sketch::ConstraintType::Angle &&
+             sameGeometryPair(dimension.geometryId,
+                              dimension.secondPoint.lineId);
+    case sketch::DimensionKind::LineDistance:
+      return constraint.type == sketch::ConstraintType::LineDistance &&
+             sameGeometryPair(dimension.geometryId,
+                              dimension.secondPoint.lineId);
+  }
+  return false;
+}
+
+static sketch::Constraint referenceConstraintForLegacyDimension(
+    const sketch::Dimension& dimension, sketch::ConstraintId id) {
+  sketch::Constraint constraint;
+  constraint.id = id;
+  constraint.mode = sketch::ConstraintMode::Reference;
+  switch (dimension.kind) {
+    case sketch::DimensionKind::LineLength:
+      constraint.type = sketch::ConstraintType::Length;
+      constraint.firstGeometry = dimension.geometryId;
+      break;
+    case sketch::DimensionKind::CircleDiameter:
+      constraint.type = sketch::ConstraintType::Diameter;
+      constraint.firstGeometry = dimension.geometryId;
+      break;
+    case sketch::DimensionKind::PointDistance:
+      constraint.type = sketch::ConstraintType::Distance;
+      constraint.firstPoint = dimension.firstPoint;
+      constraint.secondPoint = dimension.secondPoint;
+      break;
+    case sketch::DimensionKind::PointDistanceX:
+      constraint.type = sketch::ConstraintType::DistanceX;
+      constraint.firstPoint = dimension.firstPoint;
+      constraint.secondPoint = dimension.secondPoint;
+      break;
+    case sketch::DimensionKind::PointDistanceY:
+      constraint.type = sketch::ConstraintType::DistanceY;
+      constraint.firstPoint = dimension.firstPoint;
+      constraint.secondPoint = dimension.secondPoint;
+      break;
+    case sketch::DimensionKind::LineAngle:
+      constraint.type = sketch::ConstraintType::Angle;
+      constraint.firstGeometry = dimension.geometryId;
+      constraint.secondGeometry = dimension.secondPoint.lineId;
+      break;
+    case sketch::DimensionKind::LineDistance:
+      constraint.type = sketch::ConstraintType::LineDistance;
+      constraint.firstGeometry = dimension.geometryId;
+      constraint.secondGeometry = dimension.secondPoint.lineId;
+      break;
+  }
+  return constraint;
+}
+
+static bool migrateLegacyDimensionLinks(
+    sketch::Sketch* geometry,
+    std::vector<sketch::Dimension> legacyDimensions,
+    QString* error) {
+  if (!geometry) return false;
+  if (!geometry->dimensions().empty()) {
+    setError(error,
+             QString::fromUtf8(
+                 "Legacy migration получила уже материализованные annotations."));
+    return false;
+  }
+  std::vector<sketch::Constraint> constraints = geometry->constraints();
+  std::unordered_set<sketch::ConstraintId> linked;
+  sketch::ConstraintId nextId = 1;
+  for (const auto& constraint : constraints)
+    nextId = std::max(nextId, constraint.id + 1);
+
+  std::vector<sketch::ConstraintId> links;
+  links.reserve(legacyDimensions.size());
+  for (const auto& dimension : legacyDimensions) {
+    sketch::ConstraintId selected = sketch::kInvalidConstraintId;
+    if (dimension.constraintId != sketch::kInvalidConstraintId) {
+      const auto exact = std::find_if(
+          constraints.begin(), constraints.end(),
+          [&](const sketch::Constraint& constraint) {
+            return constraint.id == dimension.constraintId;
+          });
+      if (exact == constraints.end() || linked.contains(dimension.constraintId)) {
+        setError(error,
+                 QString::fromUtf8(
+                     "Annotation содержит устаревшую или повторную точную связь."));
+        return false;
+      }
+      selected = dimension.constraintId;
+    }
+
+    std::vector<sketch::ConstraintId> candidates;
+    if (selected == sketch::kInvalidConstraintId) {
+      for (const auto& constraint : constraints) {
+        if (!linked.contains(constraint.id) &&
+            constraintMatchesLegacyDimension(constraint, dimension))
+          candidates.push_back(constraint.id);
+      }
+    }
+
+    if (selected != sketch::kInvalidConstraintId) {
+      // A v3/model annotation already has an authoritative link.  Never
+      // rediscover it by shape, even when another constraint looks identical.
+    } else if (candidates.size() == 1) {
+      selected = candidates.front();
+    } else {
+      while (nextId == sketch::kInvalidConstraintId ||
+             std::any_of(constraints.begin(), constraints.end(),
+                         [nextId](const sketch::Constraint& constraint) {
+                           return constraint.id == nextId;
+                         }))
+        ++nextId;
+      selected = nextId++;
+      constraints.push_back(
+          referenceConstraintForLegacyDimension(dimension, selected));
+    }
+    linked.insert(selected);
+    links.push_back(selected);
+  }
+
+  if (!geometry->restoreConstraints(std::move(constraints))) {
+    setError(error,
+             QString::fromUtf8(
+                 "Не удалось создать однозначные связи размеров при миграции."));
+    return false;
+  }
+  for (std::size_t index = 0; index < links.size(); ++index) {
+    legacyDimensions[index].constraintId = links[index];
+    if (!geometry->storeDimension(legacyDimensions[index])) {
+      setError(error,
+               QString::fromUtf8(
+                   "Не удалось атомарно восстановить annotation при миграции."));
+      return false;
+    }
+  }
+  if (sketch::validateSketchSchema(*geometry)) return true;
+  setError(error,
+           QString::fromUtf8(
+               "Миграция annotations нарушает typed schema contract."));
+  return false;
+}
+
+static QJsonObject encodedPointReferenceV3(
+    const sketch::PointReference& reference) {
+  return std::visit([](const auto& source) -> QJsonObject {
+    using T = std::decay_t<decltype(source)>;
+    if constexpr (std::is_same_v<T, sketch::DatumOriginReference>) {
+      return {{"source", "datum-origin"}};
+    } else if constexpr (std::is_same_v<T,
+                                        sketch::LineEndpointReference>) {
+      return {{"source", "line-endpoint"},
+              {"geometryId", static_cast<qint64>(source.lineId)},
+              {"endpoint", source.endpoint == sketch::Endpoint::Start
+                               ? "start" : "end"}};
+    } else if constexpr (std::is_same_v<T,
+                                        sketch::CircleCenterReference>) {
+      return {{"source", "circle-center"},
+              {"geometryId", static_cast<qint64>(source.circleId)}};
+    } else if constexpr (std::is_same_v<T,
+                                        sketch::ArcEndpointReference>) {
+      return {{"source", "arc-endpoint"},
+              {"geometryId", static_cast<qint64>(source.arcId)},
+              {"endpoint", source.endpoint == sketch::Endpoint::Start
+                               ? "start" : "end"}};
+    } else if constexpr (std::is_same_v<T,
+                                        sketch::BezierPointReference>) {
+      return {{"source", "bezier-point"},
+              {"geometryId", static_cast<qint64>(source.bezierId)},
+              {"pointIndex", static_cast<int>(source.pointIndex)}};
+    } else {
+      return {{"source", "composite-center"},
+              {"elementId", static_cast<qint64>(source.elementId)}};
+    }
+  }, reference.payload());
+}
+
+static bool decodedPointReferenceV3(const QJsonValue& value,
+                                    sketch::PointReference* result,
+                                    QString* error) {
+  if (!result || !value.isObject())
+    return invalid(error,
+                   QString::fromUtf8("point reference v3 должен быть объектом."));
+  const auto object = value.toObject();
+  if (!object.value("source").isString())
+    return invalid(error,
+                   QString::fromUtf8("point reference v3 не содержит source."));
+  const auto source = object.value("source").toString();
+  qint64 id = 0;
+  if (source == QStringLiteral("datum-origin")) {
+    if (object.size() != 1)
+      return invalid(error,
+                     QString::fromUtf8("datum-origin содержит лишние поля."));
+    *result = sketch::PointReference{sketch::DatumOriginReference{}};
+    return true;
+  }
+  if (source == QStringLiteral("composite-center")) {
+    if (object.size() != 2 ||
+        !integerNumber(object.value("elementId"), QStringLiteral("elementId"),
+                       1, ProjectFile::kMaximumPersistedId, &id, error))
+      return false;
+    *result = sketch::PointReference{
+        sketch::CompositeCenterReference{static_cast<std::uint64_t>(id)}};
+    return true;
+  }
+  if (!integerNumber(object.value("geometryId"),
+                     QStringLiteral("geometryId"), 1,
+                     ProjectFile::kMaximumPersistedId, &id, error))
+    return false;
+  if (source == QStringLiteral("circle-center")) {
+    if (object.size() != 2)
+      return invalid(error,
+                     QString::fromUtf8("circle-center содержит лишние поля."));
+    *result = sketch::PointReference{
+        sketch::CircleCenterReference{static_cast<sketch::GeometryId>(id)}};
+    return true;
+  }
+  if (source == QStringLiteral("bezier-point")) {
+    qint64 pointIndex = -1;
+    if (object.size() != 3 ||
+        !integerNumber(object.value("pointIndex"),
+                       QStringLiteral("pointIndex"), 0, 3, &pointIndex,
+                       error))
+      return false;
+    *result = sketch::PointReference{sketch::BezierPointReference{
+        static_cast<sketch::GeometryId>(id),
+        static_cast<std::uint8_t>(pointIndex)}};
+    return true;
+  }
+  if (source == QStringLiteral("line-endpoint") ||
+      source == QStringLiteral("arc-endpoint")) {
+    if (object.size() != 3 || !object.value("endpoint").isString())
+      return invalid(error,
+                     QString::fromUtf8("endpoint reference v3 повреждён."));
+    const auto endpointText = object.value("endpoint").toString();
+    if (endpointText != QStringLiteral("start") &&
+        endpointText != QStringLiteral("end"))
+      return invalid(error,
+                     QString::fromUtf8("неизвестный endpoint reference v3."));
+    const auto endpoint = endpointText == QStringLiteral("start")
+        ? sketch::Endpoint::Start : sketch::Endpoint::End;
+    if (source == QStringLiteral("line-endpoint"))
+      *result = sketch::PointReference{sketch::LineEndpointReference{
+          static_cast<sketch::GeometryId>(id), endpoint}};
+    else
+      *result = sketch::PointReference{sketch::ArcEndpointReference{
+          static_cast<sketch::GeometryId>(id), endpoint}};
+    return true;
+  }
+  return invalid(error,
+                 QString::fromUtf8("неизвестный source point reference v3."));
+}
+
+static bool dimensionalConstraintType(sketch::ConstraintType type) {
+  return type == sketch::ConstraintType::Distance ||
+         type == sketch::ConstraintType::Length ||
+         type == sketch::ConstraintType::Radius ||
+         type == sketch::ConstraintType::Diameter ||
+         type == sketch::ConstraintType::Angle ||
+         type == sketch::ConstraintType::DistanceX ||
+         type == sketch::ConstraintType::DistanceY ||
+         type == sketch::ConstraintType::LineDistance;
+}
+
+static QJsonObject encodedConstraintV3(const sketch::Constraint& constraint) {
+  const auto type = static_cast<sketch::ConstraintType>(constraint.type);
+  QJsonObject payload{{"type", encodedConstraintType(type)},
+                      {"typeKey", encodedConstraintTypeKey(type)}};
+  const auto firstGeometry = static_cast<sketch::GeometryId>(
+      constraint.firstGeometry);
+  const auto secondGeometry = static_cast<sketch::GeometryId>(
+      constraint.secondGeometry);
+  switch (type) {
+    case sketch::ConstraintType::Horizontal:
+    case sketch::ConstraintType::Vertical:
+    case sketch::ConstraintType::Length:
+    case sketch::ConstraintType::Radius:
+    case sketch::ConstraintType::Diameter:
+    case sketch::ConstraintType::Lock:
+      payload["geometryId"] = static_cast<qint64>(firstGeometry);
+      break;
+    case sketch::ConstraintType::Parallel:
+    case sketch::ConstraintType::Perpendicular:
+    case sketch::ConstraintType::Equal:
+    case sketch::ConstraintType::Angle:
+    case sketch::ConstraintType::Tangent:
+    case sketch::ConstraintType::LineDistance:
+      payload["firstGeometryId"] = static_cast<qint64>(firstGeometry);
+      payload["secondGeometryId"] = static_cast<qint64>(secondGeometry);
+      break;
+    case sketch::ConstraintType::Coincident:
+    case sketch::ConstraintType::Distance:
+    case sketch::ConstraintType::DistanceX:
+    case sketch::ConstraintType::DistanceY:
+      payload["firstPoint"] = encodedPointReferenceV3(
+          static_cast<sketch::PointReference>(constraint.firstPoint));
+      payload["secondPoint"] = encodedPointReferenceV3(
+          static_cast<sketch::PointReference>(constraint.secondPoint));
+      break;
+    case sketch::ConstraintType::PointOnLine:
+    case sketch::ConstraintType::PointOnCircle:
+    case sketch::ConstraintType::PointOnArc:
+    case sketch::ConstraintType::Midpoint:
+      payload["geometryId"] = static_cast<qint64>(firstGeometry);
+      payload["point"] = encodedPointReferenceV3(
+          static_cast<sketch::PointReference>(constraint.secondPoint));
+      break;
+    case sketch::ConstraintType::PointOnXAxis:
+    case sketch::ConstraintType::PointOnYAxis:
+      payload["point"] = encodedPointReferenceV3(
+          static_cast<sketch::PointReference>(constraint.secondPoint));
+      break;
+  }
+  if (dimensionalConstraintType(type) &&
+      constraint.mode != sketch::ConstraintMode::Reference)
+    payload["value"] = static_cast<double>(constraint.value);
+  const char* mode = constraint.mode == sketch::ConstraintMode::Driving
+      ? "driving"
+      : constraint.mode == sketch::ConstraintMode::Reference
+            ? "reference" : "disabled";
+  return {{"id", static_cast<qint64>(constraint.id)},
+          {"mode", mode}, {"payload", payload}};
+}
+
+static bool decodedConstraintV3(const QJsonValue& value,
+                                sketch::Constraint* result,
+                                QString* error, bool* unsupported) {
+  if (!result || !value.isObject())
+    return invalid(error, QString::fromUtf8("constraint v3 должен быть объектом."));
+  const auto object = value.toObject();
+  if (!exactObjectFields(object, {"id", "mode", "payload"},
+                         QStringLiteral("constraint v3"), error))
+    return false;
+  qint64 id = 0;
+  if (!integerNumber(object.value("id"), QStringLiteral("constraint.id"), 1,
+                     ProjectFile::kMaximumPersistedId, &id, error) ||
+      !object.value("mode").isString() ||
+      !object.value("payload").isObject())
+    return invalid(error, QString::fromUtf8("оболочка constraint v3 повреждена."));
+  const auto modeText = object.value("mode").toString();
+  sketch::ConstraintMode mode{};
+  if (modeText == QStringLiteral("driving"))
+    mode = sketch::ConstraintMode::Driving;
+  else if (modeText == QStringLiteral("reference"))
+    mode = sketch::ConstraintMode::Reference;
+  else if (modeText == QStringLiteral("disabled"))
+    mode = sketch::ConstraintMode::Disabled;
+  else
+    return invalid(error, QString::fromUtf8("неизвестный constraint mode v3."));
+  const auto payload = object.value("payload").toObject();
+  sketch::ConstraintType type{};
+  if (!decodeConstraintType(payload, ConstraintTypeEncoding::StableNameV1,
+                            &type, unsupported, error))
+    return false;
+
+  sketch::Constraint constraint;
+  constraint.id = static_cast<sketch::ConstraintId>(id);
+  constraint.type = type;
+  constraint.mode = mode;
+  const auto geometryId = [&](const char* key,
+                              sketch::GeometryId* target) {
+    qint64 decoded = 0;
+    if (!integerNumber(payload.value(QLatin1String(key)),
+                       QString::fromLatin1(key), 1,
+                       ProjectFile::kMaximumPersistedId, &decoded, error))
+      return false;
+    *target = static_cast<sketch::GeometryId>(decoded);
+    return true;
+  };
+  sketch::GeometryId firstGeometry = sketch::kInvalidGeometryId;
+  sketch::GeometryId secondGeometry = sketch::kInvalidGeometryId;
+  sketch::PointReference firstPoint;
+  sketch::PointReference secondPoint;
+  switch (type) {
+    case sketch::ConstraintType::Horizontal:
+    case sketch::ConstraintType::Vertical:
+    case sketch::ConstraintType::Length:
+    case sketch::ConstraintType::Radius:
+    case sketch::ConstraintType::Diameter:
+    case sketch::ConstraintType::Lock:
+      if (!geometryId("geometryId", &firstGeometry)) return false;
+      constraint.firstGeometry = firstGeometry;
+      break;
+    case sketch::ConstraintType::Parallel:
+    case sketch::ConstraintType::Perpendicular:
+    case sketch::ConstraintType::Equal:
+    case sketch::ConstraintType::Angle:
+    case sketch::ConstraintType::Tangent:
+    case sketch::ConstraintType::LineDistance:
+      if (!geometryId("firstGeometryId", &firstGeometry) ||
+          !geometryId("secondGeometryId", &secondGeometry))
+        return false;
+      constraint.firstGeometry = firstGeometry;
+      constraint.secondGeometry = secondGeometry;
+      break;
+    case sketch::ConstraintType::Coincident:
+    case sketch::ConstraintType::Distance:
+    case sketch::ConstraintType::DistanceX:
+    case sketch::ConstraintType::DistanceY:
+      if (!decodedPointReferenceV3(payload.value("firstPoint"), &firstPoint,
+                                   error) ||
+          !decodedPointReferenceV3(payload.value("secondPoint"), &secondPoint,
+                                   error))
+        return false;
+      constraint.firstPoint = firstPoint;
+      constraint.secondPoint = secondPoint;
+      break;
+    case sketch::ConstraintType::PointOnLine:
+    case sketch::ConstraintType::PointOnCircle:
+    case sketch::ConstraintType::PointOnArc:
+    case sketch::ConstraintType::Midpoint:
+      if (!geometryId("geometryId", &firstGeometry) ||
+          !decodedPointReferenceV3(payload.value("point"), &secondPoint,
+                                   error))
+        return false;
+      constraint.firstGeometry = firstGeometry;
+      constraint.secondPoint = secondPoint;
+      break;
+    case sketch::ConstraintType::PointOnXAxis:
+    case sketch::ConstraintType::PointOnYAxis:
+      if (!decodedPointReferenceV3(payload.value("point"), &secondPoint,
+                                   error))
+        return false;
+      constraint.secondPoint = secondPoint;
+      break;
+  }
+  if (dimensionalConstraintType(type)) {
+    if (mode == sketch::ConstraintMode::Reference) {
+      if (payload.contains("value"))
+        return invalid(error,
+                       QString::fromUtf8("reference constraint содержит value."));
+    } else {
+      if (!finiteNumber(payload.value("value"), QStringLiteral("value"),
+                        std::numeric_limits<double>::min(),
+                        kMaximumModelLengthMm, error))
+        return false;
+      constraint.value = payload.value("value").toDouble();
+    }
+  } else if (payload.contains("value")) {
+    return invalid(error,
+                   QString::fromUtf8("нерaзмерный constraint содержит value."));
+  }
+  const bool carriesValue = dimensionalConstraintType(type) &&
+                            mode != sketch::ConstraintMode::Reference;
+  const auto exactPayload = [&](std::initializer_list<const char*> fields) {
+    const qsizetype expected = static_cast<qsizetype>(fields.size()) + 2 +
+                               (carriesValue ? 1 : 0);
+    if (payload.size() != expected || !payload.contains("type") ||
+        !payload.contains("typeKey") ||
+        (carriesValue && !payload.contains("value")))
+      return invalid(error,
+                     QString::fromUtf8("payload constraint v3 содержит лишние или отсутствующие поля."));
+    for (const char* field : fields)
+      if (!payload.contains(QLatin1String(field)))
+        return invalid(error,
+                       QString::fromUtf8("payload constraint v3 не содержит поле %1.")
+                           .arg(QString::fromLatin1(field)));
+    return true;
+  };
+  bool exact = false;
+  switch (type) {
+    case sketch::ConstraintType::Horizontal:
+    case sketch::ConstraintType::Vertical:
+    case sketch::ConstraintType::Length:
+    case sketch::ConstraintType::Radius:
+    case sketch::ConstraintType::Diameter:
+    case sketch::ConstraintType::Lock:
+      exact = exactPayload({"geometryId"});
+      break;
+    case sketch::ConstraintType::Parallel:
+    case sketch::ConstraintType::Perpendicular:
+    case sketch::ConstraintType::Equal:
+    case sketch::ConstraintType::Angle:
+    case sketch::ConstraintType::Tangent:
+    case sketch::ConstraintType::LineDistance:
+      exact = exactPayload({"firstGeometryId", "secondGeometryId"});
+      break;
+    case sketch::ConstraintType::Coincident:
+    case sketch::ConstraintType::Distance:
+    case sketch::ConstraintType::DistanceX:
+    case sketch::ConstraintType::DistanceY:
+      exact = exactPayload({"firstPoint", "secondPoint"});
+      break;
+    case sketch::ConstraintType::PointOnLine:
+    case sketch::ConstraintType::PointOnCircle:
+    case sketch::ConstraintType::PointOnArc:
+    case sketch::ConstraintType::Midpoint:
+      exact = exactPayload({"geometryId", "point"});
+      break;
+    case sketch::ConstraintType::PointOnXAxis:
+    case sketch::ConstraintType::PointOnYAxis:
+      exact = exactPayload({"point"});
+      break;
+  }
+  if (!exact) return false;
+  *result = std::move(constraint);
+  return true;
+}
+
+static bool upgradeSketchSchemaToV3(QJsonObject* root,
+                                    const ProjectData& data,
+                                    QString* error) {
+  if (!root) return false;
+  auto sketches = root->value("sketches").toArray();
+  if (sketches.size() != static_cast<qsizetype>(data.sketches.size()))
+    return invalid(error, QString::fromUtf8("число sketches v3 не совпадает."));
+  for (qsizetype sketchPosition = 0; sketchPosition < sketches.size();
+       ++sketchPosition) {
+    auto object = sketches[sketchPosition].toObject();
+    const auto& geometry =
+        data.sketches[static_cast<std::size_t>(sketchPosition)].geometry;
+    const auto addIds = [&](const char* key, auto idAt) {
+      auto values = object.value(QLatin1String(key)).toArray();
+      for (qsizetype index = 0; index < values.size(); ++index) {
+        auto item = values[index].toObject();
+        item["id"] = static_cast<qint64>(
+            idAt(static_cast<std::size_t>(index)));
+        values[index] = item;
+      }
+      object[QLatin1String(key)] = values;
+    };
+    addIds("lines", [&](std::size_t index) { return geometry.lineId(index); });
+    addIds("circles",
+           [&](std::size_t index) { return geometry.circleId(index); });
+    addIds("arcs", [&](std::size_t index) { return geometry.arcId(index); });
+    addIds("beziers",
+           [&](std::size_t index) { return geometry.bezierId(index); });
+
+    QJsonArray constraints;
+    for (const auto& constraint : geometry.constraints())
+      constraints.append(encodedConstraintV3(constraint));
+    QJsonArray dimensions;
+    for (const auto& dimension : geometry.dimensions()) {
+      if (dimension.constraintId == sketch::kInvalidConstraintId ||
+          !geometry.constraintIndex(dimension.constraintId))
+        return invalid(error,
+                       QString::fromUtf8("annotation v3 не связан с constraint."));
+      dimensions.append(QJsonObject{
+          {"id", static_cast<qint64>(dimension.id)},
+          {"constraintId", static_cast<qint64>(dimension.constraintId)},
+          {"offset", dimension.offsetMm}, {"angle", dimension.angleRad}});
+    }
+    object["constraints"] = constraints;
+    object["dimensions"] = dimensions;
+    object["idAllocators"] = QJsonObject{
+        {"nextElementId", static_cast<qint64>(geometry.nextElementId())},
+        {"nextGeometryId", static_cast<qint64>(geometry.nextGeometryId())},
+        {"nextConstraintId", static_cast<qint64>(geometry.nextConstraintId())},
+        {"nextDimensionId", static_cast<qint64>(geometry.nextDimensionId())}};
+    object["schema"] = QStringLiteral("typed-sketch-v1");
+    sketches[sketchPosition] = object;
+  }
+  (*root)["sketches"] = sketches;
+  return true;
+}
+
+static double measuredConstraintValue(const sketch::Sketch& geometry,
+                                      const sketch::Constraint& constraint) {
+  const auto type = static_cast<sketch::ConstraintType>(constraint.type);
+  if (constraint.mode == sketch::ConstraintMode::Driving)
+    return static_cast<double>(constraint.value);
+  if (type == sketch::ConstraintType::Length) {
+    const auto index = geometry.lineIndex(constraint.firstGeometry);
+    if (index) {
+      const auto& line = geometry.lines()[*index];
+      return std::hypot(line.end.xMm - line.start.xMm,
+                        line.end.yMm - line.start.yMm);
+    }
+  } else if (type == sketch::ConstraintType::Diameter ||
+             type == sketch::ConstraintType::Radius) {
+    const auto index = geometry.circleIndex(constraint.firstGeometry);
+    if (index)
+      return geometry.circles()[*index].radiusMm *
+             (type == sketch::ConstraintType::Diameter ? 2.0 : 1.0);
+  } else if (type == sketch::ConstraintType::Distance ||
+             type == sketch::ConstraintType::DistanceX ||
+             type == sketch::ConstraintType::DistanceY) {
+    const auto first = geometry.referencedPoint(constraint.firstPoint);
+    const auto second = geometry.referencedPoint(constraint.secondPoint);
+    if (first && second) {
+      if (type == sketch::ConstraintType::DistanceX)
+        return std::abs(second->xMm - first->xMm);
+      if (type == sketch::ConstraintType::DistanceY)
+        return std::abs(second->yMm - first->yMm);
+      return std::hypot(second->xMm - first->xMm,
+                        second->yMm - first->yMm);
+    }
+  } else if (type == sketch::ConstraintType::Angle) {
+    const auto first = geometry.lineIndex(constraint.firstGeometry);
+    const auto second = geometry.lineIndex(constraint.secondGeometry);
+    if (first && second) {
+      const auto& a = geometry.lines()[*first];
+      const auto& b = geometry.lines()[*second];
+      const double ax = a.end.xMm - a.start.xMm;
+      const double ay = a.end.yMm - a.start.yMm;
+      const double bx = b.end.xMm - b.start.xMm;
+      const double by = b.end.yMm - b.start.yMm;
+      const double lengths = std::hypot(ax, ay) * std::hypot(bx, by);
+      if (lengths > 1e-12)
+        return std::acos(std::clamp((ax * bx + ay * by) / lengths,
+                                    -1.0, 1.0)) * 180.0 / std::numbers::pi;
+    }
+  } else if (type == sketch::ConstraintType::LineDistance) {
+    const auto first = geometry.lineIndex(constraint.firstGeometry);
+    const auto second = geometry.lineIndex(constraint.secondGeometry);
+    if (first && second) {
+      const auto& a = geometry.lines()[*first];
+      const auto& b = geometry.lines()[*second];
+      const double dx = a.end.xMm - a.start.xMm;
+      const double dy = a.end.yMm - a.start.yMm;
+      const double length = std::hypot(dx, dy);
+      if (length > 1e-12)
+        return std::abs(dx * (b.start.yMm - a.start.yMm) -
+                        dy * (b.start.xMm - a.start.xMm)) / length;
+    }
+  }
+  return 0.0;
+}
+
+static std::optional<sketch::Dimension> dimensionFromConstraintV3(
+    const sketch::Sketch& geometry, const sketch::Constraint& constraint,
+    sketch::DimensionId id, double offset, double angle) {
+  sketch::Dimension dimension;
+  dimension.id = id;
+  dimension.constraintId = constraint.id;
+  dimension.offsetMm = offset;
+  dimension.angleRad = angle;
+  dimension.valueMm = measuredConstraintValue(geometry, constraint);
+  switch (static_cast<sketch::ConstraintType>(constraint.type)) {
+    case sketch::ConstraintType::Length:
+      dimension.kind = sketch::DimensionKind::LineLength;
+      dimension.geometryId = constraint.firstGeometry;
+      break;
+    case sketch::ConstraintType::Diameter:
+      dimension.kind = sketch::DimensionKind::CircleDiameter;
+      dimension.geometryId = constraint.firstGeometry;
+      break;
+    case sketch::ConstraintType::Distance:
+      dimension.kind = sketch::DimensionKind::PointDistance;
+      dimension.firstPoint = constraint.firstPoint;
+      dimension.secondPoint = constraint.secondPoint;
+      break;
+    case sketch::ConstraintType::DistanceX:
+      dimension.kind = sketch::DimensionKind::PointDistanceX;
+      dimension.firstPoint = constraint.firstPoint;
+      dimension.secondPoint = constraint.secondPoint;
+      break;
+    case sketch::ConstraintType::DistanceY:
+      dimension.kind = sketch::DimensionKind::PointDistanceY;
+      dimension.firstPoint = constraint.firstPoint;
+      dimension.secondPoint = constraint.secondPoint;
+      break;
+    case sketch::ConstraintType::Angle:
+      dimension.kind = sketch::DimensionKind::LineAngle;
+      dimension.geometryId = constraint.firstGeometry;
+      dimension.secondPoint.lineId = constraint.secondGeometry;
+      break;
+    case sketch::ConstraintType::LineDistance:
+      dimension.kind = sketch::DimensionKind::LineDistance;
+      dimension.geometryId = constraint.firstGeometry;
+      dimension.secondPoint.lineId = constraint.secondGeometry;
+      break;
+    default:
+      return std::nullopt;
+  }
+  return dimension;
+}
+
+static bool loadV3Root(const QJsonObject& root, ProjectData* data,
+                       QString* error, bool* unsupported) {
+  if (!data) return false;
+  QJsonArray sketchObjects;
+  if (!arrayField(root, "sketches", &sketchObjects, error)) return false;
+  QJsonObject geometryOnly = root;
+  auto stripped = sketchObjects;
+  for (qsizetype index = 0; index < stripped.size(); ++index) {
+    if (!stripped[index].isObject())
+      return invalid(error, QString::fromUtf8("sketch v3 должен быть объектом."));
+    auto object = stripped[index].toObject();
+    if (object.value("schema").toString() !=
+        QStringLiteral("typed-sketch-v1")) {
+      if (unsupported) *unsupported = true;
+      return invalid(error, QString::fromUtf8("неизвестная sketch schema v3."));
+    }
+    QJsonArray required;
+    for (const char* key : {"lines", "circles", "arcs", "beziers",
+                            "constraints", "dimensions",
+                            "centerNodeElementIds"}) {
+      if (!arrayField(object, key, &required, error)) return false;
+    }
+    QJsonObject allocators;
+    if (!objectField(object, "idAllocators", &allocators, error) ||
+        !exactObjectFields(allocators,
+                           {"nextElementId", "nextGeometryId",
+                            "nextConstraintId", "nextDimensionId"},
+                           QStringLiteral("idAllocators v3"), error))
+      return false;
+    object["constraints"] = QJsonArray{};
+    object["dimensions"] = QJsonArray{};
+    stripped[index] = object;
+  }
+  geometryOnly["sketches"] = stripped;
+  ProjectData loaded;
+  if (!loadLegacyRoot(geometryOnly, ConstraintTypeEncoding::StableNameV1,
+                      &loaded, error))
+    return false;
+  if (loaded.sketches.size() != static_cast<std::size_t>(sketchObjects.size()))
+    return invalid(error, QString::fromUtf8("число sketch v3 не совпадает."));
+
+  for (qsizetype position = 0; position < sketchObjects.size(); ++position) {
+    const auto object = sketchObjects[position].toObject();
+    auto& geometry = loaded.sketches[static_cast<std::size_t>(position)].geometry;
+    const auto ids = [&](const char* key, std::vector<sketch::GeometryId>* out) {
+      const auto values = object.value(QLatin1String(key)).toArray();
+      out->clear();
+      out->reserve(static_cast<std::size_t>(values.size()));
+      for (const auto& value : values) {
+        qint64 id = 0;
+        if (!value.isObject() ||
+            !integerNumber(value.toObject().value("id"),
+                           QStringLiteral("geometry.id"), 1,
+                           ProjectFile::kMaximumPersistedId, &id, error))
+          return false;
+        out->push_back(static_cast<sketch::GeometryId>(id));
+      }
+      return true;
+    };
+    std::vector<sketch::GeometryId> lineIds, circleIds, arcIds, bezierIds;
+    if (!ids("lines", &lineIds) || !ids("circles", &circleIds) ||
+        !ids("arcs", &arcIds) || !ids("beziers", &bezierIds) ||
+        !geometry.restoreGeometryIds(std::move(lineIds), std::move(circleIds),
+                                     std::move(arcIds), std::move(bezierIds)))
+      return invalid(error,
+                     QString::fromUtf8("geometry IDs v3 повреждены или повторяются."));
+
+    std::vector<sketch::Constraint> constraints;
+    const auto constraintValues = object.value("constraints").toArray();
+    constraints.reserve(static_cast<std::size_t>(constraintValues.size()));
+    for (const auto& value : constraintValues) {
+      sketch::Constraint constraint;
+      if (!decodedConstraintV3(value, &constraint, error, unsupported))
+        return false;
+      constraints.push_back(std::move(constraint));
+    }
+    if (!geometry.restoreConstraints(std::move(constraints)))
+      return invalid(error,
+                     QString::fromUtf8("constraint payload v3 невалиден."));
+
+    std::unordered_set<sketch::ConstraintId> annotated;
+    std::unordered_set<sketch::DimensionId> dimensionIds;
+    for (const auto& value : object.value("dimensions").toArray()) {
+      if (!value.isObject())
+        return invalid(error, QString::fromUtf8("annotation v3 повреждён."));
+      const auto annotation = value.toObject();
+      if (!exactObjectFields(annotation,
+                             {"id", "constraintId", "offset", "angle"},
+                             QStringLiteral("annotation v3"), error))
+        return false;
+      qint64 id = 0;
+      qint64 constraintId = 0;
+      if (!integerNumber(annotation.value("id"), QStringLiteral("dimension.id"),
+                         1, ProjectFile::kMaximumPersistedId, &id, error) ||
+          !integerNumber(annotation.value("constraintId"),
+                         QStringLiteral("dimension.constraintId"), 1,
+                         ProjectFile::kMaximumPersistedId, &constraintId,
+                         error) ||
+          !finiteNumber(annotation.value("offset"), QStringLiteral("offset"),
+                        -kMaximumModelLengthMm, kMaximumModelLengthMm, error) ||
+          !finiteNumber(annotation.value("angle"), QStringLiteral("angle"),
+                        -kMaximumCoordinateMagnitude,
+                        kMaximumCoordinateMagnitude, error))
+        return false;
+      const auto linkedId = static_cast<sketch::ConstraintId>(constraintId);
+      const auto dimensionId = static_cast<sketch::DimensionId>(id);
+      if (!dimensionIds.insert(dimensionId).second)
+        return invalid(error,
+                       QString::fromUtf8("dimension.id v3 повторяется."));
+      if (!annotated.insert(linkedId).second)
+        return invalid(error,
+                       QString::fromUtf8("constraint v3 имеет две annotations."));
+      const auto linkedIndex = geometry.constraintIndex(linkedId);
+      if (!linkedIndex)
+        return invalid(error,
+                       QString::fromUtf8("annotation v3 содержит stale constraintId."));
+      const auto dimension = dimensionFromConstraintV3(
+          geometry, geometry.constraints()[*linkedIndex],
+          dimensionId,
+          annotation.value("offset").toDouble(),
+          annotation.value("angle").toDouble());
+      if (!dimension)
+        return invalid(error,
+                       QString::fromUtf8("annotation связан с неразмерным constraint."));
+      if (!geometry.storeDimension(*dimension))
+        return invalid(error,
+                       QString::fromUtf8("annotation v3 не удалось восстановить."));
+    }
+    const auto allocators = object.value("idAllocators").toObject();
+    qint64 nextElementId = 0;
+    qint64 nextGeometryId = 0;
+    qint64 nextConstraintId = 0;
+    qint64 nextDimensionId = 0;
+    if (!integerNumber(allocators.value("nextElementId"),
+                       QStringLiteral("nextElementId"), 1,
+                       ProjectFile::kMaximumPersistedId, &nextElementId,
+                       error) ||
+        !integerNumber(allocators.value("nextGeometryId"),
+                       QStringLiteral("nextGeometryId"), 1,
+                       ProjectFile::kMaximumPersistedId, &nextGeometryId,
+                       error) ||
+        !integerNumber(allocators.value("nextConstraintId"),
+                       QStringLiteral("nextConstraintId"), 1,
+                       ProjectFile::kMaximumPersistedId, &nextConstraintId,
+                       error) ||
+        !integerNumber(allocators.value("nextDimensionId"),
+                       QStringLiteral("nextDimensionId"), 1,
+                       ProjectFile::kMaximumPersistedId, &nextDimensionId,
+                       error) ||
+        !geometry.restoreIdAllocators(
+            static_cast<std::size_t>(nextElementId),
+            static_cast<sketch::GeometryId>(nextGeometryId),
+            static_cast<sketch::ConstraintId>(nextConstraintId),
+            static_cast<sketch::DimensionId>(nextDimensionId)))
+      return invalid(error,
+                     QString::fromUtf8("allocator cursors v3 повреждены или заняты."));
+    if (auto validation = sketch::validateSketchSchema(geometry); !validation) {
+      const auto& schemaError = *validation.error;
+      const auto constraintId = schemaError.constraintIds.empty()
+          ? sketch::kInvalidConstraintId : schemaError.constraintIds.front();
+      const auto geometryId = schemaError.geometryIds.empty()
+          ? sketch::kInvalidGeometryId : schemaError.geometryIds.front();
+      return invalid(
+          error,
+          QString::fromUtf8(
+              "model-level schema validation v3 failed: code=%1, constraint=%2, geometry=%3.")
+              .arg(static_cast<int>(schemaError.code))
+              .arg(static_cast<qulonglong>(constraintId))
+              .arg(static_cast<qulonglong>(geometryId)));
+    }
+  }
+  *data = std::move(loaded);
+  return true;
+}
+
 static bool loadLegacyRoot(const QJsonObject& root,
                            ConstraintTypeEncoding constraintEncoding,
                            ProjectData* data, QString* error) {
@@ -3648,6 +4590,9 @@ static bool loadLegacyRoot(const QJsonObject& root,
         saved.geometry.markElementCenterNode(elementId);
     }
     const auto serializedDimensions = savedObject.value("dimensions").toArray();
+    std::vector<sketch::Dimension> legacyDimensions;
+    legacyDimensions.reserve(
+        static_cast<std::size_t>(serializedDimensions.size()));
     sketch::DimensionId nextMigratedDimensionId = 1;
     for (const auto dimensionValue : serializedDimensions) {
       const auto persistedId = dimensionValue.toObject().value("id").toInteger(0);
@@ -3675,12 +4620,22 @@ static bool loadLegacyRoot(const QJsonObject& root,
         const auto index =
             static_cast<std::size_t>(object.value("geometryIndex").toInteger());
         dimension.geometryId = saved.geometry.lineId(index);
-        if (dimension.geometryId == sketch::kInvalidGeometryId) continue;
+        if (dimension.geometryId == sketch::kInvalidGeometryId) {
+          setError(error,
+                   QString::fromUtf8(
+                       "Размер длины ссылается на неизвестную линию."));
+          return false;
+        }
       } else if (kind == sketch::DimensionKind::CircleDiameter) {
         const auto index =
             static_cast<std::size_t>(object.value("geometryIndex").toInteger());
         dimension.geometryId = saved.geometry.circleId(index);
-        if (dimension.geometryId == sketch::kInvalidGeometryId) continue;
+        if (dimension.geometryId == sketch::kInvalidGeometryId) {
+          setError(error,
+                   QString::fromUtf8(
+                       "Размер диаметра ссылается на неизвестную окружность."));
+          return false;
+        }
       } else if (kind == sketch::DimensionKind::LineAngle ||
                  kind == sketch::DimensionKind::LineDistance) {
         const auto firstIndex =
@@ -3690,16 +4645,20 @@ static bool loadLegacyRoot(const QJsonObject& root,
         dimension.geometryId = saved.geometry.lineId(firstIndex);
         dimension.secondPoint.lineId = saved.geometry.lineId(secondIndex);
         if (dimension.geometryId == sketch::kInvalidGeometryId ||
-            dimension.secondPoint.lineId == sketch::kInvalidGeometryId)
-          continue;
+            dimension.secondPoint.lineId == sketch::kInvalidGeometryId) {
+          setError(error,
+                   QString::fromUtf8(
+                       "Угловой или линейный размер содержит stale line reference."));
+          return false;
+        }
       } else if (kind == sketch::DimensionKind::PointDistance ||
                  kind == sketch::DimensionKind::PointDistanceX ||
                  kind == sketch::DimensionKind::PointDistanceY) {
         const auto restorePoint = [&saved, &object](
                                       const QString& prefix,
                                       sketch::PointReference* point) {
-          point->start = object.value(prefix + QStringLiteral("Start"))
-                             .toBool(true);
+          const bool start =
+              object.value(prefix + QStringLiteral("Start")).toBool(true);
           if (object.value(prefix + QStringLiteral("Origin")).toBool(false)) {
             point->origin = true;
             return true;
@@ -3708,6 +4667,7 @@ static bool loadLegacyRoot(const QJsonObject& root,
               object.value(prefix + QStringLiteral("Line")).toInteger(-1);
           if (line >= 0) {
             point->lineId = saved.geometry.lineId(static_cast<std::size_t>(line));
+            point->start = start;
             return point->lineId != sketch::kInvalidGeometryId;
           }
           const qint64 circle =
@@ -3721,6 +4681,7 @@ static bool loadLegacyRoot(const QJsonObject& root,
               object.value(prefix + QStringLiteral("Arc")).toInteger(-1);
           if (arc >= 0) {
             point->arcId = saved.geometry.arcId(static_cast<std::size_t>(arc));
+            point->start = start;
             return point->arcId != sketch::kInvalidGeometryId;
           }
           const qint64 bezier =
@@ -3751,7 +4712,7 @@ static bool loadLegacyRoot(const QJsonObject& root,
         }
       }
 
-      saved.geometry.storeDimension(dimension);
+      legacyDimensions.push_back(std::move(dimension));
     }
 
     std::vector<sketch::Constraint> restoredConstraints;
@@ -3762,9 +4723,11 @@ static bool loadLegacyRoot(const QJsonObject& root,
       sketch::Constraint constraint;
       constraint.id =
           static_cast<sketch::ConstraintId>(object.value("id").toInteger());
-      if (!decodeConstraintType(object, constraintEncoding, &constraint.type,
+      sketch::ConstraintType decodedType{};
+      if (!decodeConstraintType(object, constraintEncoding, &decodedType,
                                 nullptr, error))
         return false;
+      constraint.type = decodedType;
       constraint.value = object.value("value").toDouble();
 
       const auto resolveGeometry =
@@ -3890,6 +4853,9 @@ static bool loadLegacyRoot(const QJsonObject& root,
                    .arg(loaded.sketches.size() + 1));
       return false;
     }
+    if (!migrateLegacyDimensionLinks(&saved.geometry,
+                                     std::move(legacyDimensions), error))
+      return false;
     if (!validateMaterializedSketchGeometry(saved.geometry, error))
       return false;
 
@@ -4059,7 +5025,7 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       result.error = validationError;
       return result;
     }
-    if (version != 1 && version != 2) {
+    if (version != 1 && version != 2 && version != 3) {
       result.kind = ProjectLoadKind::Unsupported;
       result.error = QString::fromUtf8("Неподдерживаемая версия проекта: %1.")
                          .arg(version);
@@ -4071,6 +5037,36 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
     if (version == 1 && root.contains("model")) {
       result.error = QString::fromUtf8(
           "Проект v1 не может содержать параметрическую модель v2.");
+      return result;
+    }
+    if (version == 3) {
+      ProjectData legacy;
+      bool unsupportedSchema = false;
+      if (!loadV3Root(root, &legacy, &validationError,
+                      &unsupportedSchema)) {
+        if (unsupportedSchema) result.kind = ProjectLoadKind::Unsupported;
+        result.error = validationError;
+        return result;
+      }
+      bool unsupportedModel = false;
+      if (!validateV2Root(root, legacy, &validationError,
+                          &unsupportedModel)) {
+        if (unsupportedModel) result.kind = ProjectLoadKind::Unsupported;
+        result.error = validationError;
+        return result;
+      }
+      Document document;
+      {
+        ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
+        if (!loadDocumentRoot(root, legacy, &document, &validationError)) {
+          result.error = validationError;
+          return result;
+        }
+      }
+      result.kind = ProjectLoadKind::ValidV2;
+      result.legacy = std::move(legacy);
+      result.document.emplace(std::move(document));
+      result.error.clear();
       return result;
     }
     LegacyDecodePlan decodePlan;

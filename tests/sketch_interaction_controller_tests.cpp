@@ -146,6 +146,19 @@ void cancelResetsDragDimensionConstraintAndCamera() {
   CHECK(!controller.hasActiveGesture());
 }
 
+void dragReferenceAtOriginIsExplicitAndStable() {
+  SketchInteractionController controller;
+  controller.beginPointDrag(SketchLineEndpointDrag{42, true}, {0.0, 0.0});
+  CHECK(controller.snapshot().drag.referenceSet);
+  CHECK(controller.snapshot().drag.reference.xMm == 0.0);
+  CHECK(controller.snapshot().drag.reference.yMm == 0.0);
+  controller.updatePointDrag({3.0, 4.0});
+  CHECK(controller.snapshot().drag.reference.xMm == 0.0);
+  CHECK(controller.snapshot().drag.reference.yMm == 0.0);
+  CHECK(controller.snapshot().drag.current.xMm == 3.0);
+  CHECK(controller.snapshot().drag.current.yMm == 4.0);
+}
+
 void projectResetAndDestructionLeaveNoStaleState() {
   {
     SketchInteractionController controller;
@@ -172,6 +185,7 @@ void projectResetAndDestructionLeaveNoStaleState() {
 int main() {
   everyToolSwitchCancelsPartialGesture();
   cancelResetsDragDimensionConstraintAndCamera();
+  dragReferenceAtOriginIsExplicitAndStable();
   projectResetAndDestructionLeaveNoStaleState();
   std::cout << "Sketch interaction controller tests passed\n";
   return EXIT_SUCCESS;

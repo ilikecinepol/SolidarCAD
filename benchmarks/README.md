@@ -62,29 +62,30 @@ flush time, and maximum synchronous phase.
 
 `stage6_sketch_solver_benchmark` is also opt-in. Its runner executes the exact
 100/500/1000 entity matrix for localized drag, one fully connected component,
-an unchanged solve and full DOF/conflict diagnostics:
+an unchanged solve, full DOF/conflict diagnostics, all line/circle/arc/Bezier
+tangency combinations and Bezier-heavy diagnostics:
 
 ```powershell
 cmake --build --preset ci --target stage6_sketch_solver_benchmark
 ./benchmarks/run_stage6_sketch_solver_benchmark.ps1 `
   -Executable ./build/ci/benchmarks/stage6_sketch_solver_benchmark.exe `
-  -Implementation historical `
-  -OutputPath ./build/ci/stage6-sketch-solver-baseline.csv
-./benchmarks/run_stage6_sketch_solver_benchmark.ps1 `
-  -Executable ./build/ci/benchmarks/stage6_sketch_solver_benchmark.exe `
-  -Implementation optimized `
-  -OutputPath ./build/ci/stage6-sketch-solver-optimized.csv
+  -OutputPath ./build/ci/stage6-sketch-solver-production.csv
 ```
 
-Latency and retained bytes are report-only. The runner gates deterministic
-work counters: a localized drag visits exactly one component/geometry/
+The runner enforces the R4 interactive boundaries for the 100-geometry
+reference fixtures (p95 <= 16.7 ms and p99 <= 50 ms), finite latency, accepted
+solver status, normalized residual, non-zero semantic hash and deterministic
+work counters. A localized drag visits exactly one component/geometry/
 constraint, a connected drag visits the requested entity count, unchanged
-solve performs zero passes, and diagnostics runs exactly once. The historical
-mode freezes the former full-Sketch snapshot/full-solve orchestration in the
-same executable so both CSVs use identical fixtures and schema.
+solve performs zero iterations, and every diagnostics mode invokes full
+`analyzeConstraintSystem()` exactly once. Larger workloads remain report-only
+and publish their dense connected-component bottleneck. There is no runtime
+Solver-v1 branch or fallback. The final pre-cutover V1/V2 comparison is
+versioned in `docs/reports/data/2026-10-14-r4-shadow-comparison.csv`.
 `allocation_count`, `allocated_bytes`, and `peak_owned_bytes` come from the
 benchmark executable's scoped complete `operator new/new[]` override (regular,
 sized, aligned, and nothrow forms). They therefore count actual allocation
 events, requested bytes, and peak simultaneously live bytes during the measured
-operation. The override is not linked into production; process RSS remains
+operation. The CSV also records fixture component, parameter and equation
+counts. The override is not linked into production; process RSS remains
 report-only and is intentionally not used as a deterministic gate.

@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
   savedFile.close();
   CHECK(savedJson.isObject());
   QJsonObject root = savedJson.object();
-  CHECK(root.value(QStringLiteral("version")).toInt() == 2);
+  CHECK(root.value(QStringLiteral("version")).toInt() == 3);
   CHECK(root.value(QStringLiteral("model")).isObject());
   QJsonObject model = root.value(QStringLiteral("model")).toObject();
   CHECK(model.value(QStringLiteral("bodies")).isArray());

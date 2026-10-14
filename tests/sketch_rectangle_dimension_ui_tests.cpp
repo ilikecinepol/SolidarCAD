@@ -31,6 +31,19 @@ void require(bool condition, const char* message) {
   }
 }
 
+bool storeLineLengthDimension(solidar::sketch::Sketch& geometry,
+                              solidar::sketch::Dimension dimension) {
+  if (dimension.geometryId == solidar::sketch::kInvalidGeometryId)
+    return false;
+  dimension.constraintId = geometry.addConstraint(
+      solidar::sketch::Constraint{
+          solidar::sketch::LengthConstraint{dimension.geometryId,
+                                            std::nullopt},
+          solidar::sketch::ConstraintMode::Reference});
+  return dimension.constraintId != solidar::sketch::kInvalidConstraintId &&
+         geometry.storeDimension(dimension);
+}
+
 bool editDimension(solidar::SketchCanvas& canvas, double currentValue,
                    double newValue) {
   auto* editor = canvas.findChild<QDoubleSpinBox*>("primaryDimension");
@@ -1102,7 +1115,8 @@ int main(int argc, char** argv) {
     displayed.kind = solidar::sketch::DimensionKind::LineLength;
     displayed.geometryId = lineId;
     displayed.valueMm = 20.0;
-    geometry.storeDimension(displayed);
+    displayed.constraintId = lengthId;
+    CHECK(geometry.storeDimension(displayed));
 
     solidar::SketchCanvas chronologicalCanvas;
     chronologicalCanvas.resize(900, 650);
@@ -1158,7 +1172,8 @@ int main(int argc, char** argv) {
     displayed.kind = solidar::sketch::DimensionKind::LineLength;
     displayed.geometryId = sizedId;
     displayed.valueMm = 20.0;
-    geometry.storeDimension(displayed);
+    displayed.constraintId = lengthId;
+    CHECK(geometry.storeDimension(displayed));
 
     const auto originalLines = geometry.lines();
     const auto originalConstraints = geometry.constraints();
@@ -1434,7 +1449,7 @@ int main(int argc, char** argv) {
         dimension.valueMm = 10.0;
         dimension.offsetMm = 2.0 + index;
         dimension.angleRad = 0.1 * index;
-        dimensionSketch.storeDimension(dimension);
+        CHECK(storeLineLengthDimension(dimensionSketch, dimension));
       }
       solidar::SketchCanvas deleteCanvas;
       deleteCanvas.resize(900, 650);
@@ -1504,7 +1519,7 @@ int main(int argc, char** argv) {
       dimension.valueMm = 10.0;
       dimension.offsetMm = 2.0 + index;
       dimension.angleRad = 0.1 * index;
-      duplicateSketch.storeDimension(dimension);
+      CHECK(storeLineLengthDimension(duplicateSketch, dimension));
     }
     const auto firstId = duplicateSketch.dimensions()[0].id;
     const auto secondId = duplicateSketch.dimensions()[1].id;
@@ -1530,7 +1545,7 @@ int main(int argc, char** argv) {
     nextDimension.kind = solidar::sketch::DimensionKind::LineLength;
     nextDimension.geometryId = mutableRestored->geometry.lineId(0);
     nextDimension.valueMm = 10.0;
-    mutableRestored->geometry.storeDimension(nextDimension);
+    CHECK(storeLineLengthDimension(mutableRestored->geometry, nextDimension));
     CHECK(mutableRestored->geometry.dimensions().size() == 3);
     const auto nextId = mutableRestored->geometry.dimensions().back().id;
     CHECK(nextId != solidar::sketch::kInvalidDimensionId);

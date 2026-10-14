@@ -1,1130 +1,145 @@
 #include "sketch/SketchConstraintDiagnostics.h"
 
+#include "sketch/EquationKernel.h"
+#include "sketch/NonlinearSketchSolver.h"
+
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <optional>
 #include <unordered_map>
-#include <unordered_set>
-#include <utility>
 
 namespace solidar::sketch {
 namespace {
 
-constexpr double kLengthTolerance = 1e-4;
-constexpr double kAngularTolerance = 1e-5;
-constexpr double kDegeneratePenalty = 1e3;
-
-struct Equation {
-  double value{};
-  double tolerance{kLengthTolerance};
-  ConstraintId constraintId{kInvalidConstraintId};
-  ConstraintType type{ConstraintType::Horizontal};
-  bool userConstraint{false};
-};
-
-struct EndpointLink {
-  GeometryId firstId{kInvalidGeometryId};
-  bool firstStart{true};
-  GeometryId secondId{kInvalidGeometryId};
-  bool secondStart{true};
-};
-
-struct LineRelation {
-  enum class Kind { Parallel, Perpendicular };
-  GeometryId firstId{kInvalidGeometryId};
-  GeometryId secondId{kInvalidGeometryId};
-  Kind kind{Kind::Parallel};
-};
-
-struct Layout {
-  std::vector<double> variables;
-  std::unordered_map<GeometryId, std::size_t> lineBase;
-  std::unordered_map<GeometryId, std::size_t> circleBase;
-  std::unordered_map<GeometryId, std::size_t> arcBase;
-  std::unordered_map<GeometryId, std::size_t> bezierBase;
-  std::vector<EndpointLink> implicitEndpointLinks;
-  std::vector<LineRelation> implicitLineRelations;
-};
-
-double pointDistance(Point a, Point b) {
-  return std::hypot(b.xMm - a.xMm, b.yMm - a.yMm);
+void appendUnique(auto& target, const auto& source) {
+  target.insert(target.end(), source.begin(), source.end());
+  std::sort(target.begin(), target.end());
+  target.erase(std::unique(target.begin(), target.end()), target.end());
 }
 
-double cross2(double ax, double ay, double bx, double by) {
-  return ax * by - ay * bx;
+bool failedStatus(SolveStatus status) {
+  return status == SolveStatus::Conflicting ||
+         status == SolveStatus::Malformed ||
+         status == SolveStatus::Unsupported ||
+         status == SolveStatus::NonConverged ||
+         status == SolveStatus::BackendFailure;
 }
 
-double dot2(double ax, double ay, double bx, double by) {
-  return ax * bx + ay * by;
-}
+void mergeSystem(const EquationSystem& system, const SolveReport& report,
+                 bool computeDof,
+                 ConstraintDiagnostics& result, bool appendComponent) {
+  const auto summary = EquationDiagnostics::analyze(system, computeDof);
+  if (summary.status != EquationStatus::Valid)
+    result.conflicting = true;
+  const std::size_t fixedParameterCount =
+      system.parameterCount() - system.variableCount();
+  // Preserve the public Solver-v1 diagnostic contract: fixed parameters are
+  // part of the domain parameter count and contribute independent rank, while
+  // the kernel itself exposes them as non-variable columns.
+  result.variableCount += system.parameterCount();
+  result.equationRank += report.equationRank + fixedParameterCount;
+  result.degreesOfFreedom += report.degreesOfFreedom;
+  result.userEquationCount += system.equationCount();
+  result.maxNormalizedResidual =
+      std::max(result.maxNormalizedResidual, summary.maxNormalizedResidual);
 
-Layout makeLayout(
-    const Sketch& sketch,
-    const std::unordered_set<GeometryId>* includedGeometry = nullptr) {
-  Layout result;
-  result.variables.reserve(sketch.lines().size() * 4 +
-                           sketch.circles().size() * 3 +
-                           sketch.arcs().size() * 5 +
-                           sketch.beziers().size() * 8);
-
-  const auto included = [includedGeometry](GeometryId id) {
-    return !includedGeometry || includedGeometry->contains(id);
-  };
-
-  for (std::size_t i = 0; i < sketch.lines().size(); ++i) {
-    const auto id = sketch.lineId(i);
-    if (id == kInvalidGeometryId || !included(id)) continue;
-    result.lineBase[id] = result.variables.size();
-    const auto& line = sketch.lines()[i];
-    result.variables.insert(result.variables.end(),
-                            {line.start.xMm, line.start.yMm,
-                             line.end.xMm, line.end.yMm});
+  std::unordered_map<ConstraintId, std::pair<ConstraintType, double>> worst;
+  for (const auto& row : system.rows()) {
+    const double normalized =
+        std::abs(row.residual) / std::max(row.tolerance, 1e-15);
+    if (row.status == EquationStatus::Valid && normalized <= 1.0) continue;
+    auto& entry = worst[row.provenance.constraintId];
+    entry.first = row.provenance.constraintType;
+    entry.second = std::max(entry.second, normalized);
   }
-  for (std::size_t i = 0; i < sketch.circles().size(); ++i) {
-    const auto id = sketch.circleId(i);
-    if (id == kInvalidGeometryId || !included(id)) continue;
-    result.circleBase[id] = result.variables.size();
-    const auto& circle = sketch.circles()[i];
-    result.variables.insert(result.variables.end(),
-                            {circle.center.xMm, circle.center.yMm,
-                             circle.radiusMm});
+  for (const auto& [id, entry] : worst) {
+    result.violations.push_back({id, entry.first, entry.second});
+    result.conflicting = true;
   }
-  for (std::size_t i = 0; i < sketch.arcs().size(); ++i) {
-    const auto id = sketch.arcId(i);
-    if (id == kInvalidGeometryId || !included(id)) continue;
-    result.arcBase[id] = result.variables.size();
-    const auto& arc = sketch.arcs()[i];
-    result.variables.insert(result.variables.end(),
-                            {arc.center.xMm, arc.center.yMm, arc.radiusMm,
-                             arc.startAngleRad, arc.sweepAngleRad});
+  SolveStatus componentStatus = report.status;
+  if (!worst.empty()) componentStatus = SolveStatus::Conflicting;
+  result.conflicting = result.conflicting || failedStatus(componentStatus);
+  if (failedStatus(componentStatus)) result.status = componentStatus;
+  else if (!failedStatus(result.status)) {
+    if (componentStatus == SolveStatus::PartiallyRedundant ||
+        result.status == SolveStatus::PartiallyRedundant)
+      result.status = SolveStatus::PartiallyRedundant;
+    else if (componentStatus == SolveStatus::Redundant ||
+             result.status == SolveStatus::Redundant)
+      result.status = SolveStatus::Redundant;
+    else if (report.degreesOfFreedom != 0 || result.degreesOfFreedom != 0)
+      result.status = SolveStatus::SolvedUnderConstrained;
+    else
+      result.status = SolveStatus::SolvedFullyConstrained;
   }
-  for (std::size_t i = 0; i < sketch.beziers().size(); ++i) {
-    const auto id = sketch.bezierId(i);
-    if (id == kInvalidGeometryId || !included(id)) continue;
-    result.bezierBase[id] = result.variables.size();
-    const auto& bezier = sketch.beziers()[i];
-    for (const auto& point : bezier.points) {
-      result.variables.push_back(point.xMm);
-      result.variables.push_back(point.yMm);
-    }
-  }
-
-  // Preserve implicit topology of composite elements (notably rectangles).
-  for (std::size_t i = 0; i < sketch.lines().size(); ++i) {
-    if (!included(sketch.lineId(i))) continue;
-    for (std::size_t j = i + 1; j < sketch.lines().size(); ++j) {
-      if (!included(sketch.lineId(j))) continue;
-      if (sketch.lines()[i].elementId != sketch.lines()[j].elementId)
-        continue;
-      for (const bool firstStart : {true, false}) {
-        const Point a = firstStart ? sketch.lines()[i].start
-                                   : sketch.lines()[i].end;
-        for (const bool secondStart : {true, false}) {
-          const Point b = secondStart ? sketch.lines()[j].start
-                                      : sketch.lines()[j].end;
-          if (pointDistance(a, b) <= 1e-7)
-            result.implicitEndpointLinks.push_back(
-                {sketch.lineId(i), firstStart,
-                 sketch.lineId(j), secondStart});
-        }
-      }
-    }
-  }
-
-  std::unordered_map<std::size_t, std::vector<std::size_t>> elements;
-  for (std::size_t i = 0; i < sketch.lines().size(); ++i)
-    if (included(sketch.lineId(i)))
-      elements[sketch.lines()[i].elementId].push_back(i);
-
-  for (const auto& [elementId, indices] : elements) {
-    (void)elementId;
-    if (indices.size() != 4) continue;
-
-    std::vector<std::pair<std::size_t, std::size_t>> parallelPairs;
-    std::optional<std::pair<std::size_t, std::size_t>> perpendicularPair;
-    for (std::size_t a = 0; a < indices.size(); ++a) {
-      const auto& first = sketch.lines()[indices[a]];
-      const double ax = first.end.xMm - first.start.xMm;
-      const double ay = first.end.yMm - first.start.yMm;
-      const double al = std::hypot(ax, ay);
-      if (al <= 1e-9) continue;
-
-      for (std::size_t b = a + 1; b < indices.size(); ++b) {
-        const auto& second = sketch.lines()[indices[b]];
-        const double bx = second.end.xMm - second.start.xMm;
-        const double by = second.end.yMm - second.start.yMm;
-        const double bl = std::hypot(bx, by);
-        if (bl <= 1e-9) continue;
-
-        const double nc =
-            std::abs(cross2(ax, ay, bx, by) / (al * bl));
-        const double nd =
-            std::abs(dot2(ax, ay, bx, by) / (al * bl));
-        if (nc <= 1e-7)
-          parallelPairs.emplace_back(indices[a], indices[b]);
-        if (!perpendicularPair && nd <= 1e-7)
-          perpendicularPair = {indices[a], indices[b]};
-      }
-    }
-
-    for (std::size_t i = 0;
-         i < std::min<std::size_t>(2, parallelPairs.size()); ++i) {
-      result.implicitLineRelations.push_back(
-          {sketch.lineId(parallelPairs[i].first),
-           sketch.lineId(parallelPairs[i].second),
-           LineRelation::Kind::Parallel});
-    }
-    if (perpendicularPair) {
-      result.implicitLineRelations.push_back(
-          {sketch.lineId(perpendicularPair->first),
-           sketch.lineId(perpendicularPair->second),
-           LineRelation::Kind::Perpendicular});
-    }
-  }
-
-  return result;
-}
-
-std::optional<Line> lineOf(const Layout& layout,
-                           const std::vector<double>& variables,
-                           GeometryId id) {
-  const auto found = layout.lineBase.find(id);
-  if (found == layout.lineBase.end() ||
-      found->second + 3 >= variables.size())
-    return std::nullopt;
-  const auto b = found->second;
-  return Line{{variables[b], variables[b + 1]},
-              {variables[b + 2], variables[b + 3]},
-              0, false};
-}
-
-std::optional<Circle> circleOf(const Layout& layout,
-                               const std::vector<double>& variables,
-                               GeometryId id) {
-  const auto found = layout.circleBase.find(id);
-  if (found == layout.circleBase.end() ||
-      found->second + 2 >= variables.size())
-    return std::nullopt;
-  const auto b = found->second;
-  return Circle{{variables[b], variables[b + 1]},
-                variables[b + 2], false};
-}
-
-std::optional<Arc> arcOf(const Layout& layout,
-                         const std::vector<double>& variables,
-                         GeometryId id) {
-  const auto found = layout.arcBase.find(id);
-  if (found == layout.arcBase.end() || found->second + 4 >= variables.size())
-    return std::nullopt;
-  const auto b = found->second;
-  return Arc{{variables[b], variables[b + 1]}, variables[b + 2],
-             variables[b + 3], variables[b + 4], false};
-}
-
-std::optional<Bezier> bezierOf(const Layout& layout,
-                               const std::vector<double>& variables,
-                               GeometryId id) {
-  const auto found = layout.bezierBase.find(id);
-  if (found == layout.bezierBase.end() || found->second + 7 >= variables.size())
-    return std::nullopt;
-  Bezier result;
-  for (std::size_t index = 0; index < result.points.size(); ++index) {
-    const auto base = found->second + index * 2;
-    result.points[index] = {variables[base], variables[base + 1]};
-  }
-  return result;
-}
-
-std::optional<Point> pointOf(const Sketch& sketch,
-                             const Layout& layout,
-                             const std::vector<double>& variables,
-                             PointReference reference) {
-  if (reference.origin) return Point{0.0, 0.0};
-  if (reference.elementCenterId != 0) {
-    Point center{};
-    std::size_t count = 0;
-    for (std::size_t i = 0; i < sketch.lines().size(); ++i) {
-      if (sketch.lines()[i].elementId != reference.elementCenterId)
-        continue;
-      const auto line = lineOf(layout, variables, sketch.lineId(i));
-      if (!line) continue;
-      center.xMm += line->start.xMm + line->end.xMm;
-      center.yMm += line->start.yMm + line->end.yMm;
-      count += 2;
-    }
-    if (count == 0) return std::nullopt;
-    center.xMm /= static_cast<double>(count);
-    center.yMm /= static_cast<double>(count);
-    return center;
-  }
-
-  if (reference.circleId != kInvalidGeometryId) {
-    const auto circle = circleOf(layout, variables, reference.circleId);
-    return circle ? std::optional<Point>{circle->center} : std::nullopt;
-  }
-
-  if (reference.arcId != kInvalidGeometryId) {
-    const auto arc = arcOf(layout, variables, reference.arcId);
-    if (!arc) return std::nullopt;
-    return reference.start ? arcStartPoint(*arc) : arcEndPoint(*arc);
-  }
-  if (reference.bezierId != kInvalidGeometryId) {
-    const auto found = layout.bezierBase.find(reference.bezierId);
-    if (found == layout.bezierBase.end() || reference.bezierPoint >= 4 ||
-        found->second + reference.bezierPoint * 2 + 1 >= variables.size())
-      return std::nullopt;
-    const auto base = found->second + reference.bezierPoint * 2;
-    return Point{variables[base], variables[base + 1]};
-  }
-
-  const auto line = lineOf(layout, variables, reference.lineId);
-  if (!line) return std::nullopt;
-  return reference.start ? line->start : line->end;
-}
-
-double segmentDistance(Point p, const Line& line, double* outside = nullptr) {
-  const double dx = line.end.xMm - line.start.xMm;
-  const double dy = line.end.yMm - line.start.yMm;
-  const double l2 = dx * dx + dy * dy;
-  if (l2 <= 1e-18) {
-    if (outside) *outside = 0.0;
-    return kDegeneratePenalty;
-  }
-  const double rawT =
-      ((p.xMm - line.start.xMm) * dx +
-       (p.yMm - line.start.yMm) * dy) / l2;
-  const double t = std::clamp(rawT, 0.0, 1.0);
-
-  if (outside) {
-    const double length = std::sqrt(l2);
-    *outside = rawT < 0.0
-                   ? -rawT * length
-                   : rawT > 1.0
-                         ? (rawT - 1.0) * length
-                         : 0.0;
-  }
-
-  const Point q{line.start.xMm + t * dx,
-                line.start.yMm + t * dy};
-  return pointDistance(p, q);
-}
-
-double finiteArcDistance(Point point, const Arc& arc) {
-  constexpr double kTwoPi = 6.28318530717958647692;
-  if (!std::isfinite(arc.center.xMm) ||
-      !std::isfinite(arc.center.yMm) ||
-      !std::isfinite(arc.radiusMm) ||
-      !std::isfinite(arc.startAngleRad) ||
-      !std::isfinite(arc.sweepAngleRad) ||
-      arc.radiusMm <= 1e-12 ||
-      arc.sweepAngleRad <= 1e-12 ||
-      arc.sweepAngleRad >= kTwoPi - 1e-12)
-    return kDegeneratePenalty;
-
-  const auto normalizeAngle = [](double angle) {
-    constexpr double twoPi = 6.28318530717958647692;
-    angle = std::fmod(angle, twoPi);
-    if (angle < 0.0) angle += twoPi;
-    return angle;
-  };
-
-  const double dx = point.xMm - arc.center.xMm;
-  const double dy = point.yMm - arc.center.yMm;
-  const double radialLength = std::hypot(dx, dy);
-
-  if (radialLength > 1e-12) {
-    const double candidateAngle =
-        normalizeAngle(std::atan2(dy, dx));
-    const double delta =
-        normalizeAngle(
-            candidateAngle -
-            normalizeAngle(arc.startAngleRad));
-
-    if (delta <= arc.sweepAngleRad + 1e-12)
-      return std::abs(radialLength - arc.radiusMm);
-  }
-
-  return std::min(pointDistance(point, arcStartPoint(arc)),
-                  pointDistance(point, arcEndPoint(arc)));
-}
-
-std::vector<Equation> evaluate(const Sketch& sketch,
-                               const Layout& layout,
-                               const std::vector<double>& variables,
-                               const std::unordered_set<ConstraintId>*
-                                   includedConstraints = nullptr) {
-  std::vector<Equation> equations;
-  equations.reserve(sketch.constraints().size() * 2 +
-                    layout.implicitEndpointLinks.size() * 2 +
-                    layout.implicitLineRelations.size());
-
-  const auto add =
-      [&equations](double value, double tolerance,
-                   const Constraint& constraint) {
-        equations.push_back({value, tolerance, constraint.id,
-                             constraint.type, true});
-      };
-
-  const auto invalidEquation =
-      [&equations](const Constraint& constraint) {
-        equations.push_back({kDegeneratePenalty, kLengthTolerance,
-                             constraint.id, constraint.type, true});
-      };
-
-  for (const auto& constraint : sketch.constraints()) {
-    if (includedConstraints &&
-        !includedConstraints->contains(constraint.id))
-      continue;
-    switch (constraint.type) {
-      case ConstraintType::Horizontal: {
-        const auto line =
-            lineOf(layout, variables, constraint.firstGeometry);
-        if (!line) { invalidEquation(constraint); break; }
-        add(line->end.yMm - line->start.yMm,
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Vertical: {
-        const auto line =
-            lineOf(layout, variables, constraint.firstGeometry);
-        if (!line) { invalidEquation(constraint); break; }
-        add(line->end.xMm - line->start.xMm,
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Coincident: {
-        const auto first =
-            pointOf(sketch, layout, variables, constraint.firstPoint);
-        const auto second =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!first || !second) { invalidEquation(constraint); break; }
-        add(second->xMm - first->xMm, kLengthTolerance, constraint);
-        add(second->yMm - first->yMm, kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::PointOnLine: {
-        const auto line =
-            lineOf(layout, variables, constraint.firstGeometry);
-        const auto point =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!line || !point) { invalidEquation(constraint); break; }
-        double outside = 0.0;
-        add(segmentDistance(*point, *line, &outside),
-            kLengthTolerance, constraint);
-        add(outside, kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Distance:
-      case ConstraintType::DistanceX:
-      case ConstraintType::DistanceY: {
-        const auto first =
-            pointOf(sketch, layout, variables, constraint.firstPoint);
-        const auto second =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!first || !second || constraint.value <= 0.0) {
-          invalidEquation(constraint);
-          break;
-        }
-        double current = 0.0;
-        if (constraint.type == ConstraintType::Distance)
-          current = pointDistance(*first, *second);
-        else if (constraint.type == ConstraintType::DistanceX)
-          current = std::abs(second->xMm - first->xMm);
-        else
-          current = std::abs(second->yMm - first->yMm);
-        add(current - constraint.value, kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Length: {
-        const auto line =
-            lineOf(layout, variables, constraint.firstGeometry);
-        if (!line || constraint.value <= 0.0) {
-          invalidEquation(constraint);
-          break;
-        }
-        add(pointDistance(line->start, line->end) - constraint.value,
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Radius:
-      case ConstraintType::Diameter: {
-        const auto circle =
-            circleOf(layout, variables, constraint.firstGeometry);
-        if (!circle || constraint.value <= 0.0) {
-          invalidEquation(constraint);
-          break;
-        }
-        const double current =
-            constraint.type == ConstraintType::Radius
-                ? circle->radiusMm
-                : circle->radiusMm * 2.0;
-        add(current - constraint.value, kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Parallel:
-      case ConstraintType::Perpendicular:
-      case ConstraintType::Angle: {
-        const auto first =
-            lineOf(layout, variables, constraint.firstGeometry);
-        const auto second =
-            lineOf(layout, variables, constraint.secondGeometry);
-        if (!first || !second) { invalidEquation(constraint); break; }
-
-        const double ax = first->end.xMm - first->start.xMm;
-        const double ay = first->end.yMm - first->start.yMm;
-        const double bx = second->end.xMm - second->start.xMm;
-        const double by = second->end.yMm - second->start.yMm;
-        const double al = std::hypot(ax, ay);
-        const double bl = std::hypot(bx, by);
-        if (al <= 1e-12 || bl <= 1e-12) {
-          invalidEquation(constraint);
-          break;
-        }
-
-        if (constraint.type == ConstraintType::Parallel) {
-          add(cross2(ax, ay, bx, by) / (al * bl),
-              kAngularTolerance, constraint);
-        } else if (constraint.type == ConstraintType::Perpendicular) {
-          add(dot2(ax, ay, bx, by) / (al * bl),
-              kAngularTolerance, constraint);
-        } else {
-          if (constraint.value <= 0.0 || constraint.value >= 180.0) {
-            invalidEquation(constraint);
-            break;
-          }
-          const double cosine =
-              std::clamp(dot2(ax, ay, bx, by) / (al * bl),
-                         -1.0, 1.0);
-          constexpr double pi = 3.14159265358979323846;
-          add(std::acos(cosine) -
-                  constraint.value * pi / 180.0,
-              kAngularTolerance, constraint);
-        }
-        break;
-      }
-
-      case ConstraintType::Equal: {
-        const auto firstLine =
-            lineOf(layout, variables, constraint.firstGeometry);
-        const auto secondLine =
-            lineOf(layout, variables, constraint.secondGeometry);
-
-        if (firstLine && secondLine) {
-          add(pointDistance(firstLine->start, firstLine->end) -
-                  pointDistance(secondLine->start, secondLine->end),
-              kLengthTolerance, constraint);
-          break;
-        }
-
-        const auto firstCircle =
-            circleOf(layout, variables, constraint.firstGeometry);
-        const auto secondCircle =
-            circleOf(layout, variables, constraint.secondGeometry);
-        if (firstCircle && secondCircle) {
-          add(firstCircle->radiusMm - secondCircle->radiusMm,
-              kLengthTolerance, constraint);
-          break;
-        }
-
-        invalidEquation(constraint);
-        break;
-      }
-
-      case ConstraintType::PointOnCircle: {
-        const auto circle =
-            circleOf(layout, variables, constraint.firstGeometry);
-        const auto point =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!circle || !point) { invalidEquation(constraint); break; }
-        add(pointDistance(circle->center, *point) - circle->radiusMm,
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::PointOnArc: {
-        const auto arc = arcOf(layout, variables, constraint.firstGeometry);
-        const auto point =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!arc || !point) {
-          invalidEquation(constraint);
-          break;
-        }
-        add(finiteArcDistance(*point, *arc),
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Midpoint: {
-        const auto line =
-            lineOf(layout, variables, constraint.firstGeometry);
-        const auto point =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!line || !point) { invalidEquation(constraint); break; }
-        const sketch::Point midpoint{
-            (line->start.xMm + line->end.xMm) * 0.5,
-            (line->start.yMm + line->end.yMm) * 0.5};
-        add(point->xMm - midpoint.xMm, kLengthTolerance, constraint);
-        add(point->yMm - midpoint.yMm, kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::PointOnXAxis:
-      case ConstraintType::PointOnYAxis: {
-        const auto point =
-            pointOf(sketch, layout, variables, constraint.secondPoint);
-        if (!point) { invalidEquation(constraint); break; }
-        add(constraint.type == ConstraintType::PointOnXAxis
-                ? point->yMm
-                : point->xMm,
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      case ConstraintType::Tangent: {
-        const auto firstLine =
-            lineOf(layout, variables, constraint.firstGeometry);
-        const auto secondLine =
-            lineOf(layout, variables, constraint.secondGeometry);
-        const auto firstCircle =
-            circleOf(layout, variables, constraint.firstGeometry);
-        const auto secondCircle =
-            circleOf(layout, variables, constraint.secondGeometry);
-        const auto firstArc =
-            arcOf(layout, variables, constraint.firstGeometry);
-        const auto secondArc =
-            arcOf(layout, variables, constraint.secondGeometry);
-        const auto firstBezier =
-            bezierOf(layout, variables, constraint.firstGeometry);
-        const auto secondBezier =
-            bezierOf(layout, variables, constraint.secondGeometry);
-
-        const auto radialData = [](const std::optional<Circle>& circle,
-                                   const std::optional<Arc>& arc)
-            -> std::optional<std::pair<Point, double>> {
-          if (circle) return std::pair{circle->center, circle->radiusMm};
-          if (arc) return std::pair{arc->center, arc->radiusMm};
-          return std::nullopt;
-        };
-        const auto firstRadial = radialData(firstCircle, firstArc);
-        const auto secondRadial = radialData(secondCircle, secondArc);
-        const auto endpointAndTangent = [](const Bezier& curve, bool start) {
-          const Point endpoint = curve.points[start ? 0 : 3];
-          const Point handle = curve.points[start ? 1 : 2];
-          return std::pair{endpoint,
-                           Point{handle.xMm - endpoint.xMm,
-                                 handle.yMm - endpoint.yMm}};
-        };
-        const auto normalizedCross = [](Point first, Point second) {
-          const double denominator =
-              std::hypot(first.xMm, first.yMm) *
-              std::hypot(second.xMm, second.yMm);
-          return denominator <= 1e-12
-                     ? kDegeneratePenalty
-                     : cross2(first.xMm, first.yMm,
-                              second.xMm, second.yMm) /
-                           denominator;
-        };
-        const auto normalizedDot = [](Point first, Point second) {
-          const double denominator =
-              std::hypot(first.xMm, first.yMm) *
-              std::hypot(second.xMm, second.yMm);
-          return denominator <= 1e-12
-                     ? kDegeneratePenalty
-                     : dot2(first.xMm, first.yMm,
-                            second.xMm, second.yMm) /
-                           denominator;
-        };
-
-        if ((firstLine || secondLine) &&
-            (firstCircle || secondCircle || firstArc || secondArc)) {
-          const auto& line = firstLine ? *firstLine : *secondLine;
-          const auto radial = firstRadial ? *firstRadial : *secondRadial;
-          add(segmentDistance(radial.first, line) - radial.second,
-              kLengthTolerance, constraint);
-          const auto& finiteArc = firstArc ? firstArc : secondArc;
-          if (finiteArc) {
-            const double dx = line.end.xMm - line.start.xMm;
-            const double dy = line.end.yMm - line.start.yMm;
-            const double lengthSquared = dx * dx + dy * dy;
-            if (lengthSquared <= 1e-12) {
-              invalidEquation(constraint);
-              break;
-            }
-            const double t = std::clamp(
-                ((finiteArc->center.xMm - line.start.xMm) * dx +
-                 (finiteArc->center.yMm - line.start.yMm) * dy) /
-                    lengthSquared,
-                0.0, 1.0);
-            const Point contact{line.start.xMm + dx * t,
-                                line.start.yMm + dy * t};
-            add(finiteArcDistance(contact, *finiteArc),
-                kLengthTolerance, constraint);
-          }
-          break;
-        }
-
-        if (firstRadial && secondRadial) {
-          const double distance = pointDistance(firstRadial->first,
-                                                secondRadial->first);
-          const double external = firstRadial->second + secondRadial->second;
-          const double internal =
-              std::abs(firstRadial->second - secondRadial->second);
-          const double target =
-              internal > 1e-9 && std::abs(distance - internal) <
-                                      std::abs(distance - external)
-                  ? internal
-                  : external;
-          add(distance - target, kLengthTolerance, constraint);
-          if (distance > 1e-12) {
-            const double ux =
-                (secondRadial->first.xMm - firstRadial->first.xMm) / distance;
-            const double uy =
-                (secondRadial->first.yMm - firstRadial->first.yMm) / distance;
-            const bool internalBranch = target == internal && internal > 1e-9;
-            const Point contact =
-                internalBranch && firstRadial->second < secondRadial->second
-                    ? Point{firstRadial->first.xMm - ux * firstRadial->second,
-                            firstRadial->first.yMm - uy * firstRadial->second}
-                    : Point{firstRadial->first.xMm + ux * firstRadial->second,
-                            firstRadial->first.yMm + uy * firstRadial->second};
-            if (firstArc)
-              add(finiteArcDistance(contact, *firstArc), kLengthTolerance,
-                  constraint);
-            if (secondArc)
-              add(finiteArcDistance(contact, *secondArc), kLengthTolerance,
-                  constraint);
-          }
-          break;
-        }
-
-        if ((firstLine || secondLine) && (firstBezier || secondBezier)) {
-          const auto& line = firstLine ? *firstLine : *secondLine;
-          const auto& curve = firstBezier ? *firstBezier : *secondBezier;
-          const auto start = endpointAndTangent(curve, true);
-          const auto end = endpointAndTangent(curve, false);
-          const bool useStart = segmentDistance(start.first, line) <=
-                                segmentDistance(end.first, line);
-          const auto chosen = useStart ? start : end;
-          add(segmentDistance(chosen.first, line), kLengthTolerance,
-              constraint);
-          add(normalizedCross(
-                  {line.end.xMm - line.start.xMm,
-                   line.end.yMm - line.start.yMm},
-                  chosen.second),
-              kAngularTolerance, constraint);
-          break;
-        }
-
-        if ((firstRadial || secondRadial) &&
-            (firstBezier || secondBezier)) {
-          const auto radial = firstRadial ? *firstRadial : *secondRadial;
-          const auto& curve = firstBezier ? *firstBezier : *secondBezier;
-          const auto start = endpointAndTangent(curve, true);
-          const auto end = endpointAndTangent(curve, false);
-          const bool useStart =
-              std::abs(pointDistance(start.first, radial.first) -
-                       radial.second) <=
-              std::abs(pointDistance(end.first, radial.first) - radial.second);
-          const auto chosen = useStart ? start : end;
-          const Point radius{chosen.first.xMm - radial.first.xMm,
-                             chosen.first.yMm - radial.first.yMm};
-          add(std::hypot(radius.xMm, radius.yMm) - radial.second,
-              kLengthTolerance, constraint);
-          add(normalizedDot(radius, chosen.second), kAngularTolerance,
-              constraint);
-          break;
-        }
-
-        if (firstBezier && secondBezier) {
-          double best = std::numeric_limits<double>::max();
-          std::pair<Point, Point> firstData;
-          std::pair<Point, Point> secondData;
-          for (const bool firstStart : {true, false}) {
-            for (const bool secondStart : {true, false}) {
-              const auto a = endpointAndTangent(*firstBezier, firstStart);
-              const auto b = endpointAndTangent(*secondBezier, secondStart);
-              const double distance = pointDistance(a.first, b.first);
-              if (distance < best) {
-                best = distance;
-                firstData = a;
-                secondData = b;
-              }
-            }
-          }
-          add(firstData.first.xMm - secondData.first.xMm,
-              kLengthTolerance, constraint);
-          add(firstData.first.yMm - secondData.first.yMm,
-              kLengthTolerance, constraint);
-          add(normalizedCross(firstData.second, secondData.second),
-              kAngularTolerance, constraint);
-          break;
-        }
-
-        invalidEquation(constraint);
-        break;
-      }
-
-      case ConstraintType::Lock: {
-        if (const auto baselineIndex =
-                sketch.lineIndex(constraint.firstGeometry)) {
-          const std::size_t elementId =
-              sketch.lines()[*baselineIndex].elementId;
-
-          for (std::size_t index = 0;
-               index < sketch.lines().size(); ++index) {
-            if (sketch.lines()[index].elementId != elementId)
-              continue;
-
-            const auto id = sketch.lineId(index);
-            const auto current =
-                lineOf(layout, variables, id);
-            if (!current) continue;
-
-            const auto& baseline = sketch.lines()[index];
-            add(current->start.xMm - baseline.start.xMm,
-                kLengthTolerance, constraint);
-            add(current->start.yMm - baseline.start.yMm,
-                kLengthTolerance, constraint);
-            add(current->end.xMm - baseline.end.xMm,
-                kLengthTolerance, constraint);
-            add(current->end.yMm - baseline.end.yMm,
-                kLengthTolerance, constraint);
-          }
-          break;
-        }
-
-        if (const auto baselineIndex =
-                sketch.circleIndex(constraint.firstGeometry)) {
-          const auto current =
-              circleOf(layout, variables,
-                       constraint.firstGeometry);
-          if (!current) {
-            invalidEquation(constraint);
-            break;
-          }
-
-          const auto& baseline =
-              sketch.circles()[*baselineIndex];
-          add(current->center.xMm - baseline.center.xMm,
-              kLengthTolerance, constraint);
-          add(current->center.yMm - baseline.center.yMm,
-              kLengthTolerance, constraint);
-          add(current->radiusMm - baseline.radiusMm,
-              kLengthTolerance, constraint);
-          break;
-        }
-
-        if (const auto baselineIndex =
-                sketch.arcIndex(constraint.firstGeometry)) {
-          const auto current = arcOf(layout, variables,
-                                     constraint.firstGeometry);
-          if (!current) { invalidEquation(constraint); break; }
-          const auto& baseline = sketch.arcs()[*baselineIndex];
-          add(current->center.xMm - baseline.center.xMm,
-              kLengthTolerance, constraint);
-          add(current->center.yMm - baseline.center.yMm,
-              kLengthTolerance, constraint);
-          add(current->radiusMm - baseline.radiusMm,
-              kLengthTolerance, constraint);
-          add(current->startAngleRad - baseline.startAngleRad,
-              kAngularTolerance, constraint);
-          add(current->sweepAngleRad - baseline.sweepAngleRad,
-              kAngularTolerance, constraint);
-          break;
-        }
-
-        if (const auto baselineIndex =
-                sketch.bezierIndex(constraint.firstGeometry)) {
-          const auto found = layout.bezierBase.find(constraint.firstGeometry);
-          if (found == layout.bezierBase.end()) {
-            invalidEquation(constraint);
-            break;
-          }
-          const auto& baseline = sketch.beziers()[*baselineIndex];
-          for (std::size_t point = 0; point < baseline.points.size(); ++point) {
-            const auto base = found->second + point * 2;
-            add(variables[base] - baseline.points[point].xMm,
-                kLengthTolerance, constraint);
-            add(variables[base + 1] - baseline.points[point].yMm,
-                kLengthTolerance, constraint);
-          }
-          break;
-        }
-
-        invalidEquation(constraint);
-        break;
-      }
-
-      case ConstraintType::LineDistance: {
-        const auto first =
-            lineOf(layout, variables, constraint.firstGeometry);
-        const auto second =
-            lineOf(layout, variables, constraint.secondGeometry);
-        if (!first || !second || constraint.value <= 0.0) {
-          invalidEquation(constraint);
-          break;
-        }
-        const double dx = first->end.xMm - first->start.xMm;
-        const double dy = first->end.yMm - first->start.yMm;
-        const double length = std::hypot(dx, dy);
-        if (length <= 1e-12) {
-          invalidEquation(constraint);
-          break;
-        }
-        const double signedDistance =
-            ((second->start.xMm - first->start.xMm) * (-dy) +
-             (second->start.yMm - first->start.yMm) * dx) / length;
-        add(std::abs(signedDistance) - constraint.value,
-            kLengthTolerance, constraint);
-        break;
-      }
-
-      default:
-        invalidEquation(constraint);
-        break;
-    }
-  }
-
-  for (const auto& link : layout.implicitEndpointLinks) {
-    const auto first =
-        pointOf(sketch, layout, variables,
-                PointReference{link.firstId, link.firstStart});
-    const auto second =
-        pointOf(sketch, layout, variables,
-                PointReference{link.secondId, link.secondStart});
-    if (!first || !second) continue;
-
-    equations.push_back(
-        {second->xMm - first->xMm, kLengthTolerance,
-         kInvalidConstraintId, ConstraintType::Coincident, false});
-    equations.push_back(
-        {second->yMm - first->yMm, kLengthTolerance,
-         kInvalidConstraintId, ConstraintType::Coincident, false});
-  }
-
-  for (const auto& relation : layout.implicitLineRelations) {
-    const auto first =
-        lineOf(layout, variables, relation.firstId);
-    const auto second =
-        lineOf(layout, variables, relation.secondId);
-    if (!first || !second) continue;
-
-    const double ax = first->end.xMm - first->start.xMm;
-    const double ay = first->end.yMm - first->start.yMm;
-    const double bx = second->end.xMm - second->start.xMm;
-    const double by = second->end.yMm - second->start.yMm;
-    const double al = std::hypot(ax, ay);
-    const double bl = std::hypot(bx, by);
-    if (al <= 1e-12 || bl <= 1e-12) continue;
-
-    const bool parallel =
-        relation.kind == LineRelation::Kind::Parallel;
-    equations.push_back(
-        {parallel
-             ? cross2(ax, ay, bx, by) / (al * bl)
-             : dot2(ax, ay, bx, by) / (al * bl),
-         kAngularTolerance, kInvalidConstraintId,
-         parallel ? ConstraintType::Parallel
-                  : ConstraintType::Perpendicular,
-         false});
-  }
-
-  return equations;
-}
-
-std::size_t matrixRank(std::vector<std::vector<double>> matrix) {
-  if (matrix.empty() || matrix.front().empty()) return 0;
-
-  const std::size_t rows = matrix.size();
-  const std::size_t cols = matrix.front().size();
-  double largest = 0.0;
-
-  for (const auto& row : matrix)
-    for (const double value : row)
-      largest = std::max(largest, std::abs(value));
-
-  if (largest <= 1e-14) return 0;
-  const double tolerance =
-      std::max(1e-9, largest * 1e-7);
-
-  std::size_t rank = 0;
-  for (std::size_t col = 0;
-       col < cols && rank < rows; ++col) {
-    std::size_t pivot = rank;
-    for (std::size_t row = rank + 1; row < rows; ++row)
-      if (std::abs(matrix[row][col]) >
-          std::abs(matrix[pivot][col]))
-        pivot = row;
-
-    if (std::abs(matrix[pivot][col]) <= tolerance)
-      continue;
-
-    std::swap(matrix[pivot], matrix[rank]);
-    const double divisor = matrix[rank][col];
-
-    for (std::size_t c = col; c < cols; ++c)
-      matrix[rank][c] /= divisor;
-
-    for (std::size_t row = 0; row < rows; ++row) {
-      if (row == rank) continue;
-      const double factor = matrix[row][col];
-      if (std::abs(factor) <= tolerance) continue;
-      for (std::size_t c = col; c < cols; ++c)
-        matrix[row][c] -= factor * matrix[rank][c];
-    }
-
-    ++rank;
-  }
-
-  return rank;
+  appendUnique(result.conflictingConstraintIds,
+               report.conflictingConstraintIds);
+  appendUnique(result.redundantConstraintIds, report.redundantConstraintIds);
+  appendUnique(result.partiallyRedundantConstraintIds,
+               report.partiallyRedundantConstraintIds);
+  appendUnique(result.remainingDofGeometryIds,
+               report.remainingDofGeometryIds);
+  result.conflictSetComplete =
+      result.conflictSetComplete && report.conflictSetComplete;
+  if (appendComponent)
+    result.components.push_back({system.component().geometryIds,
+                                 system.component().constraintIds,
+                                 system.parameterCount(),
+                                 report.equationRank + fixedParameterCount,
+                                 report.degreesOfFreedom,
+                                 componentStatus,
+                                 report.maxNormalizedResidual,
+                                 report.iterations,
+                                 report.conflictingConstraintIds,
+                                 report.redundantConstraintIds,
+                                 report.partiallyRedundantConstraintIds,
+                                 report.remainingDofGeometryIds,
+                                 report.conflictSetComplete,
+                                 failedStatus(componentStatus)});
 }
 
 }  // namespace
 
-static ConstraintDiagnostics analyzeConstraintSubset(
-    const Sketch& sketch, bool computeDof,
-    const std::unordered_set<GeometryId>* includedGeometry,
-    const std::unordered_set<ConstraintId>* includedConstraints) {
+ConstraintDiagnostics analyzeConstraintSystem(const Sketch& sketch,
+                                              bool computeDof) {
   ConstraintDiagnostics result;
-  const Layout layout = makeLayout(sketch, includedGeometry);
-  result.variableCount = layout.variables.size();
-
-  const auto base =
-      evaluate(sketch, layout, layout.variables, includedConstraints);
-
-  std::unordered_map<
-      ConstraintId,
-      std::pair<ConstraintType, double>> worst;
-
-  for (const auto& equation : base) {
-    if (equation.userConstraint)
-      ++result.userEquationCount;
-
-    const double normalized =
-        std::abs(equation.value) /
-        std::max(equation.tolerance, 1e-12);
-
-    result.maxNormalizedResidual =
-        std::max(result.maxNormalizedResidual,
-                 normalized);
-
-    if (!equation.userConstraint ||
-        equation.constraintId == kInvalidConstraintId ||
-        normalized <= 1.0)
-      continue;
-
-    auto& entry = worst[equation.constraintId];
-    entry.first = equation.type;
-    entry.second =
-        std::max(entry.second, normalized);
+  const auto graph = ConstraintGraph::build(sketch);
+  for (const auto& component : graph.components()) {
+    const auto initialSystem =
+        ConstraintEquationRegistry::assemble(sketch, component);
+    SolveRequest request{sketch, component};
+    request.localizeConflicts = computeDof;
+    request.diagnoseRedundancy = computeDof;
+    request.calculateRank = computeDof;
+    request.maximumIterations = 256;
+    const auto report = productionSketchSolver().solve(request);
+    const auto solvedSystem = report.candidate.empty()
+                                  ? std::optional<EquationSystem>{}
+                                  : ConstraintEquationRegistry::assemble(
+                                        sketch, component, report.candidate);
+    mergeSystem(solvedSystem ? *solvedSystem : initialSystem, report,
+                computeDof, result, true);
   }
-
-  for (const auto& [id, entry] : worst)
-    result.violations.push_back(
-        {id, entry.first, entry.second});
-
-  std::sort(
-      result.violations.begin(),
-      result.violations.end(),
-      [](const ConstraintViolation& first,
-         const ConstraintViolation& second) {
-        return first.id < second.id;
-      });
-
-  result.conflicting = !result.violations.empty();
-
-  if (computeDof &&
-      !layout.variables.empty() &&
-      !base.empty()) {
-    std::vector<std::vector<double>> jacobian(
-        base.size(),
-        std::vector<double>(
-            layout.variables.size(), 0.0));
-
-    for (std::size_t column = 0;
-         column < layout.variables.size();
-         ++column) {
-      auto perturbed = layout.variables;
-      const double step =
-          std::max(
-              1e-6,
-              std::abs(perturbed[column]) * 1e-7);
-      perturbed[column] += step;
-
-      const auto changed =
-          evaluate(sketch, layout, perturbed, includedConstraints);
-      if (changed.size() != base.size())
-        continue;
-
-      for (std::size_t row = 0;
-           row < base.size(); ++row) {
-        const double scale =
-            std::max(base[row].tolerance, 1e-6);
-        jacobian[row][column] =
-            (changed[row].value -
-             base[row].value) /
-            step / scale;
-      }
-    }
-
-    result.equationRank =
-        matrixRank(std::move(jacobian));
-
-    result.degreesOfFreedom =
-        result.variableCount > result.equationRank
-            ? result.variableCount -
-                  result.equationRank
-            : 0;
-  } else {
-    result.degreesOfFreedom =
-        layout.variables.size();
-  }
-
-  result.fullyConstrained =
-      !result.conflicting &&
-      result.variableCount > 0 &&
-      result.degreesOfFreedom == 0;
-
+  std::sort(result.violations.begin(), result.violations.end(),
+            [](const auto& first, const auto& second) {
+              return first.id < second.id;
+            });
+  result.fullyConstrained = !result.conflicting && result.variableCount > 0 &&
+                            result.degreesOfFreedom == 0;
+  if (result.components.empty())
+    result.status = SolveStatus::SolvedUnderConstrained;
+  else if (result.conflicting && !failedStatus(result.status))
+    result.status = SolveStatus::Conflicting;
   return result;
 }
 
-ConstraintDiagnostics analyzeConstraintSystem(
-    const Sketch& sketch, bool computeDof) {
-  auto result = analyzeConstraintSubset(sketch, computeDof, nullptr, nullptr);
-  for (const auto& component : sketch.constraintComponents()) {
-    const std::unordered_set<GeometryId> geometry(
-        component.geometryIds.begin(), component.geometryIds.end());
-    const std::unordered_set<ConstraintId> constraints(
-        component.constraintIds.begin(), component.constraintIds.end());
-    const auto state = analyzeConstraintSubset(
-        sketch, computeDof, &geometry, &constraints);
-    result.components.push_back({component.geometryIds,
-                                 component.constraintIds,
-                                 state.variableCount,
-                                 state.equationRank,
-                                 state.degreesOfFreedom,
-                                 state.conflicting});
-  }
-  return result;
-}
-
-bool hasConstraintViolation(
-    const ConstraintDiagnostics& diagnostics,
-    ConstraintId id) noexcept {
-  return std::any_of(
-      diagnostics.violations.begin(),
-      diagnostics.violations.end(),
-      [id](const ConstraintViolation& item) {
-        return item.id == id;
-      });
+bool hasConstraintViolation(const ConstraintDiagnostics& diagnostics,
+                            ConstraintId id) noexcept {
+  return std::any_of(diagnostics.violations.begin(),
+                     diagnostics.violations.end(),
+                     [id](const ConstraintViolation& item) {
+                       return item.id == id;
+                     });
 }
 
 }  // namespace solidar::sketch

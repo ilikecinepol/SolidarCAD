@@ -316,8 +316,15 @@ void MainWindow::updateSketchConstraintPanel() {
     auto* item = new QTreeWidgetItem(sketchConstraintsList_);
     item->setText(0, entry.description);
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable |
-                   Qt::ItemIsEnabled);
-    item->setCheckState(1, entry.checked ? Qt::Checked : Qt::Unchecked);
+                   Qt::ItemIsEnabled |
+                   (entry.isDimension() ? Qt::ItemIsUserTristate
+                                        : Qt::NoItemFlags));
+    item->setCheckState(
+        1, entry.mode == sketch::ConstraintMode::Driving
+               ? Qt::Checked
+               : entry.mode == sketch::ConstraintMode::Reference
+                     ? Qt::PartiallyChecked
+                     : Qt::Unchecked);
 
     item->setData(
         0, Qt::UserRole,
@@ -3015,30 +3022,37 @@ void MainWindow::buildUi() {
             const bool isDimension =
                 dimensionIndexValue != std::numeric_limits<qulonglong>::max();
 
+            const auto mode = item->checkState(1) == Qt::Checked
+                                  ? sketch::ConstraintMode::Driving
+                              : item->checkState(1) == Qt::PartiallyChecked
+                                  ? sketch::ConstraintMode::Reference
+                                  : sketch::ConstraintMode::Disabled;
+
+            const QVariant idData = item->data(0, Qt::UserRole);
+            if (!idData.isValid()) return;
+            const auto id =
+                static_cast<sketch::ConstraintId>(idData.toULongLong());
+
             if (isDimension) {
-              const bool driving = item->checkState(1) == Qt::Checked;
               const auto dimensionIndex =
                   static_cast<std::size_t>(dimensionIndexValue);
 
               QTimer::singleShot(0, this,
-                                 [this, dimensionIndex, driving] {
-                if (sketchCanvas_)
-                  sketchCanvas_->setDimensionDriving(dimensionIndex, driving);
+                                 [this, dimensionIndex, id, mode] {
+                if (!sketchCanvas_) return;
+                if (mode == sketch::ConstraintMode::Disabled)
+                  sketchCanvas_->setConstraintModeById(id, mode);
+                else
+                  sketchCanvas_->setDimensionDriving(
+                      dimensionIndex,
+                      mode == sketch::ConstraintMode::Driving);
               });
               return;
             }
 
-            if (item->checkState(1) != Qt::Unchecked) return;
-
-            const QVariant idData = item->data(0, Qt::UserRole);
-            if (!idData.isValid()) return;
-
-            const auto id =
-                static_cast<sketch::ConstraintId>(idData.toULongLong());
-
-            QTimer::singleShot(0, this, [this, id] {
+            QTimer::singleShot(0, this, [this, id, mode] {
               if (sketchCanvas_)
-                sketchCanvas_->removeConstraintById(id);
+                sketchCanvas_->setConstraintModeById(id, mode);
             });
           });
   connect(sketchCanvas_, &SketchCanvas::lineStyleSelectionChanged, this,

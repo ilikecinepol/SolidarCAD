@@ -124,6 +124,9 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] std::size_t committedRenderSceneBuildCount() const noexcept;
   void flushConstraintDiagnostics();
   [[nodiscard]] std::size_t fullDiagnosticsCount() const noexcept;
+  [[nodiscard]] sketch::SolveStatus lastSolveStatus() const noexcept;
+  [[nodiscard]] const std::vector<sketch::ConstraintId>&
+  diagnosticConstraintIds() const noexcept;
   [[nodiscard]] Tool tool() const noexcept;
   [[nodiscard]] const sketch::Sketch& sketch() const noexcept;
   [[nodiscard]] const SketchToolState& interactionState() const noexcept;
@@ -139,7 +142,7 @@ class SketchCanvas final : public QWidget {
     QString description;
     sketch::ConstraintId constraintId{sketch::kInvalidConstraintId};
     std::size_t dimensionIndex{static_cast<std::size_t>(-1)};
-    bool checked{true};
+    sketch::ConstraintMode mode{sketch::ConstraintMode::Driving};
 
     [[nodiscard]] bool isDimension() const noexcept {
       return dimensionIndex != static_cast<std::size_t>(-1);
@@ -150,6 +153,8 @@ class SketchCanvas final : public QWidget {
   selectedConstraintPanelEntries() const;
   bool removeConstraintById(sketch::ConstraintId id);
   bool setDimensionDriving(std::size_t dimensionIndex, bool driving);
+  bool setConstraintModeById(sketch::ConstraintId id,
+                             sketch::ConstraintMode mode);
   void beginMirrorElementSelection();
   void beginMirrorAxisSelection();
   void clearMirrorElementSelection();
@@ -400,6 +405,9 @@ signals:
   QVariantAnimation* viewCubeAnimation_{nullptr};
   QTimer* constraintDiagnosticsTimer_{nullptr};
   std::size_t fullDiagnosticsCount_{};
+  sketch::SolveStatus lastSolveStatus_{
+      sketch::SolveStatus::SolvedUnderConstrained};
+  std::vector<sketch::ConstraintId> diagnosticConstraintIds_;
   ViewCubeHit cubeHover_;
   ViewCubeHit cubePressed_;
   CircleMode circleMode_{CircleMode::CenterRadius};

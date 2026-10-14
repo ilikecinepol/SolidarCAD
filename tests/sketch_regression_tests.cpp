@@ -72,7 +72,7 @@ void drivingDimensionsRemainStableAfterDragging() {
                                           kInvalidGeometryId, 50.0));
   expect(near(length(sketch.lines()[0]), 50.0), "line length must become 50");
   sketch.translatePoint({lineId, false}, 19.0, -11.0);
-  (void)BasicSketchSolver::solve(sketch);
+  (void)SketchSolver::solveStable(sketch);
   expect(near(length(sketch.lines()[0]), 50.0),
          "driving line length must survive endpoint drag");
 
@@ -89,7 +89,7 @@ void drivingDimensionsRemainStableAfterDragging() {
   expect(sketch.constraints().size() == 4,
          "X, Y and aligned constraints must coexist");
   sketch.translatePoint(second, 17.0, 23.0);
-  (void)BasicSketchSolver::solve(sketch);
+  (void)SketchSolver::solveStable(sketch);
   const Point a = *sketch.referencedPoint(first);
   const Point b = *sketch.referencedPoint(second);
   expect(near(std::abs(b.xMm - a.xMm), 30.0), "X must return to 30");
@@ -103,7 +103,7 @@ void centerReferencesMoveWholeObjects() {
   sketch.addCircle({10.0, 10.0}, 8.0);
   sketch.addLine({0.0, 0.0}, {0.0, 5.0});
   const GeometryId circleId = sketch.circleId(0);
-  const PointReference circleCenter{kInvalidGeometryId, true, circleId};
+  const PointReference circleCenter{CircleCenterReference{circleId}};
   const PointReference linePoint{sketch.lineId(0), true};
   sketch.addConstraint(pointConstraint(ConstraintType::DistanceX, linePoint,
                                        circleCenter, 25.0));
@@ -116,8 +116,8 @@ void centerReferencesMoveWholeObjects() {
   const std::size_t rectangleId = sketch.lines()[1].elementId;
   sketch.markElementCenterNode(rectangleId);
   const Point before = *sketch.elementCenterPoint(rectangleId);
-  const PointReference rectangleCenter{kInvalidGeometryId, true,
-                                       kInvalidGeometryId, rectangleId};
+  const PointReference rectangleCenter{
+      CompositeCenterReference{rectangleId}};
   expect(sketch.translatePoint(rectangleCenter, 12.0, -7.0),
          "rectangle center must be translatable");
   const Point after = *sketch.elementCenterPoint(rectangleId);
@@ -131,20 +131,37 @@ void centerReferencesMoveWholeObjects() {
 }
 
 void dimensionEditingPreservesKind() {
-  Sketch sketch;
-  sketch.addLine({0.0, 0.0}, {10.0, 10.0});
-  sketch.addLine({30.0, 40.0}, {45.0, 45.0});
-  const PointReference a{sketch.lineId(0), true};
-  const PointReference b{sketch.lineId(1), true};
   for (DimensionKind kind : {DimensionKind::PointDistanceX,
                              DimensionKind::PointDistanceY,
                              DimensionKind::PointDistance}) {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 10.0});
+    sketch.addLine({30.0, 40.0}, {45.0, 45.0});
+    const PointReference a{sketch.lineId(0), true};
+    const PointReference b{sketch.lineId(1), true};
     Dimension dimension;
     dimension.kind = kind;
     dimension.firstPoint = a;
     dimension.secondPoint = b;
     dimension.valueMm = 10.0;
-    sketch.storeDimension(dimension);
+    Constraint constraint;
+    switch (kind) {
+      case DimensionKind::PointDistanceX:
+        constraint = Constraint{DistanceXConstraint{a, b, 10.0}};
+        break;
+      case DimensionKind::PointDistanceY:
+        constraint = Constraint{DistanceYConstraint{a, b, 10.0}};
+        break;
+      case DimensionKind::PointDistance:
+        constraint = Constraint{DistanceConstraint{a, b, 10.0}};
+        break;
+      default:
+        fail("unexpected dimension kind");
+    }
+    dimension.constraintId = sketch.addConstraint(std::move(constraint));
+    expect(dimension.constraintId != kInvalidConstraintId &&
+               sketch.storeDimension(dimension),
+           "typed dimension must be stored");
     const std::size_t index = sketch.dimensions().size() - 1;
     expect(sketch.setDimensionPlacement(index, 22.0, 0.75),
            "dimension placement must be editable");
@@ -250,7 +267,8 @@ void tangencyAndPointRelationsStayValidAfterMovement() {
   sketch.addConstraint(geometryConstraint(ConstraintType::Diameter, circle,
                                           kInvalidGeometryId, 20.0));
   sketch.translateElement(sketch.lines()[0].elementId, 0.0, 5.0);
-  (void)BasicSketchSolver::solve(sketch);
+  expect(SketchSolver::solveStable(sketch).converged,
+         "equation solver must preserve the tangent component");
   const Point center = sketch.circles()[0].center;
   expect(near(std::abs(center.yMm - 5.0), 10.0) &&
              near(std::abs(center.xMm), 10.0),
@@ -279,7 +297,7 @@ void tangencyAndPointRelationsStayValidAfterMovement() {
                                         firstEnd, 0.0);
   onCircle.firstGeometry = points.circleId(0);
   points.addConstraint(onCircle);
-  (void)BasicSketchSolver::solve(points);
+  (void)SketchSolver::solveStable(points);
   expect(std::isfinite(points.referencedPoint(firstEnd)->xMm),
          "mixed point relations must solve without dangling references");
 }
@@ -306,15 +324,15 @@ void lineArcTangencySurvivesMovement() {
          "Line-Arc Tangent must follow carrier movement");
 
   sketch.translateArcById(arcId, 0.0, 12.0);
-  expect(near(sketch.arcs()[0].center.yMm, 15.0),
-         "dragging a constrained Arc must reapply Tangent");
+  expect(near(sketch.arcs()[0].center.yMm, 27.0),
+         "Arc drag hint must move the free tangent component without locks");
   expect(!analyzeConstraintSystem(sketch).conflicting,
          "Line-Arc Tangent must remain satisfied after dragging");
 
   sketch.removeArc(0);
   expect(sketch.constraints().empty(),
          "deleting an Arc must remove its Tangent constraint");
-  expect(BasicSketchSolver::solve(sketch).invalidReferences == 0,
+  expect(SketchSolver::solveStable(sketch).invalidReferences == 0,
          "Arc deletion must not leave dangling solver references");
 }
 
@@ -350,7 +368,7 @@ void rectangleSideArcDragIsStable() {
   sketch.translateElement(sketch.lines()[0].elementId, 7.0, -3.0);
   expect(!analyzeConstraintSystem(sketch).conflicting,
          "dragging the attached rectangle must keep both endpoints valid");
-  expect(BasicSketchSolver::solve(sketch).invalidReferences == 0,
+  expect(SketchSolver::solveStable(sketch).invalidReferences == 0,
          "rectangle/Arc drag must not leave invalid solver references");
 
   const auto firstLinePoint = sketch.referencedPoint(topStart);
@@ -427,10 +445,13 @@ void pointOnCircleSurvivesFurtherSketchEdits() {
   // solving and constraint removal after the relation exists.
   sketch.addRectangle({25.0, 5.0}, {45.0, 20.0});
   sketch.addLine({0.0, 30.0}, {15.0, 37.0});
-  expect(sketch.setLineHorizontalById(sketch.lineId(5)),
+  Constraint horizontal;
+  horizontal.type = ConstraintType::Horizontal;
+  horizontal.firstGeometry = sketch.lineId(5);
+  expect(sketch.tryApplyConstraint(horizontal).accepted(),
          "new line must accept Horizontal after Point-on-Circle");
   sketch.translateCircleById(circleId, 3.0, -2.0);
-  const SolveResult result = BasicSketchSolver::solve(sketch);
+  const SolveResult result = SketchSolver::solveStable(sketch);
   expect(result.invalidReferences == 0,
          "Point-on-Circle must remain a valid solver reference after edits");
   const auto point = sketch.referencedPoint(constrainedPoint);
@@ -438,7 +459,7 @@ void pointOnCircleSurvivesFurtherSketchEdits() {
          "constrained point must remain finite after later sketch edits");
   expect(sketch.removeConstraint(pointOnCircleId),
          "Point-on-Circle must remain removable after later edits");
-  (void)BasicSketchSolver::solve(sketch);
+  (void)SketchSolver::solveStable(sketch);
 }
 
 void deletionStressHasNoDanglingReferenceCrash() {
@@ -454,7 +475,7 @@ void deletionStressHasNoDanglingReferenceCrash() {
       geometryConstraint(ConstraintType::Tangent, sketch.lineId(0),
                          sketch.circleId(0)));
   sketch.removeLine(0);
-  const SolveResult result = BasicSketchSolver::solve(sketch);
+  const SolveResult result = SketchSolver::solveStable(sketch);
   expect(result.invalidReferences == 0,
          "geometry deletion must proactively remove dangling references");
   expect(!sketch.removeConstraint(stale),
@@ -754,9 +775,9 @@ void tangentAngleDimensionAndLengthConvergeTogether() {
   pointOnCircle.secondPoint = {line, false};
   expect(sketch.addConstraint(pointOnCircle) != kInvalidConstraintId,
          "angle-dimension line end must attach to circle");
-  expect(sketch.addConstraint(
-             geometryConstraint(ConstraintType::Tangent, line, circle)) !=
-             kInvalidConstraintId,
+  const auto axisTangent = sketch.addConstraint(
+      geometryConstraint(ConstraintType::Tangent, line, circle));
+  expect(axisTangent != kInvalidConstraintId,
          "tangency must be accepted before the 90 degree dimension");
   expect(sketch.addConstraint(
              geometryConstraint(ConstraintType::Angle, projection, line,
@@ -815,14 +836,14 @@ void tangencyFollowsDraggedLineWhenCircleCenterIsAxisConstrained() {
   endOnCircle.secondPoint = {line, false};
   expect(sketch.addConstraint(endOnCircle) != kInvalidConstraintId,
          "tangent endpoint must attach to the circle");
-  expect(sketch.addConstraint(
-             geometryConstraint(ConstraintType::Tangent, line, circle)) !=
-             kInvalidConstraintId,
+  const auto draggedTangent = sketch.addConstraint(
+      geometryConstraint(ConstraintType::Tangent, line, circle));
+  expect(draggedTangent != kInvalidConstraintId,
          "axis-constrained circle must accept line tangency");
 
   expect(sketch.translatePoint({line, true}, -10.0, 0.0),
          "tangent line base must remain draggable");
-  const auto solved = BasicSketchSolver::solveStable(sketch);
+  const auto solved = SketchSolver::solveStable(sketch);
   expect(solved.converged,
          "tangency must reconverge after dragging the line base");
   const auto& result = sketch.lines()[*sketch.lineIndex(line)];
@@ -1040,7 +1061,12 @@ void bezierPointsParticipateInSketchMechanics() {
   dimension.firstPoint = handle;
   dimension.secondPoint = endpoint;
   dimension.valueMm = 8.0;
-  sketch.storeDimension(dimension);
+  dimension.constraintId = sketch.addConstraint(Constraint{
+      DistanceConstraint{handle, endpoint, std::nullopt},
+      ConstraintMode::Reference});
+  expect(dimension.constraintId != kInvalidConstraintId &&
+             sketch.storeDimension(dimension),
+         "Bezier point dimension must have a typed link");
   expect(sketch.dimensions().size() == 1 &&
              sketch.dimensions()[0].id != kInvalidDimensionId,
          "Bezier points must accept point dimensions");

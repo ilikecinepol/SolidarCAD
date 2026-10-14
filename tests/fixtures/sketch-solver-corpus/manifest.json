@@ -1,0 +1,72 @@
+{
+  "schema": "solidarcad-sketch-solver-corpus-v1",
+  "expectedSolver": "equation-v2",
+  "cases": [
+    {
+      "id": "all-constraint-types",
+      "test": "sketch_equation_kernel_tests",
+      "fixture": "completeFixture",
+      "expected": "22 typed rules, finite residuals and Jacobian rows"
+    },
+    {
+      "id": "constraint-order-permutations",
+      "test": "sketch_equation_kernel_tests",
+      "fixture": "persistedOrderCannotChangeCanonicalSystem",
+      "expected": "identical system hash and canonical candidate"
+    },
+    {
+      "id": "under-full-over-status",
+      "test": "sketch_nonlinear_solver_tests",
+      "fixture": "redundantAndConflictingConstraintsAreTyped",
+      "expected": "typed under-constrained, fully-constrained and conflicting results"
+    },
+    {
+      "id": "tangent-line-circle-arc-bezier",
+      "test": "sketch_equation_kernel_tests",
+      "fixture": "everyTangentCombinationHasJacobianOracle",
+      "expected": "finite analytic residual and Jacobian for every supported pair"
+    },
+    {
+      "id": "rectangle-slot-polygon-chain",
+      "test": "sketch_constraint_integrity_tests",
+      "fixture": "rectangleSlotPolygonChainsStayExplicit",
+      "expected": "three explicit composite/constraint components solve without coordinate-proximity topology"
+    },
+    {
+      "id": "mirror-trim-undo",
+      "test": "sketch_rectangle_dimension_ui_tests",
+      "fixture": "applyMirrorSelection",
+      "expected": "derived geometry, selection and Undo restore exact semantic state"
+    },
+    {
+      "id": "delete-undo-redo-identities",
+      "test": "sketch_schema_tests",
+      "fixture": "undoRedoPreservesExactIdentityAndMode",
+      "expected": "GeometryId, ConstraintId and DimensionId remain stable"
+    },
+    {
+      "id": "delete-reference-stress",
+      "test": "sketch_regression_tests",
+      "fixture": "deletionStressHasNoDanglingReferenceCrash",
+      "expected": "no dangling references and no automatic unrelated removal"
+    },
+    {
+      "id": "persistence-v1-v2-v3",
+      "test": "project_file_tests",
+      "fixture": "unsolved-pose-v1.solidar",
+      "expected": "load, solve, save, reload and edit preserve canonical semantics"
+    },
+    {
+      "id": "explicit-topology-only",
+      "test": "sketch_constraint_integrity_tests",
+      "fixture": "coordinateProximityDoesNotDefineLocalSolveComponents",
+      "expected": "equal coordinates do not connect components or propagate drag"
+    },
+    {
+      "id": "large-independent-connected",
+      "test": "stage6_sketch_solver_benchmark",
+      "fixture": "tangency_diagnostics",
+      "expected": "stable semantic hash plus p50, p95, p99 and allocation metrics"
+    }
+  ]
+}

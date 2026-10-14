@@ -203,6 +203,8 @@ struct SketchSelectionBoxState {
 
 struct SketchDragInteractionState {
   bool active{};
+  bool referenceSet{};
+  sketch::Point reference;
   sketch::Point current;
 };
 
@@ -304,8 +306,9 @@ class SketchInteractionController final {
   void updateMirror(SketchMirrorInteractionState mirror) noexcept;
   void updateTrim(SketchTrimInteractionState trim) noexcept;
 
+  void beginPointDrag(SketchPointDragTarget target) noexcept;
   void beginPointDrag(SketchPointDragTarget target,
-                      sketch::Point current = {}) noexcept;
+                      sketch::Point current) noexcept;
   void updatePointDrag(sketch::Point current) noexcept;
   void completePointDrag() noexcept;
   void cancelPointDrag() noexcept;

@@ -92,6 +92,55 @@ void require(bool condition,
   }
 }
 
+bool storeReferenceDimension(Sketch& sketch, Dimension dimension) {
+  Constraint annotation;
+  switch (dimension.kind) {
+    case DimensionKind::LineLength:
+      annotation = Constraint{
+          LengthConstraint{dimension.geometryId, std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::CircleDiameter:
+      annotation = Constraint{
+          DiameterConstraint{dimension.geometryId, std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::PointDistance:
+      annotation = Constraint{
+          DistanceConstraint{dimension.firstPoint, dimension.secondPoint,
+                             std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::PointDistanceX:
+      annotation = Constraint{
+          DistanceXConstraint{dimension.firstPoint, dimension.secondPoint,
+                              std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::PointDistanceY:
+      annotation = Constraint{
+          DistanceYConstraint{dimension.firstPoint, dimension.secondPoint,
+                              std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::LineAngle:
+      annotation = Constraint{
+          AngleConstraint{dimension.geometryId, dimension.secondPoint.lineId,
+                          std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::LineDistance:
+      annotation = Constraint{
+          LineDistanceConstraint{dimension.geometryId,
+                                 dimension.secondPoint.lineId, std::nullopt},
+          ConstraintMode::Reference};
+      break;
+  }
+  dimension.constraintId = sketch.addConstraint(std::move(annotation));
+  return dimension.constraintId != kInvalidConstraintId &&
+         sketch.storeDimension(dimension);
+}
+
 void transactionalConstraintDoesNotBreakOldOne() {
   Sketch sketch;
   sketch.addLine(
@@ -258,16 +307,12 @@ void incompatibleDatumAxisDoesNotReenterSolver() {
   const PointReference start{
       sketch.lineId(0), true};
 
-  // Explicit IDs model project loading, where legacy or hand-edited files
-  // remain permissive and conflicting constraints are diagnosed instead of
-  // transactionally rejected.
+  // The persistence-only bulk boundary may restore a structurally valid but
+  // conflicting system so that diagnostics remain available.
   Constraint onYAxis;
   onYAxis.id = 1;
   onYAxis.type = ConstraintType::PointOnYAxis;
   onYAxis.secondPoint = start;
-  require(
-      sketch.addConstraint(onYAxis) == 1,
-      "explicit Y-axis constraint must load");
 
   Constraint distanceFromYAxis;
   distanceFromYAxis.id = 2;
@@ -275,12 +320,11 @@ void incompatibleDatumAxisDoesNotReenterSolver() {
   distanceFromYAxis.firstPoint.origin = true;
   distanceFromYAxis.secondPoint = start;
   distanceFromYAxis.value = 10.0;
-  require(
-      sketch.addConstraint(distanceFromYAxis) == 2,
-      "conflicting explicit axis distance must load without recursion");
+  require(sketch.restoreConstraints({onYAxis, distanceFromYAxis}),
+          "conflicting persisted datum constraints must restore");
 
   const auto solved =
-      BasicSketchSolver::solveStable(sketch);
+      SketchSolver::solveStable(sketch);
   require(
       !solved.converged,
       "incompatible datum constraints must be reported as conflicting");
@@ -309,7 +353,12 @@ void removingArcDropsPointAndConstraintReferences() {
   endpointDistance.firstPoint = arcStart;
   endpointDistance.secondPoint = arcEnd;
   endpointDistance.valueMm = std::sqrt(200.0);
-  sketch.storeDimension(endpointDistance);
+  Constraint endpointReference{
+      DistanceConstraint{arcStart, arcEnd, std::nullopt},
+      ConstraintMode::Reference};
+  endpointDistance.constraintId = sketch.addConstraint(endpointReference);
+  CHECK(endpointDistance.constraintId != kInvalidConstraintId);
+  CHECK(sketch.storeDimension(endpointDistance));
 
   Constraint startCoincident;
   startCoincident.type = ConstraintType::Coincident;
@@ -324,7 +373,7 @@ void removingArcDropsPointAndConstraintReferences() {
   CHECK(sketch.addConstraint(endCoincident) != kInvalidConstraintId);
 
   CHECK(sketch.dimensions().size() == 1);
-  CHECK(sketch.constraints().size() == 2);
+  CHECK(sketch.constraints().size() == 3);
 
   sketch.removeArc(0);
 
@@ -351,7 +400,6 @@ void removingCenteredElementLineDropsCenterReferences() {
   centerDistance.firstPoint = origin;
   centerDistance.secondPoint = center;
   centerDistance.valueMm = std::sqrt(125.0);
-  sketch.storeDimension(centerDistance);
 
   Constraint centerConstraint;
   centerConstraint.type = ConstraintType::Distance;
@@ -361,6 +409,8 @@ void removingCenteredElementLineDropsCenterReferences() {
   const ConstraintId centerConstraintId =
       sketch.addConstraint(centerConstraint);
   CHECK(centerConstraintId != kInvalidConstraintId);
+  centerDistance.constraintId = centerConstraintId;
+  CHECK(sketch.storeDimension(centerDistance));
   CHECK(sketch.dimensions().size() == 1);
 
   sketch.removeLine(0);
@@ -398,14 +448,12 @@ void indexesAndConnectivityStayDeterministic() {
   lineCircle.type = ConstraintType::Coincident;
   lineCircle.firstPoint = PointReference{line, false};
   lineCircle.secondPoint.circleId = circle;
-  CHECK(sketch.addConstraint(lineCircle) == 101);
 
   Constraint circleArc;
   circleArc.id = 102;
   circleArc.type = ConstraintType::Coincident;
   circleArc.firstPoint.circleId = circle;
   circleArc.secondPoint.arcId = arc;
-  CHECK(sketch.addConstraint(circleArc) == 102);
 
   Constraint centerDistance;
   centerDistance.id = 103;
@@ -413,7 +461,11 @@ void indexesAndConnectivityStayDeterministic() {
   centerDistance.firstPoint.origin = true;
   centerDistance.secondPoint.elementCenterId = rectangleElement;
   centerDistance.value = 45.0;
-  CHECK(sketch.addConstraint(centerDistance) == 103);
+  auto restored = sketch.constraints();
+  restored.push_back(lineCircle);
+  restored.push_back(circleArc);
+  restored.push_back(centerDistance);
+  CHECK(sketch.restoreConstraints(std::move(restored)));
 
   CHECK(sketch.geometryLocation(line) ==
         std::optional<GeometryLocation>({GeometryKind::Line, 0}));
@@ -471,17 +523,17 @@ void componentSolveLeavesIndependentGeometryBitwiseStable() {
   CHECK(sketch.lines()[1].end.xMm == independent.end.xMm);
   CHECK(sketch.lines()[1].end.yMm == independent.end.yMm);
 
-  const auto result = BasicSketchSolver::solveStableComponent(
+  const auto result = SketchSolver::solveStableComponent(
       sketch, {sketch.lineId(0)});
   CHECK(result.componentsVisited == 1);
   CHECK(result.geometriesVisited == 1);
   CHECK(result.constraintsVisited == 1);
   CHECK(result.lockedSnapshotSize == 0);
 
-  const auto fullAfterPartial = BasicSketchSolver::solveStable(sketch);
+  const auto fullAfterPartial = SketchSolver::solveStable(sketch);
   CHECK(fullAfterPartial.passes > 0);
   CHECK(fullAfterPartial.componentsVisited == 2);
-  const auto unchanged = BasicSketchSolver::solveStable(sketch);
+  const auto unchanged = SketchSolver::solveStable(sketch);
   CHECK(unchanged.passes == 0);
   CHECK(unchanged.componentsVisited == 0);
   CHECK(unchanged.converged);
@@ -490,35 +542,36 @@ void componentSolveLeavesIndependentGeometryBitwiseStable() {
   lock.type = ConstraintType::Lock;
   lock.firstGeometry = sketch.lineId(0);
   CHECK(sketch.addConstraint(lock) != kInvalidConstraintId);
-  const auto locked = BasicSketchSolver::solveStableComponent(
+  const auto locked = SketchSolver::solveStableComponent(
       sketch, {sketch.lineId(0)});
   CHECK(locked.lockedSnapshotSize == 1);
   CHECK(locked.geometriesVisited == 1);
 }
 
-void partialSolveNeverPublishesFullSolveCache() {
+void rejectedConstraintNeverPoisonsFullSolveCache() {
   Sketch sketch;
   sketch.addLine({0.0, 0.0}, {10.0, 0.0});
   sketch.addLine({50.0, 2.0}, {60.0, 3.0});
+  const auto beforeRejected = sketch.semanticFingerprint();
   Constraint invalid;
   invalid.id = 700;
   invalid.type = ConstraintType::Horizontal;
   invalid.firstGeometry = 999999;
-  CHECK(sketch.addConstraint(invalid) == 700);
+  CHECK(sketch.addConstraint(invalid) == kInvalidConstraintId);
+  CHECK(sketch.semanticFingerprint() == beforeRejected);
   Constraint local;
-  local.id = 701;
   local.type = ConstraintType::Horizontal;
   local.firstGeometry = sketch.lineId(1);
-  CHECK(sketch.addConstraint(local) == 701);
+  CHECK(sketch.addConstraint(local) != kInvalidConstraintId);
 
-  const auto partial = BasicSketchSolver::solveStableComponent(
+  const auto partial = SketchSolver::solveStableComponent(
       sketch, {sketch.lineId(1)});
   CHECK(partial.converged);
   CHECK(partial.invalidReferences == 0);
-  const auto full = BasicSketchSolver::solveStable(sketch);
-  CHECK(!full.converged);
-  CHECK(full.invalidReferences == 1);
-  CHECK(full.constraintsVisited == 2);
+  const auto full = SketchSolver::solveStable(sketch);
+  CHECK(full.converged);
+  CHECK(full.invalidReferences == 0);
+  CHECK(full.constraintsVisited == 1);
 }
 
 void sharedOriginDoesNotJoinComponents() {
@@ -527,13 +580,12 @@ void sharedOriginDoesNotJoinComponents() {
   sketch.addLine({0.0, 8.0}, {0.0, 12.0});
   for (std::size_t index = 0; index < 2; ++index) {
     Constraint distance;
-    distance.id = 800 + index;
     distance.type = index == 0 ? ConstraintType::DistanceX
                                : ConstraintType::DistanceY;
     distance.firstPoint.origin = true;
     distance.secondPoint = {sketch.lineId(index), true};
     distance.value = index == 0 ? 5.0 : 8.0;
-    CHECK(sketch.addConstraint(distance) == 800 + index);
+    CHECK(sketch.addConstraint(distance) != kInvalidConstraintId);
   }
   const auto components = sketch.constraintComponents();
   CHECK(components.size() == 2);
@@ -607,13 +659,12 @@ void deltaApplyIsAtomicAndIndependentOfConstraintIdOrder() {
   first.id = 20;
   first.type = ConstraintType::Horizontal;
   first.firstGeometry = shared;
-  CHECK(sketch.addConstraint(first) == 20);
   Constraint second;
   second.id = 10;
   second.type = ConstraintType::Length;
   second.firstGeometry = shared;
   second.value = 20.0;
-  CHECK(sketch.addConstraint(second) == 10);
+  CHECK(sketch.restoreConstraints({first, second}));
   CHECK(sketch.constraints()[0].id == 20);
   CHECK(sketch.constraints()[1].id == 10);
   const auto beforeHash = sketch.semanticFingerprint();
@@ -685,7 +736,7 @@ void dimensionIdsAndAllocatorAreDeltaSafe() {
   Sketch before;
   before.addLine({0.0, 0.0}, {10.0, 0.0});
   Sketch after = before;
-  after.storeDimension(makeDimension(after.lineId(0), 1));
+  CHECK(storeReferenceDimension(after, makeDimension(after.lineId(0), 1)));
   CHECK(after.dimensions().size() == 1);
   CHECK(after.dimensions()[0].id == 1);
 
@@ -698,7 +749,7 @@ void dimensionIdsAndAllocatorAreDeltaSafe() {
   CHECK(replay.applyDelta(addition, true));
   CHECK(replay.dimensions().size() == 1);
   Dimension automatic = makeDimension(replay.lineId(0), kInvalidDimensionId);
-  replay.storeDimension(automatic);
+  CHECK(storeReferenceDimension(replay, automatic));
   CHECK(replay.dimensions().size() == 2);
   CHECK(replay.dimensions()[1].id != kInvalidDimensionId);
   CHECK(replay.dimensions()[1].id != replay.dimensions()[0].id);
@@ -714,7 +765,8 @@ void dimensionIdsAndAllocatorAreDeltaSafe() {
 
   Sketch journal = before;
   journal.beginDeltaJournal();
-  journal.storeDimension(makeDimension(journal.lineId(0), 1));
+  CHECK(storeReferenceDimension(journal,
+                                makeDimension(journal.lineId(0), 1)));
   const auto journalDelta = journal.finishDeltaJournal();
   CHECK(journalDelta.beforeNextDimensionId == 1);
   CHECK(journalDelta.afterNextDimensionId == 2);
@@ -725,9 +777,11 @@ void dimensionIdsAndAllocatorAreDeltaSafe() {
 
   // A pure persistent-ID replacement must not disappear from makeDelta.
   Sketch idBefore = before;
-  idBefore.storeDimension(makeDimension(idBefore.lineId(0), 7));
+  CHECK(storeReferenceDimension(idBefore,
+                                makeDimension(idBefore.lineId(0), 7)));
   Sketch idAfter = before;
-  idAfter.storeDimension(makeDimension(idAfter.lineId(0), 9));
+  CHECK(storeReferenceDimension(idAfter,
+                                makeDimension(idAfter.lineId(0), 9)));
   const auto idOnly = Sketch::makeDelta(idBefore, idAfter);
   CHECK(idOnly.dimensions.size() == 1);
   CHECK(idOnly.dimensions[0].before->id == 7);
@@ -741,9 +795,11 @@ void dimensionIdsAndAllocatorAreDeltaSafe() {
   // still chooses a genuinely free, nonzero automatic ID.
   Sketch high;
   high.addLine({0.0, 0.0}, {10.0, 0.0});
-  high.storeDimension(makeDimension(
-      high.lineId(0), std::numeric_limits<DimensionId>::max()));
-  high.storeDimension(makeDimension(high.lineId(0), kInvalidDimensionId));
+  CHECK(storeReferenceDimension(
+      high, makeDimension(high.lineId(0),
+                          std::numeric_limits<DimensionId>::max())));
+  CHECK(storeReferenceDimension(
+      high, makeDimension(high.lineId(0), kInvalidDimensionId)));
   CHECK(high.dimensions().size() == 2);
   CHECK(high.dimensions()[0].id == std::numeric_limits<DimensionId>::max());
   CHECK(high.dimensions()[1].id != kInvalidDimensionId);
@@ -762,8 +818,10 @@ void dimensionIdsAndAllocatorAreDeltaSafe() {
   checkAtomicRejection(zeroId);
 
   Sketch twoAfter = before;
-  twoAfter.storeDimension(makeDimension(twoAfter.lineId(0), 1));
-  twoAfter.storeDimension(makeDimension(twoAfter.lineId(0), 2));
+  CHECK(storeReferenceDimension(
+      twoAfter, makeDimension(twoAfter.lineId(0), 1)));
+  CHECK(storeReferenceDimension(
+      twoAfter, makeDimension(twoAfter.lineId(0), 2)));
   auto duplicateId = Sketch::makeDelta(before, twoAfter);
   CHECK(duplicateId.dimensions.size() == 2);
   duplicateId.dimensions[1].after->id = 1;
@@ -794,8 +852,15 @@ void persistedSemanticFingerprintIncludesNonSolverFields() {
   dimension.valueMm = 10.0;
   dimension.offsetMm = 7.0;
   dimension.angleRad = 0.25;
-  dimensioned.storeDimension(dimension);
-  CHECK(dimensioned.solverFingerprint() == solverHash);
+  Constraint dimensionReference{
+      DistanceXConstraint{dimension.firstPoint, dimension.secondPoint,
+                          std::nullopt},
+      ConstraintMode::Reference};
+  dimension.constraintId = dimensioned.addConstraint(dimensionReference);
+  CHECK(dimension.constraintId != kInvalidConstraintId);
+  const auto linkedSolverHash = dimensioned.solverFingerprint();
+  CHECK(dimensioned.storeDimension(dimension));
+  CHECK(dimensioned.solverFingerprint() == linkedSolverHash);
   CHECK(dimensioned.semanticFingerprint() != semanticHash);
   CHECK(!dimensioned.semanticallyEqual(base));
 
@@ -828,9 +893,12 @@ void persistedSemanticFingerprintIncludesNonSolverFields() {
     Dimension item;
     item.kind = DimensionKind::PointDistance;
     item.firstPoint = point;
-    item.secondPoint.origin = true;
+    if (point.origin)
+      item.secondPoint = PointReference{references.lineId(0), true};
+    else
+      item.secondPoint.origin = true;
     item.valueMm = 2.0;
-    candidate.storeDimension(item);
+    CHECK(storeReferenceDimension(candidate, item));
     return candidate.semanticFingerprint();
   };
   PointReference linePoint;
@@ -862,7 +930,7 @@ void persistedSemanticFingerprintIncludesNonSolverFields() {
   placed.kind = DimensionKind::LineLength;
   placed.geometryId = placement.lineId(0);
   placed.valueMm = 10.0;
-  placement.storeDimension(placed);
+  CHECK(storeReferenceDimension(placement, placed));
   const auto placementBefore = placement.semanticFingerprint();
   placement.beginDeltaJournal();
   CHECK(placement.setDimensionPlacement(0, 9.0, 0.75));
@@ -889,27 +957,27 @@ void persistedSemanticFingerprintIncludesNonSolverFields() {
   CHECK(counters.semanticFingerprint() == countersBefore);
 }
 
-void orphanConstraintJournalRollbackIsReversible() {
+void constraintJournalRollbackIsReversible() {
   Sketch sketch;
   sketch.addLine({0.0, 0.0}, {10.0, 0.0});
-  Constraint orphan;
-  orphan.id = 700;
-  orphan.type = ConstraintType::Horizontal;
-  orphan.firstGeometry = 999999;
-  CHECK(sketch.addConstraint(orphan) == 700);
+  Constraint horizontal;
+  horizontal.type = ConstraintType::Horizontal;
+  horizontal.firstGeometry = sketch.lineId(0);
+  const auto horizontalId = sketch.addConstraint(horizontal);
+  CHECK(horizontalId != kInvalidConstraintId);
   const auto original = sketch.semanticFingerprint();
 
   sketch.beginDeltaJournal();
-  CHECK(sketch.removeConstraint(700));
+  CHECK(sketch.removeConstraint(horizontalId));
   const auto deletion = sketch.finishDeltaJournal();
   CHECK(sketch.constraints().empty());
   CHECK(sketch.applyDelta(deletion, false));
   CHECK(sketch.semanticFingerprint() == original);
   CHECK(sketch.constraints().size() == 1);
-  CHECK(sketch.constraints()[0].id == 700);
+  CHECK(sketch.constraints()[0].id == horizontalId);
 
   sketch.beginDeltaJournal();
-  CHECK(sketch.removeConstraint(700));
+  CHECK(sketch.removeConstraint(horizontalId));
   const auto cancelled = sketch.cancelDeltaJournal();
   CHECK(!cancelled.empty());
   CHECK(sketch.semanticFingerprint() == original);
@@ -970,19 +1038,28 @@ void multiDeleteJournalUsesTransactionOriginIndices() {
   first.id = 44;
   first.type = ConstraintType::Horizontal;
   first.firstGeometry = mixed.lineId(0);
-  CHECK(mixed.addConstraint(first) == 44);
   Constraint second = first;
   second.id = 12;
   second.firstGeometry = mixed.lineId(1);
-  CHECK(mixed.addConstraint(second) == 12);
+  Constraint firstDiameter{
+      DiameterConstraint{mixed.circleId(0), std::nullopt},
+      ConstraintMode::Reference, 45};
+  Constraint secondDiameter{
+      DiameterConstraint{mixed.circleId(2), std::nullopt},
+      ConstraintMode::Reference, 46};
+  CHECK(mixed.restoreConstraints(
+      {first, second, firstDiameter, secondDiameter}));
   Dimension dimension;
   dimension.kind = DimensionKind::CircleDiameter;
   dimension.geometryId = mixed.circleId(0);
   dimension.valueMm = 4.0;
-  mixed.storeDimension(dimension);
+  dimension.constraintId = 45;
+  CHECK(mixed.storeDimension(dimension));
+  dimension.id = kInvalidDimensionId;
   dimension.geometryId = mixed.circleId(2);
   dimension.valueMm = 8.0;
-  mixed.storeDimension(dimension);
+  dimension.constraintId = 46;
+  CHECK(mixed.storeDimension(dimension));
   const auto mixedBefore = mixed.semanticFingerprint();
   const std::vector<GeometryId> lineIds{mixed.lineId(0), mixed.lineId(1)};
   const std::vector<GeometryId> circleIds{mixed.circleId(0), mixed.circleId(1),
@@ -995,7 +1072,9 @@ void multiDeleteJournalUsesTransactionOriginIndices() {
   mixed.removeArc(2);
   mixed.removeArc(0);
   mixed.removeLine(0);
-  CHECK(mixed.setLineLength(0, 3.0));
+  CHECK(mixed.translatePoint(PointReference{mixed.lineId(0), false},
+                             1.0, 0.0)
+            .committed());
   const auto mixedDelta = mixed.finishDeltaJournal();
   const auto mixedAfter = mixed.semanticFingerprint();
   for (int cycle = 0; cycle < 2; ++cycle) {
@@ -1036,13 +1115,14 @@ void multiDeleteJournalUsesTransactionOriginIndices() {
   centerConstraint.firstPoint.elementCenterId = 700;
   centerConstraint.secondPoint.elementCenterId = 800;
   centerConstraint.value = 20.0;
-  CHECK(centered.addConstraint(centerConstraint) == 91);
+  CHECK(centered.restoreConstraints({centerConstraint}));
   Dimension centerDimension;
   centerDimension.kind = DimensionKind::PointDistanceX;
   centerDimension.firstPoint.elementCenterId = 700;
   centerDimension.secondPoint.elementCenterId = 800;
   centerDimension.valueMm = 20.0;
-  centered.storeDimension(centerDimension);
+  centerDimension.constraintId = 91;
+  CHECK(centered.storeDimension(centerDimension));
   const auto centersBefore = centered.semanticFingerprint();
   centered.beginDeltaJournal();
   centered.removeElement(800);
@@ -1079,7 +1159,7 @@ void indexedDimensionRemovalIsStableAndReversible() {
     dimension.valueMm = 10.0 + static_cast<double>(index);
     dimension.offsetMm = 2.0 + static_cast<double>(index);
     dimension.angleRad = 0.1 * static_cast<double>(index);
-    sketch.storeDimension(dimension);
+    CHECK(storeReferenceDimension(sketch, dimension));
   }
   const auto original = sketch.semanticFingerprint();
   sketch.beginDeltaJournal();
@@ -1107,13 +1187,13 @@ void indexedDimensionRemovalIsStableAndReversible() {
   base.kind = DimensionKind::LineLength;
   base.geometryId = nested.lineId(0);
   base.valueMm = 10.0;
-  nested.storeDimension(base);
+  CHECK(storeReferenceDimension(nested, base));
   const auto nestedBefore = nested.semanticFingerprint();
   nested.beginDeltaJournal();
   nested.beginDeltaJournal();
   Dimension temporary = base;
   temporary.valueMm = 12.0;
-  nested.storeDimension(temporary);
+  CHECK(storeReferenceDimension(nested, temporary));
   CHECK(nested.dimensions().size() == 2);
   static_cast<void>(nested.cancelDeltaJournal());
   CHECK(nested.dimensions().size() == 1);
@@ -1124,7 +1204,7 @@ void indexedDimensionRemovalIsStableAndReversible() {
   CHECK(nested.semanticFingerprint() == nestedBefore);
 }
 
-void coordinateJunctionsDefineLocalSolveComponents() {
+void coordinateProximityDoesNotDefineLocalSolveComponents() {
   Sketch sketch;
   sketch.addLine({0.0, 0.0}, {10.0, 0.0});
   sketch.addLine({10.0 + 0.5e-7, 0.0}, {10.0, 5.0});
@@ -1135,7 +1215,7 @@ void coordinateJunctionsDefineLocalSolveComponents() {
   const auto third = sketch.lineId(2);
   const auto separate = sketch.lineId(3);
   CHECK(sketch.connectedComponent({first}).geometryIds ==
-        std::vector<GeometryId>({first, second, third}));
+        std::vector<GeometryId>({first}));
   CHECK(sketch.connectedComponent({separate}).geometryIds ==
         std::vector<GeometryId>({separate}));
 
@@ -1144,21 +1224,25 @@ void coordinateJunctionsDefineLocalSolveComponents() {
   dynamic.addLine({10.0 + 0.5e-7, 0.0}, {10.0, 5.0});
   const auto dynamicFirst = dynamic.lineId(0);
   const auto dynamicSecond = dynamic.lineId(1);
-  CHECK(dynamic.connectedComponent({dynamicFirst}).geometryIds.size() == 2);
+  CHECK(dynamic.connectedComponent({dynamicFirst}).geometryIds ==
+        std::vector<GeometryId>({dynamicFirst}));
   dynamic.translateLinesByIds({dynamicSecond}, 1.0, 0.0);
   CHECK(dynamic.connectedComponent({dynamicFirst}).geometryIds ==
         std::vector<GeometryId>({dynamicFirst}));
   dynamic.translateLinesByIds({dynamicSecond}, -1.0, 0.0);
-  CHECK(dynamic.connectedComponent({dynamicFirst}).geometryIds.size() == 2);
+  CHECK(dynamic.connectedComponent({dynamicFirst}).geometryIds ==
+        std::vector<GeometryId>({dynamicFirst}));
 
   const Line untouched = sketch.lines()[3];
   const auto original = sketch.semanticFingerprint();
   sketch.beginDeltaJournal();
-  CHECK(sketch.setLineLength(0, 12.0));
+  CHECK(sketch.translatePoint(PointReference{sketch.lineId(0), false},
+                              2.0, 0.0)
+            .committed());
   const auto delta = sketch.finishDeltaJournal();
   CHECK(!delta.empty());
-  CHECK(sketch.lines()[0].end.xMm == sketch.lines()[1].start.xMm);
-  CHECK(sketch.lines()[0].end.yMm == sketch.lines()[1].start.yMm);
+  CHECK(sketch.lines()[0].end.xMm != sketch.lines()[1].start.xMm);
+  CHECK(sketch.lines()[1].start.xMm == 10.0 + 0.5e-7);
   CHECK(sketch.lines()[3].start.xMm == untouched.start.xMm);
   CHECK(sketch.lines()[3].end.xMm == untouched.end.xMm);
   const auto edited = sketch.semanticFingerprint();
@@ -1167,12 +1251,12 @@ void coordinateJunctionsDefineLocalSolveComponents() {
   CHECK(sketch.applyDelta(delta, true));
   CHECK(sketch.semanticFingerprint() == edited);
 
-  const auto result = BasicSketchSolver::solveStableComponent(sketch, {first});
+  const auto result = SketchSolver::solveStableComponent(sketch, {first});
   CHECK(result.componentsVisited == 1);
-  CHECK(result.geometriesVisited == 3);
+  CHECK(result.geometriesVisited == 1);
 }
 
-void circleCenterCoordinateJunctionsAreTransitiveAndReversible() {
+void circleCenterCoordinateProximityIsNotTopology() {
   Sketch sketch;
   sketch.addLine({0.0, 0.0}, {10.0, 0.0});
   sketch.addCircle({10.0 + 0.5e-7, 0.0}, 2.0);
@@ -1183,19 +1267,21 @@ void circleCenterCoordinateJunctionsAreTransitiveAndReversible() {
   const auto chainedLine = sketch.lineId(1);
   const auto outsideCircle = sketch.circleId(1);
   CHECK(sketch.connectedComponent({line}).geometryIds ==
-        std::vector<GeometryId>({line, circle, chainedLine}));
+        std::vector<GeometryId>({line}));
   CHECK(sketch.connectedComponent({outsideCircle}).geometryIds ==
         std::vector<GeometryId>({outsideCircle}));
 
   const Circle untouched = sketch.circles()[1];
   const auto before = sketch.semanticFingerprint();
   sketch.beginDeltaJournal();
-  CHECK(sketch.setLineLength(0, 12.0));
+  CHECK(sketch.translatePoint(PointReference{sketch.lineId(0), false},
+                              2.0, 0.0)
+            .committed());
   const auto delta = sketch.finishDeltaJournal();
   CHECK(!delta.empty());
   CHECK(std::abs(sketch.lines()[0].end.xMm - 12.0) <= 1e-9);
-  CHECK(std::abs(sketch.circles()[0].center.xMm - 12.0) <= 1e-9);
-  CHECK(std::abs(sketch.lines()[1].start.xMm - 12.0) <= 1e-9);
+  CHECK(std::abs(sketch.circles()[0].center.xMm - (10.0 + 0.5e-7)) <= 1e-12);
+  CHECK(std::abs(sketch.lines()[1].start.xMm - (10.0 + 1.4e-7)) <= 1e-12);
   CHECK(sketch.circles()[1].center.xMm == untouched.center.xMm);
   CHECK(sketch.circles()[1].center.yMm == untouched.center.yMm);
   const auto after = sketch.semanticFingerprint();
@@ -1205,46 +1291,40 @@ void circleCenterCoordinateJunctionsAreTransitiveAndReversible() {
     CHECK(sketch.applyDelta(delta, true));
     CHECK(sketch.semanticFingerprint() == after);
   }
-  const auto solved = BasicSketchSolver::solveStableComponent(sketch, {line});
+  const auto solved = SketchSolver::solveStableComponent(sketch, {line});
   CHECK(solved.componentsVisited == 1);
-  CHECK(solved.geometriesVisited == 3);
+  CHECK(solved.geometriesVisited == 1);
   CHECK(solved.constraintsVisited == 0);
   CHECK(sketch.circles()[1].center.xMm == untouched.center.xMm);
 
-  // Moving a raw circle primitive away and back invalidates only the
-  // coordinate-dependent connectivity cache; stable identity indexes remain
-  // usable throughout.
+  // The public index-based circle mutator shares the transactional component
+  // path with the ID-based drag primitive; it cannot bypass junction
+  // propagation or solver observability.
   Sketch dynamic;
   dynamic.addLine({0.0, 0.0}, {10.0, 0.0});
   dynamic.addCircle({10.0 + 0.5e-7, 0.0}, 2.0);
   const auto dynamicLine = dynamic.lineId(0);
   const auto dynamicCircle = dynamic.circleId(0);
   CHECK(dynamic.connectedComponent({dynamicLine}).geometryIds ==
-        std::vector<GeometryId>({dynamicLine, dynamicCircle}));
-  dynamic.translateCircle(0, 1.0, 0.0);
+        std::vector<GeometryId>({dynamicLine}));
+  CHECK(dynamic.translateCircle(0, 1.0, 0.0).committed());
   CHECK(dynamic.connectedComponent({dynamicLine}).geometryIds ==
         std::vector<GeometryId>({dynamicLine}));
   CHECK(dynamic.geometryLocation(dynamicCircle) ==
         std::optional<GeometryLocation>({GeometryKind::Circle, 0}));
-  dynamic.translateCircle(0, -1.0, 0.0);
+  CHECK(dynamic.translateCircle(0, -1.0, 0.0).committed());
   CHECK(dynamic.connectedComponent({dynamicLine}).geometryIds ==
-        std::vector<GeometryId>({dynamicLine, dynamicCircle}));
+        std::vector<GeometryId>({dynamicLine}));
 
-  // The production circle drag primitive expands the same implicit raw
-  // junction, so line endpoints and circle centres never diverge.
+  // A production circle drag only moves the selected geometry. Equal raw
+  // coordinates are not a relationship and cannot move the line endpoint.
   const auto dragBefore = dynamic.semanticFingerprint();
-  const double originalJunctionOffset =
-      dynamic.circles()[0].center.xMm - dynamic.lines()[0].end.xMm;
+  const Point lineEndBefore = dynamic.lines()[0].end;
   dynamic.beginDeltaJournal();
   dynamic.translateCircleById(dynamicCircle, 2.0, 3.0);
   const auto dragDelta = dynamic.finishDeltaJournal();
-  CHECK(std::abs((dynamic.circles()[0].center.xMm -
-                  dynamic.lines()[0].end.xMm) -
-                 originalJunctionOffset) <= 1e-12);
-  CHECK(std::abs(dynamic.circles()[0].center.xMm -
-                 dynamic.lines()[0].end.xMm) <= 1e-7);
-  CHECK(std::abs(dynamic.circles()[0].center.yMm -
-                 dynamic.lines()[0].end.yMm) <= 1e-9);
+  CHECK(dynamic.lines()[0].end.xMm == lineEndBefore.xMm);
+  CHECK(dynamic.lines()[0].end.yMm == lineEndBefore.yMm);
   const auto dragAfter = dynamic.semanticFingerprint();
   CHECK(dynamic.applyDelta(dragDelta, false));
   CHECK(dynamic.semanticFingerprint() == dragBefore);
@@ -1252,9 +1332,8 @@ void circleCenterCoordinateJunctionsAreTransitiveAndReversible() {
   CHECK(dynamic.semanticFingerprint() == dragAfter);
 }
 
-void knownSolverV1PersistedOrderDependenceRemainsVisible() {
-  // KNOWN SOLVER V1 LIMITATION: this test exposes order dependence so no new
-  // production code can mistake it for the intended CAD contract.
+void equationSolverIgnoresPersistedConstraintVectorOrder() {
+  // R3: vector order is persistence detail and cannot select a solution.
   // Install the persisted vector without restoreConstraints(): that public
   // loader boundary performs a full solve and would precondition both copies
   // before this regression got a chance to distinguish vector order from ID
@@ -1280,8 +1359,8 @@ void knownSolverV1PersistedOrderDependenceRemainsVisible() {
   const auto rawFingerprint = raw.semanticFingerprint();
   Sketch full = raw;
   Sketch local = raw;
-  const auto fullResult = BasicSketchSolver::solveStable(full);
-  const auto localResult = BasicSketchSolver::solveStableComponent(
+  const auto fullResult = SketchSolver::solveStable(full);
+  const auto localResult = SketchSolver::solveStableComponent(
       local, {local.lineId(0)});
   CHECK(fullResult.converged == localResult.converged);
   CHECK(full.semanticFingerprint() == local.semanticFingerprint());
@@ -1295,9 +1374,7 @@ void knownSolverV1PersistedOrderDependenceRemainsVisible() {
   CHECK(local.constraints()[0].id == 20);
   CHECK(local.constraints()[1].id == 10);
 
-  // The same raw geometry with the vector sorted by numeric ID takes the
-  // other deterministic branch (10 mm). This makes the test fail if component
-  // extraction ever sorts by ID again.
+  // The same equations in numeric-ID order must select the same nearest pose.
   Sketch idSorted;
   idSorted.addLine({0.0, 0.0}, {10.0, 0.0});
   idSorted.addLine({100.0, 0.0}, {120.0, 0.0});
@@ -1310,13 +1387,18 @@ void knownSolverV1PersistedOrderDependenceRemainsVisible() {
   sortedSecond.secondGeometry = idSorted.lineId(2);
   CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
       idSorted, {sortedFirst, sortedSecond}));
-  CHECK(BasicSketchSolver::solveStableComponent(
+  CHECK(SketchSolver::solveStableComponent(
             idSorted, {idSorted.lineId(0)})
             .converged);
   for (const auto& line : idSorted.lines())
     CHECK(std::abs(std::hypot(line.end.xMm - line.start.xMm,
-                              line.end.yMm - line.start.yMm) - 10.0) <= 1e-7);
-  CHECK(idSorted.semanticFingerprint() != local.semanticFingerprint());
+                              line.end.yMm - line.start.yMm) - 20.0) <= 1e-7);
+  for (std::size_t index = 0; index < local.lines().size(); ++index) {
+    CHECK(std::abs(local.lines()[index].start.xMm -
+                   idSorted.lines()[index].start.xMm) <= 1e-7);
+    CHECK(std::abs(local.lines()[index].end.xMm -
+                   idSorted.lines()[index].end.xMm) <= 1e-7);
+  }
 }
 
 void arcMidpointAndComponentDiagnosticsAreTruthful() {
@@ -1398,8 +1480,10 @@ void constraintPreflightClassifiesAndRollsBackAtomically() {
   stale.type = ConstraintType::Horizontal;
   stale.firstGeometry = 999999;
   const auto staleFingerprint = angular.semanticFingerprint();
-  CHECK(angular.tryApplyConstraint(stale).status ==
-        ConstraintApplyStatus::InvalidReference);
+  const auto staleResult = angular.tryApplyConstraint(stale);
+  CHECK(staleResult.status == ConstraintApplyStatus::InvalidReference);
+  CHECK(staleResult.diagnosticCode ==
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
   CHECK(angular.semanticFingerprint() == staleFingerprint);
 
   Constraint unsupported;
@@ -1422,6 +1506,8 @@ void constraintPreflightClassifiesAndRollsBackAtomically() {
   const auto horizontalId = orthogonal.constraints().front().id;
   const auto duplicate = orthogonal.tryApplyConstraint(horizontal);
   CHECK(duplicate.status == ConstraintApplyStatus::Redundant);
+  CHECK(duplicate.component.geometryIds ==
+        std::vector<GeometryId>{orthogonal.lineId(0)});
   CHECK(orthogonal.semanticFingerprint() == horizontalFingerprint);
   Constraint vertical = horizontal;
   vertical.type = ConstraintType::Vertical;
@@ -1566,7 +1652,7 @@ void interactiveConstraintSemanticsStayInSync() {
                                           constraint.firstGeometry);
       else
         SketchTestAccess::perturbPoint(sketch, constraint.secondPoint);
-      const auto solved = BasicSketchSolver::solveStable(sketch);
+      const auto solved = SketchSolver::solveStable(sketch);
       if (solved.unsupported != 0 || solved.invalidReferences != 0)
         std::cerr << "constraint semantic matrix solve failed type " << raw
                   << " unsupported=" << solved.unsupported
@@ -1577,6 +1663,274 @@ void interactiveConstraintSemanticsStayInSync() {
       CHECK(!hasConstraintViolation(diagnostics, applied.constraintId));
     }
   }
+}
+
+void r0FailedSolveIsAtomicAndObservable() {
+  Sketch orphaned;
+  orphaned.addLine({0.0, 0.0}, {10.0, 4.0});
+  const auto orphanedLine = orphaned.lineId(0);
+  Constraint validHorizontal;
+  validHorizontal.id = 40;
+  validHorizontal.type = ConstraintType::Horizontal;
+  validHorizontal.firstGeometry = orphanedLine;
+  Constraint orphanHorizontal = validHorizontal;
+  orphanHorizontal.id = 41;
+  orphanHorizontal.firstGeometry = 999999;
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      orphaned, {validHorizontal, orphanHorizontal}));
+  const auto orphanedFingerprint = orphaned.semanticFingerprint();
+  const auto orphanedGeometry = orphaned.lines().front();
+  const auto orphanedSolve = SketchSolver::solveStable(orphaned);
+  CHECK(!orphanedSolve.converged);
+  CHECK(orphanedSolve.invalidReferences == 1);
+  CHECK(orphaned.lines().front().start == orphanedGeometry.start);
+  CHECK(orphaned.lines().front().end == orphanedGeometry.end);
+  CHECK(orphaned.semanticFingerprint() == orphanedFingerprint);
+
+  Sketch emptyReference;
+  emptyReference.addLine({0.0, 0.0}, {8.0, 3.0});
+  Constraint emptyHorizontal;
+  emptyHorizontal.id = 43;
+  emptyHorizontal.type = ConstraintType::Horizontal;
+  Constraint movableHorizontal;
+  movableHorizontal.id = 44;
+  movableHorizontal.type = ConstraintType::Horizontal;
+  movableHorizontal.firstGeometry = emptyReference.lineId(0);
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      emptyReference, {movableHorizontal, emptyHorizontal}));
+  const auto emptyFingerprint = emptyReference.semanticFingerprint();
+  const auto emptyGeometry = emptyReference.lines().front();
+  const auto emptySolve = SketchSolver::solveStable(emptyReference);
+  CHECK(!emptySolve.converged);
+  CHECK(emptySolve.invalidReferences == 1);
+  CHECK(emptyReference.lines().front().start == emptyGeometry.start);
+  CHECK(emptyReference.lines().front().end == emptyGeometry.end);
+  CHECK(emptyReference.semanticFingerprint() == emptyFingerprint);
+
+  Sketch tinyCircle;
+  tinyCircle.addCircle({2.0, 3.0}, 1e-12);
+  Constraint tinyLock;
+  tinyLock.id = 42;
+  tinyLock.type = ConstraintType::Lock;
+  tinyLock.firstGeometry = tinyCircle.circleId(0);
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      tinyCircle, {tinyLock}));
+  const auto tinySolve = SketchSolver::solveStable(tinyCircle);
+  CHECK(tinySolve.converged);
+  CHECK(tinySolve.degenerateGeometry == 0);
+
+  Sketch tinyArc;
+  tinyArc.addArc({2.0, 3.0}, 1e-12, 0.0, 1.0);
+  Constraint tinyArcLock;
+  tinyArcLock.id = 46;
+  tinyArcLock.type = ConstraintType::Lock;
+  tinyArcLock.firstGeometry = tinyArc.arcId(0);
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      tinyArc, {tinyArcLock}));
+  const auto tinyArcSolve = SketchSolver::solveStable(tinyArc);
+  CHECK(tinyArcSolve.converged);
+  CHECK(tinyArcSolve.degenerateGeometry == 0);
+
+  Sketch tinyBezier;
+  tinyBezier.addBezier({0.0, 0.0}, {-0.9e-9, 0.0}, {0.9e-9, 0.0},
+                       {0.0, 0.0});
+  Constraint tinyBezierLock;
+  tinyBezierLock.id = 45;
+  tinyBezierLock.type = ConstraintType::Lock;
+  tinyBezierLock.firstGeometry = tinyBezier.bezierId(0);
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      tinyBezier, {tinyBezierLock}));
+  const auto tinyBezierSolve = SketchSolver::solveStable(tinyBezier);
+  CHECK(tinyBezierSolve.converged);
+  CHECK(tinyBezierSolve.degenerateGeometry == 0);
+
+  Sketch locked;
+  locked.addLine({0.0, 0.0}, {10.0, 4.0});
+  const auto lockedLine = locked.lineId(0);
+  Constraint lock;
+  lock.id = 1;
+  lock.type = ConstraintType::Lock;
+  lock.firstGeometry = lockedLine;
+  Constraint horizontal;
+  horizontal.id = 2;
+  horizontal.type = ConstraintType::Horizontal;
+  horizontal.firstGeometry = lockedLine;
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      locked, {lock, horizontal}));
+  const auto lockedFingerprint = locked.semanticFingerprint();
+  const auto lockedGeometry = locked.lines().front();
+  const auto failedSolve =
+      SketchSolver::solveStableComponent(locked, {lockedLine});
+  CHECK(!failedSolve.converged);
+  CHECK(failedSolve.violatedConstraints != 0);
+  CHECK(locked.lines().front().start == lockedGeometry.start);
+  CHECK(locked.lines().front().end == lockedGeometry.end);
+  CHECK(locked.semanticFingerprint() == lockedFingerprint);
+
+  Sketch conflicting;
+  conflicting.addLine({0.0, 0.0}, {10.0, 0.0});
+  const auto conflictedLine = conflicting.lineId(0);
+  Constraint h;
+  h.id = 10;
+  h.type = ConstraintType::Horizontal;
+  h.firstGeometry = conflictedLine;
+  Constraint v;
+  v.id = 11;
+  v.type = ConstraintType::Vertical;
+  v.firstGeometry = conflictedLine;
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      conflicting, {h, v}));
+  const auto before = conflicting.semanticFingerprint();
+  const auto depth = conflicting.deltaJournalDepth();
+  const auto rejected = conflicting.translatePoint(
+      {conflictedLine, false}, 3.0, 2.0);
+  CHECK(!rejected.committed());
+  CHECK(rejected.status == SketchMutationStatus::Conflicting ||
+        rejected.status == SketchMutationStatus::NonConverged);
+  CHECK(rejected.diagnosticCode ==
+            SketchMutationDiagnosticCode::ConstraintResidualViolation ||
+        rejected.diagnosticCode ==
+            SketchMutationDiagnosticCode::DegenerateGeometry ||
+        rejected.diagnosticCode ==
+            SketchMutationDiagnosticCode::SolverDidNotConverge);
+  CHECK(!rejected.relatedConstraintIds.empty());
+  CHECK(conflicting.semanticFingerprint() == before);
+  CHECK(conflicting.deltaJournalDepth() == depth);
+
+  Sketch independent;
+  independent.addLine({0.0, 0.0}, {5.0, 2.0});
+  const auto freeLine = independent.lineId(0);
+  const auto applied = independent.translateLinesByIds({freeLine}, 2.0, -1.0);
+  CHECK(applied.status == SketchMutationStatus::Applied);
+  CHECK(applied.committed());
+  CHECK(independent.deltaJournalDepth() == 0);
+  CHECK(independent.lines().front().start.xMm == 2.0);
+  CHECK(independent.lines().front().start.yMm == -1.0);
+
+  const auto validFingerprint = independent.semanticFingerprint();
+  const auto invalid = independent.translateLinesByIds({999999}, 1.0, 0.0);
+  CHECK(invalid.status == SketchMutationStatus::InvalidReference);
+  CHECK(invalid.diagnosticCode ==
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  CHECK(independent.semanticFingerprint() == validFingerprint);
+  CHECK(independent.deltaJournalDepth() == 0);
+
+  Constraint length;
+  length.type = ConstraintType::Length;
+  length.firstGeometry = freeLine;
+  length.value = std::hypot(
+      independent.lines().front().end.xMm -
+          independent.lines().front().start.xMm,
+      independent.lines().front().end.yMm -
+          independent.lines().front().start.yMm);
+  const auto lengthApplied = independent.tryApplyConstraint(length);
+  CHECK(lengthApplied.accepted());
+  const auto beforeUnsupported = independent.semanticFingerprint();
+  const auto unsupported = independent.setConstraintValue(
+      lengthApplied.constraintId, std::numeric_limits<double>::infinity());
+  CHECK(unsupported.status == SketchMutationStatus::Unsupported);
+  CHECK(unsupported.diagnosticCode ==
+        SketchMutationDiagnosticCode::UnsupportedConstraint);
+  CHECK(independent.semanticFingerprint() == beforeUnsupported);
+  CHECK(independent.deltaJournalDepth() == 0);
+
+  const auto beforeNan = independent.semanticFingerprint();
+  const auto nanMove = independent.translatePoint(
+      {freeLine, true}, std::numeric_limits<double>::quiet_NaN(), 0.0);
+  CHECK(nanMove.status == SketchMutationStatus::InternalError);
+  CHECK(nanMove.diagnosticCode ==
+        SketchMutationDiagnosticCode::NonFiniteGeometry);
+  CHECK(independent.semanticFingerprint() == beforeNan);
+  CHECK(independent.deltaJournalDepth() == 0);
+
+  Sketch zeroLength;
+  zeroLength.addLine({0.0, 0.0}, {2.0, 0.0});
+  const auto zeroLine = zeroLength.lineId(0);
+  Constraint axis;
+  axis.id = 20;
+  axis.type = ConstraintType::Horizontal;
+  axis.firstGeometry = zeroLine;
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      zeroLength, {axis}));
+  const auto zeroBefore = zeroLength.semanticFingerprint();
+  const auto collapsed = zeroLength.translatePoint({zeroLine, false}, -2.0, 0.0);
+  CHECK(!collapsed.committed());
+  CHECK(collapsed.diagnosticCode ==
+        SketchMutationDiagnosticCode::DegenerateGeometry);
+  CHECK(zeroLength.semanticFingerprint() == zeroBefore);
+  CHECK(zeroLength.deltaJournalDepth() == 0);
+
+  Sketch cached;
+  cached.addLine({0.0, 0.0}, {4.0, 0.0});
+  const auto cachedLine = cached.lineId(0);
+  Constraint cachedHorizontal;
+  cachedHorizontal.id = 50;
+  cachedHorizontal.type = ConstraintType::Horizontal;
+  cachedHorizontal.firstGeometry = cachedLine;
+  CHECK(SketchTestAccess::installPersistedConstraintsWithoutSolve(
+      cached, {cachedHorizontal}));
+  CHECK(SketchSolver::solveStable(cached).converged);
+  const auto cachedFingerprint = cached.semanticFingerprint();
+  const auto cachedRejected =
+      cached.translatePoint({cachedLine, false}, -4.0, 0.0);
+  CHECK(!cachedRejected.committed());
+  CHECK(cached.semanticFingerprint() == cachedFingerprint);
+  const auto cachedAfterRollback = SketchSolver::solveStable(cached);
+  CHECK(cachedAfterRollback.converged);
+  CHECK(cachedAfterRollback.passes == 0);
+  CHECK(cachedAfterRollback.componentsVisited == 0);
+
+  Sketch indexedCircle;
+  indexedCircle.addCircle({0.0, 0.0}, 2.0);
+  const auto indexedMove = indexedCircle.translateCircle(0, 3.0, -1.0);
+  CHECK(indexedMove.committed());
+  CHECK(indexedCircle.circles().front().center.xMm == 3.0);
+  CHECK(indexedCircle.circles().front().center.yMm == -1.0);
+  const auto staleIndexedMove = indexedCircle.translateCircle(1, 1.0, 0.0);
+  CHECK(staleIndexedMove.status == SketchMutationStatus::InvalidReference);
+}
+
+void rectangleSlotPolygonChainsStayExplicit() {
+  Sketch sketch;
+  sketch.addRectangle({0.0, 0.0}, {8.0, 5.0});
+
+  sketch.addLine({15.0, 2.0}, {25.0, 2.0});
+  const auto slotTop = sketch.lineId(sketch.lines().size() - 1);
+  sketch.addLine({25.0, 2.0}, {25.0, -2.0});
+  const auto slotRight = sketch.lineId(sketch.lines().size() - 1);
+  sketch.addLine({25.0, -2.0}, {15.0, -2.0});
+  const auto slotBottom = sketch.lineId(sketch.lines().size() - 1);
+  sketch.addLine({15.0, -2.0}, {15.0, 2.0});
+  const auto slotLeft = sketch.lineId(sketch.lines().size() - 1);
+
+  sketch.addLine({35.0, 0.0}, {41.0, 0.0});
+  const auto polygonA = sketch.lineId(sketch.lines().size() - 1);
+  sketch.addLine({41.0, 0.0}, {38.0, 5.0});
+  const auto polygonB = sketch.lineId(sketch.lines().size() - 1);
+  sketch.addLine({38.0, 5.0}, {35.0, 0.0});
+  const auto polygonC = sketch.lineId(sketch.lines().size() - 1);
+
+  std::vector<Constraint> explicitConnections;
+  ConstraintId nextId = 1;
+  const auto connect = [&explicitConnections, &nextId](
+                           PointReference first, PointReference second) {
+    explicitConnections.emplace_back(
+        CoincidentConstraint{first, second}, ConstraintMode::Driving,
+        nextId++);
+  };
+  connect({slotTop, false}, {slotRight, true});
+  connect({slotRight, false}, {slotBottom, true});
+  connect({slotBottom, false}, {slotLeft, true});
+  connect({slotLeft, false}, {slotTop, true});
+  connect({polygonA, false}, {polygonB, true});
+  connect({polygonB, false}, {polygonC, true});
+  connect({polygonC, false}, {polygonA, true});
+  CHECK(sketch.restoreConstraints(std::move(explicitConnections)));
+
+  const auto components = sketch.constraintComponents();
+  CHECK(components.size() == 3);
+  CHECK(!analyzeConstraintSystem(sketch).conflicting);
+  CHECK(SketchSolver::solveStable(sketch).converged);
 }
 
 }  // namespace
@@ -1590,21 +1944,23 @@ int main() {
   removingCenteredElementLineDropsCenterReferences();
   indexesAndConnectivityStayDeterministic();
   componentSolveLeavesIndependentGeometryBitwiseStable();
-  partialSolveNeverPublishesFullSolveCache();
+  rejectedConstraintNeverPoisonsFullSolveCache();
   sharedOriginDoesNotJoinComponents();
   localizedSketchDeltaIsBoundedAndReversible();
   mutationJournalUsesNoFullSketchCheckpoints();
   deltaApplyIsAtomicAndIndependentOfConstraintIdOrder();
   dimensionIdsAndAllocatorAreDeltaSafe();
   persistedSemanticFingerprintIncludesNonSolverFields();
-  orphanConstraintJournalRollbackIsReversible();
+  constraintJournalRollbackIsReversible();
   multiDeleteJournalUsesTransactionOriginIndices();
   indexedDimensionRemovalIsStableAndReversible();
-  coordinateJunctionsDefineLocalSolveComponents();
-  circleCenterCoordinateJunctionsAreTransitiveAndReversible();
-  knownSolverV1PersistedOrderDependenceRemainsVisible();
+  coordinateProximityDoesNotDefineLocalSolveComponents();
+  circleCenterCoordinateProximityIsNotTopology();
+  equationSolverIgnoresPersistedConstraintVectorOrder();
   arcMidpointAndComponentDiagnosticsAreTruthful();
   constraintPreflightClassifiesAndRollsBackAtomically();
   interactiveConstraintSemanticsStayInSync();
+  r0FailedSolveIsAtomicAndObservable();
+  rectangleSlotPolygonChainsStayExplicit();
   return EXIT_SUCCESS;
 }

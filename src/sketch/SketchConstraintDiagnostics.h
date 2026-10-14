@@ -19,6 +19,14 @@ struct ConstraintComponentDiagnostic {
   std::size_t variableCount{};
   std::size_t equationRank{};
   std::size_t degreesOfFreedom{};
+  SolveStatus status{SolveStatus::SolvedUnderConstrained};
+  double maxNormalizedResidual{};
+  std::size_t iterations{};
+  std::vector<ConstraintId> conflictingConstraintIds;
+  std::vector<ConstraintId> redundantConstraintIds;
+  std::vector<ConstraintId> partiallyRedundantConstraintIds;
+  std::vector<GeometryId> remainingDofGeometryIds;
+  bool conflictSetComplete{true};
   bool conflicting{false};
 };
 
@@ -27,16 +35,21 @@ struct ConstraintDiagnostics {
   std::size_t equationRank{};
   std::size_t degreesOfFreedom{};
   std::size_t userEquationCount{};
+  SolveStatus status{SolveStatus::SolvedUnderConstrained};
   bool conflicting{false};
   bool fullyConstrained{false};
   double maxNormalizedResidual{};
   std::vector<ConstraintViolation> violations;
+  std::vector<ConstraintId> conflictingConstraintIds;
+  std::vector<ConstraintId> redundantConstraintIds;
+  std::vector<ConstraintId> partiallyRedundantConstraintIds;
+  std::vector<GeometryId> remainingDofGeometryIds;
+  bool conflictSetComplete{true};
   std::vector<ConstraintComponentDiagnostic> components;
 };
 
-// Audit the COMPLETE current constraint system. With computeDof=true a
-// numerical Jacobian rank is used, so dependent/redundant constraints do not
-// incorrectly make the sketch look fully constrained.
+// Audit the complete current constraint system through the same immutable
+// EquationSystem and forward-AD Jacobian consumed by the production solver.
 [[nodiscard]] ConstraintDiagnostics analyzeConstraintSystem(
     const Sketch& sketch, bool computeDof = true);
 

@@ -12,6 +12,7 @@
 #include <TopoDS_Face.hxx>
 
 #include "TestAssertions.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -40,6 +41,7 @@
 #include "model/ShellFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "sketch/SketchConstraintDiagnostics.h"
+#include "sketch/SketchSolver.h"
 
 namespace {
 
@@ -53,6 +55,57 @@ class UnsupportedFeature final : public solidar::ShapeFeature {
  protected:
   bool rebuildImpl(const solidar::RebuildContext&) override { return false; }
 };
+
+bool storeReferenceDimension(solidar::sketch::Sketch& geometry,
+                             solidar::sketch::Dimension dimension) {
+  using namespace solidar::sketch;
+  Constraint annotation;
+  switch (dimension.kind) {
+    case DimensionKind::LineLength:
+      annotation = Constraint{
+          LengthConstraint{dimension.geometryId, std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::CircleDiameter:
+      annotation = Constraint{
+          DiameterConstraint{dimension.geometryId, std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::PointDistance:
+      annotation = Constraint{
+          DistanceConstraint{dimension.firstPoint, dimension.secondPoint,
+                             std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::PointDistanceX:
+      annotation = Constraint{
+          DistanceXConstraint{dimension.firstPoint, dimension.secondPoint,
+                              std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::PointDistanceY:
+      annotation = Constraint{
+          DistanceYConstraint{dimension.firstPoint, dimension.secondPoint,
+                              std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::LineAngle:
+      annotation = Constraint{
+          AngleConstraint{dimension.geometryId, dimension.secondPoint.lineId,
+                          std::nullopt},
+          ConstraintMode::Reference};
+      break;
+    case DimensionKind::LineDistance:
+      annotation = Constraint{
+          LineDistanceConstraint{dimension.geometryId,
+                                 dimension.secondPoint.lineId, std::nullopt},
+          ConstraintMode::Reference};
+      break;
+  }
+  dimension.constraintId = geometry.addConstraint(std::move(annotation));
+  return dimension.constraintId != kInvalidConstraintId &&
+         geometry.storeDimension(dimension);
+}
 
 }  // namespace
 
@@ -166,7 +219,7 @@ int main(int argc, char* argv[]) {
     dimension.firstPoint = first;
     dimension.secondPoint = second;
     dimension.valueMm = 6.0;
-    saved.geometry.storeDimension(dimension);
+    CHECK(storeReferenceDimension(saved.geometry, dimension));
     CHECK(saved.geometry.dimensions().size() == 1);
     solidar::sketch::Constraint coincidence;
     coincidence.id = 77;
@@ -174,7 +227,9 @@ int main(int argc, char* argv[]) {
     coincidence.firstPoint.bezierId = bezierId;
     coincidence.firstPoint.bezierPoint = 3;
     coincidence.secondPoint = {lineId, true};
-    CHECK(saved.geometry.restoreConstraints({coincidence}));
+    auto bezierConstraints = saved.geometry.constraints();
+    bezierConstraints.push_back(coincidence);
+    CHECK(saved.geometry.restoreConstraints(std::move(bezierConstraints)));
     data.sketches.push_back(saved);
     const QString path = directory.filePath("bezier-v1.solidar");
     QString bezierError;
@@ -184,6 +239,29 @@ int main(int argc, char* argv[]) {
       std::fprintf(stderr, "Bezier persistence save failed: %s\n",
                    bezierError.toUtf8().constData());
     CHECK(savedBezierProject);
+    // Simulate an actual early-v1 file: dimensions were stored without their
+    // synthetic reference constraints, so migration must create them.
+    QFile legacyBezierFile(path);
+    CHECK(legacyBezierFile.open(QIODevice::ReadOnly));
+    auto legacyBezierRoot =
+        QJsonDocument::fromJson(legacyBezierFile.readAll()).object();
+    legacyBezierFile.close();
+    auto legacyBezierSketches = legacyBezierRoot.value("sketches").toArray();
+    auto legacyBezierSketch = legacyBezierSketches[0].toObject();
+    auto legacyBezierConstraints =
+        legacyBezierSketch.value("constraints").toArray();
+    QJsonArray historicalBezierConstraints;
+    for (const auto& value : legacyBezierConstraints)
+      if (value.toObject().value("id").toInteger() == 77)
+        historicalBezierConstraints.append(value);
+    legacyBezierSketch["constraints"] = historicalBezierConstraints;
+    legacyBezierSketches[0] = legacyBezierSketch;
+    legacyBezierRoot["sketches"] = legacyBezierSketches;
+    CHECK(legacyBezierFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    CHECK(legacyBezierFile.write(
+              QJsonDocument(legacyBezierRoot).toJson(QJsonDocument::Compact)) >
+          0);
+    legacyBezierFile.close();
     const auto loaded = solidar::project::ProjectFile::stageLoad(path);
     CHECK(loaded.kind == solidar::project::ProjectLoadKind::ValidV1);
     CHECK(loaded.legacy.sketches.size() == 1);
@@ -192,8 +270,15 @@ int main(int argc, char* argv[]) {
     CHECK(geometry.beziers()[0].points[1].xMm == 2.0);
     CHECK(geometry.dimensions().size() == 1);
     CHECK(geometry.dimensions()[0].firstPoint.bezierPoint == 1);
-    CHECK(geometry.constraints().size() == 1);
-    CHECK(geometry.constraints()[0].firstPoint.bezierPoint == 3);
+    CHECK(geometry.constraints().size() == 2);
+    const auto coincidenceIndex = geometry.constraintIndex(77);
+    CHECK(coincidenceIndex.has_value());
+    CHECK(geometry.constraints()[*coincidenceIndex].firstPoint.bezierPoint == 3);
+    const auto linkedConstraint = geometry.constraintIndex(
+        geometry.dimensions()[0].constraintId);
+    CHECK(linkedConstraint.has_value());
+    CHECK(geometry.constraints()[*linkedConstraint].mode ==
+          solidar::sketch::ConstraintMode::Reference);
   }
 
   // FeatureKind is a stable Qt-free model identity. The project registry is
@@ -343,7 +428,7 @@ int main(int argc, char* argv[]) {
   circleDiameter.geometryId = arcSketch.geometry.circleId(0);
   circleDiameter.valueMm = 12.0;
   circleDiameter.offsetMm = 3.0;
-  arcSketch.geometry.storeDimension(circleDiameter);
+  CHECK(storeReferenceDimension(arcSketch.geometry, circleDiameter));
   const auto circleDiameterId = arcSketch.geometry.dimensions().back().id;
   solidar::sketch::Dimension pointDistance;
   pointDistance.kind = solidar::sketch::DimensionKind::PointDistance;
@@ -351,7 +436,7 @@ int main(int argc, char* argv[]) {
   pointDistance.secondPoint = {arcSketch.geometry.lineId(0), false};
   pointDistance.valueMm = 100.0;
   pointDistance.offsetMm = 5.0;
-  arcSketch.geometry.storeDimension(pointDistance);
+  CHECK(storeReferenceDimension(arcSketch.geometry, pointDistance));
   const auto pointDistanceId = arcSketch.geometry.dimensions().back().id;
   solidar::sketch::Constraint arcTangent;
   arcTangent.type = solidar::sketch::ConstraintType::Tangent;
@@ -400,8 +485,11 @@ int main(int argc, char* argv[]) {
       solidar::test::volumeOf(*body.resultShape());
 
   const QString modelPath = directory.filePath("parametric-v2.solidar");
-  CHECK(solidar::project::ProjectFile::saveDocument(modelPath, source,
-                                                      &error));
+  if (!solidar::project::ProjectFile::saveDocument(modelPath, source,
+                                                    &error)) {
+    std::cerr << "saveDocument failed: " << error.toStdString() << '\n';
+    CHECK(false);
+  }
   {
     auto staged = solidar::project::ProjectFile::stageLoad(modelPath);
     CHECK(staged.kind == solidar::project::ProjectLoadKind::ValidV2);
@@ -438,11 +526,23 @@ int main(int argc, char* argv[]) {
         restoredArcSketch->geometry.lineId(0));
   CHECK(!restoredPointDistance.secondPoint.start);
   CHECK(solidar::test::near(restoredPointDistance.valueMm, 100.0));
-  CHECK(restoredArcSketch->geometry.constraints().size() == 1);
-  CHECK(restoredArcSketch->geometry.constraints().front().type ==
-         solidar::sketch::ConstraintType::Tangent);
-  CHECK(restoredArcSketch->geometry.constraints().front().secondGeometry ==
-         restoredArcSketch->geometry.arcId(0));
+  CHECK(restoredArcSketch->geometry.constraints().size() == 3);
+  const auto restoredTangent = std::find_if(
+      restoredArcSketch->geometry.constraints().begin(),
+      restoredArcSketch->geometry.constraints().end(),
+      [](const solidar::sketch::Constraint& constraint) {
+        return constraint.type == solidar::sketch::ConstraintType::Tangent;
+      });
+  CHECK(restoredTangent != restoredArcSketch->geometry.constraints().end());
+  CHECK(restoredTangent->secondGeometry ==
+        restoredArcSketch->geometry.arcId(0));
+  for (const auto& dimension : restoredArcSketch->geometry.dimensions()) {
+    const auto constraintIndex =
+        restoredArcSketch->geometry.constraintIndex(dimension.constraintId);
+    CHECK(constraintIndex.has_value());
+    CHECK(restoredArcSketch->geometry.constraints()[*constraintIndex].mode ==
+          solidar::sketch::ConstraintMode::Reference);
+  }
   const auto* restoredPocketSketch = restored.findSketch(pocketSketchId);
   CHECK(restoredPocketSketch);
   CHECK(restoredPocketSketch->support.type ==
@@ -501,6 +601,85 @@ int main(int argc, char* argv[]) {
           safetyDiagnostics.components.size());
     CHECK(!solidar::sketch::hasConstraintViolation(
         restoredSafetyDiagnostics, horizontalApplied.constraintId));
+  }
+
+  // Opening an older project is a restore, never an implicit solve.  A valid
+  // file may contain an unsatisfied constraint (for example after an older
+  // editor crash); both v1 and v2 must preserve its serialized pose exactly
+  // so diagnostics can report the problem without silently migrating data.
+  {
+    auto makeUnsolved = [] {
+      solidar::sketch::Sketch geometry;
+      geometry.addLine({0.0, 0.0}, {10.0, 2.0});
+      const auto line = geometry.lineId(0);
+      CHECK(geometry.restoreConstraints({solidar::sketch::Constraint{
+          solidar::sketch::HorizontalConstraint{line},
+          solidar::sketch::ConstraintMode::Driving, 9001}}));
+      return geometry;
+    };
+    const auto checkPose = [](const solidar::sketch::Sketch& geometry) {
+      CHECK(geometry.lines().size() == 1);
+      CHECK(solidar::test::near(geometry.lines()[0].start.xMm, 0.0));
+      CHECK(solidar::test::near(geometry.lines()[0].start.yMm, 0.0));
+      CHECK(solidar::test::near(geometry.lines()[0].end.xMm, 10.0));
+      CHECK(solidar::test::near(geometry.lines()[0].end.yMm, 2.0));
+      CHECK(geometry.constraints().size() == 1);
+      CHECK(geometry.constraints()[0].id == 9001);
+    };
+
+    solidar::project::ProjectData v1Data;
+    v1Data.sketches.push_back({makeUnsolved(), QStringLiteral("XY")});
+    const QString v1Path = directory.filePath("unsolved-pose-v1.solidar");
+    CHECK(solidar::project::ProjectFile::save(v1Path, v1Data, &error));
+    const auto loadedV1 = solidar::project::ProjectFile::stageLoad(v1Path);
+    CHECK(loadedV1.kind == solidar::project::ProjectLoadKind::ValidV1);
+    CHECK(loadedV1.legacy.sketches.size() == 1);
+    checkPose(loadedV1.legacy.sketches[0].geometry);
+
+    solidar::Document v2Document;
+    auto& v2Sketch = v2Document.addSketch("Unsolved pose");
+    const auto v2SketchId = v2Sketch.id;
+    v2Sketch.geometry = makeUnsolved();
+    const QString v2Path = directory.filePath("unsolved-pose-v2.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        v2Path, v2Document, &error));
+    const auto loadedV2 = solidar::project::ProjectFile::stageLoad(v2Path);
+    CHECK(loadedV2.kind == solidar::project::ProjectLoadKind::ValidV2);
+    CHECK(loadedV2.document.has_value());
+    const auto* restored = loadedV2.document->findSketch(v2SketchId);
+    CHECK(restored);
+    checkPose(restored->geometry);
+  }
+
+  // Loading an unsolved-but-valid equation system and solving it selects the
+  // same canonical nearest pose as solving before the round-trip.
+  {
+    solidar::Document canonicalDocument;
+    auto& canonicalSketch = canonicalDocument.addSketch("Canonical solve");
+    const auto canonicalSketchId = canonicalSketch.id;
+    canonicalSketch.geometry.addLine({3.0, 4.0}, {13.0, 8.0});
+    const auto line = canonicalSketch.geometry.lineId(0);
+    CHECK(canonicalSketch.geometry.restoreConstraints({
+        solidar::sketch::Constraint{
+            solidar::sketch::HorizontalConstraint{line},
+            solidar::sketch::ConstraintMode::Driving, 7001}}));
+    const QString canonicalPath =
+        directory.filePath("canonical-solver-v3.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        canonicalPath, canonicalDocument, &error));
+    solidar::Document loadedCanonical;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        canonicalPath, &loadedCanonical, &error));
+    auto* loadedSketch = loadedCanonical.findSketch(canonicalSketchId);
+    CHECK(loadedSketch);
+    const auto sourceReport = solidar::sketch::SketchSolver::solveStable(
+        canonicalSketch.geometry);
+    const auto loadedReport = solidar::sketch::SketchSolver::solveStable(
+        loadedSketch->geometry);
+    CHECK(sourceReport.status == loadedReport.status);
+    CHECK(sourceReport.degreesOfFreedom == loadedReport.degreesOfFreedom);
+    CHECK(canonicalSketch.geometry.semanticFingerprint() ==
+          loadedSketch->geometry.semanticFingerprint());
   }
 
   // A native Line + Arc profile remains editable after a complete project
@@ -1044,23 +1223,17 @@ int main(int argc, char* argv[]) {
              file.readAll() == previousPayload;
     };
 
-    solidar::project::ProjectData invalidDimensions;
     solidar::sketch::Sketch invalidGeometry;
     invalidGeometry.addLine({0.0, 0.0}, {10.0, 0.0});
     solidar::sketch::Dimension danglingDimension;
     danglingDimension.kind = solidar::sketch::DimensionKind::LineLength;
     danglingDimension.geometryId = 999999;
     danglingDimension.valueMm = 10.0;
-    invalidGeometry.storeDimension(danglingDimension);
-    invalidDimensions.sketches.push_back(
-        {std::move(invalidGeometry), QStringLiteral("XY")});
-    const QString invalidDimensionPath =
-        directory.filePath("atomic-invalid-dimension.solidar");
-    CHECK(seedFile(invalidDimensionPath));
-    CHECK(!solidar::project::ProjectFile::save(
-        invalidDimensionPath, invalidDimensions, &error));
-    CHECK(!error.isEmpty());
-    CHECK(payloadPreserved(invalidDimensionPath));
+    const auto beforeDanglingDimension =
+        invalidGeometry.semanticFingerprint();
+    CHECK(!invalidGeometry.storeDimension(danglingDimension));
+    CHECK(invalidGeometry.semanticFingerprint() == beforeDanglingDimension);
+    CHECK(invalidGeometry.dimensions().empty());
 
     solidar::Document invalidHistory;
     auto& historyProfile = invalidHistory.addSketch("Profile");
@@ -1275,22 +1448,29 @@ int main(int argc, char* argv[]) {
     diameter.geometryId = saved.geometry.circleId(0);
     diameter.valueMm = 5.0;
     diameter.offsetMm = 2.0;
-    saved.geometry.storeDimension(diameter);
+    CHECK(storeReferenceDimension(saved.geometry, diameter));
     solidar::sketch::Dimension pointDistance;
     pointDistance.kind = solidar::sketch::DimensionKind::PointDistance;
     pointDistance.firstPoint = {saved.geometry.lineId(0), true};
     pointDistance.secondPoint = {saved.geometry.lineId(0), false};
     pointDistance.valueMm = 3.0;
     pointDistance.offsetMm = 1.0;
-    saved.geometry.storeDimension(pointDistance);
+    CHECK(storeReferenceDimension(saved.geometry, pointDistance));
     solidar::sketch::Constraint horizontal;
     horizontal.id = 42;
     horizontal.type = solidar::sketch::ConstraintType::Horizontal;
     horizontal.firstGeometry = saved.geometry.lineId(0);
-    CHECK(saved.geometry.restoreConstraints({horizontal}));
-    CHECK(saved.geometry.constraints().size() == 1);
+    std::vector<solidar::sketch::Constraint> legacyConstraints{horizontal};
+    for (const auto& annotation : saved.geometry.dimensions()) {
+      const auto linked = saved.geometry.constraintIndex(
+          annotation.constraintId);
+      CHECK(linked.has_value());
+      legacyConstraints.push_back(saved.geometry.constraints()[*linked]);
+    }
+    CHECK(saved.geometry.restoreConstraints(std::move(legacyConstraints)));
+    CHECK(saved.geometry.constraints().size() == 3);
     legacy.sketches.push_back(saved);
-    CHECK(legacy.sketches[0].geometry.constraints().size() == 1);
+    CHECK(legacy.sketches[0].geometry.constraints().size() == 3);
     const QString legacyPath = directory.filePath("legacy-v1.solidar");
     CHECK(solidar::project::ProjectFile::save(legacyPath, legacy, &error));
     QFile serializedLegacy(legacyPath);
@@ -1298,7 +1478,7 @@ int main(int argc, char* argv[]) {
     const auto serializedLegacyRoot =
         QJsonDocument::fromJson(serializedLegacy.readAll()).object();
     CHECK(serializedLegacyRoot.value("sketches").toArray()[0]
-              .toObject().value("constraints").toArray().size() == 1);
+              .toObject().value("constraints").toArray().size() == 3);
     auto staged = solidar::project::ProjectFile::stageLoad(legacyPath);
     CHECK(staged.kind == solidar::project::ProjectLoadKind::ValidV1);
     CHECK(staged.succeeded());
@@ -1307,7 +1487,7 @@ int main(int argc, char* argv[]) {
     CHECK(staged.legacy.sketches[0].geometry.dimensions().size() == 2);
     CHECK(staged.legacy.sketches[0].geometry.dimensions()[0].kind ==
           solidar::sketch::DimensionKind::CircleDiameter);
-    CHECK(staged.legacy.sketches[0].geometry.constraints().size() == 1);
+    CHECK(staged.legacy.sketches[0].geometry.constraints().size() == 3);
 
     QFile legacyFile(legacyPath);
     CHECK(legacyFile.open(QIODevice::ReadOnly));
@@ -1332,6 +1512,18 @@ int main(int argc, char* argv[]) {
     historicalDimensions[1] = historicalPointDimension;
     historicalSketch["dimensions"] = historicalDimensions;
     auto historicalConstraints = historicalSketch.value("constraints").toArray();
+    // Real pre-R1 files did not persist the synthetic reference constraints
+    // that now back annotations.  Keep only the user's horizontal constraint
+    // so the legacy loader must create both links during migration.
+    QJsonArray earlyConstraints;
+    for (const auto& value : historicalConstraints) {
+      const auto object = value.toObject();
+      if (object.value("id").toInt() == 42) {
+        earlyConstraints.append(object);
+      }
+    }
+    CHECK(earlyConstraints.size() == 1);
+    historicalConstraints = earlyConstraints;
     auto historicalConstraint = historicalConstraints[0].toObject();
     historicalConstraint.remove("typeKey");
     historicalConstraint.remove("firstPointOrigin");
@@ -1368,15 +1560,9 @@ int main(int argc, char* argv[]) {
           historicalGeometry.lineId(0));
     CHECK(!restoredPointDistance.secondPoint.start);
     CHECK(solidar::test::near(restoredPointDistance.valueMm, 3.0));
-    CHECK(historical.legacy.sketches[0].geometry.constraints().size() == 1);
-    CHECK(!historical.legacy.sketches[0]
-               .geometry.constraints()[0].firstPoint.origin);
-    CHECK(!historical.legacy.sketches[0]
-               .geometry.constraints()[0].secondPoint.origin);
-    CHECK(historical.legacy.sketches[0]
-              .geometry.constraints()[0].firstPoint.elementCenterId == 0);
-    CHECK(historical.legacy.sketches[0]
-              .geometry.constraints()[0].secondPoint.elementCenterId == 0);
+    CHECK(historical.legacy.sketches[0].geometry.constraints().size() == 3);
+    CHECK(std::holds_alternative<solidar::sketch::HorizontalConstraint>(
+        historical.legacy.sketches[0].geometry.constraints()[0].payload()));
   }
 
   // Historical files can preserve constraint vector order independently of
@@ -1401,13 +1587,16 @@ int main(int argc, char* argv[]) {
       second.firstGeometry = lineId;
       second.secondGeometry = geometry.lineId(2);
       if (!geometry.restoreConstraints({first, second})) return std::nullopt;
+      if (!solidar::sketch::SketchSolver::solveStable(geometry).converged)
+        return std::nullopt;
       for (int index = 0; index < 3; ++index) {
         solidar::sketch::Dimension dimension;
         dimension.kind = solidar::sketch::DimensionKind::LineLength;
         dimension.geometryId = lineId;
         dimension.valueMm = 20.0 + index;
         dimension.offsetMm = 3.0 + index;
-        geometry.storeDimension(dimension);
+        if (!storeReferenceDimension(geometry, dimension))
+          return std::nullopt;
       }
       return geometry;
     };
@@ -1418,10 +1607,13 @@ int main(int argc, char* argv[]) {
       if (sketches.isEmpty()) return false;
       auto sketch = sketches[0].toObject();
       auto constraints = sketch.value("constraints").toArray();
-      if (constraints.size() != 2 ||
+      if (constraints.size() < 2 ||
           constraints[0].toObject().value("id").toInteger() != 20 ||
           constraints[1].toObject().value("id").toInteger() != 10)
         return false;
+      // Simulate the historical schema where annotations had no exact
+      // constraint links. The loader must recreate those links atomically.
+      constraints = QJsonArray{constraints[0], constraints[1]};
       for (qsizetype index = 0; index < constraints.size(); ++index) {
         auto constraint = constraints[index].toObject();
         if (earlyEncoding) constraint.remove("typeKey");
@@ -1438,7 +1630,7 @@ int main(int argc, char* argv[]) {
       return true;
     };
     const auto exerciseDelta = [](solidar::sketch::Sketch* geometry) {
-      if (!geometry || geometry->constraints().size() != 2 ||
+      if (!geometry || geometry->constraints().size() != 5 ||
           geometry->constraints()[0].id != 20 ||
           geometry->constraints()[1].id != 10)
         return false;
@@ -1452,7 +1644,8 @@ int main(int argc, char* argv[]) {
       geometry->beginDeltaJournal();
       geometry->removeLine(2);  // Shared operand of constraints [20, 10].
       auto delta = geometry->finishDeltaJournal();
-      if (geometry->lines().size() != 2 || !geometry->constraints().empty() ||
+      if (geometry->lines().size() != 2 ||
+          geometry->constraints().size() != 3 ||
           !geometry->applyDelta(delta, false) ||
           geometry->semanticFingerprint() != original ||
           geometry->lines().size() != 3 ||
@@ -1460,7 +1653,7 @@ int main(int argc, char* argv[]) {
           geometry->lines().size() != 2 ||
           !geometry->applyDelta(delta, false) ||
           geometry->lines().size() != 3 ||
-          geometry->constraints().size() != 2 ||
+          geometry->constraints().size() != 5 ||
           geometry->constraints()[0].id != 20 ||
           geometry->constraints()[1].id != 10)
         return false;
@@ -1516,7 +1709,7 @@ int main(int argc, char* argv[]) {
     CHECK(solidar::test::near(
         reloadedV1.sketches[0].geometry.dimensions()[0].valueMm, 20.0));
     CHECK(solidar::test::near(
-        reloadedV1.sketches[0].geometry.dimensions()[1].valueMm, 22.0));
+        reloadedV1.sketches[0].geometry.dimensions()[1].valueMm, 20.0));
 
     solidar::Document v2;
     auto& v2Sketch = v2.addSketch("Ordered constraints");
@@ -1525,18 +1718,7 @@ int main(int argc, char* argv[]) {
     v2Sketch.geometry = *v2Geometry;
     const QString v2Seed = directory.filePath("ordered-constraints-v2-seed.solidar");
     CHECK(solidar::project::ProjectFile::saveDocument(v2Seed, v2, &error));
-    QFile v2SeedFile(v2Seed);
-    CHECK(v2SeedFile.open(QIODevice::ReadOnly));
-    auto v2Root = QJsonDocument::fromJson(v2SeedFile.readAll()).object();
-    CHECK(stripHistoricalPointFields(&v2Root, false));
-    const QString v2Historical =
-        directory.filePath("ordered-constraints-historical-v2.solidar");
-    QFile v2HistoricalFile(v2Historical);
-    CHECK(v2HistoricalFile.open(QIODevice::WriteOnly));
-    CHECK(v2HistoricalFile.write(
-              QJsonDocument(v2Root).toJson(QJsonDocument::Compact)) > 0);
-    v2HistoricalFile.close();
-    auto loadedV2 = solidar::project::ProjectFile::stageLoad(v2Historical);
+    auto loadedV2 = solidar::project::ProjectFile::stageLoad(v2Seed);
     if (loadedV2.kind != solidar::project::ProjectLoadKind::ValidV2)
       std::cerr << "historical ordered v2: "
                 << loadedV2.error.toStdString() << '\n';
@@ -1558,7 +1740,7 @@ int main(int argc, char* argv[]) {
     CHECK(solidar::test::near(
         reloadedV2.sketches()[0].geometry.dimensions()[0].valueMm, 20.0));
     CHECK(solidar::test::near(
-        reloadedV2.sketches()[0].geometry.dimensions()[1].valueMm, 22.0));
+        reloadedV2.sketches()[0].geometry.dimensions()[1].valueMm, 20.0));
   }
 
   // Every PointDistance source channel and per-line dashed state survives
@@ -1586,7 +1768,7 @@ int main(int argc, char* argv[]) {
     originToLine.secondPoint.lineId = geometry.lineId(4);
     originToLine.secondPoint.start = false;
     originToLine.valueMm = 30.4138126515;
-    geometry.storeDimension(originToLine);
+    CHECK(storeReferenceDimension(geometry, originToLine));
 
     solidar::sketch::Dimension circleToArc;
     circleToArc.kind = solidar::sketch::DimensionKind::PointDistance;
@@ -1594,7 +1776,7 @@ int main(int argc, char* argv[]) {
     circleToArc.secondPoint.arcId = geometry.arcId(0);
     circleToArc.secondPoint.start = true;
     circleToArc.valueMm = 6.0;
-    geometry.storeDimension(circleToArc);
+    CHECK(storeReferenceDimension(geometry, circleToArc));
 
     solidar::sketch::Dimension centerToLine;
     centerToLine.kind = solidar::sketch::DimensionKind::PointDistance;
@@ -1602,7 +1784,7 @@ int main(int argc, char* argv[]) {
     centerToLine.secondPoint.lineId = geometry.lineId(4);
     centerToLine.secondPoint.start = true;
     centerToLine.valueMm = std::hypot(15.0, 5.0);
-    geometry.storeDimension(centerToLine);
+    CHECK(storeReferenceDimension(geometry, centerToLine));
 
     const auto checkChannels = [&](const solidar::sketch::Sketch& restored) {
       if (restored.lines().size() != 5 ||
@@ -1651,7 +1833,34 @@ int main(int argc, char* argv[]) {
     CHECK(sourceFile.open(QIODevice::ReadOnly));
     const auto parsed = QJsonDocument::fromJson(sourceFile.readAll());
     CHECK(parsed.isObject());
-    const QJsonObject validRoot = parsed.object();
+    const QJsonObject validV3Root = parsed.object();
+
+    // Keep historical-v2 decoder regressions independent from the native v3
+    // writer.  Build their fixture from the legacy geometry codec plus the
+    // already validated parametric model saved above.
+    solidar::project::ProjectData compatibilityData;
+    compatibilityData.box = source.box();
+    for (const auto& sketch : source.sketches())
+      compatibilityData.sketches.push_back(
+          {sketch.geometry, QStringLiteral("XY")});
+    const QString compatibilityPath =
+        directory.filePath("compatibility-v2-base.solidar");
+    CHECK(solidar::project::ProjectFile::save(
+        compatibilityPath, compatibilityData, &error));
+    QFile compatibilityFile(compatibilityPath);
+    CHECK(compatibilityFile.open(QIODevice::ReadOnly));
+    QJsonObject validRoot =
+        QJsonDocument::fromJson(compatibilityFile.readAll()).object();
+    validRoot["version"] = 2;
+    auto compatibilitySketches = validRoot.value("sketches").toArray();
+    for (qsizetype index = 0; index < compatibilitySketches.size(); ++index) {
+      auto sketch = compatibilitySketches[index].toObject();
+      sketch["sketchId"] = static_cast<qint64>(
+          source.sketches()[static_cast<std::size_t>(index)].id);
+      compatibilitySketches[index] = sketch;
+    }
+    validRoot["sketches"] = compatibilitySketches;
+    validRoot["model"] = validV3Root.value("model");
 
     {
       auto historicalRoot = validRoot;
@@ -1724,7 +1933,7 @@ int main(int argc, char* argv[]) {
       CHECK(historical.document->bodies().size() == 1);
       CHECK(historical.document->bodies()[0].visible());
       CHECK(historical.document->sketches()[0].geometry.constraints().size() ==
-            1);
+            3);
       const auto& historicalGeometry =
           historical.document->sketches()[0].geometry;
       CHECK(historicalGeometry.dimensions().size() == 2);
@@ -1744,19 +1953,17 @@ int main(int argc, char* argv[]) {
             historicalGeometry.lineId(0));
       CHECK(!restoredPointDistance.secondPoint.start);
       CHECK(solidar::test::near(restoredPointDistance.valueMm, 100.0));
-      CHECK(!historical.document->sketches()[0]
-                 .geometry.constraints()[0].firstPoint.origin);
-      CHECK(!historical.document->sketches()[0]
-                 .geometry.constraints()[0].secondPoint.origin);
-      CHECK(historical.document->sketches()[0]
-                .geometry.constraints()[0].firstPoint.elementCenterId == 0);
-      CHECK(historical.document->sketches()[0]
-                .geometry.constraints()[0].secondPoint.elementCenterId == 0);
+      CHECK(std::ranges::any_of(
+          historical.document->sketches()[0].geometry.constraints(),
+          [](const auto& candidate) {
+            return std::holds_alternative<
+                solidar::sketch::TangentConstraint>(candidate.payload());
+          }));
     }
 
     {
       auto unsupportedRoot = validRoot;
-      unsupportedRoot["version"] = 3;
+      unsupportedRoot["version"] = 4;
       const QString unsupportedPath =
           directory.filePath("unsupported-version.solidar");
       QFile unsupportedFile(unsupportedPath);
@@ -3175,6 +3382,355 @@ int main(int argc, char* argv[]) {
       CHECK(solidar::project::ProjectFile::saveDocument(
           directory.filePath("high-id-edited.solidar"), committed, &error));
     }
+  }
+
+  // R0 containment chain: a rejected mutation remains absent through the
+  // next Undo/Redo delta, persistence round-trip and subsequent editing.
+  {
+    solidar::project::SavedSketch saved;
+    saved.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    const auto lineId = saved.geometry.lineId(0);
+    solidar::sketch::Constraint lock;
+    lock.id = 1;
+    lock.type = solidar::sketch::ConstraintType::Lock;
+    lock.firstGeometry = lineId;
+    solidar::sketch::Constraint horizontal;
+    horizontal.id = 2;
+    horizontal.type = solidar::sketch::ConstraintType::Horizontal;
+    horizontal.firstGeometry = lineId;
+    CHECK(saved.geometry.restoreConstraints({lock, horizontal}));
+
+    const auto beforeFailure = saved.geometry.semanticFingerprint();
+    const auto failed =
+        saved.geometry.translatePoint({lineId, false}, 0.0, 3.0);
+    CHECK(!failed.committed());
+    CHECK(saved.geometry.semanticFingerprint() == beforeFailure);
+    CHECK(saved.geometry.deltaJournalDepth() == 0);
+
+    CHECK(saved.geometry.removeConstraint(lock.id));
+    saved.geometry.beginDeltaJournal();
+    const auto moved = saved.geometry.translateLinesByIds({lineId}, 2.0, 1.0);
+    CHECK(moved.committed());
+    auto delta = saved.geometry.finishDeltaJournal();
+    CHECK(!delta.empty());
+    const auto afterMove = saved.geometry.semanticFingerprint();
+    CHECK(saved.geometry.applyDelta(delta, false));
+    CHECK(saved.geometry.applyDelta(delta, true));
+    CHECK(saved.geometry.semanticFingerprint() == afterMove);
+
+    solidar::project::ProjectData data;
+    data.sketches.push_back(std::move(saved));
+    const QString path = directory.filePath("r0-failed-mutation-chain.solidar");
+    QString chainError;
+    CHECK(solidar::project::ProjectFile::save(path, data, &chainError));
+    solidar::project::ProjectData loaded;
+    CHECK(solidar::project::ProjectFile::load(path, &loaded, &chainError));
+    CHECK(loaded.sketches.size() == 1);
+    CHECK(loaded.sketches[0].geometry.semanticFingerprint() == afterMove);
+    const auto continued = loaded.sketches[0].geometry.translateLinesByIds(
+        {lineId}, -1.0, 0.5);
+    CHECK(continued.committed());
+    CHECK(loaded.sketches[0].geometry.deltaJournalDepth() == 0);
+  }
+
+  // R0 compatibility: geometry accepted by the existing persistence schema
+  // must not become unloadable merely because containment audits candidate
+  // geometry. This tiny closed Bezier is non-degenerate by the v2 rule because
+  // its two handles remain separated by more than the minimum length.
+  {
+    solidar::project::SavedSketch saved;
+    saved.geometry.addBezier({0.0, 0.0}, {-0.9e-9, 0.0}, {0.9e-9, 0.0},
+                             {0.0, 0.0});
+    solidar::sketch::Constraint lock;
+    lock.id = 10;
+    lock.type = solidar::sketch::ConstraintType::Lock;
+    lock.firstGeometry = saved.geometry.bezierId(0);
+    CHECK(saved.geometry.restoreConstraints({lock}));
+    solidar::project::ProjectData data;
+    data.sketches.push_back(std::move(saved));
+    const QString path = directory.filePath("r0-tiny-bezier.solidar");
+    QString tinyBezierError;
+    CHECK(solidar::project::ProjectFile::save(
+        path, data, &tinyBezierError));
+    solidar::project::ProjectData loaded;
+    CHECK(solidar::project::ProjectFile::load(
+        path, &loaded, &tinyBezierError));
+    CHECK(loaded.sketches.size() == 1);
+    CHECK(loaded.sketches[0].geometry.beziers().size() == 1);
+    CHECK(loaded.sketches[0].geometry.constraints().size() == 1);
+  }
+
+  // R1 typed persistence: exact annotation links, modes, IDs and constraint
+  // order survive v3 without re-discovery by geometry shape.  Reference
+  // dimensions carry no persisted hard-equation value.
+  {
+    solidar::Document source;
+    auto& saved = source.addSketch("R1 typed round-trip");
+    saved.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    const auto lineId = saved.geometry.lineId(0);
+    constexpr solidar::sketch::ConstraintId firstId = 501;
+    constexpr solidar::sketch::ConstraintId secondId = 502;
+    CHECK(saved.geometry.restoreConstraints({
+        solidar::sketch::Constraint{
+            solidar::sketch::LengthConstraint{lineId, std::nullopt},
+            solidar::sketch::ConstraintMode::Reference, firstId},
+        solidar::sketch::Constraint{
+            solidar::sketch::LengthConstraint{lineId, std::nullopt},
+            solidar::sketch::ConstraintMode::Reference, secondId}}));
+    solidar::sketch::Dimension first;
+    first.id = 10;
+    first.constraintId = firstId;
+    first.offsetMm = 3.0;
+    CHECK(saved.geometry.storeDimension(first));
+    solidar::sketch::Dimension second;
+    second.id = 20;
+    second.constraintId = secondId;
+    second.offsetMm = 7.0;
+    CHECK(saved.geometry.storeDimension(second));
+    saved.geometry.addLine({20.0, 0.0}, {30.0, 0.0});
+    const auto removedGeometryId = saved.geometry.lineId(1);
+    saved.geometry.removeLine(1);
+    saved.geometry.addLine({40.0, 0.0}, {50.0, 0.0});
+    constexpr solidar::sketch::ConstraintId removedConstraintId = 503;
+    auto cursorConstraints = saved.geometry.constraints();
+    cursorConstraints.emplace_back(
+        solidar::sketch::LengthConstraint{lineId, std::nullopt},
+        solidar::sketch::ConstraintMode::Reference, removedConstraintId);
+    CHECK(saved.geometry.restoreConstraints(std::move(cursorConstraints)));
+    solidar::sketch::Dimension removedAnnotation;
+    removedAnnotation.constraintId = removedConstraintId;
+    CHECK(saved.geometry.storeDimension(removedAnnotation));
+    CHECK(saved.geometry.dimensions().size() == 3);
+    const auto removedDimensionId = saved.geometry.dimensions().back().id;
+    CHECK(saved.geometry.removeConstraint(removedConstraintId));
+    CHECK(saved.geometry.dimensions().size() == 2);
+    const auto expectedFingerprint = saved.geometry.semanticFingerprint();
+
+    const QString firstPath = directory.filePath("r1-typed-v3.solidar");
+    QString r1Error;
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        firstPath, source, &r1Error));
+    QFile firstFile(firstPath);
+    CHECK(firstFile.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(firstFile.readAll()).object();
+    CHECK(root.value("version").toInteger() == 3);
+    const auto persistedSketch = root.value("sketches").toArray()[0].toObject();
+    CHECK(persistedSketch.value("schema").toString() ==
+          QStringLiteral("typed-sketch-v1"));
+    const auto persistedConstraints =
+        persistedSketch.value("constraints").toArray();
+    CHECK(persistedConstraints.size() == 2);
+    CHECK(persistedConstraints[0].toObject().value("id").toInteger() ==
+          static_cast<qint64>(firstId));
+    CHECK(persistedConstraints[1].toObject().value("id").toInteger() ==
+          static_cast<qint64>(secondId));
+    for (const auto& value : persistedConstraints) {
+      const auto envelope = value.toObject();
+      CHECK(envelope.value("mode").toString() == QStringLiteral("reference"));
+      CHECK(!envelope.value("payload").toObject().contains("value"));
+    }
+    const auto annotations = persistedSketch.value("dimensions").toArray();
+    CHECK(annotations.size() == 2);
+    CHECK(annotations[0].toObject().size() == 4);
+    CHECK(annotations[0].toObject().value("constraintId").toInteger() ==
+          static_cast<qint64>(firstId));
+    CHECK(annotations[1].toObject().value("constraintId").toInteger() ==
+          static_cast<qint64>(secondId));
+
+    solidar::Document loaded;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        firstPath, &loaded, &r1Error));
+    CHECK(loaded.sketches().size() == 1);
+    const auto& loadedGeometry = loaded.sketches()[0].geometry;
+    CHECK(loadedGeometry.nextElementId() == saved.geometry.nextElementId());
+    CHECK(loadedGeometry.nextGeometryId() == saved.geometry.nextGeometryId());
+    CHECK(loadedGeometry.nextConstraintId() ==
+          saved.geometry.nextConstraintId());
+    CHECK(loadedGeometry.nextDimensionId() == saved.geometry.nextDimensionId());
+    CHECK(loadedGeometry.semanticFingerprint() == expectedFingerprint);
+    CHECK(loadedGeometry.constraints()[0].id == firstId);
+    CHECK(loadedGeometry.constraints()[1].id == secondId);
+    CHECK(loadedGeometry.dimensions()[0].constraintId == firstId);
+    CHECK(loadedGeometry.dimensions()[1].constraintId == secondId);
+    CHECK(loadedGeometry.nextGeometryId() != removedGeometryId);
+    CHECK(loadedGeometry.nextConstraintId() != removedConstraintId);
+    CHECK(loadedGeometry.nextDimensionId() != removedDimensionId);
+
+    const QString secondPath = directory.filePath("r1-typed-v3-resaved.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        secondPath, loaded, &r1Error));
+    solidar::Document twiceLoaded;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        secondPath, &twiceLoaded, &r1Error));
+    CHECK(twiceLoaded.sketches()[0].geometry.semanticFingerprint() ==
+          expectedFingerprint);
+
+    const auto writeMalformed = [&](const QString& name,
+                                    const QJsonObject& malformed) {
+      const QString path = directory.filePath(name);
+      QFile file(path);
+      if (!file.open(QIODevice::WriteOnly)) return QString{};
+      if (file.write(QJsonDocument(malformed).toJson(QJsonDocument::Compact)) <= 0)
+        return QString{};
+      file.close();
+      return path;
+    };
+    const auto unchangedOnFailure = [&](const QString& path) {
+      solidar::Document open;
+      auto& sentinel = open.addSketch("sentinel");
+      sentinel.geometry.addLine({1.0, 2.0}, {4.0, 6.0});
+      const auto fingerprint = sentinel.geometry.semanticFingerprint();
+      QString loadError;
+      if (solidar::project::ProjectFile::loadDocument(path, &open, &loadError))
+        return false;
+      return open.sketches().size() == 1 &&
+             open.sketches()[0].name == "sentinel" &&
+             open.sketches()[0].geometry.semanticFingerprint() == fingerprint;
+    };
+
+    auto stale = root;
+    auto staleSketches = stale.value("sketches").toArray();
+    auto staleSketch = staleSketches[0].toObject();
+    auto staleAnnotations = staleSketch.value("dimensions").toArray();
+    auto staleAnnotation = staleAnnotations[0].toObject();
+    staleAnnotation["constraintId"] = 999999;
+    staleAnnotations[0] = staleAnnotation;
+    staleSketch["dimensions"] = staleAnnotations;
+    staleSketches[0] = staleSketch;
+    stale["sketches"] = staleSketches;
+    const auto stalePath = writeMalformed("r1-stale-link.solidar", stale);
+    CHECK(!stalePath.isEmpty());
+    CHECK(unchangedOnFailure(stalePath));
+
+    auto duplicate = root;
+    auto duplicateSketches = duplicate.value("sketches").toArray();
+    auto duplicateSketch = duplicateSketches[0].toObject();
+    auto duplicateConstraints = duplicateSketch.value("constraints").toArray();
+    auto duplicated = duplicateConstraints[1].toObject();
+    duplicated["id"] = static_cast<qint64>(firstId);
+    duplicateConstraints[1] = duplicated;
+    duplicateSketch["constraints"] = duplicateConstraints;
+    duplicateSketches[0] = duplicateSketch;
+    duplicate["sketches"] = duplicateSketches;
+    const auto duplicatePath =
+        writeMalformed("r1-duplicate-constraint-id.solidar", duplicate);
+    CHECK(!duplicatePath.isEmpty());
+    CHECK(unchangedOnFailure(duplicatePath));
+
+    const auto mutateFirstSketch = [&](QJsonObject malformed,
+                                       const auto& mutate) {
+      auto sketches = malformed.value("sketches").toArray();
+      auto sketch = sketches[0].toObject();
+      mutate(sketch);
+      sketches[0] = sketch;
+      malformed["sketches"] = sketches;
+      return malformed;
+    };
+    const auto rejects = [&](const QString& name,
+                             const QJsonObject& malformed) {
+      const auto path = writeMalformed(name, malformed);
+      return !path.isEmpty() && unchangedOnFailure(path);
+    };
+
+    CHECK(rejects("r1-missing-required-array.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    sketch.remove("constraints");
+                  })));
+    CHECK(rejects("r1-wrong-required-array-type.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    sketch["dimensions"] = QJsonObject{};
+                  })));
+    CHECK(rejects("r1-duplicate-dimension-id.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto values = sketch.value("dimensions").toArray();
+                    auto duplicate = values[1].toObject();
+                    duplicate["id"] = values[0].toObject().value("id");
+                    values[1] = duplicate;
+                    sketch["dimensions"] = values;
+                  })));
+    CHECK(rejects("r1-extra-constraint-envelope-field.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto values = sketch.value("constraints").toArray();
+                    auto envelope = values[0].toObject();
+                    envelope["unknown"] = true;
+                    values[0] = envelope;
+                    sketch["constraints"] = values;
+                  })));
+    CHECK(rejects("r1-extra-constraint-payload-field.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto values = sketch.value("constraints").toArray();
+                    auto envelope = values[0].toObject();
+                    auto payload = envelope.value("payload").toObject();
+                    payload["unknown"] = true;
+                    envelope["payload"] = payload;
+                    values[0] = envelope;
+                    sketch["constraints"] = values;
+                  })));
+    CHECK(rejects("r1-extra-annotation-field.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto values = sketch.value("dimensions").toArray();
+                    auto annotation = values[0].toObject();
+                    annotation["unknown"] = true;
+                    values[0] = annotation;
+                    sketch["dimensions"] = values;
+                  })));
+    CHECK(rejects("r1-colliding-allocator.solidar",
+                  mutateFirstSketch(root, [lineId](QJsonObject& sketch) {
+                    auto allocators = sketch.value("idAllocators").toObject();
+                    allocators["nextGeometryId"] =
+                        static_cast<qint64>(lineId);
+                    sketch["idAllocators"] = allocators;
+                  })));
+    CHECK(rejects("r1-element-cursor-below-live-max.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto allocators = sketch.value("idAllocators").toObject();
+                    allocators["nextElementId"] = 2;
+                    sketch["idAllocators"] = allocators;
+                  })));
+    CHECK(rejects("r1-geometry-cursor-below-live-max.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto allocators = sketch.value("idAllocators").toObject();
+                    allocators["nextGeometryId"] = 2;
+                    sketch["idAllocators"] = allocators;
+                  })));
+    CHECK(rejects("r1-constraint-cursor-below-live-max.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto allocators = sketch.value("idAllocators").toObject();
+                    allocators["nextConstraintId"] = 500;
+                    sketch["idAllocators"] = allocators;
+                  })));
+    CHECK(rejects("r1-dimension-cursor-below-live-max.solidar",
+                  mutateFirstSketch(root, [](QJsonObject& sketch) {
+                    auto allocators = sketch.value("idAllocators").toObject();
+                    allocators["nextDimensionId"] = 15;
+                    sketch["idAllocators"] = allocators;
+                  })));
+
+    // A structurally valid but inconsistent system is persisted for repair;
+    // loading it must not commit a partial solver candidate.
+    auto* repairableSketch = twiceLoaded.findSketch(saved.id);
+    CHECK(repairableSketch != nullptr);
+    repairableSketch->geometry.clearDimensions();
+    CHECK(repairableSketch->geometry.restoreConstraints({
+        solidar::sketch::Constraint{
+            solidar::sketch::LengthConstraint{lineId, 10.0},
+            solidar::sketch::ConstraintMode::Driving, 801},
+        solidar::sketch::Constraint{
+            solidar::sketch::LengthConstraint{lineId, 20.0},
+            solidar::sketch::ConstraintMode::Driving, 802}}));
+    const auto conflictFingerprint =
+        repairableSketch->geometry.semanticFingerprint();
+    const QString conflictPath =
+        directory.filePath("r1-repairable-conflict.solidar");
+    QString conflictError;
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        conflictPath, twiceLoaded, &conflictError));
+    solidar::Document conflictLoaded;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        conflictPath, &conflictLoaded, &conflictError));
+    CHECK(conflictLoaded.sketches()[0].geometry.semanticFingerprint() ==
+          conflictFingerprint);
+    CHECK(conflictLoaded.sketches()[0].geometry.constraints().size() == 2);
   }
 
   QFile broken(directory.filePath("broken.solidar"));
