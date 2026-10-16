@@ -48,6 +48,7 @@
 #include "model/TopologyReferenceResolver.h"
 #include "ui/MainWindow.h"
 #include "ui/SketchCanvas.h"
+#include "ui/ViewportCamera.h"
 #include "ui/ViewCube.h"
 
 namespace {
@@ -268,7 +269,39 @@ void sketchFreeCameraTests() {
                                   360.0)) <= 1e-6);
   }
 
+  // The same plane can be opened from either side. The click-side camera
+  // hemisphere is presentation state: it changes the initial eye direction,
+  // while the SketchPlacement and its normal remain untouched.
+  canvas.setInitialViewDirection({0.0, 0.0, -1.0});
+  canvas.setSceneReferences(solidar::SketchPlacement::xy(), {}, {});
+  CHECK(canvas.viewAlignedToSketchPlane());
+  CHECK(std::abs(std::remainder(canvas.viewYawDegrees() - 180.0, 360.0)) <=
+        1e-6);
+  const auto oppositeOrientation = canvas.viewCubeCamera();
+  const solidar::ViewportCameraState oppositeCamera{
+      oppositeOrientation.yaw, oppositeOrientation.pitch, 1.0F, {},
+      QSize(800, 600)};
+  CHECK(oppositeCamera.cameraDepth({0.0, 0.0, -1.0}) > 0.999);
+  canvas.rotateViewClockwise();
+  canvas.resetViewRotation();
+  CHECK(std::abs(std::remainder(canvas.viewYawDegrees() - 180.0, 360.0)) <=
+        1e-6);
+
+  // YZ is the only principal plane whose OCCT cap UV frame commonly maps
+  // world +Z to local X. Looking at the same cap frame from the opposite
+  // hemisphere reverses that local axis, so initial roll must be calculated
+  // after yaw. Otherwise this case alone opens 180 degrees upside-down.
+  const solidar::SketchPlacement oppositeYzCap{
+      {50.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, {0.0, -1.0, 0.0}};
+  canvas.setInitialViewDirection({-1.0, 0.0, 0.0});
+  canvas.setSceneReferences(oppositeYzCap, {}, {});
+  CHECK(std::abs(std::remainder(canvas.viewYawDegrees() - 180.0, 360.0)) <=
+        1e-6);
+  CHECK(std::abs(std::remainder(canvas.viewRotationDegrees() - 90.0, 360.0)) <=
+        1e-6);
+
   canvas.setInitialViewUp({});
+  canvas.setInitialViewDirection({});
   canvas.setSketchEditContext(faceContext(box, 20.0, false));
   canvas.setSceneReferences(solidar::SketchPlacement::xy(), {secondBody}, {});
 
@@ -692,13 +725,13 @@ void sketchConstraintToolTests() {
     CHECK(input != nullptr);
     CHECK(input->isVisible());
     CHECK(canvas.interactionState().autoDimension.target ==
-          solidar::SketchAutoDimensionTarget::Points);
+          solidar::SketchAutoDimensionTarget::Line);
     input->setValue(25.0);
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(input, &enter);
     QApplication::processEvents();
     CHECK(hasConstraint(canvas.sketch(),
-                        solidar::sketch::ConstraintType::Distance));
+                        solidar::sketch::ConstraintType::Length));
 
     canvas.setTool(
         solidar::SketchCanvas::Tool::PerpendicularConstraint);
@@ -774,7 +807,7 @@ void sketchConstraintToolTests() {
     QApplication::processEvents();
     CHECK(!input->isVisible());
     CHECK(hasConstraint(dimensionCanvas.sketch(),
-                        solidar::sketch::ConstraintType::Distance));
+                        solidar::sketch::ConstraintType::Length));
     const auto& sized = dimensionCanvas.sketch().lines()[
         *dimensionCanvas.sketch().lineIndex(activeLine)];
     CHECK(std::abs(std::hypot(sized.end.xMm - sized.start.xMm,
@@ -884,7 +917,7 @@ void sketchConstraintToolTests() {
     QApplication::processEvents();
     CHECK(!input->isVisible());
     CHECK(hasConstraint(canvas.sketch(),
-                        solidar::sketch::ConstraintType::Distance));
+                        solidar::sketch::ConstraintType::Length));
     CHECK(hasConstraint(canvas.sketch(),
                         solidar::sketch::ConstraintType::Angle));
     CHECK(hasConstraint(canvas.sketch(),

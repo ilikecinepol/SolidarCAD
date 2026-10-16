@@ -1,6 +1,7 @@
 #include "ui/SketchRenderer.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QLineF>
 #include <QPolygonF>
 #include <QRectF>
@@ -33,6 +34,46 @@ namespace {
 QColor withAlpha(QColor color, int alpha) {
   color.setAlpha(alpha);
   return color;
+}
+
+void appendInteractiveTriangle(QPainterPath& path, QPointF a, QPointF b,
+                               QPointF c) {
+  const double signedArea =
+      (b.x() - a.x()) * (c.y() - a.y()) -
+      (b.y() - a.y()) * (c.x() - a.x());
+  if (std::abs(signedArea) <= 1e-9) return;
+  // A closed B-Rep projects front and rear triangles with opposite winding.
+  // Normalize it for the compound path so the two sides do not cancel each
+  // other under the winding fill rule during the interactive approximation.
+  if (signedArea < 0.0) std::swap(b, c);
+  path.moveTo(a);
+  path.lineTo(b);
+  path.lineTo(c);
+  path.closeSubpath();
+}
+
+enum class ReferenceEdgeSide { OnWorkingPlane, InFront, Behind, Crossing };
+
+ReferenceEdgeSide referenceEdgeSide(const RenderEdge& edge,
+                                    const SketchPlacement& placement,
+                                    double tolerance) {
+  if (edge.points.empty()) return ReferenceEdgeSide::Crossing;
+  const Vector3d normal = placement.normal();
+  double minimum = std::numeric_limits<double>::infinity();
+  double maximum = -std::numeric_limits<double>::infinity();
+  for (const Point3d point : edge.points) {
+    const double offset =
+        (point.x - placement.origin.x) * normal.x +
+        (point.y - placement.origin.y) * normal.y +
+        (point.z - placement.origin.z) * normal.z;
+    minimum = std::min(minimum, offset);
+    maximum = std::max(maximum, offset);
+  }
+  if (minimum >= -tolerance && maximum <= tolerance)
+    return ReferenceEdgeSide::OnWorkingPlane;
+  if (maximum < -tolerance) return ReferenceEdgeSide::Behind;
+  if (minimum > tolerance) return ReferenceEdgeSide::InFront;
+  return ReferenceEdgeSide::Crossing;
 }
 
 std::optional<SketchRenderGeometry> captureRenderGeometry(
@@ -1122,6 +1163,7 @@ class SketchFrameRecorder final {
         viewRotationDeg_(source.viewRotationDeg),
         viewYawDeg_(source.viewYawDeg),
         viewPitchDeg_(source.viewPitchDeg),
+        cameraMotionActive_(source.cameraMotionActive),
         circleMode_(source.circleMode),
         circleDiameterMm_(source.circleDiameterMm),
         rectangleMode_(source.rectangleMode),
@@ -1213,8 +1255,17 @@ class SketchFrameRecorder final {
     return snapshot.interaction;
   }
   [[nodiscard]] bool viewAlignedToSketchPlane() const noexcept {
-    return std::abs(viewYawDeg_) <= 1e-9 &&
+    const double yaw = viewYawDeg_ * std::numbers::pi / 180.0;
+    return std::abs(std::sin(yaw)) <= 1e-9 &&
            std::abs(viewPitchDeg_) <= 1e-9;
+  }
+  [[nodiscard]] bool viewingWorkingPlaneFront() const noexcept {
+    const double yaw = viewYawDeg_ * std::numbers::pi / 180.0;
+    const double pitch = viewPitchDeg_ * std::numbers::pi / 180.0;
+    // Local +Z is the outward normal of the selected support face. The
+    // current camera looks at its front while the projected depth basis has a
+    // positive component along that normal.
+    return std::cos(yaw) * std::cos(pitch) >= 0.0;
   }
   [[nodiscard]] std::array<double, 3> projectLocalPoint(
       double xMm, double yMm, double zMm) const noexcept {
@@ -1493,10 +1544,27 @@ class SketchFrameRecorder final {
     }
     painter.setPen(Qt::NoPen);
     painter.setBrush(sceneFill);
-    for (const auto& triangle : mesh->triangles()) {
-      painter.drawPolygon(QPolygonF{projectScenePoint(triangle.a),
-                                    projectScenePoint(triangle.b),
-                                    projectScenePoint(triangle.c)});
+    if (cameraMotionActive_) {
+      // QPainter draw calls dominate free-orbit latency. A single compound
+      // path keeps the translucent body visible while avoiding one raster
+      // operation and allocation per triangle.
+      QPainterPath bodyFill;
+      bodyFill.setFillRule(Qt::WindingFill);
+      for (const auto& triangle : mesh->triangles()) {
+        appendInteractiveTriangle(bodyFill,
+                                  projectScenePoint(triangle.a),
+                                  projectScenePoint(triangle.b),
+                                  projectScenePoint(triangle.c));
+      }
+      painter.setRenderHint(QPainter::Antialiasing, false);
+      painter.drawPath(bodyFill);
+      painter.setRenderHint(QPainter::Antialiasing, true);
+    } else {
+      for (const auto& triangle : mesh->triangles()) {
+        painter.drawPolygon(QPolygonF{projectScenePoint(triangle.a),
+                                      projectScenePoint(triangle.b),
+                                      projectScenePoint(triangle.c)});
+      }
     }
     painter.setBrush(Qt::NoBrush);
     for (std::size_t edgeIndex = 0; edgeIndex < mesh->edges().size();
@@ -1596,29 +1664,54 @@ class SketchFrameRecorder final {
     const auto projected = [&](Point3d point) {
       return mapWorldPoint(point);
     };
-    std::vector<ProjectedTriangle> triangles;
-    triangles.reserve(referenceBodyMesh_.triangles().size());
-    for (const auto& triangle : referenceBodyMesh_.triangles()) {
-      triangles.push_back(
-          {{projected(triangle.a), projected(triangle.b), projected(triangle.c)},
-           (depthOf(triangle.a) + depthOf(triangle.b) + depthOf(triangle.c)) /
-               3.0,
-           std::abs(triangle.normal.x * viewNormal.x +
-                    triangle.normal.y * viewNormal.y +
-                    triangle.normal.z * viewNormal.z)});
-    }
-    std::sort(triangles.begin(), triangles.end(),
-              [](const auto& first, const auto& second) {
-                return first.depth < second.depth;
-              });
     painter.setPen(Qt::NoPen);
-    for (const auto& triangle : triangles) {
-      QColor triangleFill = palette().sceneFill;
-      triangleFill.setAlpha(static_cast<int>(56 + triangle.facing * 24.0));
-      painter.setBrush(triangleFill);
-      painter.drawPolygon(triangle.polygon);
+    if (cameraMotionActive_) {
+      // During orbit the next detailed frame is only milliseconds away.
+      // Batch all projected triangles and postpone depth ordering plus
+      // per-face shading until the button is released. This keeps navigation
+      // responsive even for finely tessellated OCCT bodies.
+      QPainterPath bodyFill;
+      bodyFill.setFillRule(Qt::WindingFill);
+      for (const auto& triangle : referenceBodyMesh_.triangles()) {
+        appendInteractiveTriangle(bodyFill, projected(triangle.a),
+                                  projected(triangle.b),
+                                  projected(triangle.c));
+      }
+      QColor interactiveFill = palette().sceneFill;
+      interactiveFill.setAlpha(68);
+      painter.setBrush(interactiveFill);
+      painter.setRenderHint(QPainter::Antialiasing, false);
+      painter.drawPath(bodyFill);
+      painter.setRenderHint(QPainter::Antialiasing, true);
+    } else {
+      std::vector<ProjectedTriangle> triangles;
+      triangles.reserve(referenceBodyMesh_.triangles().size());
+      for (const auto& triangle : referenceBodyMesh_.triangles()) {
+        triangles.push_back(
+            {{projected(triangle.a), projected(triangle.b),
+              projected(triangle.c)},
+             (depthOf(triangle.a) + depthOf(triangle.b) +
+              depthOf(triangle.c)) /
+                 3.0,
+             std::abs(triangle.normal.x * viewNormal.x +
+                      triangle.normal.y * viewNormal.y +
+                      triangle.normal.z * viewNormal.z)});
+      }
+      std::sort(triangles.begin(), triangles.end(),
+                [](const auto& first, const auto& second) {
+                  return first.depth < second.depth;
+                });
+      for (const auto& triangle : triangles) {
+        QColor triangleFill = palette().sceneFill;
+        triangleFill.setAlpha(static_cast<int>(56 + triangle.facing * 24.0));
+        painter.setBrush(triangleFill);
+        painter.drawPolygon(triangle.polygon);
+      }
     }
     painter.setBrush(Qt::NoBrush);
+    const bool hasWorkingFace = !referenceFaceMesh_.triangles().empty();
+    const double planeTolerance =
+        std::max(1e-6, referenceBodyMesh_.diagonal() * 1e-5);
     for (std::size_t edgeIndex = 0;
          edgeIndex < referenceBodyMesh_.edges().size(); ++edgeIndex) {
       const auto& edge = referenceBodyMesh_.edges()[edgeIndex];
@@ -1630,23 +1723,63 @@ class SketchFrameRecorder final {
           hoveredProjectionEdge_->meshRevision ==
               referenceBodyMesh_.revision() &&
           hoveredProjectionEdge_->edgeSlot == edgeIndex;
-      painter.setPen(
-          hovered
-              ? QPen(palette().sceneHover, 3.2, Qt::SolidLine, Qt::RoundCap)
-              : QPen(palette().sceneEdge, 1.0));
+      const ReferenceEdgeSide side =
+          referenceEdgeSide(edge, referencePlacement_, planeTolerance);
+      // The selected face owns its boundary presentation. Suppressing the
+      // duplicate body edge prevents a dark line underneath the violet
+      // working-plane outline.
+      if (!hovered && hasWorkingFace &&
+          side == ReferenceEdgeSide::OnWorkingPlane)
+        continue;
+      if (hovered) {
+        painter.setPen(
+            QPen(palette().sceneHover, 3.2, Qt::SolidLine, Qt::RoundCap));
+      } else if (hasWorkingFace && side == ReferenceEdgeSide::Behind) {
+        QColor hiddenEdge = palette().sceneEdge;
+        hiddenEdge.setAlpha(62);
+        QPen hiddenPen(hiddenEdge, 0.9, Qt::DashLine, Qt::RoundCap);
+        hiddenPen.setDashPattern({4.0, 5.0});
+        painter.setPen(hiddenPen);
+      } else {
+        QColor visibleEdge = palette().sceneEdge;
+        visibleEdge.setAlpha(side == ReferenceEdgeSide::InFront ? 190 : 128);
+        painter.setPen(QPen(visibleEdge,
+                            side == ReferenceEdgeSide::InFront ? 1.4 : 1.1,
+                            Qt::SolidLine, Qt::RoundCap));
+      }
       QPolygonF curve;
       for (const auto& point : edge.points) curve << projected(point);
       painter.drawPolyline(curve);
     }
-    painter.setBrush(palette().referenceFill);
+    QColor workingFaceFill = palette().referenceFill;
+    workingFaceFill.setAlpha(viewingWorkingPlaneFront() ? 104 : 34);
+    painter.setBrush(workingFaceFill);
     painter.setPen(Qt::NoPen);
-    for (const auto& triangle : referenceFaceMesh_.triangles()) {
-      QPolygonF polygon{projected(triangle.a), projected(triangle.b),
-                        projected(triangle.c)};
-      painter.drawPolygon(polygon);
+    if (cameraMotionActive_) {
+      QPainterPath faceFill;
+      faceFill.setFillRule(Qt::WindingFill);
+      for (const auto& triangle : referenceFaceMesh_.triangles())
+        appendInteractiveTriangle(faceFill, projected(triangle.a),
+                                  projected(triangle.b),
+                                  projected(triangle.c));
+      painter.setRenderHint(QPainter::Antialiasing, false);
+      painter.drawPath(faceFill);
+      painter.setRenderHint(QPainter::Antialiasing, true);
+    } else {
+      for (const auto& triangle : referenceFaceMesh_.triangles()) {
+        QPolygonF polygon{projected(triangle.a), projected(triangle.b),
+                          projected(triangle.c)};
+        painter.drawPolygon(polygon);
+      }
     }
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(palette().sceneEdge, 2.0));
+    QColor workingFaceEdge = palette().referenceEdge;
+    workingFaceEdge.setAlpha(viewingWorkingPlaneFront() ? 255 : 150);
+    painter.setPen(QPen(workingFaceEdge,
+                        viewingWorkingPlaneFront() ? 2.6 : 1.8,
+                        viewingWorkingPlaneFront() ? Qt::SolidLine
+                                                   : Qt::DashLine,
+                        Qt::RoundCap));
     for (const auto& edge : referenceFaceMesh_.edges()) {
       QPolygonF boundary;
       for (const auto& point : edge.points) boundary << projected(point);
@@ -2939,6 +3072,26 @@ class SketchFrameRecorder final {
     painter.drawRect(normalized);
   }
 
+  if (realReferenceBodyVisible_ &&
+      !referenceFaceMesh_.triangles().empty()) {
+    const bool front = viewingWorkingPlaneFront();
+    const QRectF badge(kRulerLeft + 12.0, kRulerTop + 12.0, 172.0, 28.0);
+    QColor badgeFill = front ? palette().referenceEdge
+                             : palette().sceneEdge;
+    badgeFill.setAlpha(front ? 34 : 20);
+    QColor badgeEdge = front ? palette().referenceEdge
+                             : palette().sceneEdge;
+    badgeEdge.setAlpha(front ? 230 : 120);
+    painter.setBrush(badgeFill);
+    painter.setPen(QPen(badgeEdge, front ? 1.6 : 1.0,
+                        front ? Qt::SolidLine : Qt::DashLine));
+    painter.drawRoundedRect(badge, 5.0, 5.0);
+    painter.setPen(badgeEdge);
+    painter.drawText(badge, Qt::AlignCenter,
+                     front ? QString::fromUtf8("Лицевая сторона")
+                           : QString::fromUtf8("Обратная сторона"));
+  }
+
   painter.setPen(palette().hudText);
   const QString viewDescription =
       viewAlignedToSketchPlane()
@@ -2981,6 +3134,7 @@ class SketchFrameRecorder final {
   double viewRotationDeg_;
   double viewYawDeg_;
   double viewPitchDeg_;
+  bool cameraMotionActive_;
   SketchRenderCircleMode circleMode_;
   double circleDiameterMm_;
   SketchRenderRectangleMode rectangleMode_;

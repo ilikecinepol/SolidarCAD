@@ -31,6 +31,13 @@ Point3d onFace(int face, double u, double v) {
   return mix(mix(vertices[f[0]], vertices[f[1]], u),
              mix(vertices[f[3]], vertices[f[2]], u), v);
 }
+Point3d normalized(Point3d value) {
+  const double length = std::sqrt(value.x * value.x + value.y * value.y +
+                                  value.z * value.z);
+  return length > 1e-12
+             ? Point3d{value.x / length, value.y / length, value.z / length}
+             : Point3d{};
+}
 Point3d viewingDirection(CameraOrientation camera) {
   const double y = camera.yaw * std::numbers::pi / 180;
   const double p = camera.pitch * std::numbers::pi / 180;
@@ -64,11 +71,72 @@ CameraOrientation orientationForDirection(Point3d d) {
   return {static_cast<float>(std::atan2(d.x,d.y)*180/std::numbers::pi),
           static_cast<float>(std::acos(d.z/length)*180/std::numbers::pi)};
 }
+Point3d cameraViewingDirection(CameraOrientation camera) {
+  return viewingDirection(camera);
+}
+Point3d cameraScreenUpDirection(CameraOrientation camera) {
+  const double yaw = camera.yaw * std::numbers::pi / 180.0;
+  const double pitch = camera.pitch * std::numbers::pi / 180.0;
+  return {-std::sin(yaw) * std::cos(pitch),
+          -std::cos(yaw) * std::cos(pitch), std::sin(pitch)};
+}
+CameraOrientation uprightOrientationForDirection(Point3d direction,
+                                                  float poleYaw) {
+  const Point3d eye = normalized(direction);
+  if (std::abs(eye.x) <= 1e-12 && std::abs(eye.y) <= 1e-12)
+    return {poleYaw, eye.z >= 0.0 ? 0.0F : 180.0F};
+  return {static_cast<float>(std::atan2(eye.x, eye.y) * 180.0 /
+                            std::numbers::pi),
+          static_cast<float>(std::acos(std::clamp(eye.z, -1.0, 1.0)) *
+                            180.0 / std::numbers::pi)};
+}
 float shortestAngleDelta(float from, float to) { return std::remainder(to-from, 360.0F); }
 CameraOrientation interpolateOrientation(CameraOrientation from, CameraOrientation to, float t) {
   t = std::clamp(t, 0.0F, 1.0F);
   return {from.yaw+shortestAngleDelta(from.yaw,to.yaw)*t,
           from.pitch+shortestAngleDelta(from.pitch,to.pitch)*t};
+}
+CameraOrientation interpolateOrientationShortestArc(
+    CameraOrientation from, CameraOrientation to, float t) {
+  t = std::clamp(t, 0.0F, 1.0F);
+  if (t <= 0.0F) return from;
+  if (t >= 1.0F) return to;
+  const Point3d start = normalized(viewingDirection(from));
+  const Point3d finish = normalized(viewingDirection(to));
+  const double dot = std::clamp(start.x * finish.x + start.y * finish.y +
+                                    start.z * finish.z,
+                                -1.0, 1.0);
+  Point3d direction;
+  if (dot > 0.999999) {
+    direction = normalized(
+        {start.x + (finish.x - start.x) * t,
+         start.y + (finish.y - start.y) * t,
+         start.z + (finish.z - start.z) * t});
+  } else if (dot < -0.999999) {
+    // Antipodal directions have no unique shortest arc. The current screen-up
+    // vector supplies a deterministic tangent and avoids an arbitrary spin.
+    const Point3d tangent = normalized(cameraScreenUpDirection(from));
+    const double angle = std::numbers::pi * t;
+    direction = normalized({start.x * std::cos(angle) +
+                                tangent.x * std::sin(angle),
+                            start.y * std::cos(angle) +
+                                tangent.y * std::sin(angle),
+                            start.z * std::cos(angle) +
+                                tangent.z * std::sin(angle)});
+  } else {
+    const double angle = std::acos(dot);
+    const double scale = 1.0 / std::sin(angle);
+    const double first = std::sin((1.0 - t) * angle) * scale;
+    const double second = std::sin(t * angle) * scale;
+    direction = normalized({start.x * first + finish.x * second,
+                            start.y * first + finish.y * second,
+                            start.z * first + finish.z * second});
+  }
+  const auto result = uprightOrientationForDirection(direction, from.yaw);
+  const float expectedYaw =
+      from.yaw + shortestAngleDelta(from.yaw, to.yaw) * t;
+  return {expectedYaw + shortestAngleDelta(expectedYaw, result.yaw),
+          result.pitch};
 }
 bool ViewCubeHit::operator==(const ViewCubeHit& other) const {
   return zone == other.zone && direction.x == other.direction.x &&

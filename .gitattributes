@@ -1,0 +1,4 @@
+*.sh text eol=lf
+packaging/linux/postinst text eol=lf
+packaging/linux/postrm text eol=lf
+packaging/linux/solidar text eol=lf

@@ -1431,7 +1431,11 @@ int main(int argc, char** argv) {
 
     CHECK(blockedEditor->isVisible());
     CHECK(blockedCanvas.sketch().dimensions().empty());
-    CHECK(blockedStatus.contains(QString::fromUtf8("по X и Y")));
+    CHECK(blockedStatus.contains(
+              QString::fromUtf8("конфликт ограничений")) ||
+          blockedStatus.contains(
+              QString::fromUtf8("решатель не сошёлся")));
+    CHECK(blockedStatus.contains(QString::fromUtf8("ограничения:")));
     const auto& unchanged = blockedCanvas.sketch().lines()[2];
     CHECK(std::abs(std::hypot(unchanged.end.xMm - unchanged.start.xMm,
                               unchanged.end.yMm - unchanged.start.yMm) -
@@ -1869,6 +1873,16 @@ int main(int argc, char** argv) {
     QApplication::sendEvent(lineEdit, &enter);
     QApplication::processEvents();
     CHECK(dimensionCanvas.sketch().dimensions().size() == 1);
+    const auto& directDimension =
+        dimensionCanvas.sketch().dimensions().front();
+    CHECK(directDimension.kind ==
+          solidar::sketch::DimensionKind::LineLength);
+    const auto directConstraint =
+        dimensionCanvas.sketch().constraintIndex(
+            directDimension.constraintId);
+    CHECK(directConstraint.has_value());
+    CHECK(dimensionCanvas.sketch().constraints()[*directConstraint].type ==
+          solidar::sketch::ConstraintType::Length);
   }
   {
     // A projected/locked vertical carrier anchors the right endpoints of two

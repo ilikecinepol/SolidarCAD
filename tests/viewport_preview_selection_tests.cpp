@@ -21,6 +21,8 @@
 #include <vector>
 
 #include "model/TopologyReferenceResolver.h"
+#include "model/Document.h"
+#include "model/ExtrudeFeature.h"
 #include "ui/Viewport.h"
 #include "ui/ViewportCamera.h"
 
@@ -196,6 +198,64 @@ int main(int argc, char** argv) {
     CHECK(std::abs(candidate.circles()[1].radiusMm - 8.0) < 1e-6);
   }
 
+  // Reproduce the user's YZ-circle extrusion: the visible x=0 cap must stay
+  // the selected cap all the way through mesh picking and topology resolve.
+  {
+    solidar::Document document;
+    auto& sketch = document.addSketch("YZ circle");
+    sketch.placement = solidar::SketchPlacement::yz();
+    sketch.geometry.addCircle({0.0, 0.0}, 10.0);
+    auto& body = document.addBody("Cylinder");
+    auto extrusion = std::make_unique<solidar::ExtrudeFeature>(
+        sketch.id, 50.0, "Cylinder");
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    CHECK(document.recompute());
+    const auto shape = body.resultShape();
+    CHECK(shape != nullptr);
+    const auto topology = body.activeFeature()->topologyIndex();
+    CHECK(topology != nullptr);
+
+    solidar::Viewport cylinderView;
+    cylinderView.resize(800, 600);
+    cylinderView.setBodyShapes(
+        {{body.id(), extrusionId, shape, topology,
+          body.activeFeature()->shapeRevision()}});
+    cylinderView.setSolidVisible(true);
+    std::optional<solidar::SketchPlanePick> pickedCap;
+    QObject::connect(&cylinderView, &solidar::Viewport::sketchPlanePicked,
+                     &cylinderView,
+                     [&](const solidar::SketchPlanePick& pick) {
+                       pickedCap = pick;
+                     });
+    const solidar::ViewportCameraState camera{
+        cylinderView.cameraYawDegrees(), cylinderView.cameraPitchDegrees(),
+        1.0F, {}, cylinderView.size(), 1.0F, {25.0, 0.0, 0.0}, 100.0};
+    const QPointF visibleCap = camera.worldToScreen({0.0, 0.0, 0.0});
+    cylinderView.beginSketchPlaneSelection();
+    mouse(cylinderView, QEvent::MouseMove, visibleCap, Qt::NoButton,
+          Qt::NoButton);
+    solidar::MainWindowUndoTestAccess::flushHover(cylinderView, visibleCap);
+    mouse(cylinderView, QEvent::MouseButtonPress, visibleCap, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(pickedCap.has_value());
+    const auto* bodyFace =
+        std::get_if<solidar::BodyFacePick>(&pickedCap->source);
+    CHECK(bodyFace != nullptr);
+    const auto resolved = topology->resolveFace(bodyFace->face.topology());
+    CHECK(resolved);
+    const auto placement =
+        solidar::resolveFacePlacement(*resolved.subshape);
+    CHECK(placement.resolved && placement.planar);
+    const auto normal = placement.placement.normal();
+    CHECK(std::abs(placement.placement.origin.x) < 1e-6);
+    CHECK(normal.x < -0.999);
+    CHECK(normal.x * pickedCap->viewDirection.x +
+              normal.y * pickedCap->viewDirection.y +
+              normal.z * pickedCap->viewDirection.z >
+          0.0);
+  }
+
   constexpr solidar::BodyId bodyId = 41;
   constexpr solidar::FeatureId sourceFeatureId = 73;
   constexpr solidar::FeatureId previewFeatureId = 99;
@@ -246,6 +306,42 @@ int main(int argc, char** argv) {
   const solidar::ViewportCameraState sourceCamera{
       viewport.cameraYawDegrees(), viewport.cameraPitchDegrees(), 1.0F, {},
       viewport.size(), 1.0F, {20.0, 15.0, 10.0}, 1.0};
+
+  // Sketch-plane picks retain the eye hemisphere from the exact click. The
+  // Sketcher needs it to keep this visible face nearest instead of always
+  // choosing the positive side of the resolved placement normal.
+  {
+    solidar::Viewport planeView;
+    planeView.resize(800, 600);
+    planeView.setBodyShape(source, bodyId, sourceFeatureId);
+    planeView.setSolidVisible(true);
+    std::optional<solidar::SketchPlanePick> pickedPlane;
+    QObject::connect(&planeView, &solidar::Viewport::sketchPlanePicked,
+                     &planeView, [&](const solidar::SketchPlanePick& pick) {
+                       pickedPlane = pick;
+                     });
+    const QPointF topFace = sourceCamera.worldToScreen({20.0, 15.0, 20.0});
+    planeView.beginSketchPlaneSelection();
+    mouse(planeView, QEvent::MouseMove, topFace, Qt::NoButton, Qt::NoButton);
+    solidar::MainWindowUndoTestAccess::flushHover(planeView, topFace);
+    mouse(planeView, QEvent::MouseButtonPress, topFace, Qt::LeftButton,
+          Qt::LeftButton);
+    CHECK(pickedPlane.has_value());
+    const auto* bodyFace =
+        std::get_if<solidar::BodyFacePick>(&pickedPlane->source);
+    CHECK(bodyFace != nullptr);
+    const auto resolved =
+        sourceTopology->resolveFace(bodyFace->face.topology());
+    CHECK(resolved);
+    const auto placement =
+        solidar::resolveFacePlacement(*resolved.subshape);
+    CHECK(placement.resolved && placement.planar);
+    const auto normal = placement.placement.normal();
+    CHECK(normal.x * pickedPlane->viewDirection.x +
+              normal.y * pickedPlane->viewDirection.y +
+              normal.z * pickedPlane->viewDirection.z >
+          0.0);
+  }
 
   // Mirror's Body picker treats the complete model-level Body as one object:
   // hovering any visible face highlights all of its faces, and clicking emits

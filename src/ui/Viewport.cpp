@@ -35,6 +35,7 @@
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QResizeEvent>
 #include <QPainterPath>
 #include <QPointer>
 #include <QSignalBlocker>
@@ -1898,6 +1899,7 @@ void Viewport::resetScene() {
   const bool rulerWasActive = ruler_.active();
   ruler_.cancel();
   orientationAnimation_->stop();
+  sketchViewTransitionActive_ = false;
   clearCubeHover();
   cubePressed_ = {};
   bodyShape_.reset();
@@ -3014,7 +3016,28 @@ void Viewport::fitAll() {
   update();
 }
 
+void Viewport::preserveWorldOriginOnNextResize() {
+  const ViewportCameraState camera{
+      yaw_, pitch_, zoom_, cameraPan_, size(), 1.0F, {},
+      std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+  pendingResizeOriginScreen_ = camera.worldToScreen({});
+  QTimer::singleShot(0, this, [this] { pendingResizeOriginScreen_.reset(); });
+}
+
+void Viewport::resizeEvent(QResizeEvent* event) {
+  const auto preservedOrigin = pendingResizeOriginScreen_;
+  QOpenGLWidget::resizeEvent(event);
+  if (!preservedOrigin) return;
+
+  const ViewportCameraState resizedCamera{
+      yaw_, pitch_, zoom_, {}, event->size(), 1.0F, {},
+      std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+  cameraPan_ = *preservedOrigin - resizedCamera.worldToScreen({});
+  pendingResizeOriginScreen_.reset();
+}
+
 void Viewport::setStandardView(StandardView view) {
+  sketchViewTransitionActive_ = false;
   orientationAnimation_->stop();
   const auto target = orientationFor(view);
   yaw_ = target.yaw; pitch_ = target.pitch;
@@ -3029,6 +3052,7 @@ void Viewport::viewLeft() { setStandardView(StandardView::Left); }
 void Viewport::viewIsometric() { setStandardView(StandardView::Isometric); }
 
 void Viewport::animateOrientation(CameraOrientation target) {
+  sketchViewTransitionActive_ = false;
   orientationAnimation_->stop();
   // Re-target from the currently displayed orientation, including mid-animation.
   disconnect(orientationAnimation_, nullptr, this, nullptr);
@@ -3042,6 +3066,104 @@ void Viewport::animateOrientation(CameraOrientation target) {
   orientationAnimation_->setStartValue(0.0F);
   orientationAnimation_->setEndValue(1.0F);
   orientationAnimation_->start();
+}
+
+void Viewport::animateToSketchView(CameraOrientation target,
+                                   Point3d placementOrigin,
+                                   QPointF targetOriginScreen,
+                                   double targetPixelsPerMm,
+                                   std::function<void()> finished) {
+  if (!orientationAnimation_ || !std::isfinite(targetPixelsPerMm) ||
+      targetPixelsPerMm <= 0.0) {
+    if (finished) finished();
+    return;
+  }
+  orientationAnimation_->stop();
+  disconnect(orientationAnimation_, nullptr, this, nullptr);
+  sketchViewTransitionActive_ = true;
+  const CameraOrientation start{yaw_, pitch_};
+  const float startZoom = zoom_;
+  const QPointF startPan = cameraPan_;
+  const double basePixelsPerMm =
+      std::max(1, std::min(width(), height())) * 0.008;
+  const float targetZoom = static_cast<float>(std::clamp(
+      targetPixelsPerMm / basePixelsPerMm,
+      static_cast<double>(kMinimumViewportZoom),
+      static_cast<double>(kMaximumViewportZoom)));
+  const ViewportCameraState startCamera{
+      start.yaw, start.pitch, startZoom, {}, size(), 1.0F,
+      placementOrigin, std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+  const QPointF startOriginScreen =
+      startCamera.worldToScreen(placementOrigin) + startPan;
+
+  connect(orientationAnimation_, &QVariantAnimation::valueChanged, this,
+          [this, start, target, startZoom, targetZoom, startOriginScreen,
+           targetOriginScreen, placementOrigin](const QVariant& value) {
+            const double progress = value.toDouble();
+            const auto camera = interpolateOrientationShortestArc(
+                start, target, static_cast<float>(progress));
+            yaw_ = camera.yaw;
+            pitch_ = camera.pitch;
+            // Geometric interpolation keeps zoom motion perceptually uniform.
+            zoom_ = static_cast<float>(std::exp(
+                std::log(std::max(startZoom, kMinimumViewportZoom)) *
+                    (1.0 - progress) +
+                std::log(std::max(targetZoom, kMinimumViewportZoom)) *
+                    progress));
+            const QPointF desiredOrigin =
+                startOriginScreen +
+                (targetOriginScreen - startOriginScreen) * progress;
+            const ViewportCameraState frame{
+                yaw_, pitch_, zoom_, {}, size(), 1.0F, placementOrigin,
+                std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+            cameraPan_ =
+                desiredOrigin - frame.worldToScreen(placementOrigin);
+            update();
+          });
+  connect(orientationAnimation_, &QVariantAnimation::finished, this,
+          [this, target, targetZoom, targetOriginScreen, placementOrigin,
+           finished = std::move(finished)]() mutable {
+            yaw_ = target.yaw;
+            pitch_ = target.pitch;
+            zoom_ = targetZoom;
+            const ViewportCameraState finalCamera{
+                yaw_, pitch_, zoom_, {}, size(), 1.0F, placementOrigin,
+                std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+            cameraPan_ = targetOriginScreen -
+                         finalCamera.worldToScreen(placementOrigin);
+            sketchViewTransitionActive_ = false;
+            orientationAnimation_->setDuration(200);
+            update();
+            if (finished) finished();
+          });
+  orientationAnimation_->setDuration(280);
+  orientationAnimation_->setStartValue(0.0F);
+  orientationAnimation_->setEndValue(1.0F);
+  orientationAnimation_->start();
+}
+
+void Viewport::adoptSketchView(CameraOrientation target,
+                               Point3d placementOrigin,
+                               QPointF targetOriginScreen,
+                               double targetPixelsPerMm) {
+  if (!std::isfinite(targetPixelsPerMm) || targetPixelsPerMm <= 0.0) return;
+
+  orientationAnimation_->stop();
+  disconnect(orientationAnimation_, nullptr, this, nullptr);
+  sketchViewTransitionActive_ = false;
+  yaw_ = target.yaw;
+  pitch_ = target.pitch;
+  const double basePixelsPerMm =
+      std::max(1, std::min(width(), height())) * 0.008;
+  zoom_ = static_cast<float>(std::clamp(
+      targetPixelsPerMm / basePixelsPerMm,
+      static_cast<double>(kMinimumViewportZoom),
+      static_cast<double>(kMaximumViewportZoom)));
+  const ViewportCameraState camera{
+      yaw_, pitch_, zoom_, {}, size(), 1.0F, placementOrigin,
+      std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+  cameraPan_ = targetOriginScreen - camera.worldToScreen(placementOrigin);
+  update();
 }
 
 void Viewport::clearCubeHover() {
@@ -3082,6 +3204,12 @@ void Viewport::leaveEvent(QEvent* event) {
 }
 float Viewport::cameraYawDegrees() const noexcept { return yaw_; }
 float Viewport::cameraPitchDegrees() const noexcept { return pitch_; }
+Vector3d Viewport::cameraViewDirection() const noexcept {
+  const double yaw = yaw_ * std::numbers::pi / 180.0;
+  const double pitch = pitch_ * std::numbers::pi / 180.0;
+  return {std::sin(yaw) * std::sin(pitch),
+          std::cos(yaw) * std::sin(pitch), std::cos(pitch)};
+}
 Vector3d Viewport::cameraScreenUpDirection() const noexcept {
   const double yaw = yaw_ * std::numbers::pi / 180.0;
   const double pitch = pitch_ * std::numbers::pi / 180.0;
@@ -4028,7 +4156,12 @@ void Viewport::paintGL() {
                                          ? QPointF{}
                                          : extrusionManipulatorAnchor_ -
                                                cachedRegionsBounds.center();
-    if (!qFuzzyIsNull(extrusionPreviewLengthMm_)) {
+    // A valid legacy extrusion now uses the same depth-tested OCCT B-Rep as
+    // the committed feature. Keep this screen-space construction only as a
+    // fallback for profiles that cannot yet produce a solid preview: drawing
+    // both creates an ambiguous, apparently inverted cylinder.
+    if (!qFuzzyIsNull(extrusionPreviewLengthMm_) &&
+        (!toolPreviewShape_ || toolPreviewShape_->IsNull())) {
       for (std::size_t regionIndex = 0; regionIndex < previewPolygons.size();
            ++regionIndex) {
         const auto& polygon = previewPolygons[regionIndex];
@@ -4257,6 +4390,10 @@ qulonglong Viewport::principalAxisTokenAt(QPointF scenePosition) const {
 }
 
 void Viewport::mousePressEvent(QMouseEvent* event) {
+  if (sketchViewTransitionActive_) {
+    event->accept();
+    return;
+  }
   setFocus(Qt::MouseFocusReason);
   flushPendingHover(event->position());
   lastMousePosition_ = event->position().toPoint();
@@ -4686,10 +4823,12 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
       selectedFace_ = static_cast<int>(hoveredBodyFaceIndex_);
       if (const auto face = faceReferenceForGlobalIndex(hoveredBodyFaceIndex_))
         pickedPlane = SketchPlanePick{BodyFacePick{*face},
-                                      presentationLabel};
+                                      presentationLabel,
+                                      cameraViewDirection()};
     } else if (hoveredLegacySolidFace_) {
       pickedPlane = SketchPlanePick{*hoveredLegacySolidFace_,
-                                    presentationLabel};
+                                    presentationLabel,
+                                    cameraViewDirection()};
     } else if (selectedBasePlane_ >= 0 && selectedBasePlane_ < 3) {
       const BasePlane plane = selectedBasePlane_ == 0
                                   ? BasePlane::XY
@@ -4700,7 +4839,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
           : plane == BasePlane::XZ ? SketchPlacement::xz()
                                    : SketchPlacement::yz();
       pickedPlane = SketchPlanePick{DatumPlanePick{plane, placement},
-                                    presentationLabel};
+                                    presentationLabel,
+                                    cameraViewDirection()};
     }
     pickMode_ = PickMode::None;
     unsetCursor();
@@ -4760,7 +4900,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
         update();
         const SketchPlanePick pick{
             DatumPlanePick{basePlane, placement},
-            QString::fromUtf8("Базовая плоскость ") + name};
+            QString::fromUtf8("Базовая плоскость ") + name,
+            cameraViewDirection()};
         if (imagePlane)
           emit imagePlanePicked(pick);
         else
@@ -6480,7 +6621,10 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
   } else if (event->buttons().testFlag(Qt::RightButton) ||
              (event->buttons().testFlag(Qt::LeftButton) && !solidVisible_)) {
     const QPoint delta = event->position().toPoint() - lastMousePosition_;
-    const Point3d orbitCenter = displayedBodyCenter();
+    // Orbit around the real world-coordinate origin. Using the centre of the
+    // current body bounds made the coordinate triad slide whenever geometry
+    // changed and gave Sketcher a different pivot from the 3D view.
+    const Point3d orbitCenter{};
     const QPointF centerBefore = projectBodyPoint(
         orbitCenter, orbitCenter, size(), yaw_, pitch_, zoom_).screen;
     yaw_ += static_cast<float>(delta.x()) * 0.5F;
@@ -6585,6 +6729,10 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void Viewport::wheelEvent(QWheelEvent* event) {
+  if (sketchViewTransitionActive_) {
+    event->accept();
+    return;
+  }
   orientationAnimation_->stop();
   const int wheelDelta = event->angleDelta().y();
   if (wheelDelta == 0) {
@@ -6701,6 +6849,10 @@ void Viewport::resetToolInteraction() {
   update();
 }
 void Viewport::keyPressEvent(QKeyEvent* event) {
+  if (sketchViewTransitionActive_) {
+    event->accept();
+    return;
+  }
   // CAD Tab workflow is intentionally restricted to numeric fields drawn in
   // the viewport. The right-hand tool panel remains mouse-accessible, but it
   // is not part of this CAD parameter loop.

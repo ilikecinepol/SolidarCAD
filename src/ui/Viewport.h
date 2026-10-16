@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QMetaObject>
 #include <array>
+#include <functional>
 #include <vector>
 #include <optional>
 #include <string>
@@ -25,6 +26,7 @@
 
 class QMouseEvent;
 class QPaintEvent;
+class QResizeEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QDoubleSpinBox;
@@ -213,6 +215,10 @@ class Viewport final : public QOpenGLWidget {
   // axis so a direct profile press can continue into the same held-mouse drag.
   void seedToolManipulatorDrag(QPointF scenePosition, Vector3d worldAxis);
   void fitAll();
+  // Docked tool panels resize the central viewport. Preserve the real world
+  // origin at its current screen position for that single layout change so a
+  // preview cannot appear to rotate or flip when its panel opens/closes.
+  void preserveWorldOriginOnNextResize();
   void viewTop();
   void viewBottom();
   void viewFront();
@@ -220,12 +226,26 @@ class Viewport final : public QOpenGLWidget {
   void viewRight();
   void viewLeft();
   void viewIsometric();
+  // Smoothly matches the 3D camera to the already prepared Sketcher view.
+  // The placement origin, screen position and scale converge together so the
+  // coordinate centre does not jump when the workspace widget changes.
+  void animateToSketchView(CameraOrientation target, Point3d placementOrigin,
+                           QPointF targetOriginScreen,
+                           double targetPixelsPerMm,
+                           std::function<void()> finished);
+  // Restores the same global camera when leaving Sketcher.  The 3D viewport
+  // is hidden at this point, so this is intentionally immediate: its first
+  // visible frame, the ViewCube and any tool preview must all agree.
+  void adoptSketchView(CameraOrientation target, Point3d placementOrigin,
+                       QPointF targetOriginScreen,
+                       double targetPixelsPerMm);
   void setDisplayMode(ViewportDisplayMode mode);
   void setMeshQuality(ViewportMeshQuality quality);
   [[nodiscard]] ViewportDisplayMode displayMode() const noexcept;
   [[nodiscard]] ViewportMeshQuality meshQuality() const noexcept;
   [[nodiscard]] float cameraYawDegrees() const noexcept;
   [[nodiscard]] float cameraPitchDegrees() const noexcept;
+  [[nodiscard]] Vector3d cameraViewDirection() const noexcept;
   [[nodiscard]] Vector3d cameraScreenUpDirection() const noexcept;
   [[nodiscard]] const sketch::Sketch& extrusionCandidateSketch() const noexcept;
   [[nodiscard]] std::size_t selectedProfileRegionCount() const noexcept;
@@ -297,6 +317,7 @@ class Viewport final : public QOpenGLWidget {
  protected:
   void initializeGL() override;
   void paintGL() override;
+  void resizeEvent(QResizeEvent* event) override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
@@ -527,6 +548,7 @@ class Viewport final : public QOpenGLWidget {
   bool draggingAngularToolManipulator_{false};
   bool panningView_{false};
   QPointF cameraPan_;
+  std::optional<QPointF> pendingResizeOriginScreen_;
   bool draggingBody_{false};
   QPointF bodyDragStart_;
   bool marqueeActive_{false};
@@ -539,6 +561,7 @@ class Viewport final : public QOpenGLWidget {
   float yaw_{-35.0F};
   float pitch_{25.0F};
   float zoom_{1.0F};
+  bool sketchViewTransitionActive_{};
   ViewportRuler ruler_;
   QTimer* hoverFrameTimer_{nullptr};
   std::optional<QPointF> pendingHoverPosition_;

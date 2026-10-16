@@ -1,6 +1,6 @@
 <RCC>
   <qresource prefix="/icons">
-    <file alias="solidarity-3d-logo.png">solidarity-3d-logo.png</file>
+    <file alias="solidar3d-logo.png">solidar3d-logo.png</file>
     <file alias="home.png">home.png</file>
     <file alias="projects.png">projects.png</file>
     <file alias="settings.png">settings.png</file>

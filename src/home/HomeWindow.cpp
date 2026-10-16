@@ -59,7 +59,7 @@ HomeWindow::HomeWindow(AppSettings& settings, QWidget* parent)
   buildUi();
   resize(1280, 760);
   setMinimumSize(960, 620);
-  setWindowTitle(QString::fromUtf8("Солидарность 3D"));
+  setWindowTitle(QString::fromUtf8("СОЛИДАР3D"));
 }
 
 void HomeWindow::showPage(int index) {
@@ -94,7 +94,7 @@ void HomeWindow::buildUi() {
   logo->setObjectName("brandLogo");
   logo->setFixedHeight(82);
   logo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-  const QPixmap logoPixmap(QStringLiteral(":/icons/solidarity-3d-logo.png"));
+  const QPixmap logoPixmap(QStringLiteral(":/icons/solidar3d-logo.png"));
   logo->setPixmap(logoPixmap.scaled(218, 82, Qt::KeepAspectRatio,
                                     Qt::SmoothTransformation));
   brandLayout->addWidget(logo);
@@ -171,7 +171,7 @@ void HomeWindow::buildUi() {
       QString::fromUtf8("＋  Создать проект"), true, content, &createButton));
   cards->addWidget(makeActionCard(
       "↗", QString::fromUtf8("Открыть проект"),
-      QString::fromUtf8("Выберите сохранённый проект Солидарность CAD на этом компьютере."),
+      QString::fromUtf8("Выберите сохранённый проект СОЛИДАР3D на этом компьютере."),
       QString::fromUtf8("Открыть проект"), false, content, &openButton));
   contentLayout->addLayout(cards);
   contentLayout->addStretch();
@@ -207,7 +207,7 @@ void HomeWindow::createProject() {
       this, QString::fromUtf8("Создать проект"),
       QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) +
           "/Новый проект.solidar",
-      QString::fromUtf8("Проект Солидарность CAD (*.solidar)"));
+      QString::fromUtf8("Проект СОЛИДАР3D (*.solidar)"));
   if (path.isEmpty()) return;
   if (!path.endsWith(".solidar", Qt::CaseInsensitive)) path += ".solidar";
   QString error;
@@ -222,7 +222,7 @@ void HomeWindow::openProject() {
   const QString path = QFileDialog::getOpenFileName(
       this, QString::fromUtf8("Открыть проект"),
       QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-      QString::fromUtf8("Проект Солидарность CAD (*.solidar)"));
+      QString::fromUtf8("Проект СОЛИДАР3D (*.solidar)"));
   if (path.isEmpty()) return;
   QString error;
   if (!project::ProjectFile::validate(path, &error)) {

@@ -99,6 +99,8 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] double viewYawDegrees() const noexcept;
   [[nodiscard]] double viewPitchDegrees() const noexcept;
   [[nodiscard]] bool viewAlignedToSketchPlane() const noexcept;
+  [[nodiscard]] QPointF viewOriginScreenPosition() const;
+  [[nodiscard]] double viewPixelsPerMillimeter() const noexcept;
   // Global camera orientation consumed by the shared ViewCube.  The sketch
   // camera itself is stored in the active plane's local coordinate frame.
   [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
@@ -107,6 +109,9 @@ class SketchCanvas final : public QWidget {
   // Preserves the current 3D viewport's visual up direction when the sketch
   // plane is opened. This changes presentation only, never SketchPlacement.
   void setInitialViewUp(Vector3d worldUp) noexcept;
+  // Chooses the face-normal hemisphere from which the plane is viewed. This
+  // is presentation-only and keeps the face clicked in 3D closest to camera.
+  void setInitialViewDirection(Vector3d worldDirection) noexcept;
   void setSketchEditContext(const SketchEditContext& context);
   void setSceneReferences(
       SketchPlacement activePlacement,
@@ -398,7 +403,9 @@ signals:
   bool gridVisible_{true};
   std::optional<SketchProjectionEdgeToken> hoveredProjectionEdge_;
   Vector3d preferredViewUp_{};
+  Vector3d preferredViewDirection_{};
   double initialViewRotationDeg_{0.0};
+  double initialViewYawDeg_{0.0};
   double viewRotationDeg_{0.0};
   double viewYawDeg_{0.0};
   double viewPitchDeg_{0.0};

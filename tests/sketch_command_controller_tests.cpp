@@ -287,6 +287,41 @@ void drivingDimensionMayCommitRankRedundantConstraint() {
   CHECK(model.constraints().back().id != sketch::kInvalidConstraintId);
 }
 
+void rejectedDrivingDimensionPreservesSolverDiagnostics() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  model.addLine({0.0, 0.0}, {10.0, 0.0});
+  const auto lineId = model.lineId(0);
+
+  sketch::Constraint lock;
+  lock.type = sketch::ConstraintType::Lock;
+  lock.firstGeometry = lineId;
+  CHECK(model.addConstraint(lock) != sketch::kInvalidConstraintId);
+
+  sketch::Dimension dimension;
+  dimension.kind = sketch::DimensionKind::LineLength;
+  dimension.geometryId = lineId;
+  dimension.valueMm = 12.0;
+  sketch::Constraint length;
+  length.type = sketch::ConstraintType::Length;
+  length.firstGeometry = lineId;
+  length.value = dimension.valueMm;
+
+  const auto before = model.semanticFingerprint();
+  const auto result = controller.execute(
+      model, UpsertDrivingDimensionCommand{dimension, length, std::nullopt,
+                                           false});
+  CHECK(!result.accepted);
+  CHECK(result.error == SketchCommandError::Conflict ||
+        result.error == SketchCommandError::SolverFailed);
+  CHECK(result.constraintApplyResult.has_value());
+  CHECK(result.constraintApplyResult->diagnosticCode !=
+        sketch::SketchMutationDiagnosticCode::InternalInvariant);
+  CHECK(!result.constraintApplyResult->component.geometryIds.empty());
+  CHECK(model.semanticFingerprint() == before);
+  CHECK(model.dimensions().empty());
+}
+
 void similarDimensionsUseOnlyTheirExactConstraintLink() {
   sketch::Sketch model;
   SketchCommandController controller;
@@ -574,6 +609,7 @@ int main() {
   constraintsUseStrictSchemas();
   constraintCommandsExposeTypedTransactionalFailures();
   drivingDimensionMayCommitRankRedundantConstraint();
+  rejectedDrivingDimensionPreservesSolverDiagnostics();
   similarDimensionsUseOnlyTheirExactConstraintLink();
   directLineDimensionMovesReversedOrthogonalJunction();
   stableIdsDriveAutoConstraints();

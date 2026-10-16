@@ -9,10 +9,25 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QVariantAnimation>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <gp_Pnt.hxx>
 #include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+
+namespace solidar {
+class MainWindowUndoTestAccess {
+ public:
+  static QPointF worldScreen(const Viewport& viewport, Point3d world) {
+    const ViewportCameraState camera{
+        viewport.yaw_, viewport.pitch_, viewport.zoom_, viewport.cameraPan_,
+        viewport.size(), 1.0F, viewport.displayedBodyCenter_,
+        std::max(1.0, viewport.displayedBodyDiagonal_ * 3.0)};
+    return camera.worldToScreen(world);
+  }
+};
+}  // namespace solidar
 
 namespace {
 QPointF centroid(const QPolygonF& polygon) {
@@ -45,6 +60,29 @@ int main(int argc, char** argv) {
   CHECK(interpolateOrientation({350,0},{10,0},0.5F).yaw==360);
   CHECK(interpolateOrientation({10,0},{350,0},0.5F).yaw==0);
   CHECK(shortestAngleDelta(179,-179)==2);
+  const CameraOrientation iso{-45,30};
+
+  // Sketch transitions use an upright target and interpolate the eye vector
+  // on the shortest great-circle arc, not as two unrelated Euler angles.
+  const auto uprightFront =
+      uprightOrientationForDirection({0.0, -1.0, 0.0}, iso.yaw);
+  CHECK(std::abs(uprightFront.pitch - 90.0F) < 1e-6F);
+  CHECK(cameraScreenUpDirection(uprightFront).z > 0.999);
+  const auto uprightTop =
+      uprightOrientationForDirection({0.0, 0.0, 1.0}, iso.yaw);
+  CHECK(std::abs(shortestAngleDelta(uprightTop.yaw, iso.yaw)) < 1e-6F);
+  const auto shortestMid =
+      interpolateOrientationShortestArc(iso, uprightFront, 0.5F);
+  const auto startEye = cameraViewingDirection(iso);
+  const auto targetEye = cameraViewingDirection(uprightFront);
+  const auto middleEye = cameraViewingDirection(shortestMid);
+  const auto angleBetween = [](Point3d a, Point3d b) {
+    return std::acos(std::clamp(a.x * b.x + a.y * b.y + a.z * b.z,
+                               -1.0, 1.0));
+  };
+  CHECK(std::abs(angleBetween(startEye, middleEye) * 2.0 -
+                 angleBetween(startEye, targetEye)) <
+        1e-5);
 
   // Every face/edge/corner target looks along its actual world direction.
   for (int x=-1; x<=1; ++x) for (int y=-1; y<=1; ++y) for (int z=-1; z<=1; ++z) {
@@ -55,7 +93,6 @@ int main(int argc, char** argv) {
     CHECK(std::abs(camera.cameraDepth(d)-std::sqrt(double(x*x+y*y+z*z)))<1e-5);
   }
   const QSize size(800,600);
-  const CameraOrientation iso{-45,30};
   const auto geometry=viewCubeGeometry(size,iso);
   CHECK(geometry.patches.size()==27); // three visible planes, each partitioned 3x3
   CHECK(!geometry.hitTest({0,0}));
@@ -192,6 +229,22 @@ int main(int argc, char** argv) {
   mouse(viewport,QEvent::MouseButtonRelease,{200,200},Qt::LeftButton,Qt::NoButton);
   CHECK(viewport.cameraYawDegrees()==orientation.yaw && viewport.cameraPitchDegrees()==orientation.pitch);
   CHECK(animation->state()==QAbstractAnimation::Stopped);
+
+  // Ordinary 3D orbiting keeps the real world origin fixed on screen even
+  // when the visible body's bounding-box centre is elsewhere.
+  viewport.setBodyShape(std::make_shared<TopoDS_Shape>(
+      BRepPrimAPI_MakeBox(gp_Pnt(80.0, 20.0, 10.0), 30.0, 20.0, 15.0)
+          .Shape()));
+  const QPointF worldOriginBefore =
+      MainWindowUndoTestAccess::worldScreen(viewport, {});
+  mouse(viewport,QEvent::MouseButtonPress,{240,220},Qt::RightButton,
+        Qt::RightButton);
+  mouse(viewport,QEvent::MouseMove,{280,245},Qt::NoButton,Qt::RightButton);
+  mouse(viewport,QEvent::MouseButtonRelease,{280,245},Qt::RightButton,
+        Qt::NoButton);
+  const QPointF worldOriginAfter =
+      MainWindowUndoTestAccess::worldScreen(viewport, {});
+  CHECK(QLineF(worldOriginBefore, worldOriginAfter).length() < 1e-5);
   viewport.resetScene();
   CHECK(animation->state()==QAbstractAnimation::Stopped);
   return EXIT_SUCCESS;

@@ -6,6 +6,12 @@
 #include <QImage>
 #include <QPainter>
 
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Pnt.hxx>
+
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -194,6 +200,68 @@ int main(int argc, char** argv) {
   auto darkTransientControl = darkSnapshot;
   darkTransientControl.palette.transient = lightTransientRole;
   CHECK(render(renderer, darkTransientControl) != darkImage);
+
+  // Free orbit uses a batched reference-body fill instead of sorting and
+  // shading every triangle on every mouse sample. The lightweight frame must
+  // still contain the body, and stopping motion must restore the detailed
+  // presentation without rebuilding or mutating its mesh.
+  auto orbitMesh = std::make_shared<BodyRenderMesh>();
+  orbitMesh->rebuild(
+      BRepPrimAPI_MakeBox(gp_Pnt(-12.0, -10.0, -8.0), 24.0, 20.0, 16.0)
+          .Shape());
+  CHECK(!orbitMesh->triangles().empty());
+  sketch::Sketch orbitSketch;
+  sketch::Sketch orbitProfile;
+  std::vector<SketchSceneReference> orbitSketches;
+  std::vector<std::shared_ptr<const BodyRenderMesh>> orbitSceneMeshes;
+  auto orbitFaceMesh = std::make_shared<BodyRenderMesh>();
+  orbitFaceMesh->rebuild(
+      BRepBuilderAPI_MakeFace(
+          gp_Pln(gp_Pnt(0.0, 0.0, 8.0), gp_Dir(0.0, 0.0, 1.0)),
+          -12.0, 12.0, -10.0, 10.0)
+          .Face());
+  CHECK(!orbitFaceMesh->triangles().empty());
+  SketchPlacement orbitPlacement = SketchPlacement::xy();
+  orbitPlacement.origin = {0.0, 0.0, 8.0};
+  SketchRenderSceneCache orbitCache;
+  auto orbitSnapshot = representativeSnapshot(lightTheme);
+  orbitSnapshot.scene = orbitCache.resolve(
+      1, orbitSketch, orbitProfile, orbitSketches, orbitMesh, orbitFaceMesh,
+      orbitSceneMeshes, orbitPlacement, 24.0, 20.0, 16.0, true,
+      true, false);
+  orbitSnapshot.gridVisible = false;
+  orbitSnapshot.viewYawDeg = 31.0;
+  orbitSnapshot.viewPitchDeg = 24.0;
+  const QImage detailedOrbit = render(renderer, orbitSnapshot);
+  orbitSnapshot.cameraMotionActive = true;
+  const QImage interactiveOrbit = render(renderer, orbitSnapshot);
+  auto noBodyOrbit = orbitSnapshot;
+  SketchRenderSceneCache noBodyOrbitCache;
+  noBodyOrbit.scene = noBodyOrbitCache.resolve(
+      1, orbitSketch, orbitProfile, orbitSketches,
+      std::make_shared<BodyRenderMesh>(), orbitFaceMesh, orbitSceneMeshes,
+      SketchPlacement::xy(), 24.0, 20.0, 16.0, false, false, false);
+  const QImage orbitWithoutBody = render(renderer, noBodyOrbit);
+  CHECK(interactiveOrbit != orbitWithoutBody);
+  CHECK(detailedOrbit != orbitWithoutBody);
+  CHECK(interactiveOrbit != detailedOrbit);
+  CHECK(orbitMesh->triangleCount() > 0);
+
+  // A symmetric support looks geometrically identical from its two normal
+  // hemispheres. Front/back styling must still make those views visibly
+  // different: solid, emphasized working face in front; subdued/dashed face
+  // and an explicit reverse-side badge from behind.
+  auto frontSide = orbitSnapshot;
+  frontSide.cameraMotionActive = false;
+  frontSide.viewYawDeg = 0.0;
+  frontSide.viewPitchDeg = 0.0;
+  auto backSide = frontSide;
+  backSide.viewYawDeg = 180.0;
+  const QImage frontSideImage = render(renderer, frontSide);
+  const QImage backSideImage = render(renderer, backSide);
+  CHECK(frontSideImage != backSideImage);
+  CHECK(imageContainsColor(frontSideImage,
+                           frontSide.palette.referenceEdge, 8));
 
   // Visible reference images belong to the immutable sketch scene and render
   // as a dimmed, non-interactive backdrop. Their original pixels are retained

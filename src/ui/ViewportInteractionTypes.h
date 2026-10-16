@@ -48,6 +48,10 @@ struct LegacySolidFacePick {
 struct SketchPlanePick {
   std::variant<DatumPlanePick, BodyFacePick, LegacySolidFacePick> source;
   QString presentationLabel;
+  // Eye direction (from the model towards the camera) at the click. Sketcher
+  // uses only its hemisphere so the picked face remains on the viewer's side;
+  // it never changes the persisted SketchPlacement or feature direction.
+  Vector3d viewDirection{};
 };
 
 struct SketchRegionPick {

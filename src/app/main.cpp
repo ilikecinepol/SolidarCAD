@@ -31,8 +31,7 @@ int main(int argc, char* argv[]) {
   // the display name and of theme/language changes.
   QCoreApplication::setOrganizationName(QStringLiteral("SolidarCAD"));
   QCoreApplication::setApplicationName(QStringLiteral("SolidarCAD"));
-  QApplication::setApplicationDisplayName(
-      QString::fromUtf8("Солидарность CAD"));
+  QApplication::setApplicationDisplayName(QString::fromUtf8("СОЛИДАР3D"));
 
   // Load settings and resolve/apply the theme before any window is created so
   // the first frame is already correctly themed (no flash of the wrong theme).

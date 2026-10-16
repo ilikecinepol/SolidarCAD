@@ -30,6 +30,7 @@
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QVariantAnimation>
 #include <QToolButton>
 #include <QTreeWidget>
 
@@ -964,6 +965,56 @@ class MainWindowUndoTestAccess {
   }
   static SketchCanvas* sketch(MainWindow& window) { return window.sketchCanvas_; }
   static Viewport* viewport(MainWindow& window) { return window.viewport_; }
+  static void finishViewAnimation(Viewport& viewport) {
+    if (auto* animation = viewport.findChild<QVariantAnimation*>(
+            QStringLiteral("viewOrientationTransition"));
+        animation && animation->state() == QAbstractAnimation::Running)
+      animation->setCurrentTime(animation->duration());
+    QApplication::processEvents();
+  }
+  static bool openSketchOnBodyFaceAt(MainWindow& window, Point3d world) {
+    auto* viewport = window.viewport_;
+    viewport->resize(800, 600);
+    const ViewportCameraState camera{
+        viewport->yaw_, viewport->pitch_, viewport->zoom_,
+        viewport->cameraPan_, viewport->size(), 1.0F,
+        viewport->displayedBodyCenter_,
+        std::max(1.0, viewport->displayedBodyDiagonal_ * 3.0)};
+    const QPointF position = camera.worldToScreen(world);
+    viewport->beginSketchPlaneSelection();
+    QMouseEvent move(QEvent::MouseMove, position, position, Qt::NoButton,
+                     Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(viewport, &move);
+    viewport->flushPendingHover(position);
+    QMouseEvent press(QEvent::MouseButtonPress, position, position,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(viewport, &press);
+    const auto* animation = viewport->findChild<QVariantAnimation*>(
+        QStringLiteral("viewOrientationTransition"));
+    if (window.workspaceStack_->currentWidget() != viewport || !animation ||
+        animation->state() != QAbstractAnimation::Running)
+      return false;
+    finishViewAnimation(*viewport);
+    return window.workspaceStack_->currentWidget() == window.sketchCanvas_;
+  }
+  static QPointF viewportWorldScreen(const MainWindow& window,
+                                     Point3d world) {
+    const auto* viewport = window.viewport_;
+    const ViewportCameraState camera{
+        viewport->yaw_, viewport->pitch_, viewport->zoom_,
+        viewport->cameraPan_, viewport->size(), 1.0F,
+        viewport->displayedBodyCenter_,
+        std::max(1.0, viewport->displayedBodyDiagonal_ * 3.0)};
+    return camera.worldToScreen(world);
+  }
+  static double viewportPixelsPerMm(const MainWindow& window) {
+    return std::max(1, std::min(window.viewport_->width(),
+                                window.viewport_->height())) *
+           0.008 * window.viewport_->zoom_;
+  }
+  static float viewportZoom(const MainWindow& window) {
+    return window.viewport_->zoom_;
+  }
   static SketchPlacement currentSketchPlacement(const MainWindow& window) {
     return window.currentSketchPlacement_;
   }
@@ -1127,6 +1178,22 @@ class MainWindowUndoTestAccess {
     window.workspaceStack_->setCurrentWidget(window.sketchCanvas_);
     window.finishSketch();
   }
+  static CameraOrientation finishNewSketchFromOrbit(
+      MainWindow& window, const sketch::Sketch& geometry,
+      const SketchPlacement& placement, double yawDeg, double pitchDeg,
+      const QString& presentationLabel) {
+    window.editingSketchIndex_.reset();
+    window.currentSketchPlacement_ = placement;
+    window.currentSketchFaceReference_.reset();
+    window.currentSketchSupport_ = presentationLabel;
+    window.sketchCanvas_->setSceneReferences(placement, {}, {});
+    window.sketchCanvas_->loadSketch(geometry);
+    window.sketchCanvas_->setViewOrientation(yawDeg, pitchDeg);
+    window.workspaceStack_->setCurrentWidget(window.sketchCanvas_);
+    const auto camera = window.sketchCanvas_->viewCubeCamera();
+    window.finishSketch();
+    return camera;
+  }
   static std::optional<FaceReference> currentSketchFaceReference(
       const MainWindow& window) {
     return window.currentSketchFaceReference_;
@@ -1191,6 +1258,20 @@ class MainWindowUndoTestAccess {
         ExtrusionSourcePick{SketchRegionPick{sketch->id, sketch->placement,
                                              sketch->geometry},
                             QStringLiteral("test profile")});
+  }
+  static bool startLegacySketchExtrude(MainWindow& window, std::size_t index) {
+    if (index >= window.sketchViews_.size()) return false;
+    const auto& entry = window.sketchViews_[index];
+    const auto* sketch = window.document_.findSketch(entry.documentSketchId);
+    if (!sketch) return false;
+    window.viewport_->selectedExtrusionSketch_ = sketch->geometry;
+    window.viewport_->selectedExtrusionPlacement_ = sketch->placement;
+    window.viewport_->selectedExtrusionSketchIndex_ = index;
+    emit window.viewport_->extrusionSourcePicked(ExtrusionSourcePick{
+        SketchRegionPick{sketch->id, sketch->placement, sketch->geometry},
+        QStringLiteral("legacy test profile")});
+    window.extrusionLengthSpin_->setValue(10.0);
+    return window.extrusionDock_ && !window.extrusionDock_->isHidden();
   }
   static bool startTopFaceExtrude(MainWindow& window, double zMm) {
     Body* body = window.document_.activeBody();
@@ -1392,6 +1473,10 @@ class MainWindowUndoTestAccess {
             !window.viewport_->toolPreviewShape_->IsNull()) ||
            (window.viewport_->toolCutPreviewShape_ &&
             !window.viewport_->toolCutPreviewShape_->IsNull());
+  }
+  static ShapeFeature::ShapePtr viewportToolPreviewShape(
+      const MainWindow& window) {
+    return window.viewport_->toolPreviewShape_;
   }
   static std::size_t historyStepCount(const MainWindow& window) {
     return window.historySteps_.size();
@@ -2193,6 +2278,7 @@ int main(int argc, char** argv) {
         });
     sketchViewport->beginSketchPlaneSelection();
     click(*sketchViewport, endCap);
+    Access::finishViewAnimation(*sketchViewport);
     CHECK(sketchFaceEvents == 1);
     CHECK(Access::workspace(sketchEditor)->currentWidget() ==
           Access::sketch(sketchEditor));
@@ -4435,6 +4521,202 @@ int main(int argc, char** argv) {
     CHECK(Access::activeTool(moveEditor) ==
           solidar::PartDesignToolKind::None);
     CHECK(!Access::viewportHasToolPreview(moveEditor));
+  }
+
+  // End-to-end reproduction of sketch-on-face for the visible cap of a
+  // YZ-circle extrusion. The MainWindow route must preserve the exact cap,
+  // outward normal and camera hemisphere seen in the 3D viewport.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::Document cylinder;
+    auto& profile = cylinder.addSketch("YZ circle");
+    profile.placement = solidar::SketchPlacement::yz();
+    profile.geometry.addCircle({0.0, 0.0}, 10.0);
+    auto& body = cylinder.addBody("Cylinder");
+    body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        profile.id, 50.0, "Cylinder"));
+    CHECK(cylinder.recompute());
+
+    solidar::MainWindow faceEditor(settings);
+    Access::installDocument(faceEditor, std::move(cylinder));
+    CHECK(Access::openSketchOnBodyFaceAt(faceEditor, {0.0, 0.0, 0.0}));
+    const auto placement = Access::currentSketchPlacement(faceEditor);
+    const auto normal = placement.normal();
+    CHECK(std::abs(placement.origin.x) < 1e-6);
+    CHECK(normal.x < -0.999);
+    CHECK(std::abs(Access::sketch(faceEditor)->viewYawDegrees()) < 1e-6);
+    CHECK(std::abs(std::remainder(
+              Access::sketch(faceEditor)->viewRotationDegrees() + 90.0,
+              360.0)) < 1e-6);
+    const QPointF viewportOrigin =
+        Access::viewportWorldScreen(faceEditor, placement.origin);
+    const QPointF sketchOrigin =
+        Access::sketch(faceEditor)->viewOriginScreenPosition();
+    CHECK(QLineF(viewportOrigin, sketchOrigin).length() < 1e-5);
+    CHECK(std::abs(Access::viewportPixelsPerMm(faceEditor) -
+                   Access::sketch(faceEditor)->viewPixelsPerMillimeter()) <
+          1e-5);
+    CHECK(Access::currentSketchFaceReference(faceEditor).has_value());
+  }
+
+  // A YZ NewBody extrusion keeps one camera and one world-space shape through
+  // preview -> commit. Opening and closing the right tool dock must not move
+  // the world origin on screen, while reversed preview bounds must exactly
+  // match the committed B-Rep.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::Document document;
+    auto& profile = document.addSketch("YZ circle direct extrude");
+    profile.placement = solidar::SketchPlacement::yz();
+    profile.geometry.addCircle({0.0, 0.0}, 20.0);
+    CHECK(document.recompute());
+
+    solidar::MainWindow directEditor(settings);
+    Access::installDocument(directEditor, std::move(document));
+    directEditor.resize(1200, 760);
+    directEditor.show();
+    QApplication::processEvents();
+    const float yawBefore = Access::viewport(directEditor)->cameraYawDegrees();
+    const float pitchBefore = Access::viewport(directEditor)->cameraPitchDegrees();
+    const float zoomBefore = Access::viewportZoom(directEditor);
+    const QPointF originBefore =
+        Access::viewportWorldScreen(directEditor, {});
+
+    Access::startSketchExtrude(directEditor, 0);
+    Access::dragDirectExtrude(directEditor, -25.0);
+    QApplication::processEvents();
+    CHECK(Access::directExtrudeLifecycle(directEditor) ==
+          solidar::ToolLifecycle::PreviewValid);
+    CHECK(Access::directExtrudeReversed(directEditor));
+    const auto preview = Access::directExtrudePreview(directEditor);
+    CHECK(preview);
+    const auto previewBounds = solidar::test::boundsOf(*preview);
+    CHECK(QLineF(originBefore,
+                 Access::viewportWorldScreen(directEditor, {})).length() <
+          1.0);
+
+    Access::commitDirectExtrudeFromViewport(directEditor);
+    QApplication::processEvents();
+    const auto committed = Access::bodyShape(directEditor);
+    CHECK(committed);
+    const auto committedBounds = solidar::test::boundsOf(*committed);
+    CHECK(solidar::test::near(previewBounds.minX, committedBounds.minX,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.maxX, committedBounds.maxX,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.minY, committedBounds.minY,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.maxY, committedBounds.maxY,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.minZ, committedBounds.minZ,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.maxZ, committedBounds.maxZ,
+                             1e-6));
+    CHECK(solidar::test::near(
+        Access::viewport(directEditor)->cameraYawDegrees(), yawBefore, 1e-6));
+    CHECK(solidar::test::near(
+        Access::viewport(directEditor)->cameraPitchDegrees(), pitchBefore,
+        1e-6));
+    CHECK(solidar::test::near(Access::viewportZoom(directEditor), zoomBefore,
+                             1e-6));
+    CHECK(QLineF(originBefore,
+                 Access::viewportWorldScreen(directEditor, {})).length() <
+          1.0);
+  }
+
+  // The ribbon's legacy extrusion route used to draw a screen-space cylinder
+  // that could look inside-out on YZ. Its preview must now be the exact OCCT
+  // solid that will be committed, without changing the camera hemisphere.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::Document document;
+    auto& profile = document.addSketch("YZ circle legacy extrude");
+    profile.placement = solidar::SketchPlacement::yz();
+    profile.geometry.addCircle({0.0, 0.0}, 20.0);
+    CHECK(document.recompute());
+
+    solidar::MainWindow legacyEditor(settings);
+    Access::installDocument(legacyEditor, std::move(document));
+    legacyEditor.resize(1200, 760);
+    legacyEditor.show();
+    QApplication::processEvents();
+    const float yawBefore = Access::viewport(legacyEditor)->cameraYawDegrees();
+    const float pitchBefore =
+        Access::viewport(legacyEditor)->cameraPitchDegrees();
+
+    CHECK(Access::startLegacySketchExtrude(legacyEditor, 0));
+    QApplication::processEvents();
+    const auto preview = Access::viewportToolPreviewShape(legacyEditor);
+    CHECK(preview);
+    const auto previewBounds = solidar::test::boundsOf(*preview);
+    CHECK(Access::commitLegacyExtrusionAsNewBody(legacyEditor));
+    QApplication::processEvents();
+    const auto committed = Access::bodyShape(legacyEditor);
+    CHECK(committed);
+    const auto committedBounds = solidar::test::boundsOf(*committed);
+    CHECK(solidar::test::near(previewBounds.minX, committedBounds.minX,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.maxX, committedBounds.maxX,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.minY, committedBounds.minY,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.maxY, committedBounds.maxY,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.minZ, committedBounds.minZ,
+                             1e-6));
+    CHECK(solidar::test::near(previewBounds.maxZ, committedBounds.maxZ,
+                             1e-6));
+    CHECK(solidar::test::near(
+        Access::viewport(legacyEditor)->cameraYawDegrees(), yawBefore, 1e-6));
+    CHECK(solidar::test::near(
+        Access::viewport(legacyEditor)->cameraPitchDegrees(), pitchBefore,
+        1e-6));
+  }
+
+  // Leaving Sketcher transfers its current global camera to the hidden 3D
+  // viewport.  The ViewCube hemisphere must therefore stay identical through
+  // the first extrusion preview and its commit, including on the YZ plane.
+  {
+    using Access = solidar::MainWindowUndoTestAccess;
+    solidar::MainWindow transitionEditor(settings);
+    transitionEditor.resize(1200, 760);
+    transitionEditor.show();
+    QApplication::processEvents();
+
+    solidar::sketch::Sketch circle;
+    circle.addCircle({0.0, 0.0}, 20.0);
+    const auto placement = solidar::SketchPlacement::yz();
+    const auto sketchCamera = Access::finishNewSketchFromOrbit(
+        transitionEditor, circle, placement, 37.0, -22.0,
+        QStringLiteral("YZ transition profile"));
+    QApplication::processEvents();
+    CHECK(std::abs(solidar::shortestAngleDelta(
+              Access::viewport(transitionEditor)->cameraYawDegrees(),
+              sketchCamera.yaw)) < 1e-5F);
+    CHECK(std::abs(solidar::shortestAngleDelta(
+              Access::viewport(transitionEditor)->cameraPitchDegrees(),
+              sketchCamera.pitch)) < 1e-5F);
+
+    Access::startSketchExtrude(transitionEditor, 0);
+    Access::dragDirectExtrude(transitionEditor, 25.0);
+    QApplication::processEvents();
+    CHECK(Access::directExtrudeLifecycle(transitionEditor) ==
+          solidar::ToolLifecycle::PreviewValid);
+    CHECK(std::abs(solidar::shortestAngleDelta(
+              Access::viewport(transitionEditor)->cameraYawDegrees(),
+              sketchCamera.yaw)) < 1e-5F);
+    CHECK(std::abs(solidar::shortestAngleDelta(
+              Access::viewport(transitionEditor)->cameraPitchDegrees(),
+              sketchCamera.pitch)) < 1e-5F);
+
+    Access::commitDirectExtrudeFromViewport(transitionEditor);
+    QApplication::processEvents();
+    CHECK(std::abs(solidar::shortestAngleDelta(
+              Access::viewport(transitionEditor)->cameraYawDegrees(),
+              sketchCamera.yaw)) < 1e-5F);
+    CHECK(std::abs(solidar::shortestAngleDelta(
+              Access::viewport(transitionEditor)->cameraPitchDegrees(),
+              sketchCamera.pitch)) < 1e-5F);
   }
 
   // Closing a modified project must never discard work without an explicit

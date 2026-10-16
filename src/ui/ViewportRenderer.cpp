@@ -75,7 +75,13 @@ const char* surfaceFragmentShader = R"(
     vec4 semantic = uCutPreview ? uCutPreviewColor
                                 : uPreview ? uPreviewColor
                                            : uSurfaceColor;
-    vec3 base = semantic.rgb;
+    // Keep the preview's light/dark face hierarchy close to the committed
+    // material. A fully saturated blue solid made the near cap and far rim
+    // perceptually swap when Accept changed it to grey, which looked like a
+    // 180-degree rotation even though the B-Rep and camera were unchanged.
+    vec3 base = uPreview
+                    ? mix(uSurfaceColor.rgb, uPreviewColor.rgb, 0.56)
+                    : semantic.rgb;
     if (uHighlightMode == 1)
       base = mix(base, uSelectedColor.rgb, 0.58);
     else if (uHighlightMode == 2)

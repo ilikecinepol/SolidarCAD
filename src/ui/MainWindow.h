@@ -93,6 +93,7 @@ class MainWindow final : public QMainWindow {
   void updateFromSketch(double widthMm, double heightMm);
   void finishSketch();
   void extrudeSketch();
+  void updateLegacyExtrusionPreview();
   void updateAutomaticExtrudeOperation();
   void scheduleAutomaticExtrudeOperation();
   [[nodiscard]] std::optional<ExtrudeOperation>

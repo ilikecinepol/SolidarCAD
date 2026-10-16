@@ -1393,16 +1393,18 @@ SketchCommandResult SketchCommandController::execute(
                 parallel.type = sketch::ConstraintType::Parallel;
                 parallel.firstGeometry = first;
                 parallel.secondGeometry = second;
-                const auto id = tryApplyConstraintId(model, parallel);
-                if (id == sketch::kInvalidConstraintId)
-                  return rejected(SketchCommandError::Conflict);
-                result.changedConstraintIds.push_back(id);
+                auto applied = model.tryApplyConstraint(parallel);
+                if (!applied.accepted())
+                  return fromConstraintApply(std::move(applied));
+                result.changedConstraintIds.push_back(applied.constraintId);
+                result.constraintApplyResult = std::move(applied);
               }
             }
-            const auto constraintId =
-                tryApplyConstraintId(model, typed.constraint, true);
-            if (constraintId == sketch::kInvalidConstraintId)
-              return rejected(SketchCommandError::Conflict);
+            auto applied = model.tryApplyConstraint(typed.constraint, true);
+            if (!applied.accepted())
+              return fromConstraintApply(std::move(applied));
+            const auto constraintId = applied.constraintId;
+            result.constraintApplyResult = std::move(applied);
             auto annotation = typed.dimension;
             annotation.constraintId = constraintId;
             if (!model.storeDimension(annotation))

@@ -209,14 +209,24 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
           return setFailure(result, GeometryFailureKind::MeshingFailed,
                             "BodyRenderMesh tessellation did not complete");
 
-        for (TopExp_Explorer explorer(pendingShape, TopAbs_FACE);
+        // Keep render indices in the source shape's traversal order. OCCT's
+        // isolated copy is allowed to reorder subshapes; using the copied
+        // shape's raw order made a picked cap index resolve to the opposite
+        // cap in the model topology. ModifiedShape provides the authoritative
+        // source-to-copy correspondence while preserving model isolation.
+        for (TopExp_Explorer explorer(shape, TopAbs_FACE);
              explorer.More();
              explorer.Next()) {
           if (pendingFaceCount >= kMaxRenderFaces)
             return setFailure(result, GeometryFailureKind::ResourceLimit,
                               "BodyRenderMesh face limit exceeded");
           const std::size_t faceIndex = pendingFaceCount++;
-          const TopoDS_Face face = TopoDS::Face(explorer.Current());
+          const TopoDS_Shape copied =
+              isolatedCopy.ModifiedShape(explorer.Current());
+          if (copied.IsNull() || copied.ShapeType() != TopAbs_FACE)
+            return setFailure(result, GeometryFailureKind::InvalidBRep,
+                              "BodyRenderMesh copied face mapping is invalid");
+          const TopoDS_Face face = TopoDS::Face(copied);
           TopLoc_Location location;
           const Handle(Poly_Triangulation) mesh =
               BRep_Tool::Triangulation(face, location);
@@ -306,13 +316,18 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
         }
 
         std::size_t edgeIndex = 0;
-        for (TopExp_Explorer explorer(pendingShape, TopAbs_EDGE);
+        for (TopExp_Explorer explorer(shape, TopAbs_EDGE);
              explorer.More();
              explorer.Next(), ++edgeIndex) {
           if (edgeIndex >= kMaxRenderEdges)
             return setFailure(result, GeometryFailureKind::ResourceLimit,
                               "BodyRenderMesh edge limit exceeded");
-          const TopoDS_Edge edge = TopoDS::Edge(explorer.Current());
+          const TopoDS_Shape copied =
+              isolatedCopy.ModifiedShape(explorer.Current());
+          if (copied.IsNull() || copied.ShapeType() != TopAbs_EDGE)
+            return setFailure(result, GeometryFailureKind::InvalidBRep,
+                              "BodyRenderMesh copied edge mapping is invalid");
+          const TopoDS_Edge edge = TopoDS::Edge(copied);
           if (BRep_Tool::Degenerated(edge)) continue;
           RenderEdge rendered;
           rendered.edgeIndex = edgeIndex;

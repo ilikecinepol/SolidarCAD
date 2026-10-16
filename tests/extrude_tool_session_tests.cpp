@@ -21,6 +21,7 @@
 #include <variant>
 
 #include "TestGeometryUtils.h"
+#include "model/ExtrudeFeature.h"
 #include "model/ExtrudeToolSession.h"
 #include "model/TopologyReferenceResolver.h"
 
@@ -417,6 +418,43 @@ int main() {
       CHECK(!session.manipulator().has_value());
       CHECK(!session.error().empty());
       session.cancel();
+    }
+
+    // Preview and committed history must describe the same oriented solid.
+    // This reproduces the reported YZ-circle / reversed NewBody path, where a
+    // material change previously made the cylinder look as if it had flipped.
+    {
+      solidar::Document document;
+      auto& profile = document.addSketch("YZ circle preview/commit");
+      profile.placement = solidar::SketchPlacement::yz();
+      profile.geometry.addCircle({0.0, 0.0}, 20.0);
+
+      solidar::ExtrudeToolSession session;
+      session.beginSketch(profile, profile.id, nullptr, 25.0,
+                          ExtrudeOperation::NewBody, true);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(session.previewShape());
+      const auto previewBounds =
+          solidar::test::boundsOf(*session.previewShape());
+
+      auto& body = document.addBody("YZ reversed cylinder");
+      body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+          profile.id, session.lengthMm(), "Extrude",
+          session.operation(), session.reversed()));
+      CHECK(document.recompute());
+      CHECK(body.resultShape());
+      const auto committedBounds =
+          solidar::test::boundsOf(*body.resultShape());
+      CHECK(near(previewBounds.minX, committedBounds.minX, 1e-6));
+      CHECK(near(previewBounds.maxX, committedBounds.maxX, 1e-6));
+      CHECK(near(previewBounds.minY, committedBounds.minY, 1e-6));
+      CHECK(near(previewBounds.maxY, committedBounds.maxY, 1e-6));
+      CHECK(near(previewBounds.minZ, committedBounds.minZ, 1e-6));
+      CHECK(near(previewBounds.maxZ, committedBounds.maxZ, 1e-6));
+      CHECK(near(previewBounds.minX, -25.0, 1e-6));
+      CHECK(near(previewBounds.maxX, 0.0, 1e-6));
+      CHECK(near(volumeOf(*session.previewShape()),
+                 volumeOf(*body.resultShape()), 1e-4));
     }
 
   // operation-follows-direction: a face-supported sketch maps sign to an atomic

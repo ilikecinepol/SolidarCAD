@@ -16,9 +16,21 @@ enum class StandardView { Front, Back, Left, Right, Top, Bottom, Isometric };
 struct CameraOrientation { float yaw{}, pitch{}; };
 CameraOrientation orientationFor(StandardView view);
 CameraOrientation orientationForDirection(Point3d direction);
+// Camera frame helpers shared by the 3D viewport and Sketcher transitions.
+// The viewing direction points from the model towards the eye.
+Point3d cameraViewingDirection(CameraOrientation camera);
+Point3d cameraScreenUpDirection(CameraOrientation camera);
+// Returns an upright, roll-free target. For a pole view the current yaw is
+// retained because yaw there represents only screen roll.
+CameraOrientation uprightOrientationForDirection(Point3d direction,
+                                                  float poleYaw);
 float shortestAngleDelta(float from, float to);
 CameraOrientation interpolateOrientation(CameraOrientation from,
                                         CameraOrientation to, float progress);
+// Interpolates the eye direction on the unit sphere, following the shortest
+// great-circle arc rather than independently blending Euler angles.
+CameraOrientation interpolateOrientationShortestArc(
+    CameraOrientation from, CameraOrientation to, float progress);
 
 enum class ViewCubeZone {
   None,

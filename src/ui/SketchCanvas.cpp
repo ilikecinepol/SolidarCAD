@@ -248,7 +248,7 @@ Point3d worldDirectionToLocal(const SketchPlacement& placement,
 }
 
 double initialViewRotation(const SketchPlacement& placement,
-                           Vector3d preferredUp) {
+                           Vector3d preferredUp, double yawDeg) {
   const Vector3d normal = placement.normal();
   const auto vectorLength = [](Vector3d value) {
     return std::sqrt(value.x * value.x + value.y * value.y +
@@ -271,29 +271,54 @@ double initialViewRotation(const SketchPlacement& placement,
                      length
                : 0.0;
   };
+  const auto rotationFor = [&](Vector3d worldUp) {
+    const auto localComponent = [worldUp, &vectorLength](Vector3d axis) {
+      const double length = vectorLength(axis);
+      return length > 1e-12
+                 ? (worldUp.x * axis.x + worldUp.y * axis.y +
+                    worldUp.z * axis.z) /
+                       length
+                 : 0.0;
+    };
+    const double yaw = yawDeg * std::numbers::pi / 180.0;
+    const double localX = localComponent(placement.xDirection);
+    const double localY = localComponent(placement.yDirection);
+    const double localZ = localComponent(normal);
+    // Roll is applied after yaw in projectLocalPoint().  On YZ faces the
+    // canonical world-up vector is commonly the face's local X axis, so a
+    // 180-degree hemisphere change reverses it.  Computing roll before yaw
+    // made only YZ open upside-down when the opposite face was selected.
+    const double yawX = std::cos(yaw) * localX + std::sin(yaw) * localZ;
+    const double angle = std::atan2(-yawX, localY) * 180.0 /
+                         std::numbers::pi;
+    return std::remainder(std::round(angle / 90.0) * 90.0, 360.0);
+  };
   const double localX = component(placement.xDirection);
   const double localY = component(placement.yDirection);
   if (std::hypot(localX, localY) <= 1e-9) {
     const Vector3d fallbackUp = std::abs(normal.z) > 0.9
                                     ? Vector3d{0.0, 1.0, 0.0}
                                     : Vector3d{0.0, 0.0, 1.0};
-    const auto fallbackComponent = [fallbackUp, &vectorLength](Vector3d axis) {
-      const double length = vectorLength(axis);
-      return length > 1e-12
-                 ? (fallbackUp.x * axis.x + fallbackUp.y * axis.y +
-                    fallbackUp.z * axis.z) /
-                       length
-                 : 0.0;
-    };
-    const double angle =
-        std::atan2(-fallbackComponent(placement.xDirection),
-                   fallbackComponent(placement.yDirection)) *
-        180.0 / std::numbers::pi;
-    return std::remainder(std::round(angle / 90.0) * 90.0, 360.0);
+    return rotationFor(fallbackUp);
   }
-  const double angle =
-      std::atan2(-localX, localY) * 180.0 / std::numbers::pi;
-  return std::remainder(std::round(angle / 90.0) * 90.0, 360.0);
+  return rotationFor(preferredUp);
+}
+
+double initialViewYaw(const SketchPlacement& placement,
+                      Vector3d preferredDirection) {
+  const Vector3d normal = placement.normal();
+  const double directionLength =
+      std::sqrt(preferredDirection.x * preferredDirection.x +
+                preferredDirection.y * preferredDirection.y +
+                preferredDirection.z * preferredDirection.z);
+  const double normalLength =
+      std::sqrt(normal.x * normal.x + normal.y * normal.y +
+                normal.z * normal.z);
+  if (directionLength <= 1e-12 || normalLength <= 1e-12) return 0.0;
+  const double facing = preferredDirection.x * normal.x +
+                        preferredDirection.y * normal.y +
+                        preferredDirection.z * normal.z;
+  return facing < 0.0 ? 180.0 : 0.0;
 }
 
 CameraOrientation sketchOrientationForDirection(Point3d direction) {
@@ -1646,12 +1671,19 @@ void SketchCanvas::setInitialViewUp(Vector3d worldUp) noexcept {
   preferredViewUp_ = worldUp;
 }
 
+void SketchCanvas::setInitialViewDirection(Vector3d worldDirection) noexcept {
+  preferredViewDirection_ = worldDirection;
+}
+
 void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
   clearSketchEditContext();
   referencePlacement_ = context.placement;
-  initialViewRotationDeg_ =
-      initialViewRotation(referencePlacement_, preferredViewUp_);
+  initialViewYawDeg_ =
+      initialViewYaw(referencePlacement_, preferredViewDirection_);
+  initialViewRotationDeg_ = initialViewRotation(
+      referencePlacement_, preferredViewUp_, initialViewYawDeg_);
   viewRotationDeg_ = initialViewRotationDeg_;
+  viewYawDeg_ = initialViewYawDeg_;
   markCommittedRenderSceneDirty();
   if (!context.supportShape || context.supportShape->IsNull() ||
       !context.supportTopologyIndex || !context.supportFace)
@@ -1696,10 +1728,12 @@ void SketchCanvas::setSceneReferences(
     std::vector<SketchSceneReference> sketches,
     const std::vector<ReferenceImage>& images) {
   referencePlacement_ = activePlacement;
-  initialViewRotationDeg_ =
-      initialViewRotation(referencePlacement_, preferredViewUp_);
+  initialViewYawDeg_ =
+      initialViewYaw(referencePlacement_, preferredViewDirection_);
+  initialViewRotationDeg_ = initialViewRotation(
+      referencePlacement_, preferredViewUp_, initialViewYawDeg_);
   viewRotationDeg_ = initialViewRotationDeg_;
-  viewYawDeg_ = 0.0;
+  viewYawDeg_ = initialViewYawDeg_;
   viewPitchDeg_ = 0.0;
   sceneBodyMeshes_.clear();
   sceneBodyMeshes_.reserve(bodyShapes.size());
@@ -1826,16 +1860,21 @@ void SketchCanvas::fitReferenceGeometry() {
       includePoint(world);
     }
   }
+  // A CAD view is anchored at the real origin of the active placement. Do not
+  // silently replace that pivot with the centre of the current bounding box:
+  // doing so makes the coordinate centre jump when entering Sketcher and
+  // makes subsequent orbiting happen around a different point than in 3D.
+  interaction_.setCameraPan(0.0, 0.0);
   if (minU <= maxU && minV <= maxV) {
-    const double spanU = std::max(1.0, maxU - minU);
-    const double spanV = std::max(1.0, maxV - minV);
+    const double spanU =
+        std::max(1.0, 2.0 * std::max(std::abs(minU), std::abs(maxU)));
+    const double spanV =
+        std::max(1.0, 2.0 * std::max(std::abs(minV), std::abs(maxV)));
     const double availableWidth = std::max(100.0, width() - kRulerLeft - 50.0);
     const double availableHeight = std::max(100.0, height() - kRulerTop - 50.0);
     pixelsPerMm_ = std::clamp(0.82 * std::min(availableWidth / spanU,
                                              availableHeight / spanV),
                               0.05, 50.0);
-    interaction_.setCameraPan(-(minU + maxU) * 0.5 * pixelsPerMm_,
-                              (minV + maxV) * 0.5 * pixelsPerMm_);
   }
 }
 
@@ -1852,6 +1891,7 @@ void SketchCanvas::clearSketchEditContext() {
   realReferenceBodyVisible_ = false;
   hoveredProjectionEdge_.reset();
   initialViewRotationDeg_ = 0.0;
+  initialViewYawDeg_ = 0.0;
   viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
@@ -1912,7 +1952,9 @@ void SketchCanvas::resetSketch() {
   clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   preferredViewUp_ = {};
+  preferredViewDirection_ = {};
   initialViewRotationDeg_ = 0.0;
+  initialViewYawDeg_ = 0.0;
   viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
@@ -1951,7 +1993,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   redoRetainedBytes_ = 0;
   clearGeometrySelection();
   viewRotationDeg_ = initialViewRotationDeg_;
-  viewYawDeg_ = 0.0;
+  viewYawDeg_ = initialViewYawDeg_;
   viewPitchDeg_ = 0.0;
   setCursor(Qt::ArrowCursor);
   emit toolChanged(Tool::Select);
@@ -2195,7 +2237,7 @@ void SketchCanvas::setViewOrientation(double yawDeg, double pitchDeg) {
 void SketchCanvas::resetViewRotation() {
   if (viewCubeAnimation_) viewCubeAnimation_->stop();
   viewRotationDeg_ = initialViewRotationDeg_;
-  viewYawDeg_ = 0.0;
+  viewYawDeg_ = initialViewYawDeg_;
   viewPitchDeg_ = 0.0;
   interaction_.endCameraGesture();
   cubePressed_ = {};
@@ -2221,8 +2263,17 @@ double SketchCanvas::viewPitchDegrees() const noexcept {
 }
 
 bool SketchCanvas::viewAlignedToSketchPlane() const noexcept {
-  return std::abs(viewYawDeg_) <= 1e-9 &&
+  const double yaw = viewYawDeg_ * std::numbers::pi / 180.0;
+  return std::abs(std::sin(yaw)) <= 1e-9 &&
          std::abs(viewPitchDeg_) <= 1e-9;
+}
+
+QPointF SketchCanvas::viewOriginScreenPosition() const {
+  return mapWorldPoint(referencePlacement_.origin);
+}
+
+double SketchCanvas::viewPixelsPerMillimeter() const noexcept {
+  return pixelsPerMm_;
 }
 
 CameraOrientation SketchCanvas::viewCubeCamera() const noexcept {
@@ -3076,6 +3127,10 @@ SketchRenderSnapshot SketchCanvas::renderSnapshot() const {
   snapshot.viewRotationDeg = viewRotationDeg_;
   snapshot.viewYawDeg = viewYawDeg_;
   snapshot.viewPitchDeg = viewPitchDeg_;
+  snapshot.cameraMotionActive =
+      interaction.camera.kind == SketchCameraGestureState::Kind::Orbit ||
+      (viewCubeAnimation_ &&
+       viewCubeAnimation_->state() == QAbstractAnimation::Running);
   switch (circleMode_) {
     case CircleMode::CenterRadius:
       snapshot.circleMode = SketchRenderCircleMode::CenterRadius;
@@ -7738,15 +7793,16 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
     const auto& line = sketch_.lines()[*lineIndex];
     const auto lineId = sketch_.lineId(*lineIndex);
 
-    // Treat a direct line click exactly like selecting its two endpoints.
-    // This gives the line the same three interactive dimension modes:
-    // aligned length, X projection and Y projection.
-    automatic.target = SketchAutoDimensionTarget::Points;
-    automatic.pointMode = SketchPointDimensionMode::Aligned;
+    // A direct entity click means the intrinsic line length. Point-to-point
+    // X/Y dimensions remain available by selecting the two endpoints
+    // explicitly. Keeping the direct line id preserves the existing second
+    // click transition to angle or parallel-line distance.
+    automatic.target = SketchAutoDimensionTarget::Line;
+    automatic.geometryId = lineId;
     automatic.directLineId = lineId;
     automatic.offsetMm = 4.0;
-    automatic.firstPoint = sketch::PointReference{lineId, true};
-    automatic.secondPoint = sketch::PointReference{lineId, false};
+    automatic.firstPoint.reset();
+    automatic.secondPoint.reset();
 
     primaryDimension_->setPrefix(QString());
     primaryDimension_->setValue(
@@ -7882,14 +7938,7 @@ void SketchCanvas::commitAutoDimension() {
     cancelPendingUndo();
     emit undoAvailable(canUndo());
     emit redoAvailable(canRedo());
-    const auto message = existing
-        ? QString::fromUtf8(
-              "Размер не изменён: более ранние зависимости имеют приоритет")
-        : target == SketchAutoDimensionTarget::Points
-              ? QString::fromUtf8(
-                    "Размер не добавлен: точки уже определены по X и Y")
-              : QString::fromUtf8(
-                    "Размер не добавлен: конфликт с более ранней зависимостью");
+    const auto message = commandFailureText(result);
     emit selectionChanged(message);
     emit constraintStatusChanged(message);
     primaryDimension_->setToolTip(message);

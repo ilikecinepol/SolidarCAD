@@ -14,7 +14,7 @@ struct TitleBlockData {
   QString designation{"ОФКД.000001.001"};
   QString productName{"Деталь"};
   QString material{"Материал"};
-  QString organization{QString::fromUtf8("Солидарность CAD")};
+  QString organization{QString::fromUtf8("СОЛИДАР3D")};
   QString scale{"1:1"};
 };
 

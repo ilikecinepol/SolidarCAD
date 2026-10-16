@@ -70,6 +70,7 @@ int main(int argc, char** argv) {
   {
     solidar::AppSettings settings(directory.filePath("b.ini"));
     solidar::home::HomeWindow home(settings);
+    CHECK(home.windowTitle() == QString::fromUtf8("СОЛИДАР3D"));
     auto* pages = home.findChild<QStackedWidget*>("pages");
     CHECK(pages);
     auto* settingsButton = buttonByText(&home, QString::fromUtf8("Настройки"));

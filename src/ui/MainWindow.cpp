@@ -59,6 +59,7 @@
 #include <QPageLayout>
 #include <QPageSize>
 #include <QPainter>
+#include <QPointer>
 #include <QPrintDialog>
 #include <QPrinter>
 #include <QStatusBar>
@@ -156,7 +157,7 @@ MainWindow::MainWindow(AppSettings& settings, QWidget* parent)
   buildUi();
   buildMenus();
   resize(1200, 760);
-  setWindowTitle(QString::fromUtf8("Солидарность CAD — Скетчер ЕСКД [*]"));
+  setWindowTitle(QString::fromUtf8("СОЛИДАР3D — Скетчер ЕСКД [*]"));
 }
 
 MainWindow::~MainWindow() {
@@ -258,7 +259,11 @@ void MainWindow::applyPartDesignUiEffect(PartDesignUiEffect effect) {
   }
   if (effect.beginInputSelection) viewport_->beginDraftFaceSelection();
   if (effect.hidePanel) {
-    if (toolParametersDock_) toolParametersDock_->hide();
+    if (toolParametersDock_ && !toolParametersDock_->isHidden()) {
+      if (effect.transition.previousTool == PartDesignToolKind::Extrude)
+        viewport_->preserveWorldOriginOnNextResize();
+      toolParametersDock_->hide();
+    }
     if (revolveDock_) revolveDock_->hide();
     if (mirrorDock_) mirrorDock_->hide();
     if (moveDock_) moveDock_->hide();
@@ -905,7 +910,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 void MainWindow::createProject() {
   QString path = QFileDialog::getSaveFileName(
       this, QString::fromUtf8("Создать проект"), QStringLiteral("Новый проект.solidar"),
-      QString::fromUtf8("Проекты Солидарность CAD (*.solidar)"));
+      QString::fromUtf8("Проекты СОЛИДАР3D (*.solidar)"));
   if (path.isEmpty()) return;
   if (!path.endsWith(QStringLiteral(".solidar"), Qt::CaseInsensitive))
     path += QStringLiteral(".solidar");
@@ -931,7 +936,7 @@ void MainWindow::createProject() {
 void MainWindow::openProject() {
   const QString path = QFileDialog::getOpenFileName(
       this, QString::fromUtf8("Открыть проект"), QString(),
-      QString::fromUtf8("Проекты Солидарность CAD (*.solidar)"));
+      QString::fromUtf8("Проекты СОЛИДАР3D (*.solidar)"));
   if (path.isEmpty()) return;
   if (!confirmProjectReplacement()) return;
   QString error;
@@ -967,7 +972,7 @@ void MainWindow::saveProject() {
   if (path.isEmpty()) {
     path = QFileDialog::getSaveFileName(
         this, QString::fromUtf8("Сохранить проект"), QStringLiteral("Новый проект.solidar"),
-        QString::fromUtf8("Проекты Солидарность CAD (*.solidar)"));
+        QString::fromUtf8("Проекты СОЛИДАР3D (*.solidar)"));
     if (path.isEmpty()) return;
     if (!path.endsWith(QStringLiteral(".solidar"), Qt::CaseInsensitive))
       path += QStringLiteral(".solidar");
@@ -1321,7 +1326,7 @@ void MainWindow::exportStl() {
 void MainWindow::setProjectPath(const QString& path) {
   setWindowFilePath(path);
   setWindowTitle(QFileInfo(path).completeBaseName() +
-                 QString::fromUtf8(" — Солидарность CAD [*]"));
+                 QString::fromUtf8(" — СОЛИДАР3D [*]"));
 }
 
 void MainWindow::buildUi() {
@@ -2681,6 +2686,7 @@ void MainWindow::buildUi() {
                                            ? -std::abs(value)
                                            : std::abs(value);
             viewport_->setExtrusionPreviewLength(signedValue);
+            updateLegacyExtrusionPreview();
           });
   connect(extrusionLengthSpin_, &QDoubleSpinBox::editingFinished, this,
           &MainWindow::normalizeExtrusionDistance);
@@ -2689,11 +2695,13 @@ void MainWindow::buildUi() {
         extrusionReverseCheck_->isChecked()
             ? -std::abs(extrusionLengthSpin_->value())
             : std::abs(extrusionLengthSpin_->value()));
+    updateLegacyExtrusionPreview();
   });
   connect(extrusionOperationCombo_, &QComboBox::currentIndexChanged, this,
           [this](int) {
             extrudeOperationManuallyChanged_ = true;
             invalidatePreviewUpdates();
+            updateLegacyExtrusionPreview();
           });
   connect(viewport_, &Viewport::extrusionPreviewLengthChanged, this,
           [this](double value) {
@@ -2702,6 +2710,7 @@ void MainWindow::buildUi() {
             extrusionLengthSpin_->setValue(std::abs(value));
             extrusionReverseCheck_->setChecked(value < 0.0);
             scheduleAutomaticExtrudeOperation();
+            updateLegacyExtrusionPreview();
           });
   connect(acceptExtrusion, &QPushButton::clicked, this, &MainWindow::extrudeSketch);
   const auto applyExtrusionOnEnter = [this] {
@@ -3257,13 +3266,31 @@ void MainWindow::buildUi() {
               currentSketchPlacement_ = resolved.placement;
               currentSketchFaceReference_ = faceReference;
             }
+            Vector3d targetEye = currentSketchPlacement_.normal();
+            // A datum plane has no material "outside", so choose the normal
+            // hemisphere already closest to the current camera. A real body
+            // face does have an outside: always approach that exact side so a
+            // picked front face cannot finish behind the model.
+            if (std::holds_alternative<DatumPlanePick>(pick.source)) {
+              const double facing = targetEye.x * pick.viewDirection.x +
+                                    targetEye.y * pick.viewDirection.y +
+                                    targetEye.z * pick.viewDirection.z;
+              if (facing < 0.0)
+                targetEye = {-targetEye.x, -targetEye.y, -targetEye.z};
+            }
+            const CameraOrientation targetCamera =
+                uprightOrientationForDirection(
+                    {targetEye.x, targetEye.y, targetEye.z},
+                    viewport_->cameraYawDegrees());
+            const Point3d targetUp = cameraScreenUpDirection(targetCamera);
             sketchCanvas_->resetSketch();
             sketchCanvas_->clearSketchEditContext();
-            // Sketcher opens in a stable CAD orientation.  The current 3D
-            // camera may be orbiting or may use a front-view convention whose
-            // screen-up is opposite to world +Z; carrying that roll into the
-            // sketch can place the selected face 180 degrees around Z.
-            sketchCanvas_->setInitialViewUp({});
+            // Build the final Sketcher camera before animating the 3D view.
+            // Both modes therefore agree on eye hemisphere, screen-up, scale
+            // and the screen position of the placement's real world origin.
+            sketchCanvas_->setInitialViewUp(
+                {targetUp.x, targetUp.y, targetUp.z});
+            sketchCanvas_->setInitialViewDirection(targetEye);
             sketchCanvas_->setReferenceBody(document_.box(),
                                              currentSketchPlacement_,
                                              hasDisplayableModernSolid() ||
@@ -3277,10 +3304,25 @@ void MainWindow::buildUi() {
                 !configureSketchEditContext(true))
               return;
             configureSketchSceneReferences();
-            workspaceStack_->setCurrentWidget(sketchCanvas_);
-            ribbonStack_->setCurrentWidget(sketchRibbon_);
-            statusBar()->showMessage(QString::fromUtf8("Рабочая плоскость: ") +
-                                     pick.presentationLabel);
+            const QString supportLabel = pick.presentationLabel;
+            QPointer<MainWindow> guarded(this);
+            statusBar()->showMessage(
+                QString::fromUtf8("Переход к рабочей плоскости: ") +
+                supportLabel);
+            viewport_->animateToSketchView(
+                targetCamera, currentSketchPlacement_.origin,
+                sketchCanvas_->viewOriginScreenPosition(),
+                sketchCanvas_->viewPixelsPerMillimeter(),
+                [guarded, supportLabel] {
+                  if (!guarded) return;
+                  guarded->workspaceStack_->setCurrentWidget(
+                      guarded->sketchCanvas_);
+                  guarded->ribbonStack_->setCurrentWidget(
+                      guarded->sketchRibbon_);
+                  guarded->statusBar()->showMessage(
+                      QString::fromUtf8("Рабочая плоскость: ") +
+                      supportLabel);
+                });
           });
   connect(viewport_, &Viewport::imagePlanePicked, this,
           &MainWindow::finishReferenceImageImport);
@@ -3307,6 +3349,7 @@ void MainWindow::buildUi() {
             scheduleAutomaticExtrudeOperation();
             extrusionDock_->show();
             extrusionDock_->raise();
+            updateLegacyExtrusionPreview();
           });
   connect(viewport_, &Viewport::directProfilePicked, this,
           [this](const ExtrusionSourcePick& pick) { createSketchExtrude(pick); });
@@ -3826,6 +3869,15 @@ void MainWindow::updateFromSketch(double widthMm, double heightMm) {
 void MainWindow::finishSketch() {
   invalidatePreviewUpdates();
   const auto& sketch = sketchCanvas_->sketch();
+  // Sketcher owns its orbit while it is active.  Transfer that global camera
+  // back before exposing the 3D widget; otherwise the first extrusion preview
+  // reuses the stale pre-Sketcher hemisphere and the ViewCube can say Bottom
+  // while the user has just been looking at Top (or vice versa).
+  viewport_->adoptSketchView(sketchCanvas_->viewCubeCamera(),
+                             currentSketchPlacement_.origin,
+                             sketchCanvas_->viewOriginScreenPosition(),
+                             sketchCanvas_->viewPixelsPerMillimeter());
+  viewport_->preserveWorldOriginOnNextResize();
   const HistorySelectionState previousSelection = captureHistorySelection();
   QString completionMessage =
       QString::fromUtf8("Эскиз завершён — модель перестроена");
@@ -3922,6 +3974,73 @@ void MainWindow::normalizeExtrusionDistance() {
   scheduleAutomaticExtrudeOperation();
 }
 
+void MainWindow::updateLegacyExtrusionPreview() {
+  if (!selectedExtrusionSource_ ||
+      !viewport_->extrusionManipulatorVisible()) {
+    viewport_->clearToolPreviewShape();
+    return;
+  }
+
+  DocumentSketch profile;
+  if (const auto* region =
+          std::get_if<SketchRegionPick>(&selectedExtrusionSource_->source)) {
+    if (const auto* source = document_.findSketch(region->sketchId))
+      profile = *source;
+    profile.id = region->sketchId;
+    profile.geometry = region->geometry;
+    profile.placement = region->placement;
+  } else if (const auto* face = std::get_if<LegacySolidFacePick>(
+                 &selectedExtrusionSource_->source)) {
+    profile.id = 1;
+    profile.geometry = face->geometry;
+    profile.placement = face->placement;
+  } else {
+    viewport_->clearToolPreviewShape();
+    return;
+  }
+
+  const auto input = normalizeExtrusionInput(
+      extrusionLengthSpin_->value(), extrusionReverseCheck_->isChecked());
+  const auto operation = static_cast<ExtrudeOperation>(
+      std::clamp(extrusionOperationCombo_->currentIndex(), 0, 2));
+  const Body* body = document_.activeBody();
+  const auto baseShape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
+  if (operation != ExtrudeOperation::NewBody && !baseShape) {
+    viewport_->clearToolPreviewShape();
+    return;
+  }
+
+  TopoDS_Shape preview;
+  SketchExtrudeGeometry geometry;
+  std::string error;
+  OperationFailureCode failure{OperationFailureCode::None};
+  if (!buildExtrusionFromSketch(
+          profile,
+          operation == ExtrudeOperation::NewBody ? nullptr : baseShape.get(),
+          input.distanceMm, operation, input.reversed, &preview, &geometry,
+          &error, &failure) ||
+      preview.IsNull()) {
+    viewport_->clearToolPreviewShape();
+    return;
+  }
+
+  const BodyId bodyId = body ? body->id() : kInvalidBodyId;
+  const FeatureId featureId = body && body->activeFeature()
+                                  ? body->activeFeature()->id()
+                                  : kInvalidFeatureId;
+  viewport_->setToolPreviewPresentation(
+      operation == ExtrudeOperation::NewBody
+          ? ToolPreviewPresentation::OverlaySourceSelection
+          : ToolPreviewPresentation::ReplaceSource);
+  viewport_->setToolPreviewShape(
+      bodyId, featureId,
+      std::make_shared<const TopoDS_Shape>(std::move(preview)));
+  viewport_->setToolPreviewReplacedBodies(
+      operation == ExtrudeOperation::NewBody || bodyId == kInvalidBodyId
+          ? std::vector<BodyId>{}
+          : std::vector<BodyId>{bodyId});
+}
+
 std::optional<ExtrudeOperation>
 MainWindow::detectAutomaticExtrudeOperation() const {
   if (extrudeOperationManuallyChanged_) return std::nullopt;
@@ -3952,6 +4071,7 @@ void MainWindow::updateAutomaticExtrudeOperation() {
   if (!operation) return;
   const QSignalBlocker blocker(extrusionOperationCombo_);
   extrusionOperationCombo_->setCurrentIndex(static_cast<int>(*operation));
+  updateLegacyExtrusionPreview();
 }
 
 void MainWindow::scheduleAutomaticExtrudeOperation() {
@@ -3984,6 +4104,7 @@ void MainWindow::scheduleAutomaticExtrudeOperation() {
         const QSignalBlocker blocker(extrusionOperationCombo_);
         extrusionOperationCombo_->setCurrentIndex(
             static_cast<int>(**detected));
+        updateLegacyExtrusionPreview();
       });
 }
 
@@ -4110,6 +4231,7 @@ void MainWindow::extrudeSketch() {
                            std::move(committedAfter)))
     return;
   historicalLegacyExtrusionSourceSketchId_.reset();
+  viewport_->clearToolPreviewShape();
   refreshBodyViewFromDocument();
   viewport_->setSketch(sketch);
   selectedExtrusionSource_.reset();
@@ -6045,6 +6167,7 @@ void MainWindow::createSketchExtrude(const ExtrusionSourcePick& pick) {
                                   QStringLiteral(" mm"));
   toolParametersPanel_->setParameterRange(0.01, 100000.0, 2);
   toolParametersPanel_->setParameterValue(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).lengthMm);
+  viewport_->preserveWorldOriginOnNextResize();
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
@@ -6084,6 +6207,7 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
   toolParametersPanel_->setParameterRange(minimum, maximum, 2);
   toolParametersPanel_->setParameterValue(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).lengthMm);
   toolParametersPanel_->configureOption(QString::fromUtf8("Вырезать"), false);
+  viewport_->preserveWorldOriginOnNextResize();
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
@@ -6253,6 +6377,7 @@ void MainWindow::editFaceExtrudeStep(Body* body, ExtrudeFeature* extrude,
   toolParametersPanel_->configureOption(
       QString::fromUtf8("Вырезать"),
       partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).extrudeOperation == ExtrudeOperation::Cut);
+  viewport_->preserveWorldOriginOnNextResize();
   toolParametersDock_->show();
   toolParametersDock_->raise();
   updateFaceExtrudeToolPreview();
@@ -6876,6 +7001,7 @@ void MainWindow::editSketchStep(std::size_t index) {
     currentSketchFaceReference_ = modelSketch->support.face;
   sketchCanvas_->clearSketchEditContext();
   sketchCanvas_->setInitialViewUp({});
+  sketchCanvas_->setInitialViewDirection({});
   if (currentSketchFaceReference_ && !configureSketchEditContext()) {
     editingSketchIndex_.reset();
     return;

@@ -1,5 +1,7 @@
 #include "ui/BodyRenderMesh.h"
+#include "model/SketchPlacement.h"
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -10,6 +12,7 @@
 #include <BRep_Tool.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS.hxx>
 #include <TopLoc_Location.hxx>
@@ -188,8 +191,37 @@ int main() {
 
   const TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(10.0, 50.0).Shape();
   cache.rebuild(cylinder);
+  // Picking publishes BodyRenderMesh::faceIndex, then resolves that raw index
+  // against the model-owned B-Rep. The isolated render copy may enumerate its
+  // subshapes differently, so every rendered planar face must retain the
+  // source traversal index instead of the copied traversal index.
+  std::size_t sourceFaceIndex = 0;
+  for (TopExp_Explorer explorer(cylinder, TopAbs_FACE); explorer.More();
+       explorer.Next(), ++sourceFaceIndex) {
+    const auto resolved =
+        solidar::resolveFacePlacement(TopoDS::Face(explorer.Current()));
+    if (!resolved.planar) continue;
+    const auto normal = resolved.placement.normal();
+    std::size_t vertexCount = 0;
+    for (const auto& vertex : cache.vertices()) {
+      if (vertex.faceIndex != sourceFaceIndex) continue;
+      const auto deltaX = vertex.position.x - resolved.placement.origin.x;
+      const auto deltaY = vertex.position.y - resolved.placement.origin.y;
+      const auto deltaZ = vertex.position.z - resolved.placement.origin.z;
+      CHECK(std::abs(deltaX * normal.x + deltaY * normal.y +
+                     deltaZ * normal.z) < 1e-6);
+      ++vertexCount;
+    }
+    CHECK(vertexCount > 0);
+  }
+  std::vector<TopoDS_Edge> sourceEdges;
+  for (TopExp_Explorer explorer(cylinder, TopAbs_EDGE); explorer.More();
+       explorer.Next())
+    sourceEdges.push_back(TopoDS::Edge(explorer.Current()));
   std::size_t curvedEdges = 0;
   for (const auto& edge : cache.edges()) {
+    CHECK(edge.edgeIndex < sourceEdges.size());
+    const BRepAdaptor_Curve sourceCurve(sourceEdges[edge.edgeIndex]);
     if (edge.points.size() <= 3) continue;
     ++curvedEdges;
     const std::size_t expectedIndex = edge.edgeIndex;
@@ -203,6 +235,11 @@ int main() {
     CHECK(edge.kind == solidar::RenderEdge::Kind::Circle ||
            edge.kind == solidar::RenderEdge::Kind::Arc);
     CHECK(std::abs(edge.radius - 10.0) <= 1e-6);
+    CHECK(sourceCurve.GetType() == GeomAbs_Circle);
+    const gp_Circ sourceCircle = sourceCurve.Circle();
+    CHECK(std::abs(edge.center.x - sourceCircle.Location().X()) <= 1e-6);
+    CHECK(std::abs(edge.center.y - sourceCircle.Location().Y()) <= 1e-6);
+    CHECK(std::abs(edge.center.z - sourceCircle.Location().Z()) <= 1e-6);
   }
   CHECK(curvedEdges >= 2);
 

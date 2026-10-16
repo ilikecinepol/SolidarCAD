@@ -306,6 +306,11 @@ struct SketchRenderSnapshot {
   double viewRotationDeg{};
   double viewYawDeg{};
   double viewPitchDeg{};
+  // Camera motion uses an interactive reference-body presentation. The
+  // committed sketch and its exact geometry remain unchanged; only the
+  // expensive per-triangle depth sorting/shading is deferred until motion
+  // stops.
+  bool cameraMotionActive{};
   SketchRenderCircleMode circleMode{SketchRenderCircleMode::CenterRadius};
   double circleDiameterMm{20.0};
   SketchRenderRectangleMode rectangleMode{SketchRenderRectangleMode::TwoPoints};
