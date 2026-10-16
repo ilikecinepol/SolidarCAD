@@ -100,9 +100,9 @@ class SketchCanvas final : public QWidget {
   [[nodiscard]] double viewPitchDegrees() const noexcept;
   [[nodiscard]] bool viewAlignedToSketchPlane() const noexcept;
   [[nodiscard]] QPointF viewOriginScreenPosition() const;
+  [[nodiscard]] QPointF worldOriginScreenPosition() const;
   [[nodiscard]] double viewPixelsPerMillimeter() const noexcept;
-  // Global camera orientation consumed by the shared ViewCube.  The sketch
-  // camera itself is stored in the active plane's local coordinate frame.
+  // Global camera orientation shared with the 3D viewport and ViewCube.
   [[nodiscard]] CameraOrientation viewCubeCamera() const noexcept;
   void setReferenceBody(BoxParameters box, const SketchPlacement& placement,
                         bool visible);
@@ -255,6 +255,9 @@ signals:
       double xMm, double yMm, double zMm) const noexcept;
   [[nodiscard]] QPointF mapWorldPoint(Point3d point) const;
   [[nodiscard]] double worldPointDepth(Point3d point) const noexcept;
+  void initializeViewFrame();
+  void applyWorldViewOrientation(CameraOrientation camera,
+                                 bool preserveWorldOrigin);
   [[nodiscard]] QPolygonF circlePolyline(
       sketch::Point center, double radiusMm, double startAngleRad = 0.0,
       double sweepAngleRad = 2.0 * 3.14159265358979323846,
@@ -409,6 +412,8 @@ signals:
   double viewRotationDeg_{0.0};
   double viewYawDeg_{0.0};
   double viewPitchDeg_{0.0};
+  CameraOrientation initialWorldCamera_{};
+  CameraOrientation worldCamera_{};
   QVariantAnimation* viewCubeAnimation_{nullptr};
   QTimer* constraintDiagnosticsTimer_{nullptr};
   std::size_t fullDiagnosticsCount_{};

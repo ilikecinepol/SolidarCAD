@@ -3310,8 +3310,8 @@ void MainWindow::buildUi() {
                 QString::fromUtf8("Переход к рабочей плоскости: ") +
                 supportLabel);
             viewport_->animateToSketchView(
-                targetCamera, currentSketchPlacement_.origin,
-                sketchCanvas_->viewOriginScreenPosition(),
+                targetCamera, {},
+                sketchCanvas_->worldOriginScreenPosition(),
                 sketchCanvas_->viewPixelsPerMillimeter(),
                 [guarded, supportLabel] {
                   if (!guarded) return;
@@ -3874,8 +3874,7 @@ void MainWindow::finishSketch() {
   // reuses the stale pre-Sketcher hemisphere and the ViewCube can say Bottom
   // while the user has just been looking at Top (or vice versa).
   viewport_->adoptSketchView(sketchCanvas_->viewCubeCamera(),
-                             currentSketchPlacement_.origin,
-                             sketchCanvas_->viewOriginScreenPosition(),
+                             {}, sketchCanvas_->worldOriginScreenPosition(),
                              sketchCanvas_->viewPixelsPerMillimeter());
   viewport_->preserveWorldOriginOnNextResize();
   const HistorySelectionState previousSelection = captureHistorySelection();

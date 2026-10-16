@@ -209,16 +209,6 @@ Point3d cubeViewingDirection(CameraOrientation camera) {
           std::cos(yaw) * std::sin(pitch), std::cos(pitch)};
 }
 
-Point3d sketchViewingDirection(double yawDeg, double pitchDeg) {
-  const double yaw = yawDeg * std::numbers::pi / 180.0;
-  const double pitch = pitchDeg * std::numbers::pi / 180.0;
-  // The sketch projection rotates the scene, while ViewCube describes the
-  // camera.  Their vertical motion has opposite signs: when the visible model
-  // tilts upward, the cube must tilt upward as well instead of mirroring it.
-  return {-std::sin(yaw) * std::cos(pitch), -std::sin(pitch),
-          std::cos(yaw) * std::cos(pitch)};
-}
-
 Point3d localDirectionToWorld(const SketchPlacement& placement,
                               Point3d local) {
   const Vector3d normal = placement.normal();
@@ -245,6 +235,77 @@ Point3d worldDirectionToLocal(const SketchPlacement& placement,
   };
   return {component(placement.xDirection),
           component(placement.yDirection), component(normal)};
+}
+
+struct SketchLocalCameraFrame {
+  double yawDeg{};
+  double pitchDeg{};
+  double rollDeg{};
+};
+
+CameraOrientation worldCameraForLocalFrame(const SketchPlacement& placement,
+                                           double yawDeg, double pitchDeg,
+                                           double rollDeg) {
+  const double yaw = yawDeg * std::numbers::pi / 180.0;
+  const double pitch = pitchDeg * std::numbers::pi / 180.0;
+  const double roll = rollDeg * std::numbers::pi / 180.0;
+  const double cy = std::cos(yaw), sy = std::sin(yaw);
+  const double cp = std::cos(pitch), sp = std::sin(pitch);
+  const double cr = std::cos(roll), sr = std::sin(roll);
+
+  // These are the exact local camera basis vectors used by projectLocalPoint.
+  // Recovering both eye and horizontal directions preserves the otherwise
+  // ambiguous yaw at Top/Bottom instead of losing the current screen roll.
+  const Point3d horizontalLocal{
+      cr * cy + sr * sp * sy, sr * cp,
+      cr * sy - sr * sp * cy};
+  const Point3d eyeLocal{-cp * sy, sp, cp * cy};
+  const Point3d horizontal =
+      localDirectionToWorld(placement, horizontalLocal);
+  const Point3d eye = localDirectionToWorld(placement, eyeLocal);
+
+  const double horizontalLength = std::hypot(horizontal.x, horizontal.y);
+  const double worldYaw = horizontalLength > 1e-10
+                              ? std::atan2(-horizontal.y, horizontal.x)
+                              : std::atan2(eye.x, eye.y);
+  const double sinPitch =
+      eye.x * std::sin(worldYaw) + eye.y * std::cos(worldYaw);
+  const double worldPitch = std::atan2(sinPitch, eye.z);
+  return {static_cast<float>(worldYaw * 180.0 / std::numbers::pi),
+          static_cast<float>(worldPitch * 180.0 / std::numbers::pi)};
+}
+
+SketchLocalCameraFrame localFrameForWorldCamera(
+    const SketchPlacement& placement, CameraOrientation camera,
+    double fallbackYawDeg) {
+  const double worldYaw = camera.yaw * std::numbers::pi / 180.0;
+  const double worldPitch = camera.pitch * std::numbers::pi / 180.0;
+  const Point3d horizontalWorld{std::cos(worldYaw), -std::sin(worldYaw), 0.0};
+  const Point3d eyeWorld{std::sin(worldYaw) * std::sin(worldPitch),
+                         std::cos(worldYaw) * std::sin(worldPitch),
+                         std::cos(worldPitch)};
+  const Point3d horizontal =
+      worldDirectionToLocal(placement, horizontalWorld);
+  const Point3d eye = worldDirectionToLocal(placement, eyeWorld);
+
+  const double localPitch = std::asin(std::clamp(eye.y, -1.0, 1.0));
+  const double cosPitch = std::cos(localPitch);
+  const double localYaw =
+      std::abs(cosPitch) > 1e-10
+          ? std::atan2(-eye.x, eye.z)
+          : fallbackYawDeg * std::numbers::pi / 180.0;
+  const double cy = std::cos(localYaw), sy = std::sin(localYaw);
+  const double sp = std::sin(localPitch);
+  const Point3d horizontalBeforeRoll{cy, 0.0, sy};
+  const Point3d verticalBeforeRoll{sp * sy, cosPitch, -sp * cy};
+  const auto dot = [](Point3d first, Point3d second) {
+    return first.x * second.x + first.y * second.y + first.z * second.z;
+  };
+  const double localRoll = std::atan2(dot(horizontal, verticalBeforeRoll),
+                                      dot(horizontal, horizontalBeforeRoll));
+  return {localYaw * 180.0 / std::numbers::pi,
+          localPitch * 180.0 / std::numbers::pi,
+          localRoll * 180.0 / std::numbers::pi};
 }
 
 double initialViewRotation(const SketchPlacement& placement,
@@ -319,20 +380,6 @@ double initialViewYaw(const SketchPlacement& placement,
                         preferredDirection.y * normal.y +
                         preferredDirection.z * normal.z;
   return facing < 0.0 ? 180.0 : 0.0;
-}
-
-CameraOrientation sketchOrientationForDirection(Point3d direction) {
-  const double length = std::sqrt(direction.x * direction.x +
-                                  direction.y * direction.y +
-                                  direction.z * direction.z);
-  if (length <= 1e-12) return {};
-  const double x = direction.x / length;
-  const double y = std::clamp(direction.y / length, -1.0, 1.0);
-  const double z = direction.z / length;
-  return {static_cast<float>(std::atan2(-x, z) * 180.0 /
-                                        std::numbers::pi),
-          static_cast<float>(std::clamp(
-              -std::asin(y) * 180.0 / std::numbers::pi, -89.9, 89.9))};
 }
 
 double niceRulerStep(double pixelsPerMm) {
@@ -1678,12 +1725,7 @@ void SketchCanvas::setInitialViewDirection(Vector3d worldDirection) noexcept {
 void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
   clearSketchEditContext();
   referencePlacement_ = context.placement;
-  initialViewYawDeg_ =
-      initialViewYaw(referencePlacement_, preferredViewDirection_);
-  initialViewRotationDeg_ = initialViewRotation(
-      referencePlacement_, preferredViewUp_, initialViewYawDeg_);
-  viewRotationDeg_ = initialViewRotationDeg_;
-  viewYawDeg_ = initialViewYawDeg_;
+  initializeViewFrame();
   markCommittedRenderSceneDirty();
   if (!context.supportShape || context.supportShape->IsNull() ||
       !context.supportTopologyIndex || !context.supportFace)
@@ -1728,13 +1770,7 @@ void SketchCanvas::setSceneReferences(
     std::vector<SketchSceneReference> sketches,
     const std::vector<ReferenceImage>& images) {
   referencePlacement_ = activePlacement;
-  initialViewYawDeg_ =
-      initialViewYaw(referencePlacement_, preferredViewDirection_);
-  initialViewRotationDeg_ = initialViewRotation(
-      referencePlacement_, preferredViewUp_, initialViewYawDeg_);
-  viewRotationDeg_ = initialViewRotationDeg_;
-  viewYawDeg_ = initialViewYawDeg_;
-  viewPitchDeg_ = 0.0;
+  initializeViewFrame();
   sceneBodyMeshes_.clear();
   sceneBodyMeshes_.reserve(bodyShapes.size());
   for (const auto& shape : bodyShapes) {
@@ -1895,6 +1931,8 @@ void SketchCanvas::clearSketchEditContext() {
   viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
+  initialWorldCamera_ = {};
+  worldCamera_ = {};
   interaction_.cancelGesture();
   markCommittedRenderSceneDirty();
   update();
@@ -1958,6 +1996,8 @@ void SketchCanvas::resetSketch() {
   viewRotationDeg_ = 0.0;
   viewYawDeg_ = 0.0;
   viewPitchDeg_ = 0.0;
+  initialWorldCamera_ = {};
+  worldCamera_ = {};
   hideDimensionEditor();
   setCursor(Qt::ArrowCursor);
   emit toolChanged(Tool::Select);
@@ -1995,6 +2035,7 @@ void SketchCanvas::loadSketch(const sketch::Sketch& sketch) {
   viewRotationDeg_ = initialViewRotationDeg_;
   viewYawDeg_ = initialViewYawDeg_;
   viewPitchDeg_ = 0.0;
+  worldCamera_ = initialWorldCamera_;
   setCursor(Qt::ArrowCursor);
   emit toolChanged(Tool::Select);
   notifyGeometryChanged();
@@ -2203,6 +2244,44 @@ double SketchCanvas::angularDimensionRadiusPx(
   return std::clamp(requested, 16.0, maximum);
 }
 
+void SketchCanvas::initializeViewFrame() {
+  initialViewYawDeg_ =
+      initialViewYaw(referencePlacement_, preferredViewDirection_);
+  initialViewRotationDeg_ = initialViewRotation(
+      referencePlacement_, preferredViewUp_, initialViewYawDeg_);
+  viewRotationDeg_ = initialViewRotationDeg_;
+  viewYawDeg_ = initialViewYawDeg_;
+  viewPitchDeg_ = 0.0;
+  initialWorldCamera_ = worldCameraForLocalFrame(
+      referencePlacement_, viewYawDeg_, viewPitchDeg_, viewRotationDeg_);
+  worldCamera_ = initialWorldCamera_;
+}
+
+void SketchCanvas::applyWorldViewOrientation(CameraOrientation camera,
+                                             bool preserveWorldOrigin) {
+  if (!std::isfinite(camera.yaw) || !std::isfinite(camera.pitch)) return;
+
+  const QPointF worldOriginBefore =
+      preserveWorldOrigin ? mapWorldPoint({}) : QPointF{};
+  camera.yaw = std::remainder(camera.yaw, 360.0F);
+  camera.pitch = std::clamp(camera.pitch, -179.5F, 179.5F);
+  const SketchLocalCameraFrame local = localFrameForWorldCamera(
+      referencePlacement_, camera, viewYawDeg_);
+  viewYawDeg_ = std::remainder(local.yawDeg, 360.0);
+  viewPitchDeg_ = std::clamp(local.pitchDeg, -90.0, 90.0);
+  viewRotationDeg_ = std::remainder(local.rollDeg, 360.0);
+  worldCamera_ = camera;
+
+  if (preserveWorldOrigin) {
+    const QPointF worldOriginAfter = mapWorldPoint({});
+    const double panX = interactionState().camera.panX;
+    const double panY = interactionState().camera.panY;
+    interaction_.setCameraPan(
+        panX + worldOriginBefore.x() - worldOriginAfter.x(),
+        panY + worldOriginBefore.y() - worldOriginAfter.y());
+  }
+}
+
 void SketchCanvas::rotateViewClockwise() {
   if (viewCubeAnimation_) viewCubeAnimation_->stop();
   viewRotationDeg_ = std::remainder(viewRotationDeg_ + 90.0, 360.0);
@@ -2219,14 +2298,14 @@ void SketchCanvas::rotateViewCounterClockwise() {
 
 void SketchCanvas::orbitView(double yawDeltaDeg, double pitchDeltaDeg) {
   if (viewCubeAnimation_) viewCubeAnimation_->stop();
-  setViewOrientation(viewYawDeg_ + yawDeltaDeg,
-                     viewPitchDeg_ + pitchDeltaDeg);
+  setViewOrientation(worldCamera_.yaw + yawDeltaDeg,
+                     worldCamera_.pitch + pitchDeltaDeg);
 }
 
 void SketchCanvas::setViewOrientation(double yawDeg, double pitchDeg) {
   if (!std::isfinite(yawDeg) || !std::isfinite(pitchDeg)) return;
-  viewYawDeg_ = std::remainder(yawDeg, 360.0);
-  viewPitchDeg_ = std::clamp(pitchDeg, -89.9, 89.9);
+  applyWorldViewOrientation(
+      {static_cast<float>(yawDeg), static_cast<float>(pitchDeg)}, true);
   hideDimensionEditor();
   constructionHover_.reset();
   interaction_.updateTrim({});
@@ -2239,6 +2318,7 @@ void SketchCanvas::resetViewRotation() {
   viewRotationDeg_ = initialViewRotationDeg_;
   viewYawDeg_ = initialViewYawDeg_;
   viewPitchDeg_ = 0.0;
+  worldCamera_ = initialWorldCamera_;
   interaction_.endCameraGesture();
   cubePressed_ = {};
   clearViewCubeHover();
@@ -2256,20 +2336,33 @@ double SketchCanvas::viewRotationDegrees() const noexcept {
   return viewRotationDeg_;
 }
 
-double SketchCanvas::viewYawDegrees() const noexcept { return viewYawDeg_; }
+double SketchCanvas::viewYawDegrees() const noexcept {
+  return worldCamera_.yaw;
+}
 
 double SketchCanvas::viewPitchDegrees() const noexcept {
-  return viewPitchDeg_;
+  return worldCamera_.pitch;
 }
 
 bool SketchCanvas::viewAlignedToSketchPlane() const noexcept {
-  const double yaw = viewYawDeg_ * std::numbers::pi / 180.0;
-  return std::abs(std::sin(yaw)) <= 1e-9 &&
-         std::abs(viewPitchDeg_) <= 1e-9;
+  const Point3d eye = cameraViewingDirection(worldCamera_);
+  const Vector3d normal = referencePlacement_.normal();
+  const double normalLength = std::sqrt(normal.x * normal.x +
+                                        normal.y * normal.y +
+                                        normal.z * normal.z);
+  if (normalLength <= 1e-12) return false;
+  const double dot = (eye.x * normal.x + eye.y * normal.y +
+                      eye.z * normal.z) /
+                     normalLength;
+  return std::abs(std::abs(dot) - 1.0) <= 1e-9;
 }
 
 QPointF SketchCanvas::viewOriginScreenPosition() const {
   return mapWorldPoint(referencePlacement_.origin);
+}
+
+QPointF SketchCanvas::worldOriginScreenPosition() const {
+  return mapWorldPoint({});
 }
 
 double SketchCanvas::viewPixelsPerMillimeter() const noexcept {
@@ -2277,24 +2370,16 @@ double SketchCanvas::viewPixelsPerMillimeter() const noexcept {
 }
 
 CameraOrientation SketchCanvas::viewCubeCamera() const noexcept {
-  // ViewCube labels are global (Front/Top/Right), while the Sketcher orbits
-  // in the active plane's local frame.  Transform the eye direction through
-  // SketchPlacement before feeding the shared 3D cube; otherwise an XZ face
-  // is incorrectly labelled as Top and pitch appears mirrored.
-  return orientationForDirection(localDirectionToWorld(
-      referencePlacement_,
-      sketchViewingDirection(viewYawDeg_, viewPitchDeg_)));
+  return worldCamera_;
 }
 
 void SketchCanvas::animateViewToDirection(Point3d direction) {
   if (!viewCubeAnimation_) return;
   viewCubeAnimation_->stop();
   disconnect(viewCubeAnimation_, nullptr, this, nullptr);
-  const CameraOrientation start{static_cast<float>(viewYawDeg_),
-                                static_cast<float>(viewPitchDeg_)};
-  const CameraOrientation target = sketchOrientationForDirection(
-      worldDirectionToLocal(referencePlacement_, direction));
-  viewRotationDeg_ = initialViewRotationDeg_;
+  const CameraOrientation start = worldCamera_;
+  const CameraOrientation target =
+      uprightOrientationForDirection(direction, worldCamera_.yaw);
   hideDimensionEditor();
   constructionHover_.reset();
   interaction_.updateTrim({});
@@ -2303,10 +2388,7 @@ void SketchCanvas::animateViewToDirection(Point3d direction) {
           [this, start, target](const QVariant& value) {
             const auto camera = interpolateOrientation(
                 start, target, value.toFloat());
-            viewYawDeg_ = std::remainder(
-                static_cast<double>(camera.yaw), 360.0);
-            viewPitchDeg_ = std::clamp(
-                static_cast<double>(camera.pitch), -89.9, 89.9);
+            applyWorldViewOrientation(camera, true);
             update();
           });
   viewCubeAnimation_->setStartValue(0.0F);
@@ -2318,15 +2400,17 @@ void SketchCanvas::animateViewRotationBy(double deltaDeg) {
   if (!viewCubeAnimation_ || !std::isfinite(deltaDeg)) return;
   viewCubeAnimation_->stop();
   disconnect(viewCubeAnimation_, nullptr, this, nullptr);
-  const double start = viewRotationDeg_;
+  const CameraOrientation start = worldCamera_;
+  const CameraOrientation target{
+      static_cast<float>(start.yaw + deltaDeg), start.pitch};
   hideDimensionEditor();
   constructionHover_.reset();
   interaction_.updateTrim({});
   hoveredProjectionEdge_.reset();
   connect(viewCubeAnimation_, &QVariantAnimation::valueChanged, this,
-          [this, start, deltaDeg](const QVariant& value) {
-            viewRotationDeg_ = std::remainder(
-                start + deltaDeg * value.toDouble(), 360.0);
+          [this, start, target](const QVariant& value) {
+            applyWorldViewOrientation(
+                interpolateOrientation(start, target, value.toFloat()), true);
             update();
           });
   viewCubeAnimation_->setStartValue(0.0);
@@ -3867,7 +3951,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
           current.x(), current.y(),
           dragButton == Qt::RightButton &&
               (std::abs(delta.x()) >= 0.5 || std::abs(delta.y()) >= 0.5));
-      orbitView(delta.x() * 0.55, delta.y() * 0.55);
+      orbitView(delta.x() * 0.5, delta.y() * 0.5);
       event->accept();
       return;
     }

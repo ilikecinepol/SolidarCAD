@@ -275,8 +275,6 @@ void sketchFreeCameraTests() {
   canvas.setInitialViewDirection({0.0, 0.0, -1.0});
   canvas.setSceneReferences(solidar::SketchPlacement::xy(), {}, {});
   CHECK(canvas.viewAlignedToSketchPlane());
-  CHECK(std::abs(std::remainder(canvas.viewYawDegrees() - 180.0, 360.0)) <=
-        1e-6);
   const auto oppositeOrientation = canvas.viewCubeCamera();
   const solidar::ViewportCameraState oppositeCamera{
       oppositeOrientation.yaw, oppositeOrientation.pitch, 1.0F, {},
@@ -284,8 +282,7 @@ void sketchFreeCameraTests() {
   CHECK(oppositeCamera.cameraDepth({0.0, 0.0, -1.0}) > 0.999);
   canvas.rotateViewClockwise();
   canvas.resetViewRotation();
-  CHECK(std::abs(std::remainder(canvas.viewYawDegrees() - 180.0, 360.0)) <=
-        1e-6);
+  CHECK(std::abs(std::abs(canvas.viewPitchDegrees()) - 180.0) <= 1e-6);
 
   // YZ is the only principal plane whose OCCT cap UV frame commonly maps
   // world +Z to local X. Looking at the same cap frame from the opposite
@@ -295,8 +292,11 @@ void sketchFreeCameraTests() {
       {50.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, {0.0, -1.0, 0.0}};
   canvas.setInitialViewDirection({-1.0, 0.0, 0.0});
   canvas.setSceneReferences(oppositeYzCap, {}, {});
-  CHECK(std::abs(std::remainder(canvas.viewYawDegrees() - 180.0, 360.0)) <=
-        1e-6);
+  const auto oppositeYzEye =
+      solidar::cameraViewingDirection(canvas.viewCubeCamera());
+  CHECK(oppositeYzEye.x < -0.999);
+  CHECK(std::abs(oppositeYzEye.y) <= 1e-6);
+  CHECK(std::abs(oppositeYzEye.z) <= 1e-6);
   CHECK(std::abs(std::remainder(canvas.viewRotationDegrees() - 90.0, 360.0)) <=
         1e-6);
 
@@ -352,8 +352,8 @@ void sketchFreeCameraTests() {
   CHECK(std::abs(canvas.viewYawDegrees()) <= 1e-9);
   CHECK(std::abs(canvas.viewPitchDegrees()) <= 1e-9);
 
-  // The cube arrows roll the sketch plane in 45-degree increments. This must
-  // remain an editable sketch-plane view rather than entering inspection mode.
+  // The cube arrows have exactly the same meaning as in the 3D viewport:
+  // they change global yaw by 45 degrees and keep the current pitch.
   const auto rotationCube = solidar::viewCubeGeometry(
       canvas.size(), solidar::orientationForDirection({0.0, 0.0, 1.0}));
   QMouseEvent rotatePress(QEvent::MouseButtonPress,
@@ -369,7 +369,8 @@ void sketchFreeCameraTests() {
   CHECK(rotationAnimation != nullptr);
   CHECK(rotationAnimation->state() == QAbstractAnimation::Running);
   rotationAnimation->setCurrentTime(200);
-  CHECK(std::abs(canvas.viewRotationDegrees() - 45.0) <= 1e-9);
+  CHECK(std::abs(canvas.viewYawDegrees() - 45.0) <= 1e-6);
+  CHECK(std::abs(canvas.viewPitchDegrees()) <= 1e-6);
   CHECK(canvas.viewAlignedToSketchPlane());
   canvas.resetViewRotation();
 
@@ -399,20 +400,16 @@ void sketchFreeCameraTests() {
   CHECK(cubeAnimation->state() == QAbstractAnimation::Running);
   cubeAnimation->setCurrentTime(200);
   const auto direction = edgeIt->hit.direction;
-  const double directionLength = std::sqrt(direction.x * direction.x +
-                                           direction.y * direction.y +
-                                           direction.z * direction.z);
-  const double expectedYaw =
-      std::atan2(-direction.x, direction.z) * 180.0 / std::numbers::pi;
-  const double expectedPitch =
-      -std::asin(direction.y / directionLength) * 180.0 / std::numbers::pi;
-  CHECK(std::abs(canvas.viewYawDegrees() - expectedYaw) <= 1e-4);
-  CHECK(std::abs(canvas.viewPitchDegrees() - expectedPitch) <= 1e-4);
+  const auto expectedCamera =
+      solidar::uprightOrientationForDirection(direction, 0.0F);
+  CHECK(std::abs(canvas.viewYawDegrees() - expectedCamera.yaw) <= 1e-4);
+  CHECK(std::abs(canvas.viewPitchDegrees() - expectedCamera.pitch) <= 1e-4);
   CHECK(!canvas.viewAlignedToSketchPlane());
   canvas.resetViewRotation();
 
   // Match the ordinary 3D viewport gesture: right-button dragging orbits the
   // Sketcher camera without requiring a keyboard modifier.
+  const QPointF worldOriginBeforeOrbit = canvas.worldOriginScreenPosition();
   QMouseEvent rightPress(QEvent::MouseButtonPress, start, Qt::RightButton,
                          Qt::RightButton, Qt::NoModifier);
   QApplication::sendEvent(&canvas, &rightPress);
@@ -424,8 +421,10 @@ void sketchFreeCameraTests() {
   QApplication::sendEvent(&canvas, &rightRelease);
 
   CHECK(!canvas.viewAlignedToSketchPlane());
-  CHECK(std::abs(canvas.viewYawDegrees()) > 1.0);
-  CHECK(std::abs(canvas.viewPitchDegrees()) > 1.0);
+  CHECK(std::abs(canvas.viewYawDegrees() - 30.0) <= 1e-6);
+  CHECK(std::abs(canvas.viewPitchDegrees() - 20.0) <= 1e-6);
+  CHECK(QLineF(worldOriginBeforeOrbit, canvas.worldOriginScreenPosition())
+            .length() <= 1e-6);
   canvas.resetViewRotation();
 
   // A short right click remains a cancellation gesture and must not move the
@@ -438,10 +437,9 @@ void sketchFreeCameraTests() {
   QApplication::sendEvent(&canvas, &clickRelease);
   CHECK(canvas.viewAlignedToSketchPlane());
 
-  // Cube labels and tilt are expressed in world coordinates.  An XZ sketch
-  // is viewed from the global Front, not from Top.  Vertical orbit is mapped
-  // with the opposite camera sign so the cube follows the visible model
-  // instead of rotating in the opposite direction.
+  // Cube labels and orbit angles are expressed in world coordinates. An XZ
+  // sketch starts at global Front and changes pitch with the same sign and
+  // limit as the ordinary 3D viewport.
   const auto viewingDirection = [](solidar::CameraOrientation camera) {
     const double yaw = camera.yaw * std::numbers::pi / 180.0;
     const double pitch = camera.pitch * std::numbers::pi / 180.0;
@@ -460,13 +458,18 @@ void sketchFreeCameraTests() {
   const auto sketchTilt = viewingDirection(canvas.viewCubeCamera());
   CHECK(std::abs(sketchTilt.x) <= 1e-6);
   CHECK(sketchTilt.y < -0.9);
-  CHECK(sketchTilt.z < -0.3);
+  CHECK(sketchTilt.z > 0.3);
 
   canvas.orbitView(0.0, -40.0);
   const auto oppositeTilt = viewingDirection(canvas.viewCubeCamera());
   CHECK(std::abs(oppositeTilt.x) <= 1e-6);
   CHECK(oppositeTilt.y < -0.9);
-  CHECK(oppositeTilt.z > 0.3);
+  CHECK(oppositeTilt.z < -0.3);
+
+  canvas.setViewOrientation(10.0, 170.0);
+  canvas.orbitView(0.0, 20.0);
+  CHECK(std::abs(canvas.viewYawDegrees() - 10.0) <= 1e-6);
+  CHECK(std::abs(canvas.viewPitchDegrees() - 179.5) <= 1e-6);
 }
 
 void sketchConstraintToolTests() {

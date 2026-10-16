@@ -4544,14 +4544,18 @@ int main(int argc, char** argv) {
     const auto normal = placement.normal();
     CHECK(std::abs(placement.origin.x) < 1e-6);
     CHECK(normal.x < -0.999);
-    CHECK(std::abs(Access::sketch(faceEditor)->viewYawDegrees()) < 1e-6);
+    const auto sketchEye = solidar::cameraViewingDirection(
+        Access::sketch(faceEditor)->viewCubeCamera());
+    CHECK(sketchEye.x < -0.999);
+    CHECK(std::abs(sketchEye.y) < 1e-6);
+    CHECK(std::abs(sketchEye.z) < 1e-6);
     CHECK(std::abs(std::remainder(
               Access::sketch(faceEditor)->viewRotationDegrees() + 90.0,
               360.0)) < 1e-6);
     const QPointF viewportOrigin =
-        Access::viewportWorldScreen(faceEditor, placement.origin);
+        Access::viewportWorldScreen(faceEditor, {});
     const QPointF sketchOrigin =
-        Access::sketch(faceEditor)->viewOriginScreenPosition();
+        Access::sketch(faceEditor)->worldOriginScreenPosition();
     CHECK(QLineF(viewportOrigin, sketchOrigin).length() < 1e-5);
     CHECK(std::abs(Access::viewportPixelsPerMm(faceEditor) -
                    Access::sketch(faceEditor)->viewPixelsPerMillimeter()) <
