@@ -168,18 +168,24 @@ int main(int argc, char* argv[]) {
     CHECK(v1.payloadKind ==
           solidar::project::ProjectPayloadKind::LegacyPartV1);
     CHECK(v1.succeeded());
+    CHECK(v1.error.isEmpty());
+    CHECK(!v1.document.has_value());
     const auto v2 = solidar::project::ProjectFile::stageLoad(v2Path);
     CHECK(v2.status == solidar::project::ProjectLoadStatus::Valid);
     CHECK(v2.sourceVersion == 2);
     CHECK(v2.payloadKind ==
           solidar::project::ProjectPayloadKind::ParametricPartV2);
     CHECK(v2.succeeded());
+    CHECK(v2.error.isEmpty());
+    CHECK(v2.document.has_value());
     const auto v3 = solidar::project::ProjectFile::stageLoad(v3Path);
     CHECK(v3.status == solidar::project::ProjectLoadStatus::Valid);
     CHECK(v3.sourceVersion == 3);
     CHECK(v3.payloadKind ==
           solidar::project::ProjectPayloadKind::ParametricPartV3);
     CHECK(v3.succeeded());
+    CHECK(v3.error.isEmpty());
+    CHECK(v3.document.has_value());
 
     constexpr auto kUnknownPayload =
         static_cast<solidar::project::ProjectPayloadKind>(9999);
@@ -215,6 +221,10 @@ int main(int argc, char* argv[]) {
     CHECK(malformedV3.sourceVersion == 3);
     CHECK(malformedV3.payloadKind ==
           solidar::project::ProjectPayloadKind::None);
+    CHECK(!malformedV3.document.has_value());
+    CHECK(malformedV3.error ==
+          QString::fromUtf8(
+              "Файл проекта повреждён: поле model должно быть объектом."));
 
     auto futureRoot = v3Root;
     futureRoot["version"] = 101;
@@ -224,6 +234,9 @@ int main(int argc, char* argv[]) {
     CHECK(future.sourceVersion == 101);
     CHECK(future.payloadKind == solidar::project::ProjectPayloadKind::None);
     CHECK(!future.succeeded());
+    CHECK(!future.document.has_value());
+    CHECK(future.error ==
+          QString::fromUtf8("Неподдерживаемая версия проекта: 101."));
 
     auto unknownSchemaRoot = v3Root;
     unknownSchemaRoot["sketches"] = QJsonArray{QJsonObject{
@@ -236,6 +249,10 @@ int main(int argc, char* argv[]) {
     CHECK(unknownSchema.sourceVersion == 3);
     CHECK(unknownSchema.payloadKind ==
           solidar::project::ProjectPayloadKind::None);
+    CHECK(!unknownSchema.document.has_value());
+    CHECK(unknownSchema.error ==
+          QString::fromUtf8(
+              "Файл проекта повреждён: неизвестная sketch schema v3."));
 
     // Semantic writer oracle: metadata time and JSON key/byte order are not
     // contractual. The independently authored object checks the v3 payload.
@@ -2640,14 +2657,31 @@ int main(int argc, char* argv[]) {
     CHECK(historicalJoinPattern("historical-circular-pattern.solidar",
                                 QStringLiteral("CircularPattern")));
 
+    const auto sourceVersionOf = [](const QJsonObject& root)
+        -> std::optional<qint64> {
+      constexpr double kMaximumExactJsonInteger = 9007199254740991.0;
+      const auto value = root.value("version");
+      if (!value.isDouble()) return std::nullopt;
+      const double number = value.toDouble();
+      if (!std::isfinite(number) || std::trunc(number) != number ||
+          number < 1.0 || number > kMaximumExactJsonInteger)
+        return std::nullopt;
+      return static_cast<qint64>(number);
+    };
+
     auto expectInvalid = [&](const QString& name, QJsonObject root) -> bool {
+      const auto expectedSourceVersion = sourceVersionOf(root);
       const QString invalidPath = writeRoot(name, root);
       if (invalidPath.isEmpty()) return false;
       QFile beforeFile(invalidPath);
       if (!beforeFile.open(QIODevice::ReadOnly)) return false;
       const QByteArray beforeBytes = beforeFile.readAll();
       auto staged = solidar::project::ProjectFile::stageLoad(invalidPath);
-      if (staged.kind != solidar::project::ProjectLoadKind::Invalid ||
+      if (staged.status != solidar::project::ProjectLoadStatus::Invalid ||
+          staged.sourceVersion != expectedSourceVersion ||
+          staged.payloadKind != solidar::project::ProjectPayloadKind::None ||
+          staged.document.has_value() ||
+          staged.kind != solidar::project::ProjectLoadKind::Invalid ||
           staged.succeeded() || staged.error.isEmpty())
         return false;
       if (solidar::project::ProjectFile::validate(invalidPath, &error) ||
@@ -2673,11 +2707,16 @@ int main(int argc, char* argv[]) {
 
     auto expectUnsupported = [&](const QString& name,
                                  const QJsonObject& root) -> bool {
+      const auto expectedSourceVersion = sourceVersionOf(root);
       const QString unsupportedPath = writeRoot(name, root);
       if (unsupportedPath.isEmpty()) return false;
       const auto staged =
           solidar::project::ProjectFile::stageLoad(unsupportedPath);
-      return staged.kind == solidar::project::ProjectLoadKind::Unsupported &&
+      return staged.status == solidar::project::ProjectLoadStatus::Unsupported &&
+             staged.sourceVersion == expectedSourceVersion &&
+             staged.payloadKind == solidar::project::ProjectPayloadKind::None &&
+             !staged.document.has_value() &&
+             staged.kind == solidar::project::ProjectLoadKind::Unsupported &&
              !staged.succeeded() && !staged.error.isEmpty();
     };
 

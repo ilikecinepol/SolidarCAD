@@ -122,6 +122,7 @@ int main(int argc, char* argv[]) {
     CHECK(first.payloadKind == second.payloadKind);
     CHECK(first.kind == second.kind);
     CHECK(first.succeeded() == second.succeeded());
+    CHECK(first.error == second.error);
 
     if (!first.succeeded()) {
       CHECK(!first.error.isEmpty());

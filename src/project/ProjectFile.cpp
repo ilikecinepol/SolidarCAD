@@ -4994,6 +4994,119 @@ bool validateAndSelectLegacyPlan(const QJsonObject& root, qint64 version,
   return false;
 }
 
+namespace {
+
+struct DecodedPartPayload {
+  std::optional<qint64> sourceVersion;
+  ProjectPayloadKind payloadKind{ProjectPayloadKind::None};
+  QJsonObject root;
+  ProjectData legacy;
+};
+
+struct PartPayloadDecodeResult {
+  ProjectLoadStatus status{ProjectLoadStatus::Invalid};
+  DecodedPartPayload payload;
+  QString error;
+};
+
+PartPayloadDecodeResult decodeAndValidatePartPayload(
+    QJsonObject root, std::optional<qint64>& observedSourceVersion) {
+  PartPayloadDecodeResult result;
+  result.payload.root = std::move(root);
+  const QJsonObject& payloadRoot = result.payload.root;
+
+  if (!payloadRoot.value("format").isString()) {
+    result.error = QString::fromUtf8(
+        "Файл проекта повреждён: отсутствует строковое поле format.");
+    return result;
+  }
+  if (payloadRoot.value("format").toString() !=
+      QStringLiteral("solidar-project")) {
+    result.status = ProjectLoadStatus::Unsupported;
+    result.error = QString::fromUtf8("Неподдерживаемый формат проекта.");
+    return result;
+  }
+
+  qint64 version = 0;
+  if (!integerNumber(payloadRoot.value("version"), QStringLiteral("version"),
+                     1, kMaximumExactJsonInteger, &version, &result.error))
+    return result;
+  observedSourceVersion = version;
+  result.payload.sourceVersion = observedSourceVersion;
+  if (version != 1 && version != 2 && version != 3) {
+    result.status = ProjectLoadStatus::Unsupported;
+    result.error = QString::fromUtf8("Неподдерживаемая версия проекта: %1.")
+                       .arg(version);
+    return result;
+  }
+
+  // The parametric model was introduced together with format v2. Treating
+  // a downgraded/corrupted v2 root as legacy would silently discard its
+  // history and allow the next Save to overwrite the original model.
+  if (version == 1 && payloadRoot.contains("model")) {
+    result.error = QString::fromUtf8(
+        "Проект v1 не может содержать параметрическую модель v2.");
+    return result;
+  }
+
+  ProjectData legacy;
+  if (version == 3) {
+    bool unsupportedSchema = false;
+    if (!loadV3Root(payloadRoot, &legacy, &result.error,
+                    &unsupportedSchema)) {
+      if (unsupportedSchema) result.status = ProjectLoadStatus::Unsupported;
+      return result;
+    }
+    bool unsupportedModel = false;
+    if (!validateV2Root(payloadRoot, legacy, &result.error,
+                        &unsupportedModel)) {
+      if (unsupportedModel) result.status = ProjectLoadStatus::Unsupported;
+      return result;
+    }
+    result.status = ProjectLoadStatus::Valid;
+    result.payload.payloadKind = ProjectPayloadKind::ParametricPartV3;
+    result.payload.legacy = std::move(legacy);
+    result.error.clear();
+    return result;
+  }
+
+  LegacyDecodePlan decodePlan;
+  bool unsupportedSchema = false;
+  if (!validateAndSelectLegacyPlan(payloadRoot, version, &decodePlan,
+                                   &unsupportedSchema, &result.error)) {
+    if (unsupportedSchema) result.status = ProjectLoadStatus::Unsupported;
+    return result;
+  }
+  if (!loadLegacyRoot(payloadRoot, decodePlan.constraintEncoding, &legacy,
+                      &result.error)) {
+    if (result.error.isEmpty())
+      result.error =
+          QString::fromUtf8("Не удалось восстановить данные проекта.");
+    return result;
+  }
+  if (version == 1) {
+    result.status = ProjectLoadStatus::Valid;
+    result.payload.payloadKind = ProjectPayloadKind::LegacyPartV1;
+    result.payload.legacy = std::move(legacy);
+    result.error.clear();
+    return result;
+  }
+
+  bool unsupportedModel = false;
+  if (!validateV2Root(payloadRoot, legacy, &result.error,
+                      &unsupportedModel)) {
+    if (unsupportedModel) result.status = ProjectLoadStatus::Unsupported;
+    return result;
+  }
+  result.status = ProjectLoadStatus::Valid;
+  result.payload.payloadKind = ProjectPayloadKind::ParametricPartV2;
+  result.payload.legacy = std::move(legacy);
+  result.error.clear();
+  return result;
+}
+
+}  // namespace
+
 StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
   StagedProjectLoad result;
   try {
@@ -5021,68 +5134,33 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
                      parseError.errorString();
       return result;
     }
-    const QJsonObject root = parsed.object();
-    if (!root.value("format").isString()) {
-      result.error = QString::fromUtf8(
-          "Файл проекта повреждён: отсутствует строковое поле format.");
+    auto decoded =
+        decodeAndValidatePartPayload(parsed.object(), result.sourceVersion);
+    if (decoded.status != ProjectLoadStatus::Valid) {
+      result.status = decoded.status;
+      if (decoded.status == ProjectLoadStatus::Unsupported)
+        result.kind = ProjectLoadKind::Unsupported;
+      result.error = std::move(decoded.error);
       return result;
     }
-    if (root.value("format").toString() != QStringLiteral("solidar-project")) {
-      result.status = ProjectLoadStatus::Unsupported;
-      result.kind = ProjectLoadKind::Unsupported;
-      result.error = QString::fromUtf8("Неподдерживаемый формат проекта.");
+
+    auto decodedPayload = std::move(decoded.payload);
+    if (decodedPayload.payloadKind == ProjectPayloadKind::LegacyPartV1) {
+      result.status = ProjectLoadStatus::Valid;
+      result.payloadKind = ProjectPayloadKind::LegacyPartV1;
+      result.kind = ProjectLoadKind::ValidV1;
+      result.legacy = std::move(decodedPayload.legacy);
+      result.error.clear();
       return result;
     }
-    qint64 version = 0;
+
     QString validationError;
-    if (!integerNumber(root.value("version"), QStringLiteral("version"), 1,
-                       kMaximumExactJsonInteger, &version,
-                       &validationError)) {
-      result.error = validationError;
-      return result;
-    }
-    result.sourceVersion = version;
-    if (version != 1 && version != 2 && version != 3) {
-      result.status = ProjectLoadStatus::Unsupported;
-      result.kind = ProjectLoadKind::Unsupported;
-      result.error = QString::fromUtf8("Неподдерживаемая версия проекта: %1.")
-                         .arg(version);
-      return result;
-    }
-    // The parametric model was introduced together with format v2. Treating
-    // a downgraded/corrupted v2 root as legacy would silently discard its
-    // history and allow the next Save to overwrite the original model.
-    if (version == 1 && root.contains("model")) {
-      result.error = QString::fromUtf8(
-          "Проект v1 не может содержать параметрическую модель v2.");
-      return result;
-    }
-    if (version == 3) {
-      ProjectData legacy;
-      bool unsupportedSchema = false;
-      if (!loadV3Root(root, &legacy, &validationError,
-                      &unsupportedSchema)) {
-        if (unsupportedSchema) {
-          result.status = ProjectLoadStatus::Unsupported;
-          result.kind = ProjectLoadKind::Unsupported;
-        }
-        result.error = validationError;
-        return result;
-      }
-      bool unsupportedModel = false;
-      if (!validateV2Root(root, legacy, &validationError,
-                          &unsupportedModel)) {
-        if (unsupportedModel) {
-          result.status = ProjectLoadStatus::Unsupported;
-          result.kind = ProjectLoadKind::Unsupported;
-        }
-        result.error = validationError;
-        return result;
-      }
+    if (decodedPayload.payloadKind == ProjectPayloadKind::ParametricPartV3) {
       Document document;
       {
         ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
-        if (!loadDocumentRoot(root, legacy, &document, &validationError)) {
+        if (!loadDocumentRoot(decodedPayload.root, decodedPayload.legacy,
+                              &document, &validationError)) {
           result.error = validationError;
           return result;
         }
@@ -5090,68 +5168,38 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       result.status = ProjectLoadStatus::Valid;
       result.payloadKind = ProjectPayloadKind::ParametricPartV3;
       result.kind = ProjectLoadKind::ValidV2;
-      result.legacy = std::move(legacy);
+      result.legacy = std::move(decodedPayload.legacy);
       result.document.emplace(std::move(document));
       result.error.clear();
       return result;
     }
-    LegacyDecodePlan decodePlan;
-    bool unsupportedSchema = false;
-    if (!validateAndSelectLegacyPlan(root, version, &decodePlan,
-                                     &unsupportedSchema, &validationError)) {
-      if (unsupportedSchema) {
-        result.status = ProjectLoadStatus::Unsupported;
-        result.kind = ProjectLoadKind::Unsupported;
+
+    if (decodedPayload.payloadKind == ProjectPayloadKind::ParametricPartV2) {
+      Document document;
+      {
+        // Parsing and rebuilding are speculative until the complete staged
+        // document has passed validation.  Explicit persisted IDs must not
+        // advance process-global edit generators on a rejected file.
+        ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
+        if (!loadDocumentRoot(decodedPayload.root, decodedPayload.legacy,
+                              &document, &validationError)) {
+          result.error = validationError.isEmpty()
+                             ? QString::fromUtf8(
+                                   "Не удалось восстановить параметрическую модель.")
+                             : validationError;
+          return result;
+        }
       }
-      result.error = validationError;
-      return result;
-    }
-    ProjectData legacy;
-    if (!loadLegacyRoot(root, decodePlan.constraintEncoding, &legacy,
-                        &validationError)) {
-      result.error = validationError.isEmpty()
-                         ? QString::fromUtf8("Не удалось восстановить данные проекта.")
-                         : validationError;
-      return result;
-    }
-    if (version == 1) {
       result.status = ProjectLoadStatus::Valid;
-      result.payloadKind = ProjectPayloadKind::LegacyPartV1;
-      result.kind = ProjectLoadKind::ValidV1;
-      result.legacy = std::move(legacy);
+      result.payloadKind = ProjectPayloadKind::ParametricPartV2;
+      result.kind = ProjectLoadKind::ValidV2;
+      result.legacy = std::move(decodedPayload.legacy);
+      result.document.emplace(std::move(document));
       result.error.clear();
       return result;
     }
 
-    bool unsupportedModel = false;
-    if (!validateV2Root(root, legacy, &validationError, &unsupportedModel)) {
-      if (unsupportedModel) {
-        result.status = ProjectLoadStatus::Unsupported;
-        result.kind = ProjectLoadKind::Unsupported;
-      }
-      result.error = validationError;
-      return result;
-    }
-    Document document;
-    {
-      // Parsing and rebuilding are speculative until the complete staged
-      // document has passed validation.  Explicit persisted IDs must not
-      // advance process-global edit generators on a rejected file.
-      ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
-      if (!loadDocumentRoot(root, legacy, &document, &validationError)) {
-        result.error = validationError.isEmpty()
-                           ? QString::fromUtf8(
-                                 "Не удалось восстановить параметрическую модель.")
-                           : validationError;
-        return result;
-      }
-    }
-    result.status = ProjectLoadStatus::Valid;
-    result.payloadKind = ProjectPayloadKind::ParametricPartV2;
-    result.kind = ProjectLoadKind::ValidV2;
-    result.legacy = std::move(legacy);
-    result.document.emplace(std::move(document));
-    result.error.clear();
+    result.error = QString::fromUtf8("Неизвестный вид данных проекта.");
     return result;
   } catch (const Standard_Failure& failure) {
     result.error = QString::fromUtf8("Ошибка OCCT при загрузке проекта: ") +
