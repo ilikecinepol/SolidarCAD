@@ -3271,119 +3271,123 @@ bool ProjectFile::validate(const QString& path, QString* error) {
   return false;
 }
 
+static bool encodeCurrentPartV3Root(const QString& path,
+                                    const Document& document,
+                                    QJsonObject* result, QString* error) {
+  ProjectData legacy;
+  legacy.box = document.box();
+  for (const auto& item : document.sketches()) {
+    legacy.sketches.push_back({item.geometry, QStringLiteral("XY")});
+    if (!sketch::validateSketchSchema(legacy.sketches.back().geometry)) {
+      setError(error,
+               QString::fromUtf8(
+                   "Эскиз документа нарушает typed schema contract."));
+      return false;
+    }
+  }
+  QJsonObject root;
+  if (!serializedProjectRoot(path, legacy, &root, error)) return false;
+  root["version"] = 3;
+  auto persistedSketches = root.value("sketches").toArray();
+  for (qsizetype position = 0; position < persistedSketches.size();
+       ++position) {
+    auto persistedSketch = persistedSketches[position].toObject();
+    persistedSketch["sketchId"] = static_cast<qint64>(
+        document.sketches()[static_cast<std::size_t>(position)].id);
+    persistedSketches[position] = persistedSketch;
+  }
+  root["sketches"] = persistedSketches;
+
+  QJsonArray sketches;
+  for (const auto& item : document.sketches()) {
+    QJsonObject support{{"type", static_cast<int>(item.support.type)}};
+    if (item.support.type == SketchSupportType::Face) {
+      support["bodyId"] = static_cast<qint64>(item.support.face.bodyId);
+      support["featureId"] = static_cast<qint64>(item.support.face.featureId);
+      support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex);
+      if (!item.support.face.persistentTag.empty())
+        support["persistentTag"] =
+            QString::fromStdString(item.support.face.persistentTag);
+      if (item.support.face.signature)
+        support["signature"] = faceSignature(*item.support.face.signature);
+    }
+    sketches.append(QJsonObject{
+        {"id", static_cast<qint64>(item.id)},
+        {"name", QString::fromStdString(item.name)},
+        {"origin", vector3(item.placement.origin.x, item.placement.origin.y,
+                           item.placement.origin.z)},
+        {"xDirection",
+         vector3(item.placement.xDirection.x, item.placement.xDirection.y,
+                 item.placement.xDirection.z)},
+        {"yDirection",
+         vector3(item.placement.yDirection.x, item.placement.yDirection.y,
+                 item.placement.yDirection.z)},
+        {"support", support}});
+  }
+
+  QJsonArray bodies;
+  for (const auto& body : document.bodies()) {
+    QJsonArray features;
+    for (const auto& feature : body.features()) {
+      const auto* codec = findFeatureCodec(feature->kind());
+      if (!codec) {
+        setError(error, QString::fromUtf8("Неподдерживаемый FeatureKind."));
+        return false;
+      }
+      QJsonObject saved{
+          {"id", static_cast<qint64>(feature->id())},
+          {"name", QString::fromStdString(feature->name())},
+          {"type", QString::fromLatin1(
+                       codec->token.data(),
+                       static_cast<qsizetype>(codec->token.size()))}};
+      if (!codec->encode(*feature, saved,
+                         FeatureEncodeContext{document, error}))
+        return false;
+      features.append(saved);
+    }
+    bodies.append(QJsonObject{{"id", static_cast<qint64>(body.id())},
+                              {"name", QString::fromStdString(body.name())},
+                              {"visible", body.visible()},
+                              {"features", features}});
+  }
+  QJsonArray referenceImages;
+  for (const auto& image : document.referenceImages()) {
+    referenceImages.append(QJsonObject{
+        {"id", static_cast<qint64>(image.id)},
+        {"name", QString::fromStdString(image.name)},
+        {"sourcePath", QString::fromStdString(image.sourcePath)},
+        {"supportName", QString::fromStdString(image.supportName)},
+        {"origin", vector3(image.placement.origin.x, image.placement.origin.y,
+                            image.placement.origin.z)},
+        {"xDirection",
+         vector3(image.placement.xDirection.x, image.placement.xDirection.y,
+                 image.placement.xDirection.z)},
+        {"yDirection",
+         vector3(image.placement.yDirection.x, image.placement.yDirection.y,
+                 image.placement.yDirection.z)},
+        {"offsetX", image.offsetXMm},
+        {"offsetY", image.offsetYMm},
+        {"offsetZ", image.offsetZMm},
+        {"scale", image.scale},
+        {"pixelWidth", image.pixelWidth},
+        {"pixelHeight", image.pixelHeight},
+        {"visible", image.visible}});
+  }
+  root["model"] = QJsonObject{{"sketches", sketches},
+                               {"bodies", bodies},
+                               {"referenceImages", referenceImages}};
+
+  if (!upgradeSketchSchemaToV3(&root, legacy, error)) return false;
+  if (!validateV2Root(root, legacy, error)) return false;
+  *result = std::move(root);
+  return true;
+}
+
 bool ProjectFile::saveDocument(const QString& path, const Document& document,
                                QString* error) {
   const auto saveOperation = [&]() -> bool {
-    ProjectData legacy;
-    legacy.box = document.box();
-    for (const auto& item : document.sketches()) {
-      legacy.sketches.push_back({item.geometry, QStringLiteral("XY")});
-      if (!sketch::validateSketchSchema(
-              legacy.sketches.back().geometry)) {
-        setError(error,
-                 QString::fromUtf8(
-                     "Эскиз документа нарушает typed schema contract."));
-        return false;
-      }
-    }
     QJsonObject root;
-    if (!serializedProjectRoot(path, legacy, &root, error))
-      return false;
-    root["version"] = 3;
-    auto persistedSketches = root.value("sketches").toArray();
-    for (qsizetype position = 0; position < persistedSketches.size();
-         ++position) {
-      auto persistedSketch = persistedSketches[position].toObject();
-      persistedSketch["sketchId"] = static_cast<qint64>(
-          document.sketches()[static_cast<std::size_t>(position)].id);
-      persistedSketches[position] = persistedSketch;
-    }
-    root["sketches"] = persistedSketches;
-
-    QJsonArray sketches;
-    for (const auto& item : document.sketches()) {
-      QJsonObject support{{"type", static_cast<int>(item.support.type)}};
-      if (item.support.type == SketchSupportType::Face) {
-        support["bodyId"] = static_cast<qint64>(item.support.face.bodyId);
-        support["featureId"] = static_cast<qint64>(item.support.face.featureId);
-        support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex);
-        if (!item.support.face.persistentTag.empty())
-          support["persistentTag"] =
-              QString::fromStdString(item.support.face.persistentTag);
-        if (item.support.face.signature)
-          support["signature"] = faceSignature(*item.support.face.signature);
-      }
-      sketches.append(QJsonObject{
-          {"id", static_cast<qint64>(item.id)},
-          {"name", QString::fromStdString(item.name)},
-          {"origin", vector3(item.placement.origin.x, item.placement.origin.y,
-                             item.placement.origin.z)},
-          {"xDirection",
-           vector3(item.placement.xDirection.x, item.placement.xDirection.y,
-                   item.placement.xDirection.z)},
-          {"yDirection",
-           vector3(item.placement.yDirection.x, item.placement.yDirection.y,
-                   item.placement.yDirection.z)},
-          {"support", support}});
-    }
-
-    QJsonArray bodies;
-    for (const auto& body : document.bodies()) {
-      QJsonArray features;
-      for (const auto& feature : body.features()) {
-        const auto* codec = findFeatureCodec(feature->kind());
-        if (!codec) {
-          setError(error, QString::fromUtf8("Неподдерживаемый FeatureKind."));
-          return false;
-        }
-        QJsonObject saved{
-            {"id", static_cast<qint64>(feature->id())},
-            {"name", QString::fromStdString(feature->name())},
-            {"type", QString::fromLatin1(
-                         codec->token.data(),
-                         static_cast<qsizetype>(codec->token.size()))}};
-        if (!codec->encode(*feature, saved, FeatureEncodeContext{document, error}))
-          return false;
-        features.append(saved);
-      }
-      bodies.append(QJsonObject{{"id", static_cast<qint64>(body.id())},
-                                {"name", QString::fromStdString(body.name())},
-                                {"visible", body.visible()},
-                                {"features", features}});
-    }
-    QJsonArray referenceImages;
-    for (const auto& image : document.referenceImages()) {
-      referenceImages.append(QJsonObject{
-          {"id", static_cast<qint64>(image.id)},
-          {"name", QString::fromStdString(image.name)},
-          {"sourcePath", QString::fromStdString(image.sourcePath)},
-          {"supportName", QString::fromStdString(image.supportName)},
-          {"origin", vector3(image.placement.origin.x, image.placement.origin.y,
-                              image.placement.origin.z)},
-          {"xDirection",
-           vector3(image.placement.xDirection.x,
-                   image.placement.xDirection.y,
-                   image.placement.xDirection.z)},
-          {"yDirection",
-           vector3(image.placement.yDirection.x,
-                   image.placement.yDirection.y,
-                   image.placement.yDirection.z)},
-          {"offsetX", image.offsetXMm},
-          {"offsetY", image.offsetYMm},
-          {"offsetZ", image.offsetZMm},
-          {"scale", image.scale},
-          {"pixelWidth", image.pixelWidth},
-          {"pixelHeight", image.pixelHeight},
-          {"visible", image.visible}});
-    }
-    root["model"] = QJsonObject{{"sketches", sketches},
-                                 {"bodies", bodies},
-                                 {"referenceImages", referenceImages}};
-
-    if (!upgradeSketchSchemaToV3(&root, legacy, error)) return false;
-
-    if (!validateV2Root(root, legacy, error))
-      return false;
+    if (!encodeCurrentPartV3Root(path, document, &root, error)) return false;
     ProjectData restoredLegacy;
     if (!loadV3Root(root, &restoredLegacy, error))
       return false;

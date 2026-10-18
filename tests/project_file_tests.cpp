@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 
 #include <BRep_Builder.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <TopoDS_Face.hxx>
 
 #include "TestAssertions.h"
@@ -535,6 +536,354 @@ int main(int argc, char* argv[]) {
     CHECK(clone);
     CHECK(clone->kind() == feature->kind());
   }
+
+  // current_part_encoder_semantics_and_rebuild_oracle
+  // The public writer boundary must preserve the authored v3 semantics while
+  // the decoder rebuilds equivalent transient B-Rep independently.
+  {
+    constexpr solidar::SketchId kProfileSketchId = 101;
+    constexpr solidar::SketchId kSupportedSketchId = 202;
+    constexpr solidar::BodyId kBodyId = 301;
+    constexpr solidar::FeatureId kExtrudeId = 401;
+    constexpr solidar::FeatureId kMoveId = 402;
+
+    solidar::Document source;
+    source.setBox({123.0, 87.0, 45.0});
+    auto& profile = source.addSketch(kProfileSketchId, "Ordered profile", {});
+    profile.geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    profile.geometry.addLine({10.0, 0.0}, {10.0, 20.0});
+    profile.geometry.addLine({10.0, 20.0}, {0.0, 20.0});
+    profile.geometry.addLine({0.0, 20.0}, {0.0, 0.0});
+
+    auto& body = source.addBody(kBodyId, "Encoder body");
+    body.setVisible(false);
+    body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        kExtrudeId, kProfileSketchId, 7.0, "Encoder extrude"));
+    CHECK(source.recompute());
+    const auto* sourceExtrude = source.findFeature(kExtrudeId);
+    CHECK(sourceExtrude && sourceExtrude->shape());
+    const auto topFace =
+        solidar::test::topPlanarFace(*sourceExtrude->shape(), 7.0);
+    CHECK(topFace.has_value());
+    const auto supportReference = solidar::makeFaceReference(
+        *sourceExtrude->shape(), kBodyId, kExtrudeId, *topFace);
+    CHECK(!supportReference.persistentTag.empty());
+    CHECK(supportReference.signature.has_value());
+
+    auto& supported =
+        source.addSketch(kSupportedSketchId, "Face-supported detail", {});
+    supported.geometry.addLine({1.0, 2.0}, {5.0, 2.0});
+    supported.geometry.addLine({5.0, 2.0}, {5.0, 6.0});
+    supported.geometry.addCircle({3.0, 4.0}, 1.5);
+    CHECK(source.attachSketchToFace(kSupportedSketchId, supportReference));
+    body.addFeature(std::make_unique<solidar::MoveFeature>(
+        kMoveId, kExtrudeId, solidar::Vector3d{3.0, -2.0, 4.0},
+        "Encoder move"));
+    CHECK(source.recompute());
+
+    const QString oraclePath = directory.filePath(
+        QStringLiteral("current_part_encoder_semantics_and_rebuild_oracle.solidar"));
+    QString oracleError;
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        oraclePath, source, &oracleError));
+    QFile oracleFile(oraclePath);
+    CHECK(oracleFile.open(QIODevice::ReadOnly));
+    const auto parsed = QJsonDocument::fromJson(oracleFile.readAll());
+    CHECK(parsed.isObject());
+    auto root = parsed.object();
+    CHECK(root.value("createdAt").isString());
+    root.remove("createdAt");
+
+    const auto exactFields = [](const QJsonObject& object,
+                                std::initializer_list<const char*> fields) {
+      if (object.size() != static_cast<qsizetype>(fields.size())) return false;
+      return std::ranges::all_of(fields, [&object](const char* field) {
+        return object.contains(QLatin1String(field));
+      });
+    };
+    const auto tripleNear = [](const QJsonValue& value, double x, double y,
+                               double z, double tolerance = 1.0e-9) {
+      const auto values = value.toArray();
+      return values.size() == 3 &&
+             solidar::test::near(values[0].toDouble(), x, tolerance) &&
+             solidar::test::near(values[1].toDouble(), y, tolerance) &&
+             solidar::test::near(values[2].toDouble(), z, tolerance);
+    };
+
+    CHECK(exactFields(root, {"format", "version", "constraintTypeEncoding",
+                             "name", "document", "sketches", "extrusion",
+                             "model"}));
+    CHECK(root.value("format").toString() ==
+          QStringLiteral("solidar-project"));
+    CHECK(root.value("version").toInteger() == 3);
+    CHECK(root.value("constraintTypeEncoding").toString() ==
+          QStringLiteral("stable-name-v1"));
+    CHECK(root.value("name").toString() ==
+          QStringLiteral("current_part_encoder_semantics_and_rebuild_oracle"));
+    const auto document = root.value("document").toObject();
+    CHECK(exactFields(document, {"widthMm", "heightMm", "extrusionMm"}));
+    CHECK(document.value("widthMm").toDouble() == 123.0);
+    CHECK(document.value("heightMm").toDouble() == 87.0);
+    CHECK(document.value("extrusionMm").toDouble() == 45.0);
+    const auto extrusion = root.value("extrusion").toObject();
+    CHECK(exactFields(extrusion, {"enabled"}));
+    CHECK(!extrusion.value("enabled").toBool());
+
+    const auto persistedSketches = root.value("sketches").toArray();
+    CHECK(persistedSketches.size() == 2);
+    const auto profileJson = persistedSketches[0].toObject();
+    const auto supportedJson = persistedSketches[1].toObject();
+    for (const auto& sketchJson : {profileJson, supportedJson}) {
+      CHECK(exactFields(sketchJson,
+                        {"support", "lines", "circles", "arcs", "beziers",
+                         "dimensions", "constraints", "centerNodeElementIds",
+                         "sketchId", "idAllocators", "schema"}));
+      CHECK(sketchJson.value("support").toString() == QStringLiteral("XY"));
+      CHECK(sketchJson.value("schema").toString() ==
+            QStringLiteral("typed-sketch-v1"));
+      CHECK(sketchJson.value("arcs").toArray().isEmpty());
+      CHECK(sketchJson.value("beziers").toArray().isEmpty());
+      CHECK(sketchJson.value("constraints").toArray().isEmpty());
+      CHECK(sketchJson.value("dimensions").toArray().isEmpty());
+      CHECK(sketchJson.value("centerNodeElementIds").toArray().isEmpty());
+    }
+    CHECK(profileJson.value("sketchId").toInteger() ==
+          static_cast<qint64>(kProfileSketchId));
+    CHECK(supportedJson.value("sketchId").toInteger() ==
+          static_cast<qint64>(kSupportedSketchId));
+
+    const std::array<std::array<double, 4>, 4> expectedProfileLines{{
+        {0.0, 0.0, 10.0, 0.0},
+        {10.0, 0.0, 10.0, 20.0},
+        {10.0, 20.0, 0.0, 20.0},
+        {0.0, 20.0, 0.0, 0.0},
+    }};
+    const auto profileLines = profileJson.value("lines").toArray();
+    CHECK(profileLines.size() ==
+          static_cast<qsizetype>(expectedProfileLines.size()));
+    for (qsizetype index = 0; index < profileLines.size(); ++index) {
+      const auto line = profileLines[index].toObject();
+      CHECK(exactFields(line, {"x1", "y1", "x2", "y2", "elementId",
+                               "dashed", "id"}));
+      const auto& expected =
+          expectedProfileLines[static_cast<std::size_t>(index)];
+      CHECK(line.value("x1").toDouble() == expected[0]);
+      CHECK(line.value("y1").toDouble() == expected[1]);
+      CHECK(line.value("x2").toDouble() == expected[2]);
+      CHECK(line.value("y2").toDouble() == expected[3]);
+      CHECK(line.value("elementId").toInteger() == index + 1);
+      CHECK(line.value("id").toInteger() == index + 1);
+      CHECK(!line.value("dashed").toBool());
+    }
+    CHECK(profileJson.value("circles").toArray().isEmpty());
+    const auto profileAllocators =
+        profileJson.value("idAllocators").toObject();
+    CHECK(exactFields(profileAllocators,
+                      {"nextElementId", "nextGeometryId", "nextConstraintId",
+                       "nextDimensionId"}));
+    CHECK(profileAllocators.value("nextElementId").toInteger() == 5);
+    CHECK(profileAllocators.value("nextGeometryId").toInteger() == 5);
+    CHECK(profileAllocators.value("nextConstraintId").toInteger() == 1);
+    CHECK(profileAllocators.value("nextDimensionId").toInteger() == 1);
+
+    const auto supportedLines = supportedJson.value("lines").toArray();
+    CHECK(supportedLines.size() == 2);
+    const std::array<std::array<double, 4>, 2> expectedSupportedLines{{
+        {1.0, 2.0, 5.0, 2.0},
+        {5.0, 2.0, 5.0, 6.0},
+    }};
+    for (qsizetype index = 0; index < supportedLines.size(); ++index) {
+      const auto line = supportedLines[index].toObject();
+      CHECK(exactFields(line, {"x1", "y1", "x2", "y2", "elementId",
+                               "dashed", "id"}));
+      const auto& expected =
+          expectedSupportedLines[static_cast<std::size_t>(index)];
+      CHECK(line.value("x1").toDouble() == expected[0]);
+      CHECK(line.value("y1").toDouble() == expected[1]);
+      CHECK(line.value("x2").toDouble() == expected[2]);
+      CHECK(line.value("y2").toDouble() == expected[3]);
+      CHECK(line.value("elementId").toInteger() == index + 1);
+      CHECK(line.value("id").toInteger() == index + 1);
+      CHECK(!line.value("dashed").toBool());
+    }
+    const auto supportedCircles = supportedJson.value("circles").toArray();
+    CHECK(supportedCircles.size() == 1);
+    const auto circle = supportedCircles[0].toObject();
+    CHECK(exactFields(circle, {"x", "y", "radius", "dashed", "id"}));
+    CHECK(circle.value("id").toInteger() == 3);
+    CHECK(circle.value("x").toDouble() == 3.0);
+    CHECK(circle.value("y").toDouble() == 4.0);
+    CHECK(circle.value("radius").toDouble() == 1.5);
+    CHECK(!circle.value("dashed").toBool());
+    const auto supportedAllocators =
+        supportedJson.value("idAllocators").toObject();
+    CHECK(exactFields(supportedAllocators,
+                      {"nextElementId", "nextGeometryId", "nextConstraintId",
+                       "nextDimensionId"}));
+    CHECK(supportedAllocators.value("nextElementId").toInteger() == 3);
+    CHECK(supportedAllocators.value("nextGeometryId").toInteger() == 4);
+    CHECK(supportedAllocators.value("nextConstraintId").toInteger() == 1);
+    CHECK(supportedAllocators.value("nextDimensionId").toInteger() == 1);
+
+    const auto model = root.value("model").toObject();
+    CHECK(exactFields(model, {"sketches", "bodies", "referenceImages"}));
+    CHECK(model.value("referenceImages").toArray().isEmpty());
+    const auto metadata = model.value("sketches").toArray();
+    CHECK(metadata.size() == 2);
+    CHECK(metadata[0].toObject().value("id").toInteger() ==
+          static_cast<qint64>(kProfileSketchId));
+    CHECK(metadata[1].toObject().value("id").toInteger() ==
+          static_cast<qint64>(kSupportedSketchId));
+    CHECK(metadata[0].toObject().value("name").toString() ==
+          QStringLiteral("Ordered profile"));
+    CHECK(metadata[1].toObject().value("name").toString() ==
+          QStringLiteral("Face-supported detail"));
+    for (const auto value : metadata)
+      CHECK(exactFields(value.toObject(),
+                        {"id", "name", "origin", "xDirection",
+                         "yDirection", "support"}));
+    for (qsizetype index = 0; index < metadata.size(); ++index) {
+      const auto& placement =
+          source.sketches()[static_cast<std::size_t>(index)].placement;
+      const auto encoded = metadata[index].toObject();
+      CHECK(tripleNear(encoded.value("origin"), placement.origin.x,
+                       placement.origin.y, placement.origin.z));
+      CHECK(tripleNear(encoded.value("xDirection"), placement.xDirection.x,
+                       placement.xDirection.y, placement.xDirection.z));
+      CHECK(tripleNear(encoded.value("yDirection"), placement.yDirection.x,
+                       placement.yDirection.y, placement.yDirection.z));
+    }
+    const auto baseSupport = metadata[0].toObject().value("support").toObject();
+    CHECK(exactFields(baseSupport, {"type"}));
+    CHECK(baseSupport.value("type").toInt() ==
+          static_cast<int>(solidar::SketchSupportType::BasePlane));
+    const auto faceSupport = metadata[1].toObject().value("support").toObject();
+    CHECK(exactFields(faceSupport,
+                      {"type", "bodyId", "featureId", "faceIndex",
+                       "persistentTag", "signature"}));
+    CHECK(faceSupport.value("type").toInt() ==
+          static_cast<int>(solidar::SketchSupportType::Face));
+    CHECK(faceSupport.value("bodyId").toInteger() ==
+          static_cast<qint64>(kBodyId));
+    CHECK(faceSupport.value("featureId").toInteger() ==
+          static_cast<qint64>(kExtrudeId));
+    CHECK(faceSupport.value("faceIndex").toInteger() ==
+          static_cast<qint64>(supportReference.faceIndex));
+    CHECK(faceSupport.value("persistentTag").toString().toStdString() ==
+          supportReference.persistentTag);
+
+    const auto signature = faceSupport.value("signature").toObject();
+    const auto& expectedSignature = *supportReference.signature;
+    CHECK(exactFields(signature,
+                      {"surfaceType", "area", "centroid", "normal", "bounds",
+                       "radius", "axis"}));
+    CHECK(signature.value("surfaceType").toInt() ==
+          static_cast<int>(expectedSignature.surface));
+    CHECK(solidar::test::near(signature.value("area").toDouble(),
+                              expectedSignature.area, 1.0e-9));
+    CHECK(tripleNear(signature.value("centroid"), expectedSignature.centroid.x,
+                     expectedSignature.centroid.y,
+                     expectedSignature.centroid.z));
+    CHECK(tripleNear(signature.value("normal"), expectedSignature.normal.x,
+                     expectedSignature.normal.y, expectedSignature.normal.z));
+    CHECK(solidar::test::near(signature.value("radius").toDouble(),
+                              expectedSignature.radius, 1.0e-9));
+    CHECK(tripleNear(signature.value("axis"), expectedSignature.axis.x,
+                     expectedSignature.axis.y, expectedSignature.axis.z));
+    const auto signatureBounds = signature.value("bounds").toObject();
+    CHECK(exactFields(signatureBounds, {"minimum", "maximum"}));
+    CHECK(tripleNear(signatureBounds.value("minimum"),
+                     expectedSignature.bounds.minimum.x,
+                     expectedSignature.bounds.minimum.y,
+                     expectedSignature.bounds.minimum.z));
+    CHECK(tripleNear(signatureBounds.value("maximum"),
+                     expectedSignature.bounds.maximum.x,
+                     expectedSignature.bounds.maximum.y,
+                     expectedSignature.bounds.maximum.z));
+
+    const auto bodies = model.value("bodies").toArray();
+    CHECK(bodies.size() == 1);
+    const auto bodyJson = bodies[0].toObject();
+    CHECK(exactFields(bodyJson, {"id", "name", "visible", "features"}));
+    CHECK(bodyJson.value("id").toInteger() == static_cast<qint64>(kBodyId));
+    CHECK(bodyJson.value("name").toString() == QStringLiteral("Encoder body"));
+    CHECK(!bodyJson.value("visible").toBool());
+    const auto features = bodyJson.value("features").toArray();
+    CHECK(features.size() == 2);
+    const auto extrudeJson = features[0].toObject();
+    CHECK(exactFields(extrudeJson,
+                      {"id", "name", "type", "lengthMm", "operation",
+                       "reversed", "sourceKind", "sketchId"}));
+    CHECK(extrudeJson.value("id").toInteger() ==
+          static_cast<qint64>(kExtrudeId));
+    CHECK(extrudeJson.value("name").toString() ==
+          QStringLiteral("Encoder extrude"));
+    CHECK(extrudeJson.value("type").toString() == QStringLiteral("Extrude"));
+    CHECK(extrudeJson.value("lengthMm").toDouble() == 7.0);
+    CHECK(extrudeJson.value("operation").toInt() ==
+          static_cast<int>(solidar::ExtrudeOperation::NewBody));
+    CHECK(!extrudeJson.value("reversed").toBool());
+    CHECK(extrudeJson.value("sourceKind").toString() ==
+          QStringLiteral("sketch"));
+    CHECK(extrudeJson.value("sketchId").toInteger() ==
+          static_cast<qint64>(kProfileSketchId));
+    const auto moveJson = features[1].toObject();
+    CHECK(exactFields(moveJson,
+                      {"id", "name", "type", "sourceFeatureId", "offsetXmm",
+                       "offsetYmm", "offsetZmm"}));
+    CHECK(moveJson.value("id").toInteger() == static_cast<qint64>(kMoveId));
+    CHECK(moveJson.value("name").toString() == QStringLiteral("Encoder move"));
+    CHECK(moveJson.value("type").toString() == QStringLiteral("Move"));
+    CHECK(moveJson.value("sourceFeatureId").toInteger() ==
+          static_cast<qint64>(kExtrudeId));
+    CHECK(moveJson.value("offsetXmm").toDouble() == 3.0);
+    CHECK(moveJson.value("offsetYmm").toDouble() == -2.0);
+    CHECK(moveJson.value("offsetZmm").toDouble() == 4.0);
+
+    const auto staged = solidar::project::ProjectFile::stageLoad(oraclePath);
+    CHECK(staged.status == solidar::project::ProjectLoadStatus::Valid);
+    CHECK(staged.sourceVersion == 3);
+    CHECK(staged.payloadKind ==
+          solidar::project::ProjectPayloadKind::ParametricPartV3);
+    CHECK(staged.document.has_value());
+    const auto& restored = *staged.document;
+    CHECK(restored.sketches().size() == 2);
+    CHECK(restored.sketches()[0].id == kProfileSketchId);
+    CHECK(restored.sketches()[1].id == kSupportedSketchId);
+    CHECK(restored.bodies().size() == 1);
+    CHECK(restored.bodies()[0].id() == kBodyId);
+    CHECK(restored.bodies()[0].features().size() == 2);
+    CHECK(restored.bodies()[0].features()[0]->id() == kExtrudeId);
+    CHECK(restored.bodies()[0].features()[1]->id() == kMoveId);
+    for (const auto& restoredFeature : restored.bodies()[0].features()) {
+      CHECK(restoredFeature->isValid());
+      CHECK(restoredFeature->shape());
+      CHECK(BRepCheck_Analyzer(*restoredFeature->shape()).IsValid());
+    }
+    const auto* restoredExtrude = restored.findFeature(kExtrudeId);
+    CHECK(restoredExtrude && restoredExtrude->shape());
+    const auto& restoredSupport = restored.sketches()[1].support.face;
+    const auto resolvedSupport = solidar::resolveFaceReference(
+        *restoredExtrude->shape(), restoredSupport.topology());
+    CHECK(resolvedSupport);
+    CHECK(resolvedSupport.failure ==
+          solidar::TopologyResolutionFailure::None);
+    CHECK(resolvedSupport.method == solidar::TopologyMatchMethod::SemanticTag);
+
+    const auto resultShape = restored.bodies()[0].resultShape();
+    CHECK(resultShape);
+    const auto bounds = solidar::test::boundsOf(*resultShape);
+    CHECK(solidar::test::near(bounds.minX, 3.0, 1.0e-6));
+    CHECK(solidar::test::near(bounds.maxX, 13.0, 1.0e-6));
+    CHECK(solidar::test::near(bounds.minY, -2.0, 1.0e-6));
+    CHECK(solidar::test::near(bounds.maxY, 18.0, 1.0e-6));
+    CHECK(solidar::test::near(bounds.minZ, 4.0, 1.0e-6));
+    CHECK(solidar::test::near(bounds.maxZ, 11.0, 1.0e-6));
+    CHECK(solidar::test::near(solidar::test::volumeOf(*resultShape), 1400.0,
+                              1.0e-4));
+    CHECK(solidar::test::solidCount(*resultShape) == 1);
+  }
+
   const QString path = directory.filePath("sample.solidar");
 
   QString error;
