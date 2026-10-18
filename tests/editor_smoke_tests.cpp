@@ -977,17 +977,25 @@ void circularEdgeProjectionTests() {
   manual.setTool(solidar::SketchCanvas::Tool::Projection);
   manual.show();
   QApplication::processEvents();
+  manual.resetViewRotation();
+  QApplication::processEvents();
 
-  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
-  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
-  constexpr double pixelsPerMm = 0.82 * (650.0 - 30.0 - 50.0) / 10.0;
-  const QPointF circlePoint(centerX + 5.0 * pixelsPerMm, centerY);
+  const double circleRadiusMm = circle.Radius();
+  const QPointF circleOrigin = manual.viewOriginScreenPosition();
+  const double circlePixelsPerMm = manual.viewPixelsPerMillimeter();
+  const QPointF circlePoint =
+      circleOrigin + QPointF(circleRadiusMm * circlePixelsPerMm, 0.0);
+  CHECK(manual.rect().contains(circlePoint.toPoint()));
   QMouseEvent move(QEvent::MouseMove, circlePoint, Qt::NoButton,
                    Qt::NoButton, Qt::NoModifier);
   QApplication::sendEvent(&manual, &move);
+  CHECK(manual.cursor().shape() == Qt::PointingHandCursor);
   QMouseEvent press(QEvent::MouseButtonPress, circlePoint, Qt::LeftButton,
                     Qt::LeftButton, Qt::NoModifier);
   QApplication::sendEvent(&manual, &press);
+  QMouseEvent release(QEvent::MouseButtonRelease, circlePoint, Qt::LeftButton,
+                      Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&manual, &release);
 
   CHECK(manual.sketch().circles().size() == 1);
   CHECK(manual.sketch().circles().front().dashed);
@@ -1010,11 +1018,24 @@ void circularEdgeProjectionTests() {
   arcCanvas.setTool(solidar::SketchCanvas::Tool::Projection);
   arcCanvas.show();
   QApplication::processEvents();
+  arcCanvas.resetViewRotation();
+  QApplication::processEvents();
 
-  const QPointF arcPoint(centerX, centerY - 5.0 * pixelsPerMm);
+  const QPointF arcOrigin = arcCanvas.viewOriginScreenPosition();
+  const double arcPixelsPerMm = arcCanvas.viewPixelsPerMillimeter();
+  const QPointF arcPoint =
+      arcOrigin + QPointF(0.0, -circleRadiusMm * arcPixelsPerMm);
+  CHECK(arcCanvas.rect().contains(arcPoint.toPoint()));
+  QMouseEvent arcMove(QEvent::MouseMove, arcPoint, Qt::NoButton,
+                      Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&arcCanvas, &arcMove);
+  CHECK(arcCanvas.cursor().shape() == Qt::PointingHandCursor);
   QMouseEvent arcPress(QEvent::MouseButtonPress, arcPoint, Qt::LeftButton,
                        Qt::LeftButton, Qt::NoModifier);
   QApplication::sendEvent(&arcCanvas, &arcPress);
+  QMouseEvent arcRelease(QEvent::MouseButtonRelease, arcPoint, Qt::LeftButton,
+                         Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&arcCanvas, &arcRelease);
   CHECK(arcCanvas.sketch().arcs().size() == 1);
   CHECK(arcCanvas.sketch().arcs().front().dashed);
   CHECK(arcCanvas.sketch().isGeometryLocked(arcCanvas.sketch().arcId(0)));
