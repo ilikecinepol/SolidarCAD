@@ -867,6 +867,20 @@ int main(int argc, char* argv[]) {
     CHECK(restored.sketches().size() == 2);
     CHECK(restored.sketches()[0].id == kProfileSketchId);
     CHECK(restored.sketches()[1].id == kSupportedSketchId);
+    for (std::size_t index = 0; index < source.sketches().size(); ++index) {
+      const auto& sourceGeometry = source.sketches()[index].geometry;
+      const auto& restoredGeometry = restored.sketches()[index].geometry;
+      CHECK(restoredGeometry.semanticFingerprint() ==
+            sourceGeometry.semanticFingerprint());
+      CHECK(restoredGeometry.nextElementId() ==
+            sourceGeometry.nextElementId());
+      CHECK(restoredGeometry.nextGeometryId() ==
+            sourceGeometry.nextGeometryId());
+      CHECK(restoredGeometry.nextConstraintId() ==
+            sourceGeometry.nextConstraintId());
+      CHECK(restoredGeometry.nextDimensionId() ==
+            sourceGeometry.nextDimensionId());
+    }
     CHECK(restored.bodies().size() == 1);
     CHECK(restored.bodies()[0].id() == kBodyId);
     CHECK(restored.bodies()[0].features().size() == 2);
@@ -1860,25 +1874,40 @@ int main(int argc, char* argv[]) {
       CHECK(bdbFile.write(bytes) == bytes.size());
       bdbFile.close();
       const auto bdb = solidar::project::ProjectFile::stageLoad(bdbPath);
+      CHECK(bdb.status == solidar::project::ProjectLoadStatus::Valid);
+      CHECK(bdb.sourceVersion == 1);
+      CHECK(bdb.payloadKind ==
+            solidar::project::ProjectPayloadKind::LegacyPartV1);
       CHECK(bdb.kind == solidar::project::ProjectLoadKind::ValidV1);
+      CHECK(bdb.error.isEmpty());
+      CHECK(!bdb.document.has_value());
       CHECK(bdb.legacy.sketches.size() == 1);
-      CHECK(bdb.legacy.sketches[0].geometry.dimensions().size() == 3);
+      const auto& bdbGeometry = bdb.legacy.sketches[0].geometry;
+      CHECK(bdbGeometry.lines().size() == 1);
+      CHECK(bdbGeometry.circles().size() == 1);
+      CHECK(bdbGeometry.lineId(0) == 1);
+      CHECK(bdbGeometry.circleId(0) == 2);
+      CHECK(bdbGeometry.nextElementId() == 2);
+      CHECK(bdbGeometry.nextGeometryId() == 3);
+      CHECK(bdbGeometry.nextConstraintId() == 4);
+      CHECK(bdbGeometry.nextDimensionId() == 4);
+      CHECK(bdbGeometry.dimensions().size() == 3);
       const auto& migratedDimensions =
-          bdb.legacy.sketches[0].geometry.dimensions();
+          bdbGeometry.dimensions();
+      CHECK(migratedDimensions[0].id == 1);
+      CHECK(migratedDimensions[1].id == 2);
+      CHECK(migratedDimensions[2].id == 3);
       CHECK(migratedDimensions[0].id != solidar::sketch::kInvalidDimensionId);
       CHECK(migratedDimensions[1].id != migratedDimensions[0].id);
       CHECK(migratedDimensions[2].id != migratedDimensions[0].id);
       CHECK(migratedDimensions[2].id != migratedDimensions[1].id);
-      const auto& dimension =
-          bdb.legacy.sketches[0].geometry.dimensions()[1];
+      const auto& dimension = bdbGeometry.dimensions()[1];
       CHECK(dimension.kind == solidar::sketch::DimensionKind::PointDistance);
-      CHECK(dimension.firstPoint.lineId ==
-            bdb.legacy.sketches[0].geometry.lineId(0));
-      CHECK(dimension.secondPoint.lineId ==
-            bdb.legacy.sketches[0].geometry.lineId(0));
-      CHECK(bdb.legacy.sketches[0].geometry.dimensions()[0].kind ==
+      CHECK(dimension.firstPoint.lineId == bdbGeometry.lineId(0));
+      CHECK(dimension.secondPoint.lineId == bdbGeometry.lineId(0));
+      CHECK(bdbGeometry.dimensions()[0].kind ==
             solidar::sketch::DimensionKind::LineLength);
-      CHECK(bdb.legacy.sketches[0].geometry.dimensions()[2].kind ==
+      CHECK(bdbGeometry.dimensions()[2].kind ==
             solidar::sketch::DimensionKind::CircleDiameter);
     }
 
@@ -1938,12 +1967,44 @@ int main(int argc, char* argv[]) {
       CHECK(bfFile.write(bytes) == bytes.size());
       bfFile.close();
       const auto bf = solidar::project::ProjectFile::stageLoad(bfPath);
+      CHECK(bf.status == solidar::project::ProjectLoadStatus::Valid);
+      CHECK(bf.sourceVersion == 2);
+      CHECK(bf.payloadKind ==
+            solidar::project::ProjectPayloadKind::ParametricPartV2);
       CHECK(bf.kind == solidar::project::ProjectLoadKind::ValidV2);
+      CHECK(bf.error.isEmpty());
       CHECK(bf.document.has_value());
+      CHECK(bf.document->sketches().size() == 1);
+      CHECK(bf.document->sketches()[0].id == 501);
+      const auto& bfGeometry = bf.document->sketches()[0].geometry;
+      CHECK(bfGeometry.lines().size() == 4);
+      for (std::size_t index = 0; index < 4; ++index)
+        CHECK(bfGeometry.lineId(index) == index + 1);
+      CHECK(bfGeometry.nextElementId() == 5);
+      CHECK(bfGeometry.nextGeometryId() == 5);
+      CHECK(bfGeometry.nextConstraintId() == 1);
+      CHECK(bfGeometry.nextDimensionId() == 1);
       CHECK(bf.document->bodies().size() == 1);
-      CHECK(bf.document->bodies()[0].visible());
-      CHECK(bf.document->bodies()[0].resultShape());
-      CHECK(!bf.document->bodies()[0].resultShape()->IsNull());
+      const auto& bfBody = bf.document->bodies()[0];
+      CHECK(bfBody.id() == 601);
+      CHECK(bfBody.visible());
+      CHECK(bfBody.features().size() == 1);
+      CHECK(bfBody.features()[0]->id() == 701);
+      CHECK(bfBody.features()[0]->isValid());
+      CHECK(bfBody.features()[0]->shape());
+      CHECK(BRepCheck_Analyzer(*bfBody.features()[0]->shape()).IsValid());
+      CHECK(bfBody.resultShape());
+      CHECK(!bfBody.resultShape()->IsNull());
+      const auto bfBounds = solidar::test::boundsOf(*bfBody.resultShape());
+      CHECK(solidar::test::near(bfBounds.minX, 0.0, 1.0e-6));
+      CHECK(solidar::test::near(bfBounds.maxX, 10.0, 1.0e-6));
+      CHECK(solidar::test::near(bfBounds.minY, 0.0, 1.0e-6));
+      CHECK(solidar::test::near(bfBounds.maxY, 10.0, 1.0e-6));
+      CHECK(solidar::test::near(bfBounds.minZ, 0.0, 1.0e-6));
+      CHECK(solidar::test::near(bfBounds.maxZ, 10.0, 1.0e-6));
+      CHECK(solidar::test::near(
+          solidar::test::volumeOf(*bfBody.resultShape()), 1000.0, 1.0e-4));
+      CHECK(solidar::test::solidCount(*bfBody.resultShape()) == 1);
     }
 
     solidar::project::ProjectData legacy;
@@ -3980,78 +4041,106 @@ int main(int argc, char* argv[]) {
       lateBodies[0] = lateBody;
       lateModel["bodies"] = lateBodies;
       lateFailureRoot["model"] = lateModel;
-      const QString lateFailurePath =
-          writeRoot("late-materialization-failure.solidar", lateFailureRoot);
-      CHECK(!lateFailurePath.isEmpty());
+      const auto checkLateMaterializationFailure =
+          [&](qint64 version) {
+            auto versionedRoot = lateFailureRoot;
+            versionedRoot["version"] = version;
+            const QString lateFailurePath = writeRoot(
+                QStringLiteral("late-materialization-failure-v%1.solidar")
+                    .arg(version),
+                versionedRoot);
+            CHECK(!lateFailurePath.isEmpty());
 
-      solidar::Document destination;
-      auto& sentinel = destination.addSketch("sentinel");
-      sentinel.geometry.addLine({0.0, 0.0}, {3.0, 4.0});
-      const auto sentinelFingerprint = sentinel.geometry.semanticFingerprint();
-      const auto sentinelNextElement = sentinel.geometry.nextElementId();
-      const auto sentinelNextGeometry = sentinel.geometry.nextGeometryId();
-      const auto sentinelNextConstraint = sentinel.geometry.nextConstraintId();
-      const auto sentinelNextDimension = sentinel.geometry.nextDimensionId();
+            solidar::Document destination;
+            auto& sentinel = destination.addSketch("sentinel");
+            sentinel.geometry.addLine({0.0, 0.0}, {3.0, 4.0});
+            const auto sentinelFingerprint =
+                sentinel.geometry.semanticFingerprint();
+            const auto sentinelNextElement =
+                sentinel.geometry.nextElementId();
+            const auto sentinelNextGeometry =
+                sentinel.geometry.nextGeometryId();
+            const auto sentinelNextConstraint =
+                sentinel.geometry.nextConstraintId();
+            const auto sentinelNextDimension =
+                sentinel.geometry.nextDimensionId();
 
-      solidar::Document beforeRejectedStage;
-      const auto beforeRejectedSketch =
-          beforeRejectedStage.addSketch("Before rejected").id;
-      const auto beforeRejectedImage = beforeRejectedStage
-                                           .addReferenceImage(
-                                               "Before rejected", "before-r.png",
-                                               "XY", solidar::SketchPlacement::xy(),
-                                               1, 1)
-                                           .id;
-      auto& beforeRejectedBody = beforeRejectedStage.addBody("Before rejected");
-      const auto beforeRejectedBodyId = beforeRejectedBody.id();
-      auto beforeRejectedFeature = std::make_unique<solidar::ExtrudeFeature>(
-          beforeRejectedSketch, 1.0, "Before rejected");
-      const auto beforeRejectedFeatureId = beforeRejectedFeature->id();
-      beforeRejectedBody.addFeature(std::move(beforeRejectedFeature));
+            solidar::Document beforeRejectedStage;
+            const auto beforeRejectedSketch =
+                beforeRejectedStage.addSketch("Before rejected").id;
+            const auto beforeRejectedImage =
+                beforeRejectedStage
+                    .addReferenceImage("Before rejected", "before-r.png",
+                                       "XY", solidar::SketchPlacement::xy(),
+                                       1, 1)
+                    .id;
+            auto& beforeRejectedBody =
+                beforeRejectedStage.addBody("Before rejected");
+            const auto beforeRejectedBodyId = beforeRejectedBody.id();
+            auto beforeRejectedFeature =
+                std::make_unique<solidar::ExtrudeFeature>(
+                    beforeRejectedSketch, 1.0, "Before rejected");
+            const auto beforeRejectedFeatureId =
+                beforeRejectedFeature->id();
+            beforeRejectedBody.addFeature(std::move(beforeRejectedFeature));
 
-      const auto rejected =
-          solidar::project::ProjectFile::stageLoad(lateFailurePath);
-      CHECK(rejected.status == solidar::project::ProjectLoadStatus::Invalid);
-      CHECK(rejected.sourceVersion == 3);
-      CHECK(rejected.payloadKind == solidar::project::ProjectPayloadKind::None);
-      CHECK(!rejected.document.has_value());
-      CHECK(rejected.error.contains(QString::fromUtf8("перестроить")));
-      QString rejectedError;
-      CHECK(!solidar::project::ProjectFile::loadDocument(
-          lateFailurePath, &destination, &rejectedError));
-      CHECK(!rejectedError.isEmpty());
-      CHECK(destination.sketches().size() == 1);
-      CHECK(destination.sketches()[0].name == "sentinel");
-      CHECK(destination.sketches()[0].geometry.semanticFingerprint() ==
-            sentinelFingerprint);
-      CHECK(destination.sketches()[0].geometry.nextElementId() ==
-            sentinelNextElement);
-      CHECK(destination.sketches()[0].geometry.nextGeometryId() ==
-            sentinelNextGeometry);
-      CHECK(destination.sketches()[0].geometry.nextConstraintId() ==
-            sentinelNextConstraint);
-      CHECK(destination.sketches()[0].geometry.nextDimensionId() ==
-            sentinelNextDimension);
+            const auto rejected =
+                solidar::project::ProjectFile::stageLoad(lateFailurePath);
+            CHECK(rejected.status ==
+                  solidar::project::ProjectLoadStatus::Invalid);
+            CHECK(rejected.sourceVersion == version);
+            CHECK(rejected.payloadKind ==
+                  solidar::project::ProjectPayloadKind::None);
+            CHECK(rejected.kind == solidar::project::ProjectLoadKind::Invalid);
+            CHECK(!rejected.document.has_value());
+            CHECK(rejected.legacy.sketches.empty());
+            CHECK(!rejected.legacy.hasExtrusion);
+            CHECK(!rejected.legacy.extrusionSourceSketch.has_value());
+            CHECK(!rejected.error.isEmpty());
+            CHECK(rejected.error.startsWith(
+                QString::fromUtf8("Не удалось перестроить проект: ")));
 
-      solidar::Document afterRejectedStage;
-      const auto afterRejectedSketch =
-          afterRejectedStage.addSketch("After rejected").id;
-      const auto afterRejectedImage = afterRejectedStage
-                                          .addReferenceImage(
-                                              "After rejected", "after-r.png",
-                                              "XY", solidar::SketchPlacement::xy(),
-                                              1, 1)
-                                          .id;
-      auto& afterRejectedBody = afterRejectedStage.addBody("After rejected");
-      const auto afterRejectedBodyId = afterRejectedBody.id();
-      auto afterRejectedFeature = std::make_unique<solidar::ExtrudeFeature>(
-          afterRejectedSketch, 1.0, "After rejected");
-      const auto afterRejectedFeatureId = afterRejectedFeature->id();
-      afterRejectedBody.addFeature(std::move(afterRejectedFeature));
-      CHECK(afterRejectedSketch == beforeRejectedSketch + 1);
-      CHECK(afterRejectedImage == beforeRejectedImage + 1);
-      CHECK(afterRejectedBodyId == beforeRejectedBodyId + 1);
-      CHECK(afterRejectedFeatureId == beforeRejectedFeatureId + 1);
+            QString rejectedError;
+            CHECK(!solidar::project::ProjectFile::loadDocument(
+                lateFailurePath, &destination, &rejectedError));
+            CHECK(rejectedError == rejected.error);
+            CHECK(destination.sketches().size() == 1);
+            CHECK(destination.sketches()[0].name == "sentinel");
+            CHECK(destination.sketches()[0].geometry.semanticFingerprint() ==
+                  sentinelFingerprint);
+            CHECK(destination.sketches()[0].geometry.nextElementId() ==
+                  sentinelNextElement);
+            CHECK(destination.sketches()[0].geometry.nextGeometryId() ==
+                  sentinelNextGeometry);
+            CHECK(destination.sketches()[0].geometry.nextConstraintId() ==
+                  sentinelNextConstraint);
+            CHECK(destination.sketches()[0].geometry.nextDimensionId() ==
+                  sentinelNextDimension);
+
+            solidar::Document afterRejectedStage;
+            const auto afterRejectedSketch =
+                afterRejectedStage.addSketch("After rejected").id;
+            const auto afterRejectedImage =
+                afterRejectedStage
+                    .addReferenceImage("After rejected", "after-r.png", "XY",
+                                       solidar::SketchPlacement::xy(), 1, 1)
+                    .id;
+            auto& afterRejectedBody =
+                afterRejectedStage.addBody("After rejected");
+            const auto afterRejectedBodyId = afterRejectedBody.id();
+            auto afterRejectedFeature =
+                std::make_unique<solidar::ExtrudeFeature>(
+                    afterRejectedSketch, 1.0, "After rejected");
+            const auto afterRejectedFeatureId = afterRejectedFeature->id();
+            afterRejectedBody.addFeature(std::move(afterRejectedFeature));
+            CHECK(afterRejectedSketch == beforeRejectedSketch + 1);
+            CHECK(afterRejectedImage == beforeRejectedImage + 1);
+            CHECK(afterRejectedBodyId == beforeRejectedBodyId + 1);
+            CHECK(afterRejectedFeatureId == beforeRejectedFeatureId + 1);
+          };
+
+      checkLateMaterializationFailure(2);
+      checkLateMaterializationFailure(3);
     }
   }
 

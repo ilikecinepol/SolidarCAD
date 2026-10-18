@@ -5009,6 +5009,11 @@ struct PartPayloadDecodeResult {
   QString error;
 };
 
+struct MaterializedPartPayloadResult {
+  std::optional<Document> document;
+  QString error;
+};
+
 PartPayloadDecodeResult decodeAndValidatePartPayload(
     QJsonObject root, std::optional<qint64>& observedSourceVersion) {
   PartPayloadDecodeResult result;
@@ -5105,6 +5110,32 @@ PartPayloadDecodeResult decodeAndValidatePartPayload(
   return result;
 }
 
+MaterializedPartPayloadResult materializeAndRecomputePartPayload(
+    const DecodedPartPayload& payload) {
+  MaterializedPartPayloadResult result;
+  if (payload.payloadKind != ProjectPayloadKind::ParametricPartV2 &&
+      payload.payloadKind != ProjectPayloadKind::ParametricPartV3) {
+    result.error = QString::fromUtf8("Неизвестный вид данных проекта.");
+    return result;
+  }
+
+  Document candidate;
+  {
+    ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
+    if (!loadDocumentRoot(payload.root, payload.legacy, &candidate,
+                          &result.error)) {
+      if (payload.payloadKind == ProjectPayloadKind::ParametricPartV2 &&
+          result.error.isEmpty()) {
+        result.error = QString::fromUtf8(
+            "Не удалось восстановить параметрическую модель.");
+      }
+      return result;
+    }
+  }
+  result.document.emplace(std::move(candidate));
+  return result;
+}
+
 }  // namespace
 
 StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
@@ -5154,52 +5185,18 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       return result;
     }
 
-    QString validationError;
-    if (decodedPayload.payloadKind == ProjectPayloadKind::ParametricPartV3) {
-      Document document;
-      {
-        ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
-        if (!loadDocumentRoot(decodedPayload.root, decodedPayload.legacy,
-                              &document, &validationError)) {
-          result.error = validationError;
-          return result;
-        }
-      }
-      result.status = ProjectLoadStatus::Valid;
-      result.payloadKind = ProjectPayloadKind::ParametricPartV3;
-      result.kind = ProjectLoadKind::ValidV2;
-      result.legacy = std::move(decodedPayload.legacy);
-      result.document.emplace(std::move(document));
-      result.error.clear();
+    auto materialized = materializeAndRecomputePartPayload(decodedPayload);
+    if (!materialized.document) {
+      result.error = std::move(materialized.error);
       return result;
     }
 
-    if (decodedPayload.payloadKind == ProjectPayloadKind::ParametricPartV2) {
-      Document document;
-      {
-        // Parsing and rebuilding are speculative until the complete staged
-        // document has passed validation.  Explicit persisted IDs must not
-        // advance process-global edit generators on a rejected file.
-        ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
-        if (!loadDocumentRoot(decodedPayload.root, decodedPayload.legacy,
-                              &document, &validationError)) {
-          result.error = validationError.isEmpty()
-                             ? QString::fromUtf8(
-                                   "Не удалось восстановить параметрическую модель.")
-                             : validationError;
-          return result;
-        }
-      }
-      result.status = ProjectLoadStatus::Valid;
-      result.payloadKind = ProjectPayloadKind::ParametricPartV2;
-      result.kind = ProjectLoadKind::ValidV2;
-      result.legacy = std::move(decodedPayload.legacy);
-      result.document.emplace(std::move(document));
-      result.error.clear();
-      return result;
-    }
-
-    result.error = QString::fromUtf8("Неизвестный вид данных проекта.");
+    result.status = ProjectLoadStatus::Valid;
+    result.payloadKind = decodedPayload.payloadKind;
+    result.kind = ProjectLoadKind::ValidV2;
+    result.legacy = std::move(decodedPayload.legacy);
+    result.document.emplace(std::move(*materialized.document));
+    result.error.clear();
     return result;
   } catch (const Standard_Failure& failure) {
     result.error = QString::fromUtf8("Ошибка OCCT при загрузке проекта: ") +

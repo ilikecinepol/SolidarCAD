@@ -46,6 +46,9 @@ int main(int argc, char* argv[]) {
   CHECK(directory.isValid());
 
   const solidar::ProjectApplicationService service;
+  static_assert(std::is_same_v<
+                decltype(solidar::StagedApplicationDocument::document),
+                solidar::Document>);
   static_assert(noexcept(service.stageOpen(QString{})));
   static_assert(noexcept(service.save(QString{},
                                       std::declval<const solidar::Document&>())));
