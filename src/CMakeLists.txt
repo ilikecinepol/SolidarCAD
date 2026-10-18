@@ -93,6 +93,8 @@ add_library(solidar_model
   model/ShellToolSession.h
   model/SketchPlacement.cpp
   model/SketchPlacement.h
+  model/TopologyLineage.cpp
+  model/TopologyLineage.h
   model/TopologyReferenceResolver.cpp
   model/TopologyReferenceResolver.h
   model/TopologyReference.h

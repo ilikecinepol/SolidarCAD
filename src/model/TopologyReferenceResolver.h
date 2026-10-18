@@ -9,6 +9,7 @@
 
 #include "model/SketchPlacement.h"
 #include "model/OperationFailure.h"
+#include "model/TopologyLineage.h"
 
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -25,7 +26,13 @@ inline constexpr double kTopologyMeasureRelativeTolerance = 0.35;
 inline constexpr double kTopologyDirectionCosineTolerance = 0.996;
 inline constexpr double kTopologyAmbiguityScoreTolerance = 0.01;
 
-enum class TopologyMatchMethod { None, SemanticTag, GeometricSignature, LegacyIndex };
+enum class TopologyMatchMethod {
+  None,
+  OperationProvenance,
+  SemanticTag,
+  GeometricSignature,
+  LegacyIndex,
+};
 
 enum class TopologyResolutionFailure {
   None,
@@ -99,6 +106,10 @@ class TopologyIndex final {
       ShapePtr shape, ShapeRevision revision = kInvalidShapeRevision,
       std::string* error = nullptr);
   [[nodiscard]] static std::shared_ptr<const TopologyIndex> build(
+      ShapePtr shape, ShapeRevision revision,
+      std::shared_ptr<const TopologyLineage> lineage,
+      std::string* error = nullptr);
+  [[nodiscard]] static std::shared_ptr<const TopologyIndex> build(
       const TopoDS_Shape& shape,
       ShapeRevision revision = kInvalidShapeRevision,
       std::string* error = nullptr);
@@ -108,6 +119,8 @@ class TopologyIndex final {
 
   [[nodiscard]] const ShapePtr& shape() const noexcept;
   [[nodiscard]] ShapeRevision revision() const noexcept;
+  [[nodiscard]] const std::shared_ptr<const TopologyLineage>& lineage()
+      const noexcept;
   [[nodiscard]] std::size_t faceCount() const noexcept;
   [[nodiscard]] std::size_t edgeCount() const noexcept;
   [[nodiscard]] std::size_t rawFaceCount() const noexcept;
@@ -115,8 +128,12 @@ class TopologyIndex final {
 
   [[nodiscard]] FaceResolution resolveFace(
       const TopologyReference& reference) const;
+  [[nodiscard]] FaceResolution resolveFace(
+      const TopologyReferenceV2& reference) const;
   [[nodiscard]] EdgeResolution resolveEdge(
       const TopologyReference& reference) const;
+  [[nodiscard]] EdgeResolution resolveEdge(
+      const TopologyReferenceV2& reference) const;
   [[nodiscard]] std::vector<FaceResolution> resolveFaces(
       std::span<const TopologyReference> references) const;
   [[nodiscard]] std::vector<EdgeResolution> resolveEdges(
@@ -155,6 +172,10 @@ class TopologyIndex final {
     const TopologyIndex& index, const TopologyReference& reference);
 [[nodiscard]] EdgeResolution resolveEdgeReference(
     const TopologyIndex& index, const TopologyReference& reference);
+[[nodiscard]] FaceResolution resolveFaceReference(
+    const TopologyIndex& index, const TopologyReferenceV2& reference);
+[[nodiscard]] EdgeResolution resolveEdgeReference(
+    const TopologyIndex& index, const TopologyReferenceV2& reference);
 [[nodiscard]] std::vector<FaceResolution> resolveFaceReferences(
     const TopologyIndex& index,
     std::span<const TopologyReference> references);

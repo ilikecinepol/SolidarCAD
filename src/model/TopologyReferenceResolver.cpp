@@ -306,6 +306,7 @@ struct TopologyIndex::Data {
     FaceSignature signature;
     std::string tag;
     std::vector<std::size_t> rawAliases;
+    std::vector<TopologyProvenanceKey> provenance;
   };
   struct EdgeCandidate {
     TopoDS_Edge edge;
@@ -313,10 +314,12 @@ struct TopologyIndex::Data {
     EdgeSignature signature;
     std::string tag;
     std::vector<std::size_t> rawAliases;
+    std::vector<TopologyProvenanceKey> provenance;
   };
 
   ShapePtr shape;
   ShapeRevision revision{kInvalidShapeRevision};
+  std::shared_ptr<const TopologyLineage> lineage;
   TopologyBounds bounds;
   double shapeDiagonal{1e-9};
   std::vector<FaceCandidate> faces;
@@ -384,6 +387,12 @@ TopologyIndex::TopologyIndex(std::shared_ptr<const Data> data) noexcept
 
 std::shared_ptr<const TopologyIndex> TopologyIndex::build(
     ShapePtr shape, ShapeRevision revision, std::string* error) {
+  return build(std::move(shape), revision, {}, error);
+}
+
+std::shared_ptr<const TopologyIndex> TopologyIndex::build(
+    ShapePtr shape, ShapeRevision revision,
+    std::shared_ptr<const TopologyLineage> lineage, std::string* error) {
   topologyBuildAttempts.fetch_add(1, std::memory_order_relaxed);
   if (error) error->clear();
   if (!shape || shape->IsNull()) {
@@ -394,6 +403,7 @@ std::shared_ptr<const TopologyIndex> TopologyIndex::build(
     auto data = std::make_shared<Data>();
     data->shape = std::move(shape);
     data->revision = revision;
+    data->lineage = std::move(lineage);
     std::string diagnostic;
     const auto shapeBounds = boundsOf(*data->shape, &diagnostic);
     if (!shapeBounds) {
@@ -423,7 +433,7 @@ std::shared_ptr<const TopologyIndex> TopologyIndex::build(
         }
         data->faces.push_back({face, rawIndex, signature,
                                automaticFaceTag(signature, data->bounds),
-                               {rawIndex}});
+                               {rawIndex}, {}});
       } else {
         data->faces[static_cast<std::size_t>(mapped - 1)]
             .rawAliases.push_back(rawIndex);
@@ -451,13 +461,71 @@ std::shared_ptr<const TopologyIndex> TopologyIndex::build(
           return {};
         }
         data->edges.push_back(
-            {edge, rawIndex, signature, {}, {rawIndex}});
+            {edge, rawIndex, signature, {}, {rawIndex}, {}});
       } else {
         data->edges[static_cast<std::size_t>(mapped - 1)]
             .rawAliases.push_back(rawIndex);
       }
       data->edgeByRawOrdinal.push_back(
           static_cast<std::size_t>(mapped - 1));
+    }
+
+    if (data->lineage) {
+      for (const auto& binding : data->lineage->bindings()) {
+        std::string provenanceError;
+        if (!binding.provenance.isCanonical(&provenanceError)) {
+          if (error) *error = std::move(provenanceError);
+          return {};
+        }
+        if (!binding.subshape || binding.subshape->IsNull()) {
+          if (error) *error = "Topology lineage binding has no subshape";
+          return {};
+        }
+
+        bool found = false;
+        switch (binding.provenance.kind) {
+          case TopologyKind::Face:
+            if (binding.subshape->ShapeType() != TopAbs_FACE) {
+              if (error)
+                *error = "Topology face provenance is bound to a non-face";
+              return {};
+            }
+            for (auto& candidate : data->faces) {
+              if (!candidate.face.IsSame(*binding.subshape)) continue;
+              if (std::find(candidate.provenance.begin(),
+                            candidate.provenance.end(), binding.provenance) ==
+                  candidate.provenance.end())
+                candidate.provenance.push_back(binding.provenance);
+              found = true;
+              break;
+            }
+            break;
+          case TopologyKind::Edge:
+            if (binding.subshape->ShapeType() != TopAbs_EDGE) {
+              if (error)
+                *error = "Topology edge provenance is bound to a non-edge";
+              return {};
+            }
+            for (auto& candidate : data->edges) {
+              if (!candidate.edge.IsSame(*binding.subshape)) continue;
+              if (std::find(candidate.provenance.begin(),
+                            candidate.provenance.end(), binding.provenance) ==
+                  candidate.provenance.end())
+                candidate.provenance.push_back(binding.provenance);
+              found = true;
+              break;
+            }
+            break;
+          default:
+            if (error) *error = "Topology lineage binding kind is invalid";
+            return {};
+        }
+        if (!found) {
+          if (error)
+            *error = "Topology lineage binding is not part of the output shape";
+          return {};
+        }
+      }
     }
 
     return std::shared_ptr<const TopologyIndex>(
@@ -495,6 +563,11 @@ const TopologyIndex::ShapePtr& TopologyIndex::shape() const noexcept {
 
 ShapeRevision TopologyIndex::revision() const noexcept {
   return data_->revision;
+}
+
+const std::shared_ptr<const TopologyLineage>& TopologyIndex::lineage()
+    const noexcept {
+  return data_->lineage;
 }
 
 std::size_t TopologyIndex::faceCount() const noexcept {
@@ -591,6 +664,46 @@ FaceResolution TopologyIndex::resolveFace(
   return failure;
 }
 
+FaceResolution TopologyIndex::resolveFace(
+    const TopologyReferenceV2& reference) const {
+  FaceResolution failure;
+  std::string provenanceError;
+  const bool canonical =
+      reference.provenance.isCanonical(&provenanceError);
+  if (!reference.hasValidOwner() || !canonical ||
+      reference.provenance.kind != TopologyKind::Face) {
+    failure.failure = TopologyResolutionFailure::InvalidReference;
+    failure.error = provenanceError.empty()
+                        ? "Topology v2 reference has invalid face identity"
+                        : std::move(provenanceError);
+    return failure;
+  }
+  try {
+    std::optional<std::size_t> match;
+    for (std::size_t index = 0; index < data_->faces.size(); ++index) {
+      const auto& provenance = data_->faces[index].provenance;
+      if (std::find(provenance.begin(), provenance.end(),
+                    reference.provenance) == provenance.end())
+        continue;
+      if (match) {
+        failure.failure = TopologyResolutionFailure::Ambiguous;
+        failure.error = "Topology v2 face provenance is ambiguous";
+        return failure;
+      }
+      match = index;
+    }
+    if (match)
+      return resolvedFace(data_->faces[*match],
+                          TopologyMatchMethod::OperationProvenance);
+    failure.failure = TopologyResolutionFailure::Missing;
+    failure.error = "Topology v2 face provenance no longer exists";
+  } catch (...) {
+    failure.failure = TopologyResolutionFailure::Unexpected;
+    failure.error = "Unexpected failure while resolving topology v2 face";
+  }
+  return failure;
+}
+
 EdgeResolution TopologyIndex::resolveEdge(
     const TopologyReference& reference) const {
   EdgeResolution failure;
@@ -634,6 +747,46 @@ EdgeResolution TopologyIndex::resolveEdge(
   } catch (...) {
     failure.failure = TopologyResolutionFailure::Unexpected;
     failure.error = "Unexpected failure while resolving topology edge";
+  }
+  return failure;
+}
+
+EdgeResolution TopologyIndex::resolveEdge(
+    const TopologyReferenceV2& reference) const {
+  EdgeResolution failure;
+  std::string provenanceError;
+  const bool canonical =
+      reference.provenance.isCanonical(&provenanceError);
+  if (!reference.hasValidOwner() || !canonical ||
+      reference.provenance.kind != TopologyKind::Edge) {
+    failure.failure = TopologyResolutionFailure::InvalidReference;
+    failure.error = provenanceError.empty()
+                        ? "Topology v2 reference has invalid edge identity"
+                        : std::move(provenanceError);
+    return failure;
+  }
+  try {
+    std::optional<std::size_t> match;
+    for (std::size_t index = 0; index < data_->edges.size(); ++index) {
+      const auto& provenance = data_->edges[index].provenance;
+      if (std::find(provenance.begin(), provenance.end(),
+                    reference.provenance) == provenance.end())
+        continue;
+      if (match) {
+        failure.failure = TopologyResolutionFailure::Ambiguous;
+        failure.error = "Topology v2 edge provenance is ambiguous";
+        return failure;
+      }
+      match = index;
+    }
+    if (match)
+      return resolvedEdge(data_->edges[*match],
+                          TopologyMatchMethod::OperationProvenance);
+    failure.failure = TopologyResolutionFailure::Missing;
+    failure.error = "Topology v2 edge provenance no longer exists";
+  } catch (...) {
+    failure.failure = TopologyResolutionFailure::Unexpected;
+    failure.error = "Unexpected failure while resolving topology v2 edge";
   }
   return failure;
 }
@@ -741,6 +894,18 @@ FaceResolution resolveFaceReference(
 EdgeResolution resolveEdgeReference(
     const TopologyIndex& index,
     const TopologyReference& reference) {
+  return index.resolveEdge(reference);
+}
+
+FaceResolution resolveFaceReference(
+    const TopologyIndex& index,
+    const TopologyReferenceV2& reference) {
+  return index.resolveFace(reference);
+}
+
+EdgeResolution resolveEdgeReference(
+    const TopologyIndex& index,
+    const TopologyReferenceV2& reference) {
   return index.resolveEdge(reference);
 }
 

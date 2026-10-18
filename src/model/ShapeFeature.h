@@ -9,6 +9,7 @@ class TopoDS_Shape;
 namespace solidar {
 
 class TopologyIndex;
+class TopologyLineage;
 
 // Parametric features own their generated B-Rep result. The incomplete OCCT
 // type keeps the document model buildable until the geometry adapter is linked.
@@ -30,6 +31,10 @@ public:
       std::string* error = nullptr) const;
   [[nodiscard]] std::shared_ptr<const TopologyIndex> lastValidTopologyIndex(
       std::string* error = nullptr) const;
+  [[nodiscard]] std::shared_ptr<const TopologyLineage> topologyLineage()
+      const noexcept;
+  [[nodiscard]] const std::shared_ptr<const TopologyLineage>&
+  lastValidTopologyLineage() const noexcept;
   void discardResult() noexcept;
   // Converts a retained history definition to a cold, recomputable payload.
   // The base implementation drops all runtime B-Rep/topology caches.
@@ -37,7 +42,12 @@ public:
 
 protected:
   virtual bool rebuildImpl(const RebuildContext& context) = 0;
+  // Legacy/no-lineage result. This explicitly clears any staged lineage.
   void setShape(ShapePtr shape) noexcept;
+  // V2 result. A null lineage is an invalid attempted v2 result, not a legacy
+  // result; the rebuild boundary fails closed and restores the last snapshot.
+  void setShapeAndTopologyLineage(
+      ShapePtr shape, std::shared_ptr<const TopologyLineage> lineage) noexcept;
   void clearShape() noexcept;
 
 private:
@@ -46,6 +56,8 @@ private:
       std::string* error) const;
   ShapePtr shape_;
   ShapeRevision shapeRevision_{kInvalidShapeRevision};
+  std::shared_ptr<const TopologyLineage> topologyLineage_;
+  bool topologyLineageAttempted_{};
   mutable std::shared_ptr<const TopologyIndex> topologyIndex_;
   mutable bool topologyIndexAttempted_{};
   mutable std::string topologyIndexError_;

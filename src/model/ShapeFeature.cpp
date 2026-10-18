@@ -61,6 +61,16 @@ std::shared_ptr<const TopologyIndex> ShapeFeature::lastValidTopologyIndex(
   return ensureTopologyIndex(error);
 }
 
+std::shared_ptr<const TopologyLineage> ShapeFeature::topologyLineage()
+    const noexcept {
+  return isValid() ? topologyLineage_ : std::shared_ptr<const TopologyLineage>{};
+}
+
+const std::shared_ptr<const TopologyLineage>&
+ShapeFeature::lastValidTopologyLineage() const noexcept {
+  return topologyLineage_;
+}
+
 std::shared_ptr<const TopologyIndex> ShapeFeature::ensureTopologyIndex(
     std::string* error) const {
   if (!shape_ || shape_->IsNull() ||
@@ -70,7 +80,7 @@ std::shared_ptr<const TopologyIndex> ShapeFeature::ensureTopologyIndex(
   }
   if (!topologyIndexAttempted_) {
     auto index = TopologyIndex::build(shape_, shapeRevision_,
-                                      &topologyIndexError_);
+                                      topologyLineage_, &topologyIndexError_);
     topologyIndex_ = std::move(index);
     topologyIndexAttempted_ = true;
   }
@@ -81,6 +91,8 @@ std::shared_ptr<const TopologyIndex> ShapeFeature::ensureTopologyIndex(
 bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
   const ShapePtr previousShape = shape_;
   const ShapeRevision previousRevision = shapeRevision_;
+  const auto previousTopologyLineage = topologyLineage_;
+  const bool previousTopologyLineageAttempted = topologyLineageAttempted_;
   const auto previousTopologyIndex = topologyIndex_;
   const bool previousTopologyAttempted = topologyIndexAttempted_;
   const std::string previousTopologyError = topologyIndexError_;
@@ -106,20 +118,43 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
           [&] { brepValid = BRepCheck_Analyzer(*shape_).IsValid(); },
           &validationFailure);
       if (validationCompleted && brepValid) {
-        shapeRevision_ =
+        const ShapeRevision candidateRevision =
             g_nextShapeRevision.fetch_add(1, std::memory_order_relaxed);
-        topologyIndex_.reset();
-        topologyIndexAttempted_ = false;
-        topologyIndexError_.clear();
-        return true;
+        if (topologyLineageAttempted_ && !topologyLineage_) {
+          diagnostic = "Geometry rebuild attempted invalid topology lineage";
+        } else if (topologyLineageAttempted_) {
+          std::string topologyError;
+          auto index = TopologyIndex::build(shape_, candidateRevision,
+                                            topologyLineage_, &topologyError);
+          if (index) {
+            shapeRevision_ = candidateRevision;
+            topologyIndex_ = std::move(index);
+            topologyIndexAttempted_ = true;
+            topologyIndexError_.clear();
+            return true;
+          }
+          diagnostic = topologyError.empty()
+                           ? "Geometry rebuild produced invalid topology lineage"
+                           : std::move(topologyError);
+        } else {
+          shapeRevision_ = candidateRevision;
+          topologyIndex_.reset();
+          topologyIndexAttempted_ = false;
+          topologyIndexError_.clear();
+          return true;
+        }
       }
-      diagnostic = validationCompleted
-                       ? "Geometry rebuild produced an invalid B-Rep shape"
-                       : exceptionDiagnostic(validationFailure.kind);
+      if (diagnostic.empty()) {
+        diagnostic = validationCompleted
+                         ? "Geometry rebuild produced an invalid B-Rep shape"
+                         : exceptionDiagnostic(validationFailure.kind);
+      }
     }
 
     shape_ = previousShape;
     shapeRevision_ = previousRevision;
+    topologyLineage_ = previousTopologyLineage;
+    topologyLineageAttempted_ = previousTopologyLineageAttempted;
     topologyIndex_ = previousTopologyIndex;
     topologyIndexAttempted_ = previousTopologyAttempted;
     topologyIndexError_ = previousTopologyError;
@@ -130,6 +165,8 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
   } catch (...) {
     shape_ = previousShape;
     shapeRevision_ = previousRevision;
+    topologyLineage_ = previousTopologyLineage;
+    topologyLineageAttempted_ = previousTopologyLineageAttempted;
     topologyIndex_ = previousTopologyIndex;
     topologyIndexAttempted_ = previousTopologyAttempted;
     topologyIndexError_ = previousTopologyError;
@@ -144,6 +181,8 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
 void ShapeFeature::discardResult() noexcept {
   clearShape();
   shapeRevision_ = kInvalidShapeRevision;
+  topologyLineage_.reset();
+  topologyLineageAttempted_ = false;
   topologyIndex_.reset();
   topologyIndexAttempted_ = false;
   topologyIndexError_.clear();
@@ -156,8 +195,21 @@ void ShapeFeature::prepareForHistory() {
 
 void ShapeFeature::setShape(ShapePtr shape) noexcept {
   shape_ = std::move(shape);
+  topologyLineage_.reset();
+  topologyLineageAttempted_ = false;
 }
 
-void ShapeFeature::clearShape() noexcept { shape_.reset(); }
+void ShapeFeature::setShapeAndTopologyLineage(
+    ShapePtr shape, std::shared_ptr<const TopologyLineage> lineage) noexcept {
+  shape_ = std::move(shape);
+  topologyLineage_ = std::move(lineage);
+  topologyLineageAttempted_ = true;
+}
+
+void ShapeFeature::clearShape() noexcept {
+  shape_.reset();
+  topologyLineage_.reset();
+  topologyLineageAttempted_ = false;
+}
 
 } // namespace solidar
