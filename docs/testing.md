@@ -102,7 +102,7 @@ dedicated measurement environment exists.
 | Shell and Draft | `shell_feature_tests`, `shell_complex_topology_tests`, `draft_feature_tests` | Covered | Shell v1 intentionally rejects removed faces from several solids. |
 | Revolve | `revolve_feature_tests`, `part_design_regression_tests` | Covered | Manual preview/manipulator verification remains. |
 | Mirror, Move and patterns | Dedicated feature tests and `pattern_persistence_tests` | Covered | Arbitrary datum references, occurrence suppression and fusion are post-MVP. |
-| Cascading recompute | `document_tests`, `parametric_feature_chain_tests`, `parametric_history_tests` | Covered | Independent-body and recovery invariants remain mandatory regressions. |
+| Dependency-graph scheduling and cascading recompute | `document_tests`, `parametric_feature_chain_tests`, `parametric_history_tests`, `feature_removal_tests` | Covered for G0 | Feature reorder, branching and suppression remain open. |
 | Project save/load and v1 compatibility | `project_file_tests`, feature persistence regressions | Covered | Cached B-Rep is intentionally never serialized. |
 | Rebuild diagnostics | `document_tests`, feature tests | Covered | Diagnostics must remain exception-safe at OCCT boundaries. |
 | SBOM/compliance | `compliance_artifacts_tests`, `release_artifact_script_tests` | Covered | Vulnerability scanning and update diagnostics are post-MVP. |
@@ -113,11 +113,22 @@ uses volumes, non-null shapes, feature states, parameters and stable model IDs
 instead of OCCT face/edge ordering or exact topology counts.
 
 `parametric_history_tests` is the scheduler-level regression gate. It verifies
-targeted dirty propagation, upstream-to-downstream evaluation, stale-result
-removal, explicit blocked diagnostics, recovery with stable feature IDs, and
-continued recompute of independent bodies. The Part Design regression test adds
+targeted dirty propagation, upstream-to-downstream evaluation, current-result
+gating with last-valid retention, explicit blocked diagnostics, recovery with
+stable feature IDs, and continued recompute of independent bodies. The Part
+Design regression test adds
 the real Sketch -> Extrude -> Sketch-on-Face -> Pocket -> Fillet -> Chamfer path,
 an independent Revolve body, and an edit after project save/load.
+
+The G0 structural cases in `parametric_history_tests` remove a declared Feature,
+remove a declared Sketch, and mismatch a face-support owner after a successful
+build. They require deterministic root/blocked diagnostics, atomic scheduler
+abort, retained last-valid geometry and revisions, unchanged independent Dirty
+state, and same-ID recovery. `feature_removal_tests` is a regression-labelled
+gate for dependency-closure removal and exact stale-plan rejection. Body vector
+storage order is exercised independently of graph order; this does not claim or
+test Feature history reorder, which remains unsupported together with branching
+and suppression.
 
 Mirror and pattern coverage is split into `mirror_feature_tests`,
 `linear_pattern_feature_tests`, `circular_pattern_feature_tests`, and

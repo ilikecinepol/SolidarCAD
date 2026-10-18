@@ -1,4 +1,5 @@
 #include "TestAssertions.h"
+#include "TestGeometryUtils.h"
 
 #include <BRepPrimAPI_MakeBox.hxx>
 
@@ -15,13 +16,18 @@ namespace {
 class CountingFeature final : public solidar::ShapeFeature {
  public:
   CountingFeature(std::string name,
-                  solidar::SketchId sketchId = solidar::kInvalidSketchId)
-      : ShapeFeature(std::move(name)), sketchId_(sketchId) {}
+                  solidar::SketchId sketchId = solidar::kInvalidSketchId,
+                  solidar::FeatureId featureId = solidar::kInvalidFeatureId)
+      : ShapeFeature(std::move(name)),
+        sketchId_(sketchId),
+        featureId_(featureId) {}
   solidar::FeatureDependencies dependencies() const override {
     ++dependencyDeclarationCount;
     solidar::FeatureDependencies result;
     if (sketchId_ != solidar::kInvalidSketchId)
       result.sketchIds.push_back(sketchId_);
+    if (featureId_ != solidar::kInvalidFeatureId)
+      result.featureIds.push_back(featureId_);
     return result;
   }
  protected:
@@ -50,6 +56,7 @@ class CountingFeature final : public solidar::ShapeFeature {
   mutable int dependencyDeclarationCount{};
  private:
   solidar::SketchId sketchId_{solidar::kInvalidSketchId};
+  solidar::FeatureId featureId_{solidar::kInvalidFeatureId};
   bool fail_{};
 };
 }  // namespace
@@ -181,5 +188,267 @@ int main() {
   CHECK(document.recomputeFrom(tailId));
   CHECK(rootPtr->rebuildCount == rootCount && childPtr->rebuildCount == childCount);
   CHECK(tailPtr->rebuildCount == 4);
+
+  // A missing cross-Body Feature dependency invalidates its direct consumer
+  // and the active history tail without evaluating either closure or an
+  // independent Dirty Body. Restoring the same ID recovers the graph.
+  {
+    solidar::Document missingFeatureDocument;
+    auto& sourceBody = missingFeatureDocument.addBody("Feature source body");
+    const auto sourceBodyId = sourceBody.id();
+    auto source = std::make_unique<CountingFeature>("Feature source");
+    auto* sourcePtr = source.get();
+    const auto sourceId = sourcePtr->id();
+    sourceBody.addFeature(std::move(source));
+
+    auto& consumerBody =
+        missingFeatureDocument.addBody("Feature consumer body");
+    const auto consumerBodyId = consumerBody.id();
+    auto direct = std::make_unique<CountingFeature>(
+        "Missing Feature consumer", solidar::kInvalidSketchId, sourceId);
+    auto tail = std::make_unique<CountingFeature>("Feature consumer tail");
+    auto* directPtr = direct.get();
+    auto* tailPtr = tail.get();
+    const auto directId = directPtr->id();
+    consumerBody.addFeature(std::move(direct));
+    consumerBody.addFeature(std::move(tail));
+
+    auto& independentBody =
+        missingFeatureDocument.addBody("Independent Feature body");
+    auto independent = std::make_unique<CountingFeature>("Independent Feature");
+    auto* independentPtr = independent.get();
+    independentBody.addFeature(std::move(independent));
+
+    CHECK(missingFeatureDocument.recompute());
+    const auto directLastValid = directPtr->shape();
+    const auto tailLastValid = tailPtr->shape();
+    const auto independentLastValid = independentPtr->shape();
+    const auto directRevision = directPtr->shapeRevision();
+    const auto tailRevision = tailPtr->shapeRevision();
+    const auto independentRevision = independentPtr->shapeRevision();
+    const int directCount = directPtr->rebuildCount;
+    const int tailCount = tailPtr->rebuildCount;
+    const int independentCount = independentPtr->rebuildCount;
+    CountingFeature sourceSnapshot = *sourcePtr;
+    independentPtr->setFail(false);
+    CHECK(independentPtr->isDirty());
+    CHECK(missingFeatureDocument.applyFeatureSlice(sourceBodyId, 0, nullptr));
+
+    const std::string rootDiagnostic =
+        "Feature #" + std::to_string(directId) +
+        " references missing Feature #" + std::to_string(sourceId);
+    CHECK(!missingFeatureDocument.recompute());
+    CHECK(missingFeatureDocument.rebuildError() == rootDiagnostic);
+    CHECK(directPtr->isFailed() && directPtr->error() == rootDiagnostic);
+    CHECK(tailPtr->isFailed());
+    CHECK(tailPtr->error() ==
+          "Blocked by invalid upstream dependency 'Body #" +
+              std::to_string(consumerBodyId) + " / Feature #" +
+              std::to_string(directId) + "'");
+    CHECK(!directPtr->shape() && !tailPtr->shape());
+    CHECK(directPtr->lastValidShape() == directLastValid);
+    CHECK(tailPtr->lastValidShape() == tailLastValid);
+    CHECK(directPtr->shapeRevision() == directRevision);
+    CHECK(tailPtr->shapeRevision() == tailRevision);
+    CHECK(directPtr->rebuildCount == directCount);
+    CHECK(tailPtr->rebuildCount == tailCount);
+    CHECK(!missingFeatureDocument.findBody(consumerBodyId)->resultShape());
+    CHECK(missingFeatureDocument.findBody(consumerBodyId)
+              ->lastValidResultShape() == tailLastValid);
+    CHECK(independentPtr->isDirty());
+    CHECK(independentPtr->error().empty() && !independentPtr->shape());
+    CHECK(independentPtr->lastValidShape() == independentLastValid);
+    CHECK(independentPtr->shapeRevision() == independentRevision);
+    CHECK(independentPtr->rebuildCount == independentCount);
+
+    CHECK(missingFeatureDocument.applyFeatureSlice(sourceBodyId, 0,
+                                                    &sourceSnapshot));
+    CHECK(missingFeatureDocument.recompute());
+    CHECK(missingFeatureDocument.findFeature(sourceId));
+    CHECK(directPtr->isValid() && tailPtr->isValid());
+    CHECK(missingFeatureDocument.findBody(consumerBodyId)->resultShape());
+    CHECK(independentPtr->isValid());
+  }
+
+  // A missing declared Sketch has the same atomic abort and recovery contract.
+  {
+    solidar::Document missingSketchDocument;
+    auto& profile = missingSketchDocument.addSketch("Missing profile");
+    const auto profileId = profile.id;
+    profile.geometry.addRectangle({0.0, 0.0}, {8.0, 6.0});
+    auto& consumerBody = missingSketchDocument.addBody("Sketch consumer body");
+    const auto consumerBodyId = consumerBody.id();
+    auto direct = std::make_unique<CountingFeature>("Missing Sketch consumer",
+                                                    profileId);
+    auto tail = std::make_unique<CountingFeature>("Sketch consumer tail");
+    auto* directPtr = direct.get();
+    auto* tailPtr = tail.get();
+    const auto directId = directPtr->id();
+    consumerBody.addFeature(std::move(direct));
+    consumerBody.addFeature(std::move(tail));
+    auto& independentBody =
+        missingSketchDocument.addBody("Independent Sketch body");
+    auto independent = std::make_unique<CountingFeature>("Independent Sketch");
+    auto* independentPtr = independent.get();
+    independentBody.addFeature(std::move(independent));
+
+    CHECK(missingSketchDocument.recompute());
+    const auto directLastValid = directPtr->shape();
+    const auto tailLastValid = tailPtr->shape();
+    const auto independentLastValid = independentPtr->shape();
+    const auto directRevision = directPtr->shapeRevision();
+    const auto tailRevision = tailPtr->shapeRevision();
+    const auto independentRevision = independentPtr->shapeRevision();
+    const int directCount = directPtr->rebuildCount;
+    const int tailCount = tailPtr->rebuildCount;
+    const int independentCount = independentPtr->rebuildCount;
+    const solidar::DocumentSketch profileSnapshot =
+        *missingSketchDocument.findSketch(profileId);
+    independentPtr->setFail(false);
+    CHECK(missingSketchDocument.applySketchSlice(0, std::nullopt));
+
+    const std::string rootDiagnostic =
+        "Feature #" + std::to_string(directId) +
+        " references missing Sketch #" + std::to_string(profileId);
+    CHECK(!missingSketchDocument.recompute());
+    CHECK(missingSketchDocument.rebuildError() == rootDiagnostic);
+    CHECK(directPtr->isFailed() && directPtr->error() == rootDiagnostic);
+    CHECK(tailPtr->isFailed());
+    CHECK(tailPtr->error() ==
+          "Blocked by invalid upstream dependency 'Body #" +
+              std::to_string(consumerBodyId) + " / Feature #" +
+              std::to_string(directId) + "'");
+    CHECK(!directPtr->shape() && !tailPtr->shape());
+    CHECK(directPtr->lastValidShape() == directLastValid);
+    CHECK(tailPtr->lastValidShape() == tailLastValid);
+    CHECK(directPtr->shapeRevision() == directRevision);
+    CHECK(tailPtr->shapeRevision() == tailRevision);
+    CHECK(directPtr->rebuildCount == directCount);
+    CHECK(tailPtr->rebuildCount == tailCount);
+    CHECK(!missingSketchDocument.findBody(consumerBodyId)->resultShape());
+    CHECK(missingSketchDocument.findBody(consumerBodyId)
+              ->lastValidResultShape() == tailLastValid);
+    CHECK(independentPtr->isDirty());
+    CHECK(independentPtr->error().empty() && !independentPtr->shape());
+    CHECK(independentPtr->lastValidShape() == independentLastValid);
+    CHECK(independentPtr->shapeRevision() == independentRevision);
+    CHECK(independentPtr->rebuildCount == independentCount);
+
+    CHECK(missingSketchDocument.applySketchSlice(0, profileSnapshot));
+    CHECK(missingSketchDocument.recompute());
+    CHECK(missingSketchDocument.findSketch(profileId));
+    CHECK(directPtr->isValid() && tailPtr->isValid());
+    CHECK(missingSketchDocument.findBody(consumerBodyId)->resultShape());
+    CHECK(independentPtr->isValid());
+  }
+
+  // A face-support owner mismatch invalidates the Sketch node first. Its
+  // consumers are blocked, cached geometry is retained, and the support flags
+  // force reconciliation after restoring the same support reference.
+  {
+    solidar::Document supportOwnerDocument;
+    auto& supportBody = supportOwnerDocument.addBody("Support owner body");
+    const auto supportBodyId = supportBody.id();
+    auto support = std::make_unique<CountingFeature>("Support owner Feature");
+    auto* supportPtr = support.get();
+    const auto supportId = supportPtr->id();
+    supportBody.addFeature(std::move(support));
+    CHECK(supportOwnerDocument.recompute());
+    const auto topFace =
+        solidar::test::topPlanarFace(*supportPtr->shape(), 10.0);
+    CHECK(topFace);
+
+    auto& supportedSketch =
+        supportOwnerDocument.addSketch("Face-supported dependency");
+    const auto supportedSketchId = supportedSketch.id;
+    supportedSketch.geometry.addRectangle({1.0, 1.0}, {4.0, 4.0});
+    const auto supportReference = solidar::makeFaceReference(
+        *supportPtr->shape(), supportBodyId, supportId, *topFace);
+    CHECK(supportOwnerDocument.attachSketchToFace(supportedSketchId,
+                                                  supportReference));
+
+    auto& consumerBody =
+        supportOwnerDocument.addBody("Supported consumer body");
+    const auto consumerBodyId = consumerBody.id();
+    auto direct = std::make_unique<CountingFeature>(
+        "Supported Sketch consumer", supportedSketchId);
+    auto tail = std::make_unique<CountingFeature>("Supported consumer tail");
+    auto* directPtr = direct.get();
+    auto* tailPtr = tail.get();
+    const auto directId = directPtr->id();
+    consumerBody.addFeature(std::move(direct));
+    consumerBody.addFeature(std::move(tail));
+    auto& independentBody =
+        supportOwnerDocument.addBody("Independent support body");
+    const auto independentBodyId = independentBody.id();
+    auto independent = std::make_unique<CountingFeature>("Independent support");
+    auto* independentPtr = independent.get();
+    independentBody.addFeature(std::move(independent));
+
+    CHECK(supportOwnerDocument.recompute());
+    const auto directLastValid = directPtr->shape();
+    const auto tailLastValid = tailPtr->shape();
+    const auto independentLastValid = independentPtr->shape();
+    const auto directRevision = directPtr->shapeRevision();
+    const auto tailRevision = tailPtr->shapeRevision();
+    const auto independentRevision = independentPtr->shapeRevision();
+    const int supportCount = supportPtr->rebuildCount;
+    const int directCount = directPtr->rebuildCount;
+    const int tailCount = tailPtr->rebuildCount;
+    const int independentCount = independentPtr->rebuildCount;
+    const solidar::DocumentSketch supportSnapshot =
+        *supportOwnerDocument.findSketch(supportedSketchId);
+    const auto placementRevision = supportSnapshot.placementRevision;
+    auto invalidSupport = supportSnapshot;
+    invalidSupport.support.face.bodyId = independentBodyId;
+    independentPtr->setFail(false);
+    CHECK(supportOwnerDocument.applySketchSlice(0, invalidSupport));
+
+    const std::string rootDiagnostic =
+        "Sketch #" + std::to_string(supportedSketchId) +
+        " support owner Body does not match Feature #" +
+        std::to_string(supportId);
+    CHECK(!supportOwnerDocument.recompute());
+    CHECK(supportOwnerDocument.rebuildError() == rootDiagnostic);
+    const auto* failedSupport =
+        supportOwnerDocument.findSketch(supportedSketchId);
+    CHECK(failedSupport);
+    CHECK(!failedSupport->supportResolved && failedSupport->placementDirty);
+    CHECK(failedSupport->placementRevision == placementRevision);
+    CHECK(directPtr->isFailed());
+    CHECK(directPtr->error() ==
+          "Blocked by invalid upstream dependency 'Sketch #" +
+              std::to_string(supportedSketchId) + "'");
+    CHECK(tailPtr->isFailed());
+    CHECK(tailPtr->error() ==
+          "Blocked by invalid upstream dependency 'Body #" +
+              std::to_string(consumerBodyId) + " / Feature #" +
+              std::to_string(directId) + "'");
+    CHECK(!directPtr->shape() && !tailPtr->shape());
+    CHECK(directPtr->lastValidShape() == directLastValid);
+    CHECK(tailPtr->lastValidShape() == tailLastValid);
+    CHECK(directPtr->shapeRevision() == directRevision);
+    CHECK(tailPtr->shapeRevision() == tailRevision);
+    CHECK(supportPtr->isValid() && supportPtr->rebuildCount == supportCount);
+    CHECK(directPtr->rebuildCount == directCount);
+    CHECK(tailPtr->rebuildCount == tailCount);
+    CHECK(!supportOwnerDocument.findBody(consumerBodyId)->resultShape());
+    CHECK(supportOwnerDocument.findBody(consumerBodyId)
+              ->lastValidResultShape() == tailLastValid);
+    CHECK(independentPtr->isDirty());
+    CHECK(independentPtr->error().empty() && !independentPtr->shape());
+    CHECK(independentPtr->lastValidShape() == independentLastValid);
+    CHECK(independentPtr->shapeRevision() == independentRevision);
+    CHECK(independentPtr->rebuildCount == independentCount);
+
+    CHECK(supportOwnerDocument.applySketchSlice(0, supportSnapshot));
+    CHECK(supportOwnerDocument.recompute());
+    const auto* restoredSupport =
+        supportOwnerDocument.findSketch(supportedSketchId);
+    CHECK(restoredSupport && restoredSupport->supportResolved);
+    CHECK(directPtr->isValid() && tailPtr->isValid());
+    CHECK(supportOwnerDocument.findBody(consumerBodyId)->resultShape());
+    CHECK(independentPtr->isValid());
+  }
   return EXIT_SUCCESS;
 }

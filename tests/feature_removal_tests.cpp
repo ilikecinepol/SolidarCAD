@@ -474,7 +474,7 @@ int main() {
   const auto lateFeatureId = lateFeature.id();
   stage2Error.clear();
   CHECK(!stalePlanDocument.applyRemovalPlan(stalePlan, &stage2Error));
-  CHECK(!stage2Error.empty());
+  CHECK(stage2Error == "Removal plan is stale; document history changed");
   CHECK(stalePlanDocument.findSketch(staleSketchId));
   CHECK(stalePlanDocument.findBody(staleBodyId)->features().size() == 2);
   CHECK(stalePlanDocument.findBody(staleBodyId)->features()[0]->id() ==

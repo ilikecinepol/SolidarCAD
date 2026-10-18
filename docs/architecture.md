@@ -47,17 +47,33 @@ serialized.
 ## Parametric history 1.0
 
 Each `Body` is an ordered dependency chain. A feature stores stable IDs and
-topology references to its inputs; generated OCCT shapes are transient. Editing
-a sketch marks every dependent feature dirty, while editing a feature marks that
-feature and the following features in its body dirty. Recompute always proceeds
-from upstream to downstream and preserves the IDs of existing nodes.
+topology references to its inputs; generated OCCT shapes are transient. One
+operation-local `DocumentIndex` combines the local history edges, declared
+cross-Body Feature/Sketch dependencies, and face-support edges. Body storage
+order does not define cross-Body evaluation order; the Feature order inside one
+Body still defines its linear local history and is not a supported reorder API.
+Editing a sketch marks every dependent feature dirty, while editing a feature
+marks that feature and the following features in its body dirty. Recompute
+proceeds from upstream to downstream and preserves the IDs of existing nodes.
 
-If a feature cannot rebuild, its stale result is discarded. Every downstream
-feature is moved to `Error`, its stale shape is also discarded, and its
-diagnostic identifies the invalid upstream feature. Other bodies still rebuild
-independently. Correcting the source retries the same nodes and restores the
-chain without recreating IDs. Face-supported sketches are repositioned after
-each rebuilt producer so Pocket and later operations consume the updated face.
+Before topological scheduling, the index validates declared IDs and face-support
+ownership while retaining every known valid dependency and reverse edge. A
+missing Feature, missing Sketch, missing support Feature, or support-owner
+mismatch produces a deterministic document diagnostic and aborts before any
+Feature evaluation. The structural root and its dependent closure become
+`Error`; an invalid support Sketch also becomes unresolved and placement-dirty.
+Public `shape()` and the affected active `Body::resultShape()` are unavailable,
+but cached last-valid B-Rep and shape revisions are retained. Independent Valid
+or Dirty nodes keep exactly their prior state. Restoring the same IDs/support
+allows the existing graph to recompute and recover.
+
+If geometry evaluation of a structurally valid feature fails, its current result
+is likewise unavailable and every downstream feature moves to `Error` with an
+invalid-upstream diagnostic. Cached last-valid geometry remains available only
+through the explicit last-valid APIs, while independent dirty Bodies continue
+to rebuild. Correcting the source retries the same nodes without recreating IDs.
+Face-supported sketches are repositioned after each rebuilt producer so Pocket
+and later operations consume the updated face.
 
 The persisted source of truth is the ordered feature definitions, parameters,
 stable IDs, sketch geometry, and topology references. Save/load never treats a

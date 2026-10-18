@@ -153,7 +153,7 @@ solidar_add_test(tool_icon_tests
 solidar_add_test(part_design_history_ui_tests
   LIBRARIES solidar_editor solidar_project Qt6::Widgets LABELS ui-smoke)
 solidar_add_test(feature_removal_tests
-  LIBRARIES solidar_model LABELS ui-smoke)
+  LIBRARIES solidar_model LABELS regression)
 solidar_add_test(history_timeline_geometry_tests
   LIBRARIES solidar_viewport3d LABELS ui-smoke)
 solidar_add_test(historical_preview_tests

@@ -65,6 +65,12 @@ struct FeatureLocation {
   const ShapeFeature* feature{};
 };
 
+struct StructuralDependencyFailure {
+  DependencyNode root;
+  std::string diagnostic;
+  bool invalidatesSketchSupport{};
+};
+
 struct DocumentIndex {
   std::unordered_map<BodyId, std::size_t> bodies;
   std::unordered_map<FeatureId, FeatureLocation> features;
@@ -75,8 +81,8 @@ struct DocumentIndex {
   std::vector<std::vector<std::size_t>> dependents;
   std::vector<std::vector<std::size_t>> dependencies;
   std::vector<std::size_t> topologicalOrder;
+  std::vector<StructuralDependencyFailure> structuralFailures;
   std::string error;
-  FeatureId errorFeatureId{kInvalidFeatureId};
 
   [[nodiscard]] std::optional<std::size_t> nodeIndex(
       DependencyNode node) const noexcept {
@@ -161,21 +167,24 @@ DocumentIndex buildDocumentIndex(const Document& document) {
     for (const FeatureId upstreamId : declared.featureIds) {
       if (upstreamId == kInvalidFeatureId ||
           !index.features.contains(upstreamId)) {
-        index.error = "Feature #" + std::to_string(node.id) +
-                      " references missing Feature #" +
-                      std::to_string(upstreamId);
-        index.errorFeatureId = static_cast<FeatureId>(node.id);
-        return index;
+        index.structuralFailures.push_back(
+            {node,
+             "Feature #" + std::to_string(node.id) +
+                 " references missing Feature #" +
+                 std::to_string(upstreamId),
+             false});
+        continue;
       }
       edges.emplace_back(featureNode(upstreamId), node);
     }
     for (const SketchId sketchId : declared.sketchIds) {
       if (sketchId == kInvalidSketchId || !index.sketches.contains(sketchId)) {
-        index.error = "Feature #" + std::to_string(node.id) +
-                      " references missing Sketch #" +
-                      std::to_string(sketchId);
-        index.errorFeatureId = static_cast<FeatureId>(node.id);
-        return index;
+        index.structuralFailures.push_back(
+            {node,
+             "Feature #" + std::to_string(node.id) +
+                 " references missing Sketch #" + std::to_string(sketchId),
+             false});
+        continue;
       }
       edges.emplace_back(sketchNode(sketchId), node);
     }
@@ -188,16 +197,22 @@ DocumentIndex buildDocumentIndex(const Document& document) {
     if (sketch.support.type != SketchSupportType::Face) continue;
     const auto owner = index.features.find(sketch.support.face.featureId);
     if (owner == index.features.end()) {
-      index.error = "Sketch #" + std::to_string(sketch.id) +
-                    " references missing support Feature #" +
-                    std::to_string(sketch.support.face.featureId);
-      return index;
+      index.structuralFailures.push_back(
+          {sketchNode(sketch.id),
+           "Sketch #" + std::to_string(sketch.id) +
+               " references missing support Feature #" +
+               std::to_string(sketch.support.face.featureId),
+           true});
+      continue;
     }
     if (owner->second.bodyId != sketch.support.face.bodyId) {
-      index.error = "Sketch #" + std::to_string(sketch.id) +
-                    " support owner Body does not match Feature #" +
-                    std::to_string(sketch.support.face.featureId);
-      return index;
+      index.structuralFailures.push_back(
+          {sketchNode(sketch.id),
+           "Sketch #" + std::to_string(sketch.id) +
+               " support owner Body does not match Feature #" +
+               std::to_string(sketch.support.face.featureId),
+           true});
+      continue;
     }
     edges.emplace_back(featureNode(owner->first), sketchNode(sketch.id));
   }
@@ -214,6 +229,24 @@ DocumentIndex buildDocumentIndex(const Document& document) {
     const std::size_t dependentIndex = index.nodeIndices.at(dependent);
     index.dependents[upstreamIndex].push_back(dependentIndex);
     index.dependencies[dependentIndex].push_back(upstreamIndex);
+  }
+  if (!index.structuralFailures.empty()) {
+    std::sort(index.structuralFailures.begin(),
+              index.structuralFailures.end(),
+              [](const auto& left, const auto& right) {
+                if (left.root < right.root) return true;
+                if (right.root < left.root) return false;
+                return left.diagnostic < right.diagnostic;
+              });
+    index.structuralFailures.erase(
+        std::unique(index.structuralFailures.begin(),
+                    index.structuralFailures.end(),
+                    [](const auto& left, const auto& right) {
+                      return left.root == right.root;
+                    }),
+        index.structuralFailures.end());
+    index.error = index.structuralFailures.front().diagnostic;
+    return index;
   }
   finalizeTopologicalOrder(&index);
   return index;
@@ -242,6 +275,50 @@ std::string nodeLabel(const DocumentIndex& index,
     return "Feature #" + std::to_string(node.id);
   return "Body #" + std::to_string(found->second.bodyId) + " / Feature #" +
          std::to_string(node.id);
+}
+
+void applyStructuralDependencyFailures(Document& document,
+                                       const DocumentIndex& index) {
+  std::vector<bool> unavailable(index.nodes.size());
+  std::vector<bool> roots(index.nodes.size());
+  std::deque<std::size_t> pending;
+  for (const auto& failure : index.structuralFailures) {
+    const auto root = index.nodeIndex(failure.root);
+    if (!root) continue;
+    roots[*root] = true;
+    unavailable[*root] = true;
+    pending.push_back(*root);
+    if (failure.root.kind == DependencyNodeKind::Feature) {
+      if (auto* feature =
+              document.findFeature(static_cast<FeatureId>(failure.root.id)))
+        feature->markBlocked(failure.diagnostic);
+    } else if (failure.invalidatesSketchSupport) {
+      if (auto* sketch =
+              document.findSketch(static_cast<SketchId>(failure.root.id))) {
+        sketch->supportResolved = false;
+        sketch->placementDirty = true;
+      }
+    }
+  }
+
+  while (!pending.empty()) {
+    const std::size_t node = pending.front();
+    pending.pop_front();
+    for (const std::size_t dependent : index.dependents[node]) {
+      if (unavailable[dependent]) continue;
+      unavailable[dependent] = true;
+      const DependencyNode dependentNode = index.nodes[dependent];
+      if (!roots[dependent] &&
+          dependentNode.kind == DependencyNodeKind::Feature) {
+        if (auto* feature = document.findFeature(
+                static_cast<FeatureId>(dependentNode.id)))
+          feature->markBlocked(
+              "Blocked by invalid upstream dependency '" +
+              nodeLabel(index, index.nodes[node]) + "'");
+      }
+      pending.push_back(dependent);
+    }
+  }
 }
 
 bool findCycleFrom(const DocumentIndex& index,
@@ -581,9 +658,8 @@ bool Document::rebuild() {
         const DocumentIndex index = buildDocumentIndex(*this);
         if (!index.error.empty()) {
           dependencyError_ = index.error;
-          if (index.errorFeatureId != kInvalidFeatureId)
-            if (auto* feature = findFeature(index.errorFeatureId))
-              feature->markBlocked(index.error);
+          if (!index.structuralFailures.empty())
+            applyStructuralDependencyFailures(*this, index);
           return false;
         }
         dependencyError_.clear();

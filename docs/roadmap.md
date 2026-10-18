@@ -100,6 +100,15 @@ selection/hover, активный инструмент, solver, Undo/Redo и с�
 - сохранить совместимость формата проекта либо выполнить явную версионированную
   миграцию.
 
+Отдельный подэтап G0 «ядро графа зависимостей» закрыт 18 октября 2026 года:
+единый `DocumentIndex` детерминированно обслуживает cross-body зависимости,
+Sketch и face-support edges, структурный abort, affected closure и same-ID
+recovery. Evidence закреплено в `parametric_history_tests`,
+`feature_removal_tests`, `join_bodies_feature_tests` и
+`pattern_persistence_tests`. Это не закрывает этап 0.3: DocumentSketch migration,
+persistent topology v2, Feature history reorder, branching и suppression
+остаются открытыми.
+
 Критерий выхода: сложная однодетальная модель выдерживает изменение размеров,
 редактирование и перестановку допустимых шагов истории, сохранение и повторное
 открытие без необходимости заново выбирать корректно сохранившиеся ссылки.
@@ -125,12 +134,11 @@ selection/hover, активный инструмент, solver, Undo/Redo и с�
 18 октября 2026 года для D1 принята ветвь B: единый identity-bearing
 product/component envelope. Решение и границы миграции зафиксированы в
 [`docs/decisions/2026-10-18-product-document-envelope.md`](decisions/2026-10-18-product-document-envelope.md).
-A1 остаётся заблокированным: milestone графа зависимостей ещё требуется
-формально согласовать и закрыть, persistent topology v2 с regressions для
-split/merge, symmetry и pattern provenance не реализована, отсутствует зелёное
-evidence на точном HEAD и отдельная пользовательская авторизация. Элементы
-сборок не переводятся в завершённые, номер новой схемы не назначен; mates
-остаются запрещены до прохождения topology v2 gate.
+A1 остаётся заблокированным: G0 графа зависимостей закрыт, но persistent topology
+v2 с regressions для split/merge, symmetry и pattern provenance не реализована,
+отсутствует итоговое зелёное evidence на точном HEAD и отдельная пользовательская
+авторизация. Элементы сборок не переводятся в завершённые, номер новой схемы не
+назначен; mates остаются запрещены до прохождения topology v2 gate.
 
 ## 0.6 — макросы и автоматизация
 
