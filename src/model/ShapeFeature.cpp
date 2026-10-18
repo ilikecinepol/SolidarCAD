@@ -118,25 +118,30 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
           [&] { brepValid = BRepCheck_Analyzer(*shape_).IsValid(); },
           &validationFailure);
       if (validationCompleted && brepValid) {
-        const ShapeRevision candidateRevision =
-            g_nextShapeRevision.fetch_add(1, std::memory_order_relaxed);
         if (topologyLineageAttempted_ && !topologyLineage_) {
           diagnostic = "Geometry rebuild attempted invalid topology lineage";
         } else if (topologyLineageAttempted_) {
-          std::string topologyError;
-          auto index = TopologyIndex::build(shape_, candidateRevision,
-                                            topologyLineage_, &topologyError);
-          if (index) {
-            shapeRevision_ = candidateRevision;
-            topologyIndex_ = std::move(index);
-            topologyIndexAttempted_ = true;
-            topologyIndexError_.clear();
-            return true;
+          if (topologyLineage_->validateForProducer(id(), &diagnostic)) {
+            const ShapeRevision candidateRevision =
+                g_nextShapeRevision.fetch_add(1, std::memory_order_relaxed);
+            std::string topologyError;
+            auto index = TopologyIndex::build(
+                shape_, candidateRevision, topologyLineage_, &topologyError);
+            if (index) {
+              shapeRevision_ = candidateRevision;
+              topologyIndex_ = std::move(index);
+              topologyIndexAttempted_ = true;
+              topologyIndexError_.clear();
+              return true;
+            }
+            diagnostic =
+                topologyError.empty()
+                    ? "Geometry rebuild produced invalid topology lineage"
+                    : std::move(topologyError);
           }
-          diagnostic = topologyError.empty()
-                           ? "Geometry rebuild produced invalid topology lineage"
-                           : std::move(topologyError);
         } else {
+          const ShapeRevision candidateRevision =
+              g_nextShapeRevision.fetch_add(1, std::memory_order_relaxed);
           shapeRevision_ = candidateRevision;
           topologyIndex_.reset();
           topologyIndexAttempted_ = false;

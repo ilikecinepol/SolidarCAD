@@ -526,6 +526,18 @@ std::shared_ptr<const TopologyIndex> TopologyIndex::build(
           return {};
         }
       }
+      if (data->lineage->coverage() ==
+          TopologyLineageCoverage::CompleteFaces) {
+        const bool unnamedFace = std::any_of(
+            data->faces.begin(), data->faces.end(), [](const auto& face) {
+              return face.provenance.empty();
+            });
+        if (unnamedFace) {
+          if (error)
+            *error = "Complete face lineage does not name every output face";
+          return {};
+        }
+      }
     }
 
     return std::shared_ptr<const TopologyIndex>(

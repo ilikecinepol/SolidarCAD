@@ -49,6 +49,7 @@
 #include "model/TopologyReference.h"
 #include "model/TopologyReferenceResolver.h"
 #include "model/TopologyLineage.h"
+#include "model/TopologyLineageBuilder.h"
 #include "model/macro/MacroDefinition.h"
 #include "model/macro/MacroExecutor.h"
 #include "model/macro/MacroReferences.h"

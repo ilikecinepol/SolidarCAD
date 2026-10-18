@@ -95,6 +95,8 @@ add_library(solidar_model
   model/SketchPlacement.h
   model/TopologyLineage.cpp
   model/TopologyLineage.h
+  model/TopologyLineageBuilder.cpp
+  model/TopologyLineageBuilder.h
   model/TopologyReferenceResolver.cpp
   model/TopologyReferenceResolver.h
   model/TopologyReference.h

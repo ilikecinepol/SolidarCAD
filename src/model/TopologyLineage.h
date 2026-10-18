@@ -19,6 +19,7 @@ enum class TopologyProvenanceOperation : std::uint8_t {
   Seed,
   Generated,
   Modified,
+  Retained,
   Merge,
 };
 
@@ -33,16 +34,7 @@ enum class TopologySemanticRole : std::uint8_t {
   Custom,
 };
 
-struct TopologyProvenanceOrigin {
-  FeatureId featureId{kInvalidFeatureId};
-  TopologyKind kind{TopologyKind::Face};
-  std::string localName;
-
-  friend bool operator==(const TopologyProvenanceOrigin&,
-                         const TopologyProvenanceOrigin&) = default;
-};
-
-// Authored occurrence identity.  A pattern count edit may append or remove
+// Authored occurrence identity. A pattern count edit may append or remove
 // slots, but must never renumber surviving slots.
 struct TopologyOccurrenceKey {
   FeatureId featureId{kInvalidFeatureId};
@@ -50,6 +42,27 @@ struct TopologyOccurrenceKey {
 
   friend bool operator==(const TopologyOccurrenceKey&,
                          const TopologyOccurrenceKey&) = default;
+};
+
+struct TopologyProvenanceOrigin {
+  TopologyProvenanceOrigin() = default;
+  TopologyProvenanceOrigin(
+      FeatureId sourceFeatureId, TopologyKind topologyKind,
+      TopologyProvenanceOperation provenanceOperation,
+      TopologySemanticRole semanticRole, std::string authoredLocalName,
+      std::optional<TopologyOccurrenceKey> authoredOccurrence = {});
+
+  FeatureId featureId{kInvalidFeatureId};
+  TopologyKind kind{TopologyKind::Face};
+  TopologyProvenanceOperation operation{TopologyProvenanceOperation::Seed};
+  TopologySemanticRole role{TopologySemanticRole::Custom};
+  std::string localName;
+  std::optional<TopologyOccurrenceKey> occurrence;
+
+  [[nodiscard]] bool isValid(std::string* error = nullptr) const;
+
+  friend bool operator==(const TopologyProvenanceOrigin&,
+                         const TopologyProvenanceOrigin&) = default;
 };
 
 struct TopologyProvenanceKey {
@@ -73,6 +86,11 @@ struct TopologyProvenanceKey {
   std::optional<TopologyOccurrenceKey> occurrence;
 
   [[nodiscard]] bool isCanonical(std::string* error = nullptr) const;
+  // Immediate origins are intentionally non-recursive. Identity remains
+  // lossless because the complete immediate key projection (including
+  // operation, role and authored occurrence) is retained verbatim. Producer
+  // validation only rejects two unequal full keys with that same projection.
+  [[nodiscard]] TopologyProvenanceOrigin immediateOrigin() const;
   void canonicalizeOrigins();
 
   friend bool operator==(const TopologyProvenanceKey&,
@@ -100,20 +118,35 @@ struct TopologyLineageBinding {
   std::shared_ptr<const TopoDS_Shape> subshape;
 };
 
+enum class TopologyLineageCoverage : std::uint8_t {
+  None,
+  PartialFaces,
+  CompleteFaces,
+};
+
+[[nodiscard]] bool isValidTopologyLineageCoverage(
+    TopologyLineageCoverage coverage) noexcept;
+
 class TopologyLineage final {
  public:
   [[nodiscard]] static std::shared_ptr<const TopologyLineage> create(
       std::vector<TopologyLineageBinding> bindings,
+      TopologyLineageCoverage coverage,
       std::string* error = nullptr);
 
   [[nodiscard]] const std::vector<TopologyLineageBinding>& bindings()
       const noexcept;
   [[nodiscard]] bool empty() const noexcept;
+  [[nodiscard]] TopologyLineageCoverage coverage() const noexcept;
+  [[nodiscard]] bool validateForProducer(
+      FeatureId producerFeatureId, std::string* error = nullptr) const;
 
  private:
-  explicit TopologyLineage(std::vector<TopologyLineageBinding> bindings);
+  TopologyLineage(std::vector<TopologyLineageBinding> bindings,
+                  TopologyLineageCoverage coverage);
 
   std::vector<TopologyLineageBinding> bindings_;
+  TopologyLineageCoverage coverage_{TopologyLineageCoverage::None};
 };
 
 }  // namespace solidar
