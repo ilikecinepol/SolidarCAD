@@ -82,45 +82,55 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
   try {
     auto loaded = project::ProjectFile::stageLoad(path);
     if (!loaded.succeeded()) {
-      const auto code = loaded.kind == project::ProjectLoadKind::Unsupported
+      const auto code = loaded.status == project::ProjectLoadStatus::Unsupported
                             ? ProjectApplicationErrorCode::UnsupportedProject
                             : ProjectApplicationErrorCode::InvalidProject;
       return {{code, std::move(loaded.error)}, std::nullopt};
     }
 
     StagedApplicationDocument candidate;
-    if (loaded.kind == project::ProjectLoadKind::ValidV2) {
-      if (!loaded.document) {
-        return {{ProjectApplicationErrorCode::InvalidProject,
+    switch (project::classifyPartPayload(loaded.payloadKind)) {
+      case project::PartPayloadDisposition::Parametric:
+        if (!loaded.document) {
+          return {{ProjectApplicationErrorCode::InvalidProject,
+                   QString::fromUtf8(
+                       "Проект v2/v3 не содержит восстановленного документа.")},
+                  std::nullopt};
+        }
+        candidate.document = std::move(*loaded.document);
+        break;
+      case project::PartPayloadDisposition::Legacy: {
+        candidate.document.setBox(loaded.legacy.box);
+        // v1 does not persist IDs. Use deterministic local IDs while explicit
+        // reservation is paused so speculative staging cannot consume process-
+        // global edit IDs. The commit boundary reserves them atomically later.
+        detail::ScopedExplicitIdReservationPause reservationPause;
+        for (std::size_t index = 0; index < loaded.legacy.sketches.size();
+             ++index) {
+          const auto& saved = loaded.legacy.sketches[index];
+          auto& modelSketch = candidate.document.addSketch(
+              static_cast<SketchId>(index + 1), "Loaded sketch", {});
+          modelSketch.geometry = saved.geometry;
+          modelSketch.placement =
+              legacyV1SketchPlacement(saved.support, loaded.legacy.box);
+        }
+        if (loaded.legacy.hasExtrusion &&
+            loaded.legacy.extrusionSourceSketch &&
+            *loaded.legacy.extrusionSourceSketch <
+                candidate.document.sketches().size()) {
+          candidate.historicalLegacyExtrusionSourceSketchId =
+              candidate.document
+                  .sketches()[*loaded.legacy.extrusionSourceSketch]
+                  .id;
+        }
+        break;
+      }
+      case project::PartPayloadDisposition::Unsupported:
+      default:
+        return {{ProjectApplicationErrorCode::UnsupportedProject,
                  QString::fromUtf8(
-                     "Проект v2 не содержит восстановленного документа.")},
+                     "Проект не содержит поддерживаемых данных детали.")},
                 std::nullopt};
-      }
-      candidate.document = std::move(*loaded.document);
-    } else {
-      candidate.document.setBox(loaded.legacy.box);
-      // v1 does not persist IDs. Use deterministic local IDs while explicit
-      // reservation is paused so speculative staging cannot consume process-
-      // global edit IDs. The commit boundary reserves them atomically later.
-      detail::ScopedExplicitIdReservationPause reservationPause;
-      for (std::size_t index = 0; index < loaded.legacy.sketches.size();
-           ++index) {
-        const auto& saved = loaded.legacy.sketches[index];
-        auto& modelSketch = candidate.document.addSketch(
-            static_cast<SketchId>(index + 1), "Loaded sketch", {});
-        modelSketch.geometry = saved.geometry;
-        modelSketch.placement =
-            legacyV1SketchPlacement(saved.support, loaded.legacy.box);
-      }
-      if (loaded.legacy.hasExtrusion &&
-          loaded.legacy.extrusionSourceSketch &&
-          *loaded.legacy.extrusionSourceSketch <
-              candidate.document.sketches().size()) {
-        candidate.historicalLegacyExtrusionSourceSketchId =
-            candidate.document
-                .sketches()[*loaded.legacy.extrusionSourceSketch]
-                .id;
-      }
     }
     return {{}, std::move(candidate)};
   } catch (const std::exception& exception) {

@@ -31,17 +31,47 @@ struct ProjectData {
   std::optional<std::size_t> extrusionSourceSketch;
 };
 
+enum class ProjectLoadStatus { Valid, Invalid, Unsupported };
+
+enum class ProjectPayloadKind {
+  None,
+  LegacyPartV1,
+  ParametricPartV2,
+  ParametricPartV3
+};
+
+enum class PartPayloadDisposition { Unsupported, Legacy, Parametric };
+
+[[nodiscard]] constexpr PartPayloadDisposition classifyPartPayload(
+    ProjectPayloadKind kind) noexcept {
+  switch (kind) {
+    case ProjectPayloadKind::LegacyPartV1:
+      return PartPayloadDisposition::Legacy;
+    case ProjectPayloadKind::ParametricPartV2:
+    case ProjectPayloadKind::ParametricPartV3:
+      return PartPayloadDisposition::Parametric;
+    case ProjectPayloadKind::None:
+    default:
+      return PartPayloadDisposition::Unsupported;
+  }
+}
+
+// Compatibility facade for existing part-only callers. New dispatch must use
+// status, sourceVersion and payloadKind instead of inferring one axis from
+// another.
 enum class ProjectLoadKind { ValidV1, ValidV2, Invalid, Unsupported };
 
 struct StagedProjectLoad {
+  ProjectLoadStatus status{ProjectLoadStatus::Invalid};
+  std::optional<qint64> sourceVersion;
+  ProjectPayloadKind payloadKind{ProjectPayloadKind::None};
   ProjectLoadKind kind{ProjectLoadKind::Invalid};
   ProjectData legacy;
   std::optional<Document> document;
   QString error;
 
   [[nodiscard]] bool succeeded() const noexcept {
-    return kind == ProjectLoadKind::ValidV1 ||
-           kind == ProjectLoadKind::ValidV2;
+    return status == ProjectLoadStatus::Valid;
   }
 };
 

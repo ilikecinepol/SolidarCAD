@@ -3257,7 +3257,18 @@ bool ProjectFile::validate(const QString& path, QString* error) {
     setError(error, staged.error);
     return false;
   }
-  return true;
+  switch (staged.payloadKind) {
+    case ProjectPayloadKind::LegacyPartV1:
+    case ProjectPayloadKind::ParametricPartV2:
+    case ProjectPayloadKind::ParametricPartV3:
+      return true;
+    case ProjectPayloadKind::None:
+      setError(error,
+               QString::fromUtf8("Проект не содержит поддерживаемых данных детали."));
+      return false;
+  }
+  setError(error, QString::fromUtf8("Неизвестный вид данных проекта."));
+  return false;
 }
 
 bool ProjectFile::saveDocument(const QString& path, const Document& document,
@@ -5013,6 +5024,7 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       return result;
     }
     if (root.value("format").toString() != QStringLiteral("solidar-project")) {
+      result.status = ProjectLoadStatus::Unsupported;
       result.kind = ProjectLoadKind::Unsupported;
       result.error = QString::fromUtf8("Неподдерживаемый формат проекта.");
       return result;
@@ -5025,7 +5037,9 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       result.error = validationError;
       return result;
     }
+    result.sourceVersion = version;
     if (version != 1 && version != 2 && version != 3) {
+      result.status = ProjectLoadStatus::Unsupported;
       result.kind = ProjectLoadKind::Unsupported;
       result.error = QString::fromUtf8("Неподдерживаемая версия проекта: %1.")
                          .arg(version);
@@ -5044,14 +5058,20 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       bool unsupportedSchema = false;
       if (!loadV3Root(root, &legacy, &validationError,
                       &unsupportedSchema)) {
-        if (unsupportedSchema) result.kind = ProjectLoadKind::Unsupported;
+        if (unsupportedSchema) {
+          result.status = ProjectLoadStatus::Unsupported;
+          result.kind = ProjectLoadKind::Unsupported;
+        }
         result.error = validationError;
         return result;
       }
       bool unsupportedModel = false;
       if (!validateV2Root(root, legacy, &validationError,
                           &unsupportedModel)) {
-        if (unsupportedModel) result.kind = ProjectLoadKind::Unsupported;
+        if (unsupportedModel) {
+          result.status = ProjectLoadStatus::Unsupported;
+          result.kind = ProjectLoadKind::Unsupported;
+        }
         result.error = validationError;
         return result;
       }
@@ -5063,6 +5083,8 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
           return result;
         }
       }
+      result.status = ProjectLoadStatus::Valid;
+      result.payloadKind = ProjectPayloadKind::ParametricPartV3;
       result.kind = ProjectLoadKind::ValidV2;
       result.legacy = std::move(legacy);
       result.document.emplace(std::move(document));
@@ -5073,7 +5095,10 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
     bool unsupportedSchema = false;
     if (!validateAndSelectLegacyPlan(root, version, &decodePlan,
                                      &unsupportedSchema, &validationError)) {
-      if (unsupportedSchema) result.kind = ProjectLoadKind::Unsupported;
+      if (unsupportedSchema) {
+        result.status = ProjectLoadStatus::Unsupported;
+        result.kind = ProjectLoadKind::Unsupported;
+      }
       result.error = validationError;
       return result;
     }
@@ -5086,6 +5111,8 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
       return result;
     }
     if (version == 1) {
+      result.status = ProjectLoadStatus::Valid;
+      result.payloadKind = ProjectPayloadKind::LegacyPartV1;
       result.kind = ProjectLoadKind::ValidV1;
       result.legacy = std::move(legacy);
       result.error.clear();
@@ -5094,7 +5121,10 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
 
     bool unsupportedModel = false;
     if (!validateV2Root(root, legacy, &validationError, &unsupportedModel)) {
-      if (unsupportedModel) result.kind = ProjectLoadKind::Unsupported;
+      if (unsupportedModel) {
+        result.status = ProjectLoadStatus::Unsupported;
+        result.kind = ProjectLoadKind::Unsupported;
+      }
       result.error = validationError;
       return result;
     }
@@ -5112,6 +5142,8 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
         return result;
       }
     }
+    result.status = ProjectLoadStatus::Valid;
+    result.payloadKind = ProjectPayloadKind::ParametricPartV2;
     result.kind = ProjectLoadKind::ValidV2;
     result.legacy = std::move(legacy);
     result.document.emplace(std::move(document));
@@ -5130,6 +5162,8 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
   if (result.error.isEmpty())
     result.error = QString::fromUtf8("Не удалось загрузить проект.");
   result.kind = ProjectLoadKind::Invalid;
+  result.status = ProjectLoadStatus::Invalid;
+  result.payloadKind = ProjectPayloadKind::None;
   result.document.reset();
   return result;
 }
@@ -5144,8 +5178,18 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
     setError(error, staged.error);
     return false;
   }
-  *data = std::move(staged.legacy);
-  return true;
+  switch (staged.payloadKind) {
+    case ProjectPayloadKind::LegacyPartV1:
+    case ProjectPayloadKind::ParametricPartV2:
+    case ProjectPayloadKind::ParametricPartV3:
+      *data = std::move(staged.legacy);
+      return true;
+    case ProjectPayloadKind::None:
+      break;
+  }
+  setError(error,
+           QString::fromUtf8("Проект не содержит поддерживаемых данных детали."));
+  return false;
 }
 
 bool ProjectFile::loadDocument(const QString& path, Document* document,
@@ -5159,9 +5203,15 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
     setError(error, staged.error);
     return false;
   }
-  if (staged.kind != ProjectLoadKind::ValidV2 || !staged.document) {
+  if (classifyPartPayload(staged.payloadKind) !=
+      PartPayloadDisposition::Parametric) {
     setError(error, QString::fromUtf8(
-                        "Проект не содержит параметрическую историю v2."));
+                        "Проект не содержит параметрическую историю v2/v3."));
+    return false;
+  }
+  if (!staged.document) {
+    setError(error, QString::fromUtf8(
+                        "Проект не содержит восстановленного документа."));
     return false;
   }
   *document = std::move(*staged.document);

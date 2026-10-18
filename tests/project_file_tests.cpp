@@ -122,6 +122,148 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // The load result has three independent axes. These migration fixtures are
+  // authored directly rather than emitted by ProjectFile's current writer.
+  {
+    const auto writeRoot = [&](const QString& name, const QJsonObject& root) {
+      const QString path = directory.filePath(name);
+      QFile file(path);
+      CHECK(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+      const QByteArray bytes =
+          QJsonDocument(root).toJson(QJsonDocument::Compact);
+      CHECK(file.write(bytes) == bytes.size());
+      return path;
+    };
+    const auto legacyEnvelope = [](qint64 version) {
+      return QJsonObject{
+          {"format", QStringLiteral("solidar-project")},
+          {"version", version},
+          {"name", QStringLiteral("hand-authored-part")},
+          {"createdAt", QStringLiteral("2026-10-18T00:00:00Z")},
+          {"document", QJsonObject{{"widthMm", 60.0},
+                                    {"heightMm", 40.0},
+                                    {"extrusionMm", 25.0}}},
+          {"sketches", QJsonArray{}},
+          {"extrusion", QJsonObject{{"enabled", false}}}};
+    };
+
+    const QString v1Path = writeRoot(
+        QStringLiteral("load-taxonomy-v1.solidar"), legacyEnvelope(1));
+    auto v2Root = legacyEnvelope(2);
+    v2Root["model"] = QJsonObject{{"sketches", QJsonArray{}},
+                                   {"bodies", QJsonArray{}},
+                                   {"referenceImages", QJsonArray{}}};
+    const QString v2Path =
+        writeRoot(QStringLiteral("load-taxonomy-v2.solidar"), v2Root);
+    auto v3Root = v2Root;
+    v3Root["version"] = 3;
+    v3Root["constraintTypeEncoding"] = QStringLiteral("stable-name-v1");
+    const QString v3Path =
+        writeRoot(QStringLiteral("load-taxonomy-v3.solidar"), v3Root);
+
+    const auto v1 = solidar::project::ProjectFile::stageLoad(v1Path);
+    CHECK(v1.status == solidar::project::ProjectLoadStatus::Valid);
+    CHECK(v1.sourceVersion == 1);
+    CHECK(v1.payloadKind ==
+          solidar::project::ProjectPayloadKind::LegacyPartV1);
+    CHECK(v1.succeeded());
+    const auto v2 = solidar::project::ProjectFile::stageLoad(v2Path);
+    CHECK(v2.status == solidar::project::ProjectLoadStatus::Valid);
+    CHECK(v2.sourceVersion == 2);
+    CHECK(v2.payloadKind ==
+          solidar::project::ProjectPayloadKind::ParametricPartV2);
+    CHECK(v2.succeeded());
+    const auto v3 = solidar::project::ProjectFile::stageLoad(v3Path);
+    CHECK(v3.status == solidar::project::ProjectLoadStatus::Valid);
+    CHECK(v3.sourceVersion == 3);
+    CHECK(v3.payloadKind ==
+          solidar::project::ProjectPayloadKind::ParametricPartV3);
+    CHECK(v3.succeeded());
+
+    constexpr auto kUnknownPayload =
+        static_cast<solidar::project::ProjectPayloadKind>(9999);
+    CHECK(solidar::project::classifyPartPayload(
+              solidar::project::ProjectPayloadKind::LegacyPartV1) ==
+          solidar::project::PartPayloadDisposition::Legacy);
+    CHECK(solidar::project::classifyPartPayload(
+              solidar::project::ProjectPayloadKind::ParametricPartV2) ==
+          solidar::project::PartPayloadDisposition::Parametric);
+    CHECK(solidar::project::classifyPartPayload(
+              solidar::project::ProjectPayloadKind::ParametricPartV3) ==
+          solidar::project::PartPayloadDisposition::Parametric);
+    CHECK(solidar::project::classifyPartPayload(kUnknownPayload) ==
+          solidar::project::PartPayloadDisposition::Unsupported);
+
+    const QString brokenPath = directory.filePath("load-taxonomy-broken.solidar");
+    QFile brokenFile(brokenPath);
+    CHECK(brokenFile.open(QIODevice::WriteOnly));
+    CHECK(brokenFile.write("{broken") == 7);
+    brokenFile.close();
+    const auto broken = solidar::project::ProjectFile::stageLoad(brokenPath);
+    CHECK(broken.status == solidar::project::ProjectLoadStatus::Invalid);
+    CHECK(!broken.sourceVersion.has_value());
+    CHECK(broken.payloadKind == solidar::project::ProjectPayloadKind::None);
+    CHECK(!broken.succeeded());
+
+    auto malformedV3Root = v3Root;
+    malformedV3Root.remove("model");
+    const auto malformedV3 = solidar::project::ProjectFile::stageLoad(
+        writeRoot(QStringLiteral("load-taxonomy-malformed-v3.solidar"),
+                  malformedV3Root));
+    CHECK(malformedV3.status == solidar::project::ProjectLoadStatus::Invalid);
+    CHECK(malformedV3.sourceVersion == 3);
+    CHECK(malformedV3.payloadKind ==
+          solidar::project::ProjectPayloadKind::None);
+
+    auto futureRoot = v3Root;
+    futureRoot["version"] = 101;
+    const auto future = solidar::project::ProjectFile::stageLoad(
+        writeRoot(QStringLiteral("load-taxonomy-future.solidar"), futureRoot));
+    CHECK(future.status == solidar::project::ProjectLoadStatus::Unsupported);
+    CHECK(future.sourceVersion == 101);
+    CHECK(future.payloadKind == solidar::project::ProjectPayloadKind::None);
+    CHECK(!future.succeeded());
+
+    auto unknownSchemaRoot = v3Root;
+    unknownSchemaRoot["sketches"] = QJsonArray{QJsonObject{
+        {"schema", QStringLiteral("future-sketch-v9")}}};
+    const auto unknownSchema = solidar::project::ProjectFile::stageLoad(
+        writeRoot(QStringLiteral("load-taxonomy-unknown-schema-v3.solidar"),
+                  unknownSchemaRoot));
+    CHECK(unknownSchema.status ==
+          solidar::project::ProjectLoadStatus::Unsupported);
+    CHECK(unknownSchema.sourceVersion == 3);
+    CHECK(unknownSchema.payloadKind ==
+          solidar::project::ProjectPayloadKind::None);
+
+    // Semantic writer oracle: metadata time and JSON key/byte order are not
+    // contractual. The independently authored object checks the v3 payload.
+    const QString writerPath =
+        directory.filePath(QStringLiteral("semantic-writer-v3.solidar"));
+    QString writerError;
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        writerPath, solidar::Document{}, &writerError));
+    QFile writerFile(writerPath);
+    CHECK(writerFile.open(QIODevice::ReadOnly));
+    auto actualSemantics =
+        QJsonDocument::fromJson(writerFile.readAll()).object();
+    actualSemantics.remove("createdAt");
+    QJsonObject oracleSemantics{
+        {"format", QStringLiteral("solidar-project")},
+        {"version", 3},
+        {"constraintTypeEncoding", QStringLiteral("stable-name-v1")},
+        {"name", QStringLiteral("semantic-writer-v3")},
+        {"document", QJsonObject{{"widthMm", 60.0},
+                                  {"heightMm", 40.0},
+                                  {"extrusionMm", 25.0}}},
+        {"sketches", QJsonArray{}},
+        {"extrusion", QJsonObject{{"enabled", false}}},
+        {"model", QJsonObject{{"sketches", QJsonArray{}},
+                                {"bodies", QJsonArray{}},
+                                {"referenceImages", QJsonArray{}}}}};
+    CHECK(actualSemantics == oracleSemantics);
+  }
+
   // Reference images are metadata-only external references: their placement,
   // scale and visibility round-trip even when the source file is unavailable.
   {
@@ -3278,12 +3420,16 @@ int main(int argc, char* argv[]) {
 
     // Staging is speculative: explicit IDs from a candidate file must not
     // advance process-global generators. Committing the same document must
-    // reserve all three ID domains and retain the documented save headroom.
+    // reserve all four global ID domains and retain the documented save
+    // headroom.
     {
       solidar::Document templateDocument;
       auto& templateSketch = templateDocument.addSketch("ID profile");
       const auto templateSketchId = templateSketch.id;
       templateSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+      templateDocument.addReferenceImage(
+          "ID image", "id-image.png", "XY", solidar::SketchPlacement::xy(),
+          16, 16);
       auto& templateBody = templateDocument.addBody("ID body");
       templateBody.addFeature(std::make_unique<solidar::ExtrudeFeature>(
           templateSketchId, 5.0, "ID extrude"));
@@ -3310,6 +3456,11 @@ int main(int argc, char* argv[]) {
       metadataSketch["id"] = kHighId;
       metadataSketches[0] = metadataSketch;
       highModel["sketches"] = metadataSketches;
+      auto highImages = highModel.value("referenceImages").toArray();
+      auto highImage = highImages[0].toObject();
+      highImage["id"] = kHighId;
+      highImages[0] = highImage;
+      highModel["referenceImages"] = highImages;
       auto highBodies = highModel.value("bodies").toArray();
       auto highBody = highBodies[0].toObject();
       highBody["id"] = kHighId;
@@ -3338,6 +3489,11 @@ int main(int argc, char* argv[]) {
       CHECK(!highIdPath.isEmpty());
       solidar::Document beforeStage;
       const auto beforeSketchId = beforeStage.addSketch("Before").id;
+      const auto beforeImageId = beforeStage
+                                     .addReferenceImage(
+                                         "Before", "before.png", "XY",
+                                         solidar::SketchPlacement::xy(), 1, 1)
+                                     .id;
       auto& beforeBody = beforeStage.addBody("Before");
       const auto beforeBodyId = beforeBody.id();
       auto beforeFeature = std::make_unique<solidar::ExtrudeFeature>(
@@ -3353,6 +3509,11 @@ int main(int argc, char* argv[]) {
 
       solidar::Document afterStage;
       const auto afterSketchId = afterStage.addSketch("After").id;
+      const auto afterImageId = afterStage
+                                    .addReferenceImage(
+                                        "After", "after.png", "XY",
+                                        solidar::SketchPlacement::xy(), 1, 1)
+                                    .id;
       auto& afterBody = afterStage.addBody("After");
       const auto afterBodyId = afterBody.id();
       auto afterFeature = std::make_unique<solidar::ExtrudeFeature>(
@@ -3360,6 +3521,7 @@ int main(int argc, char* argv[]) {
       const auto afterFeatureId = afterFeature->id();
       afterBody.addFeature(std::move(afterFeature));
       CHECK(afterSketchId == beforeSketchId + 1);
+      CHECK(afterImageId == beforeImageId + 1);
       CHECK(afterBodyId == beforeBodyId + 1);
       CHECK(afterFeatureId == beforeFeatureId + 1);
 
@@ -3369,6 +3531,11 @@ int main(int argc, char* argv[]) {
       auto& nextSketch = committed.addSketch("After high ID");
       const auto nextSketchId = nextSketch.id;
       nextSketch.geometry.addRectangle({20.0, 0.0}, {30.0, 10.0});
+      const auto nextImageId = committed
+                                   .addReferenceImage(
+                                       "After high ID", "after-high.png", "XY",
+                                       solidar::SketchPlacement::xy(), 1, 1)
+                                   .id;
       auto& nextBody = committed.addBody("After high ID");
       const auto nextBodyId = nextBody.id();
       auto nextFeature = std::make_unique<solidar::ExtrudeFeature>(
@@ -3376,11 +3543,127 @@ int main(int argc, char* argv[]) {
       const auto nextFeatureId = nextFeature->id();
       nextBody.addFeature(std::move(nextFeature));
       CHECK(nextSketchId == static_cast<solidar::SketchId>(kHighId + 1));
+      CHECK(nextImageId ==
+            static_cast<solidar::ReferenceImageId>(kHighId + 1));
       CHECK(nextBodyId == static_cast<solidar::BodyId>(kHighId + 1));
       CHECK(nextFeatureId == static_cast<solidar::FeatureId>(kHighId + 1));
       CHECK(committed.recompute());
       CHECK(solidar::project::ProjectFile::saveDocument(
           directory.filePath("high-id-edited.solidar"), committed, &error));
+
+      // Validation accepts an open profile, but document recompute rejects
+      // its Extrude later during materialization. Even this late failure must
+      // leave caller state, sketch-local cursors and all global ID generators
+      // untouched.
+      auto lateFailureRoot = highIdRoot;
+      constexpr qint64 kLateFailureId =
+          solidar::project::ProjectFile::kMaximumPersistedId - 2;
+      auto lateSketches = lateFailureRoot.value("sketches").toArray();
+      auto lateSketch = lateSketches[0].toObject();
+      lateSketch["sketchId"] = kLateFailureId;
+      auto lateLines = lateSketch.value("lines").toArray();
+      while (lateLines.size() > 1) lateLines.removeLast();
+      lateSketch["lines"] = lateLines;
+      lateSketch["constraints"] = QJsonArray{};
+      lateSketch["dimensions"] = QJsonArray{};
+      lateSketch["centerNodeElementIds"] = QJsonArray{};
+      lateSketches[0] = lateSketch;
+      lateFailureRoot["sketches"] = lateSketches;
+      auto lateModel = lateFailureRoot.value("model").toObject();
+      auto lateMetadataSketches = lateModel.value("sketches").toArray();
+      auto lateMetadataSketch = lateMetadataSketches[0].toObject();
+      lateMetadataSketch["id"] = kLateFailureId;
+      lateMetadataSketches[0] = lateMetadataSketch;
+      lateModel["sketches"] = lateMetadataSketches;
+      auto lateImages = lateModel.value("referenceImages").toArray();
+      auto lateImage = lateImages[0].toObject();
+      lateImage["id"] = kLateFailureId;
+      lateImages[0] = lateImage;
+      lateModel["referenceImages"] = lateImages;
+      auto lateBodies = lateModel.value("bodies").toArray();
+      auto lateBody = lateBodies[0].toObject();
+      lateBody["id"] = kLateFailureId;
+      auto lateFeatures = lateBody.value("features").toArray();
+      auto lateFeature = lateFeatures[0].toObject();
+      lateFeature["id"] = kLateFailureId;
+      lateFeature["sketchId"] = kLateFailureId;
+      lateFeatures[0] = lateFeature;
+      lateBody["features"] = lateFeatures;
+      lateBodies[0] = lateBody;
+      lateModel["bodies"] = lateBodies;
+      lateFailureRoot["model"] = lateModel;
+      const QString lateFailurePath =
+          writeRoot("late-materialization-failure.solidar", lateFailureRoot);
+      CHECK(!lateFailurePath.isEmpty());
+
+      solidar::Document destination;
+      auto& sentinel = destination.addSketch("sentinel");
+      sentinel.geometry.addLine({0.0, 0.0}, {3.0, 4.0});
+      const auto sentinelFingerprint = sentinel.geometry.semanticFingerprint();
+      const auto sentinelNextElement = sentinel.geometry.nextElementId();
+      const auto sentinelNextGeometry = sentinel.geometry.nextGeometryId();
+      const auto sentinelNextConstraint = sentinel.geometry.nextConstraintId();
+      const auto sentinelNextDimension = sentinel.geometry.nextDimensionId();
+
+      solidar::Document beforeRejectedStage;
+      const auto beforeRejectedSketch =
+          beforeRejectedStage.addSketch("Before rejected").id;
+      const auto beforeRejectedImage = beforeRejectedStage
+                                           .addReferenceImage(
+                                               "Before rejected", "before-r.png",
+                                               "XY", solidar::SketchPlacement::xy(),
+                                               1, 1)
+                                           .id;
+      auto& beforeRejectedBody = beforeRejectedStage.addBody("Before rejected");
+      const auto beforeRejectedBodyId = beforeRejectedBody.id();
+      auto beforeRejectedFeature = std::make_unique<solidar::ExtrudeFeature>(
+          beforeRejectedSketch, 1.0, "Before rejected");
+      const auto beforeRejectedFeatureId = beforeRejectedFeature->id();
+      beforeRejectedBody.addFeature(std::move(beforeRejectedFeature));
+
+      const auto rejected =
+          solidar::project::ProjectFile::stageLoad(lateFailurePath);
+      CHECK(rejected.status == solidar::project::ProjectLoadStatus::Invalid);
+      CHECK(rejected.sourceVersion == 3);
+      CHECK(rejected.payloadKind == solidar::project::ProjectPayloadKind::None);
+      CHECK(!rejected.document.has_value());
+      CHECK(rejected.error.contains(QString::fromUtf8("перестроить")));
+      QString rejectedError;
+      CHECK(!solidar::project::ProjectFile::loadDocument(
+          lateFailurePath, &destination, &rejectedError));
+      CHECK(!rejectedError.isEmpty());
+      CHECK(destination.sketches().size() == 1);
+      CHECK(destination.sketches()[0].name == "sentinel");
+      CHECK(destination.sketches()[0].geometry.semanticFingerprint() ==
+            sentinelFingerprint);
+      CHECK(destination.sketches()[0].geometry.nextElementId() ==
+            sentinelNextElement);
+      CHECK(destination.sketches()[0].geometry.nextGeometryId() ==
+            sentinelNextGeometry);
+      CHECK(destination.sketches()[0].geometry.nextConstraintId() ==
+            sentinelNextConstraint);
+      CHECK(destination.sketches()[0].geometry.nextDimensionId() ==
+            sentinelNextDimension);
+
+      solidar::Document afterRejectedStage;
+      const auto afterRejectedSketch =
+          afterRejectedStage.addSketch("After rejected").id;
+      const auto afterRejectedImage = afterRejectedStage
+                                          .addReferenceImage(
+                                              "After rejected", "after-r.png",
+                                              "XY", solidar::SketchPlacement::xy(),
+                                              1, 1)
+                                          .id;
+      auto& afterRejectedBody = afterRejectedStage.addBody("After rejected");
+      const auto afterRejectedBodyId = afterRejectedBody.id();
+      auto afterRejectedFeature = std::make_unique<solidar::ExtrudeFeature>(
+          afterRejectedSketch, 1.0, "After rejected");
+      const auto afterRejectedFeatureId = afterRejectedFeature->id();
+      afterRejectedBody.addFeature(std::move(afterRejectedFeature));
+      CHECK(afterRejectedSketch == beforeRejectedSketch + 1);
+      CHECK(afterRejectedImage == beforeRejectedImage + 1);
+      CHECK(afterRejectedBodyId == beforeRejectedBodyId + 1);
+      CHECK(afterRejectedFeatureId == beforeRejectedFeatureId + 1);
     }
   }
 

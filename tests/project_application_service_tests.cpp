@@ -76,6 +76,28 @@ int main(int argc, char* argv[]) {
   CHECK(unsupported.status.code ==
         solidar::ProjectApplicationErrorCode::UnsupportedProject);
 
+  const QString malformedV3Path =
+      directory.filePath(QStringLiteral("malformed-v3.solidar"));
+  CHECK(writeBytes(
+      malformedV3Path,
+      QByteArrayLiteral(
+          R"({"format":"solidar-project","version":3,"constraintTypeEncoding":"stable-name-v1"})")));
+  const auto malformedV3 = service.stageOpen(malformedV3Path);
+  CHECK(!malformedV3.succeeded());
+  CHECK(malformedV3.status.code ==
+        solidar::ProjectApplicationErrorCode::InvalidProject);
+
+  const QString unknownSchemaV3Path =
+      directory.filePath(QStringLiteral("unknown-schema-v3.solidar"));
+  CHECK(writeBytes(
+      unknownSchemaV3Path,
+      QByteArrayLiteral(
+          R"({"format":"solidar-project","version":3,"constraintTypeEncoding":"stable-name-v1","sketches":[{"schema":"future-sketch-v9"}]})")));
+  const auto unknownSchemaV3 = service.stageOpen(unknownSchemaV3Path);
+  CHECK(!unknownSchemaV3.succeeded());
+  CHECK(unknownSchemaV3.status.code ==
+        solidar::ProjectApplicationErrorCode::UnsupportedProject);
+
   // Historical v1 becomes a complete staged Document and carries the legacy
   // extrusion presentation reference without exposing ProjectFile DTOs to UI.
   solidar::project::ProjectData legacy;
@@ -97,16 +119,16 @@ int main(int argc, char* argv[]) {
   CHECK(openedV1.staged->document.sketches().front().placement.origin.z ==
         20.0);
 
-  // Canonical v2 save/open round-trip keeps parametric document ownership in
+  // Canonical v3 save/open round-trip keeps parametric document ownership in
   // the staged result until the caller explicitly commits it.
-  const QString v2Path = directory.filePath(QStringLiteral("canonical-v2.solidar"));
-  const auto saved = service.save(v2Path, committed);
+  const QString v3Path = directory.filePath(QStringLiteral("canonical-v3.solidar"));
+  const auto saved = service.save(v3Path, committed);
   CHECK(saved.succeeded());
-  auto openedV2 = service.stageOpen(v2Path);
-  CHECK(openedV2.succeeded());
-  CHECK(openedV2.staged->document.bodies().size() == 1);
-  CHECK(openedV2.staged->document.bodies().front().features().size() == 1);
-  CHECK(!openedV2.staged->historicalLegacyExtrusionSourceSketchId);
+  auto openedV3 = service.stageOpen(v3Path);
+  CHECK(openedV3.succeeded());
+  CHECK(openedV3.staged->document.bodies().size() == 1);
+  CHECK(openedV3.staged->document.bodies().front().features().size() == 1);
+  CHECK(!openedV3.staged->historicalLegacyExtrusionSourceSketchId);
 
   // STEP import is also staged against a copy. Both successful and failed
   // translations leave the supplied current Document unchanged.

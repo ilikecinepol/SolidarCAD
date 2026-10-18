@@ -57,8 +57,12 @@ int main(int argc, char* argv[]) {
       QJsonDocument(stableSeed).toJson(QJsonDocument::Compact);
   CHECK(!seed.isEmpty());
   CHECK(writeBytes(seedPath, seed));
-  CHECK(solidar::project::ProjectFile::stageLoad(seedPath).kind ==
-        solidar::project::ProjectLoadKind::ValidV2);
+  const auto stagedSeed =
+      solidar::project::ProjectFile::stageLoad(seedPath);
+  CHECK(stagedSeed.status == solidar::project::ProjectLoadStatus::Valid);
+  CHECK(stagedSeed.sourceVersion == 3);
+  CHECK(stagedSeed.payloadKind ==
+        solidar::project::ProjectPayloadKind::ParametricPartV3);
 
   std::vector<QByteArray> cases{
       QByteArray{},
@@ -113,6 +117,9 @@ int main(int argc, char* argv[]) {
 
     const auto first = solidar::project::ProjectFile::stageLoad(path);
     const auto second = solidar::project::ProjectFile::stageLoad(path);
+    CHECK(first.status == second.status);
+    CHECK(first.sourceVersion == second.sourceVersion);
+    CHECK(first.payloadKind == second.payloadKind);
     CHECK(first.kind == second.kind);
     CHECK(first.succeeded() == second.succeeded());
 
