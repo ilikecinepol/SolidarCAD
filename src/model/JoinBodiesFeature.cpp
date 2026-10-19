@@ -6,21 +6,24 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 
+#include <array>
+#include <span>
+
 #include "model/Document.h"
 #include "model/GeometryOperation.h"
+#include "model/OcctBooleanTopologyHistoryCapture.h"
+#include "model/TopologyLineage.h"
 
 namespace solidar {
 namespace {
 
-const TopoDS_Shape* resolveSource(const RebuildContext& context, BodyId bodyId,
-                                  FeatureId featureId) {
-  const Body* body = context.document.findBody(bodyId);
-  if (!body) return nullptr;
-  for (const auto& feature : body->features())
-    if (feature->id() == featureId && feature->isValid() && feature->shape() &&
-        !feature->shape()->IsNull())
-      return feature->shape().get();
-  return nullptr;
+const ShapeFeature* resolveSource(const RebuildContext& context,
+                                  BodyId bodyId, FeatureId featureId) {
+  const auto* feature = context.document.findFeature(bodyId, featureId);
+  if (!feature || !feature->isValid() || !feature->shape() ||
+      feature->shape()->IsNull())
+    return nullptr;
+  return feature;
 }
 
 int solidCount(const TopoDS_Shape& shape) {
@@ -152,21 +155,93 @@ FeatureDependencies JoinBodiesFeature::dependencies() const {
 
 bool JoinBodiesFeature::rebuildImpl(const RebuildContext& context) {
   clearShape();
-  const TopoDS_Shape* first =
+  if (firstBodyId_ == secondBodyId_) {
+    markError("Join Bodies requires two distinct source Bodies");
+    return false;
+  }
+  if (context.body &&
+      (context.body->id() == firstBodyId_ ||
+       context.body->id() == secondBodyId_)) {
+    markError("Join Bodies result Body must not alias a source Body");
+    return false;
+  }
+
+  const ShapeFeature* first =
       resolveSource(context, firstBodyId_, firstFeatureId_);
-  const TopoDS_Shape* second =
+  const ShapeFeature* second =
       resolveSource(context, secondBodyId_, secondFeatureId_);
   if (!first || !second) {
     markError("Join Bodies source Feature could not be resolved");
     return false;
   }
-  std::string error;
-  auto result = buildJoinedBodiesShape(*first, *second, &error);
-  if (!result) {
-    markError(std::move(error));
+  const auto firstShape = first->shape();
+  const auto secondShape = second->shape();
+  const auto firstLineage = first->topologyLineage();
+  const auto secondLineage = second->topologyLineage();
+
+  if ((firstLineage && firstLineage->coverage() !=
+                           TopologyLineageCoverage::CompleteFaces) ||
+      (secondLineage && secondLineage->coverage() !=
+                            TopologyLineageCoverage::CompleteFaces)) {
+    markError("Join Bodies source face lineage is incomplete");
     return false;
   }
-  setShape(std::move(result));
+
+  std::string error;
+  if (!firstLineage || !secondLineage) {
+    auto result = buildJoinedBodiesShape(*firstShape, *secondShape, &error);
+    if (!result) {
+      markError(std::move(error));
+      return false;
+    }
+    setShape(std::move(result));
+    markValid();
+    return true;
+  }
+
+  if (!BRepCheck_Analyzer(*firstShape).IsValid() ||
+      !BRepCheck_Analyzer(*secondShape).IsValid()) {
+    markError("Join Bodies source B-Rep is invalid");
+    return false;
+  }
+
+  BRepAlgoAPI_Fuse fuse(*firstShape, *secondShape);
+  fuse.Build();
+  if (!fuse.IsDone() || fuse.Shape().IsNull()) {
+    markError("Join Bodies boolean operation failed");
+    return false;
+  }
+
+  const std::array<BooleanTopologySource, 2> sources{{
+      {BooleanOperandRole::Object,
+       {first->id(), firstShape, firstLineage}},
+      {BooleanOperandRole::Tool,
+       {second->id(), secondShape, secondLineage}},
+  }};
+  BooleanTopologyCaptureOptions options;
+  options.simplifyResult = true;
+  BooleanTopologyCaptureFailure captureFailure;
+  auto captured = captureBooleanFaceHistory(
+      fuse, id(), std::span<const BooleanTopologySource>(sources), {},
+      options, &captureFailure);
+  if (!captured) {
+    markError(captureFailure.detail.empty()
+                  ? "Join Bodies face history capture failed"
+                  : std::move(captureFailure.detail));
+    return false;
+  }
+  if (solidCount(*captured->outputShape) != 1) {
+    markError("Join Bodies requires two touching or intersecting solids");
+    return false;
+  }
+  auto lineage = captured->builder.build(&error);
+  if (!lineage) {
+    markError(error.empty() ? "Join Bodies face lineage build failed"
+                            : std::move(error));
+    return false;
+  }
+  setShapeAndTopologyLineage(std::move(captured->outputShape),
+                             std::move(lineage));
   markValid();
   return true;
 }

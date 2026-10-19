@@ -225,7 +225,7 @@ solidar_add_test(fillet_feature_tests
 solidar_add_test(chamfer_feature_tests
   LIBRARIES solidar_project Qt6::Core LABELS regression)
 solidar_add_test(join_bodies_feature_tests
-  LIBRARIES solidar_project Qt6::Core LABELS regression)
+  LIBRARIES solidar_project Qt6::Core LABELS regression topology)
 solidar_add_test(parametric_feature_chain_tests
   LIBRARIES solidar_model LABELS regression)
 solidar_add_test(part_design_regression_tests
