@@ -31,6 +31,7 @@
 #include "model/MoveFeature.h"
 #include "model/MoveToolSession.h"
 #include "model/NumericParameterState.h"
+#include "model/OcctTopologyHistoryCapture.h"
 #include "model/OperationFailure.h"
 #include "model/PartDesignToolFramework.h"
 #include "model/PatternTypes.h"

@@ -93,6 +93,8 @@ add_library(solidar_model
   model/ShellToolSession.h
   model/SketchPlacement.cpp
   model/SketchPlacement.h
+  model/OcctTopologyHistoryCapture.cpp
+  model/OcctTopologyHistoryCapture.h
   model/TopologyLineage.cpp
   model/TopologyLineage.h
   model/TopologyLineageBuilder.cpp

@@ -248,6 +248,8 @@ solidar_add_test(persistent_topology_tests
   LIBRARIES solidar_model LABELS regression topology)
 solidar_add_test(topology_lineage_tests
   LIBRARIES solidar_model LABELS unit regression topology)
+solidar_add_test(topology_history_capture_tests
+  LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(sketch_constraint_integrity_tests
   LIBRARIES solidar_model LABELS regression)
 solidar_add_test(sketch_schema_tests
