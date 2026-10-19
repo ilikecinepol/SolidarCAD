@@ -1,8 +1,8 @@
 # Product document envelope и идентичность определений
 
-Дата: 18 октября 2026 г.
-Статус: архитектурное решение принято (ветвь B); D1 не завершён, реализация A1
-заблокирована невыполненными prerequisites
+Дата: 18 октября 2026 г.; уточнение persistence boundary — 19 октября 2026 г.
+Статус: архитектурное решение принято (ветвь B); product envelope отделён от
+standalone project format v4; D1 не завершён
 
 ## Контекст
 
@@ -14,12 +14,12 @@
 `DocumentIndex` имеет детерминированные cross-body, Sketch и face-support edges,
 структурный abort, affected-closure propagation и same-ID recovery; evidence
 закреплено scheduler/removal/join/pattern regressions и согласовано с roadmap.
-Это не закрывает полный этап Parametric Core 2.0. Persistent topology остаётся
-на уровне v1; v2 отсутствует. Split/merge сейчас завершаются отказом,
-симметричная геометрия неоднозначна, а provenance для геометрии, созданной
-pattern-операциями, отсутствует. Поэтому A1 и типы изделия, а также A7 и mates,
-запрещены до прохождения оставшихся gates. Техническая возможность показать
-статическую сборку не является разрешением на реализацию.
+Это не закрывает полный этап Parametric Core 2.0. In-memory carrier persistent
+topology v2 и первые face-lineage producers/transform consumers уже существуют,
+но persistence, полный boolean split/merge contract и reader/writer gates ещё
+не завершены. Поэтому A1 и типы изделия, а также A7 и mates, запрещены до
+прохождения оставшихся gates. Техническая возможность показать статическую
+сборку не является разрешением на реализацию.
 
 Текущее приложение по-прежнему владеет одним `Document`. Production-типа
 изделия и перехода application ownership пока нет.
@@ -31,9 +31,9 @@ pattern-операциями, отсутствует. Поэтому A1 и ти�
 Сохранить текущий part-документ как самостоятельный корень и добавить
 параллельный формат сборки со своими правилами ссылок. Честная реализация этого
 варианта не обязана считать путь идентичностью: assembly может владеть стабильным
-binding ID для вставленного legacy v3, а путь оставить только locator. Такой
+binding ID для вставленного standalone v3, а путь оставить только locator. Такой
 binding, однако, идентифицирует вхождение для конкретной сборки, а не создаёт
-долговечную внешнюю идентичность самого legacy-проекта.
+долговечную внешнюю идентичность самого standalone-проекта.
 
 ### Вариант B — единый identity-bearing envelope
 
@@ -48,10 +48,10 @@ subassemblies и позволяет честно отделить идентич
 | Dimension | Вариант A | Вариант B |
 | --- | --- | --- |
 | Пользовательская ценность | Быстрее даёт отдельную статическую сборку и не требует немедленной конвертации детали. | Даёт общую модель детали, изделия и будущей subassembly, включая устойчивую внешнюю идентичность после явной конвертации. |
-| Начальная стоимость миграции | Ниже: legacy part остаётся отдельным типом root, assembly добавляется рядом. | Выше: нужны envelope, явная конвертация persistence и staged смена application ownership. |
+| Начальная стоимость миграции | Ниже: standalone part остаётся отдельным типом root, assembly добавляется рядом. | Выше: нужны envelope, явная конвертация persistence и staged смена application ownership. |
 | Linked identity | Assembly-owned binding ID честно идентифицирует импорт внутри одной сборки; путь остаётся locator. Для ссылки на тот же проект между сборками нужна дополнительная внешняя identity policy. | После explicit conversion `ExternalSourceKey` задаёт долговечную идентичность definition; linked resolution остаётся запрещённым до A6. Locator и revision отделены. |
-| `Save` / `Save As` / `Relocate` | Для legacy продолжают действовать legacy semantics; assembly binding не превращает файл детали в identity-bearing source. Правила part и assembly остаются раздельными. | До конвертации действуют те же legacy semantics; после неё единые правила `ProjectId` различают Save, clone через Save As и Relocate. |
-| Обратная совместимость | Legacy part читается без миграции; новый assembly root неизвестен старому reader. | Legacy part читается без миграции; новый envelope неизвестен старому reader. В обоих вариантах требуется явный `Unsupported`, без silent downgrade. |
+| `Save` / `Save As` / `Relocate` | Для standalone продолжают действовать standalone semantics; assembly binding не превращает файл детали в identity-bearing source. Правила part и assembly остаются раздельными. | До конвертации действуют те же standalone semantics; после неё единые правила `ProjectId` различают Save, clone через Save As и Relocate. |
+| Обратная совместимость | Standalone part читается без миграции; новый assembly root неизвестен старому reader. | Standalone part читается без миграции; новый envelope неизвестен старому reader. В обоих вариантах требуется явный `Unsupported`, без silent downgrade. |
 | Число format bumps | Можно начать с одного assembly-format transition, но последующее объединение external identity/subassembly, вероятно, потребует ещё одного перехода. | Требует более дорогого первого envelope transition, но, вероятно, уменьшает число долгосрочных schema transitions благодаря одной модели root/kind. |
 | Application ownership | Сохраняет два долгосрочных пути владения: single `Document` для part и отдельный owner для assembly. | Целевой единый `ProductDocument` становится owner для part и assembly после отдельной staged миграции. |
 
@@ -64,8 +64,10 @@ schema transitions, а также единый application owner. Эти пре�
 ## Решение
 
 Принят вариант B: единый identity-bearing product/component envelope. Версия
-схемы ортогональна виду корня и виду определения. Номер следующей схемы этим ADR
-не назначается.
+схемы ортогональна виду корня и виду определения. Уточнение P0 резервирует v4
+не для envelope, а для standalone single-part topology-capable schema из
+`docs/project-format-v4.md`. Первая схема envelope поэтому получает отдельный
+номер строго выше `4`; точный номер назначается её собственным persistence gate.
 
 Целевая модель владения:
 
@@ -92,41 +94,74 @@ schema transitions, а также единый application owner. Эти пре�
 означает `IdentityConflict`. Resolver не должен молча выбирать один вариант по
 пути, времени изменения или порядку загрузки.
 
-## Миграция legacy v1-v3
+## Миграция standalone v1-v4
 
-Production сегодня остаётся v1-v3 и single `Document`. Envelope, `ProjectId`,
-`DefinitionRegistry` и conversion workflow ещё не реализованы и не должны
-появляться до отдельно разрешённого A2. A2 будет реализовывать правила этого
-ADR, а не заново решать их.
+Production writer сегодня остаётся v3 и single `Document`; reader сохраняет
+standalone v1-v3. V4 определён отдельно как standalone single-part schema для
+persistent topology v2, но его reader/writer ещё не реализованы. До A2
+запрещены persisted product envelope, `ProjectId`, envelope schema metadata,
+conversion workflow, persistence codec и activation product-envelope schema в
+application Open.
 
-В будущем envelope-aware open сможет staged и атомарно обернуть legacy v1-v3 в
-памяти в envelope с одним корневым `PartDefinition` и выделить candidate
-`ProjectId` и root `DefinitionId`. До успешного explicit conversion commit эти
-candidate IDs являются только transient migration state: они не сохраняются и
-не считаются persisted external identity.
+Этот запрет не блокирует последовательность A1 из исходной задачи. После
+прохождения topology gate A1a добавляет Qt-free in-memory, non-production и
+non-persisted foundation — project-local `DefinitionId`,
+`DefinitionRegistry`, root ID и `PartDefinition`, единолично владеющую
+существующим `Document`. Затем A1b1 может провести тот же единственный
+in-memory carrier через staged-границу `ProjectApplicationService`, а A1b2 —
+перевести committed editor ownership на него. Все три шага остаются
+non-persisted: не добавляют `ProjectId` или envelope metadata, не меняют
+standalone codec/writer и не создают второй authoritative state.
 
-Единственный trigger первой записи envelope для открытого legacy-проекта —
+Carrier A1 не является product envelope. После A1b обычный New/Open может
+владеть standalone `Document` через этот in-memory root carrier, но не создаёт
+ни transient, ни persisted product envelope и не активирует envelope schema.
+A1a, A1b1 и A1b2 выполняются до A2, последовательно и каждый в собственной
+границе с отдельной авторизацией.
+
+Правила этого ADR явно заменяют раннюю формулировку A2 в строках 403–407
+`docs/tasks/2026-10-18-components-and-assemblies.md`, где обычные Save/Save As
+могли быть истолкованы как implicit identity migration. Вложение задачи
+остаётся неизменяемым историческим evidence; при будущей реализации A2
+приоритет имеет этот ADR. Единственный способ создать product envelope из
+standalone v1-v4 — явная команда conversion, описанная ниже.
+
+В будущем только explicit Convert workflow сможет staged и атомарно обернуть
+standalone v1-v4 в памяти в envelope с одним корневым `PartDefinition` и
+выделить candidate `ProjectId` и root `DefinitionId`. До успешного conversion
+commit эти candidate IDs являются только transient conversion state: они не
+сохраняются и не считаются persisted external identity. Обычный Open не создаёт
+даже transient product envelope.
+
+Единственный trigger первой записи envelope для открытого standalone v1-v4 —
 явная будущая команда `Convert to Product Document` / «Преобразовать в документ
 изделия». Она атомарно пишет envelope в выбранную пользователем цель и не
-перезаписывает source неявно. Legacy-файл остаётся читаемым и неизменным, если
+перезаписывает source неявно. Standalone-файл остаётся читаемым и неизменным, если
 пользователь явно не выбрал его как conversion target с перезаписью. Скрытый
 sidecar не создаётся.
 
 До conversion:
 
-- обычный `Save` в ту же цель и `Save As` сохраняют legacy v3 semantics и не
-  обещают и не записывают `ProjectId`;
-- legacy `Relocate` не имеет гарантии сохранения идентичности проекта;
-- использовать legacy payload внутри product/assembly можно только явной
+- обычный `Save` в ту же цель и `Save As` не создают envelope и не записывают
+  `ProjectId`; P2
+  декодирует v4 только в low-level staged tests, не содержит v4 writer и не
+  допускает payload до application open/Save/Save As/autosave/recovery; после
+  P3 Save и Save As сохраняют явный standalone format state: открытый v4
+  остаётся v4, а новый или открытый v1-v3 остаётся v3 до отдельного явного
+  standalone upgrade, без content-driven upgrade/downgrade; standalone upgrade
+  v1-v3 -> v4 не создаёт product envelope;
+- standalone `Relocate` не имеет гарантии сохранения идентичности проекта;
+- использовать standalone payload внутри product/assembly можно только явной
   операцией import/copy в новый project-local embedded `PartDefinition`, которым
   владеет целевой `ProductDocument`/assembly;
 - такой embedded `PartDefinition` является новым определением целевого проекта:
   он не является source binding или link, не сохраняет идентичность исходного
-  legacy-файла и не создаёт `ExternalSourceKey`;
-- linked identity, binding к legacy source и reload/repair semantics запрещены
-  до explicit conversion исходного legacy-файла в identity-bearing envelope и
+  standalone-файла и не создаёт `ExternalSourceKey`;
+- linked identity, binding к standalone source и reload/repair semantics
+  запрещены до explicit conversion исходного standalone-файла в
+  identity-bearing envelope и
   утверждения A6 resolver policy;
-- путь к legacy source допускается только как provenance/locator metadata и
+- путь к standalone source допускается только как provenance/locator metadata и
   никогда не является идентичностью.
 
 После conversion:
@@ -146,22 +181,23 @@ sidecar не создаётся.
 ## Embedded и linked definitions
 
 Будущий начальный product envelope сможет владеть embedded definitions. До
-conversion legacy payload может попасть туда только как явно импортированный
+conversion standalone payload может попасть туда только как явно импортированный
 или скопированный новый project-local embedded `PartDefinition`; связи с
-исходным legacy source у него нет. Linked definitions, source binding и
+исходным standalone source у него нет. Linked definitions, source binding и
 reload/repair откладываются до explicit conversion источника и A6 identity и
-resolver policy. Legacy v3 не становится linked definition и не получает
+resolver policy. Standalone v1-v4 не становится linked definition и не получает
 `ExternalSourceKey` посредством файлового пути: путь остаётся только
 provenance/locator metadata.
 
 ## Совместимость и сериализация
 
-Envelope-aware loader должен сохранить поддержку v1, v2 и v3. Envelope новой
-схемы для reader без её поддержки должен классифицироваться как `Unsupported`
-и никогда не понижаться
-молча до legacy part. Миграция будет выполняться staged и атомарно через seams A0:
-ошибка не публикует частично построенный product-документ и не изменяет
-destination.
+Envelope-aware loader должен сохранить поддержку standalone v1, v2, v3 и v4.
+Явная конвертация v1-v4 обязана сохранять существующие stable IDs и полную
+topology provenance без понижения V2 references до V1. Envelope новой схемы для
+reader без её поддержки должен классифицироваться как `Unsupported` и никогда
+не понижаться молча до standalone part. Миграция будет выполняться staged и атомарно
+через seams A0: ошибка не публикует частично построенный product-документ, не
+изменяет source и не изменяет destination.
 
 Derived и transformed B-Rep, mesh и GPU-данные не сериализуются и
 перестраиваются из авторитетных параметров. Существующее исключение
@@ -175,15 +211,17 @@ ownership; текущий single-`Document` workflow остаётся факти
 авторизованной реализации. Цена миграции принята ради одной модели envelope/kind,
 честной linked identity и возможности subassemblies без второй смены основы.
 
-Этот ADR не вводит production-типы, формат, resolver, occurrences, UI, mates или
-номер схемы. A7 mates не начинается до реализации persistent topology v2 и её
-регрессий.
+Этот ADR не вводит production-типы, resolver, occurrences, UI или mates. Он
+также не переиспользует standalone v4 как envelope: product schema будет
+отдельной версией выше 4. A7 mates не начинается до завершения persistent
+topology v2 persistence и её регрессий.
 
 Graph prerequisite закрыт подэтапом G0. Оставшийся точный gate для разблокировки
 A1 состоит из всех трёх условий:
 
-1. persistent topology v2 реализована и покрыта regressions для требуемых
-   split/merge, symmetry и pattern provenance случаев;
+1. persistent topology v2 реализована end-to-end, включая v4 reader/writer,
+   freeze boolean algebra и regressions для требуемых split/merge, symmetry и
+   pattern provenance случаев;
 2. на точном HEAD получено итоговое зелёное evidence согласованного build/test
    gate;
 3. пользователь дал явную авторизацию начать A1.

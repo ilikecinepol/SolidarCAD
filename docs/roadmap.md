@@ -1,6 +1,6 @@
 # Дорожная карта SolidarCAD
 
-Актуальность: 18 октября 2026 года.
+Актуальность: 19 октября 2026 года.
 
 Этот документ — основной источник статуса этапов. `README.md` содержит краткое
 резюме, `docs/release-checklist.md` — обязательный gate конкретного релизного
@@ -109,6 +109,30 @@ recovery. Evidence закреплено в `parametric_history_tests`,
 persistent topology v2, Feature history reorder, branching и suppression
 остаются открытыми.
 
+Persistence gate P0 фиксирует
+[`docs/project-format-v4.md`](project-format-v4.md): v4 — standalone
+single-part topology-capable schema с обязательной отсортированной capability
+`persistent-topology-v2` и строгими tagged V1/V2 references. Standalone v1-v3 не
+меняются, mixed V1/V2 references разрешены, а V2 никогда не использует V1
+fallback. Production writer остаётся v3 до завершения последовательности:
+
+1. **P1 — carrier и consumers:** завершить разрешённые in-memory producers и
+   consumers, atomic rollback и regressions provenance/coverage;
+2. **P2 — codec/staging:** добавить строгий low-level decoder v4 и staged
+   validation tests без encoder/writer, не регистрируя v4 в
+   `ProjectApplicationService`, UI open, autosave или recovery и не публикуя
+   application `Document`; все пути записи v4 остаются запрещены;
+3. **P3 — writer/application gate:** добавить каноническую атомарную запись v4,
+   включить application open и закрепить deterministic format-state matrix:
+   v4 остаётся v4; v1-v3 и новые документы остаются v3 до явного upgrade;
+   Save и Save As сохраняют state; authoring V2 в v3 запрещён до отдельной
+   явной команды upgrade; удаление V2 не понижает формат.
+
+До выпуска P3 должен быть заморожен и покрыт тестами boolean provenance algebra:
+правила Generated/Modified/Retained/Merge, split/merge, canonical origins и
+coverage. Частичный carrier или reader не разрешает writer v4.
+Ошибка Save не меняет destination или format state.
+
 Критерий выхода: сложная однодетальная модель выдерживает изменение размеров,
 редактирование и перестановку допустимых шагов истории, сохранение и повторное
 открытие без необходимости заново выбирать корректно сохранившиеся ссылки.
@@ -135,10 +159,26 @@ persistent topology v2, Feature history reorder, branching и suppression
 product/component envelope. Решение и границы миграции зафиксированы в
 [`docs/decisions/2026-10-18-product-document-envelope.md`](decisions/2026-10-18-product-document-envelope.md).
 A1 остаётся заблокированным: G0 графа зависимостей закрыт, но persistent topology
-v2 с regressions для split/merge, symmetry и pattern provenance не реализована,
-отсутствует итоговое зелёное evidence на точном HEAD и отдельная пользовательская
-авторизация. Элементы сборок не переводятся в завершённые, номер новой схемы не
-назначен; mates остаются запрещены до прохождения topology v2 gate.
+v2 persistence и regressions для split/merge, symmetry и pattern provenance не
+завершены, отсутствует итоговое зелёное evidence на точном HEAD и отдельная
+пользовательская авторизация. Standalone v4 не является product envelope.
+Первая envelope schema получит отдельный номер выше 4 и явную атомарную
+conversion из v1-v4 с сохранением stable IDs и V2 provenance; mates остаются
+запрещены до прохождения topology v2 gate.
+
+После прохождения gate этапы A1 идут до A2 в заданном порядке: A1a добавляет
+Qt-free in-memory non-production/non-persisted foundation (`DefinitionId`,
+registry, root, `PartDefinition`), A1b1 проводит тот же единственный carrier
+через staged service boundary, A1b2 переводит editor ownership на него. Carrier
+A1 не является product envelope: обычный Open по-прежнему открывает standalone
+document и не активирует envelope schema. До A2 запрещены только persisted
+product envelope, `ProjectId`, envelope schema metadata, conversion workflow,
+persistence codec и application-open activation envelope schema.
+
+Обычные Save/Save As standalone документа никогда не создают envelope: новый и
+открытый v1-v3 сохраняют v3, v4 сохраняет v4, а product envelope создаётся
+только явной командой `Convert to Product Document`. Это уточнение ADR имеет
+приоритет над ранней формулировкой A2 в неизменяемом файле исходной задачи.
 
 ## 0.6 — макросы и автоматизация
 
