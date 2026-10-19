@@ -9,11 +9,16 @@
 #include <TopExp_Explorer.hxx>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
+#include <span>
 #include <utility>
 
+#include "model/OcctBooleanTopologyHistoryCapture.h"
+#include "model/SketchExtrudeBuilder.h"
 #include "model/SketchProfileBuilder.h"
+#include "model/TopologyLineage.h"
 
 namespace solidar {
 namespace {
@@ -23,6 +28,12 @@ std::size_t solidCount(const TopoDS_Shape& shape) {
   for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next())
     ++count;
   return count;
+}
+
+bool containsFace(const TopoDS_Shape& shape, const TopoDS_Shape& face) {
+  for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next())
+    if (faces.Current().IsSame(face)) return true;
+  return false;
 }
 
 }  // namespace
@@ -74,12 +85,52 @@ bool PocketFeature::rebuildImpl(const RebuildContext& context) {
     markError("Pocket profile sketch was not found");
     return false;
   }
+
+  const ShapeFeature* baseFeature = context.previousFeature;
+  const auto baseLineage =
+      baseFeature ? baseFeature->topologyLineage()
+                  : std::shared_ptr<const TopologyLineage>{};
+  if (baseLineage &&
+      baseLineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    markError("Pocket base face lineage is incomplete");
+    return false;
+  }
+
+  bool useStrictLineage = false;
+  if (baseLineage) {
+    if (!baseFeature->shape() ||
+        !baseFeature->shape()->IsSame(*context.previousShape)) {
+      markError("Pocket base snapshot is incoherent");
+      return false;
+    }
+    useStrictLineage = isSupportedSingleSketchProfile(*profile);
+    // Eligibility only selects the strict lineage path. If it is not selected,
+    // the exact historical Pocket builder below remains the sole validator and
+    // diagnostic source for valid-out-of-scope and malformed profiles alike.
+  }
+
   std::string profileError;
   TopoDS_Shape prismShape;
-  if (!buildExtrusionPrismFromSketch(*profile, depthMm_, true, &prismShape,
-                                     &profileError)) {
-    markError("Pocket " + profileError);
-    return false;
+  std::shared_ptr<const TopologyLineage> toolLineage;
+  if (useStrictLineage) {
+    SketchExtrusionWithLineage tool;
+    if (!buildSimpleNewBodyExtrusionWithLineage(
+            *profile, id(), depthMm_, true, &tool, &profileError) ||
+        !tool.shape || !tool.lineage ||
+        tool.lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+      markError("Pocket " +
+                (profileError.empty() ? "tool face lineage is incomplete"
+                                      : profileError));
+      return false;
+    }
+    prismShape = *tool.shape;
+    toolLineage = std::move(tool.lineage);
+  } else {
+    if (!buildExtrusionPrismFromSketch(*profile, depthMm_, true, &prismShape,
+                                       &profileError)) {
+      markError("Pocket " + profileError);
+      return false;
+    }
   }
 
   try {
@@ -115,6 +166,63 @@ bool PocketFeature::rebuildImpl(const RebuildContext& context) {
       markError("Pocket result is invalid");
       return false;
     }
+
+    if (useStrictLineage) {
+      const std::array<BooleanTopologySource, 2> sources{{
+          {BooleanOperandRole::Object,
+           {baseFeature->id(), baseFeature->shape(), baseLineage}},
+          {BooleanOperandRole::Tool,
+           {id(), std::make_shared<TopoDS_Shape>(prismShape), toolLineage}},
+      }};
+      BooleanTopologyCaptureOptions options;
+      options.simplifyResult = false;
+      BooleanTopologyCaptureFailure captureFailure;
+      auto captured = captureBooleanFaceHistory(
+          cut, id(), std::span<const BooleanTopologySource>(sources), {},
+          options, &captureFailure);
+      if (!captured) {
+        markError(captureFailure.detail.empty()
+                      ? "Pocket face history capture failed"
+                      : std::move(captureFailure.detail));
+        return false;
+      }
+      auto lineage = captured->builder.build(&profileError);
+      if (!lineage ||
+          lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+        markError(profileError.empty() ? "Pocket face lineage build failed"
+                                       : std::move(profileError));
+        return false;
+      }
+
+      ShapeFeature::ShapePtr committedShape = captured->outputShape;
+      // Preserve the historical single-solid root without changing topology:
+      // every captured face must remain the exact IsSame subshape of the
+      // extracted solid. Otherwise fail instead of publishing incoherent
+      // shape/lineage snapshots.
+      if (resultSolidCount == 1 &&
+          committedShape->ShapeType() != TopAbs_SOLID) {
+        TopExp_Explorer solids(*committedShape, TopAbs_SOLID);
+        if (!solids.More()) {
+          markError("Pocket result solid could not be normalized");
+          return false;
+        }
+        const TopoDS_Shape normalized = solids.Current();
+        if (std::any_of(lineage->bindings().begin(), lineage->bindings().end(),
+                        [&](const auto& binding) {
+                          return !binding.subshape || binding.subshape->IsNull() ||
+                                 !containsFace(normalized, *binding.subshape);
+                        })) {
+          markError("Pocket result normalization changed captured faces");
+          return false;
+        }
+        committedShape = std::make_shared<TopoDS_Shape>(normalized);
+      }
+      setShapeAndTopologyLineage(std::move(committedShape),
+                                 std::move(lineage));
+      markValid();
+      return true;
+    }
+
     // Preserve multi-solid containers.  Keep the historical single-solid
     // normalization so existing callers still receive a TopAbs_SOLID root.
     if (resultSolidCount == 1 && result.ShapeType() != TopAbs_SOLID) {

@@ -133,6 +133,8 @@ solidar_add_test(extrude_tool_session_tests
   LIBRARIES solidar_model LABELS regression)
 solidar_add_test(pocket_feature_tests
   LIBRARIES solidar_model LABELS unit)
+solidar_add_test(pocket_topology_lineage_tests
+  LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(project_file_tests
   LIBRARIES solidar_project Qt6::Core LABELS regression)
 solidar_add_test(project_decoder_property_tests
