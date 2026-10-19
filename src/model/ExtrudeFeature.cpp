@@ -236,12 +236,12 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
                   : "Extrude Cut base shape is missing");
     return false;
   }
-  if (!context.body || source.face.bodyId != context.body->id()) {
+  if (!context.body || source.face.bodyId() != context.body->id()) {
     markError("Extrude face belongs to a different Body");
     return false;
   }
   if (!context.previousFeature ||
-      source.face.featureId != context.previousFeature->id()) {
+      source.face.featureId() != context.previousFeature->id()) {
     markError("Extrude face must belong to the immediate source Feature");
     return false;
   }

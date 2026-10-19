@@ -114,8 +114,8 @@ bool MirrorToolSession::updatePreview() {
     return false;
   }
   if (planeFace_ &&
-      (planeFace_->bodyId != bodyId_ ||
-       planeFace_->featureId != sourceFeatureId_)) {
+      (planeFace_->bodyId() != bodyId_ ||
+       planeFace_->featureId() != sourceFeatureId_)) {
     error_ = "Mirror plane face must belong to the selected source Feature";
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;

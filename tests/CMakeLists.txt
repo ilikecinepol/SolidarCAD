@@ -82,7 +82,10 @@ solidar_add_test(model_command_history_tests
 # This target intentionally neither links solidar_model nor receives any Qt
 # target/include directory. It compiles the public headers using only the
 # repository and OCCT include roots, so a Qt include in the model API fails.
-solidar_add_test(model_public_headers_compile_tests LABELS compliance)
+solidar_add_test(model_public_headers_compile_tests
+  SOURCES model_public_headers_compile_tests.cpp
+          shape_feature_public_header_compile.cpp
+  LABELS compliance)
 target_include_directories(model_public_headers_compile_tests
   PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(model_public_headers_compile_tests SYSTEM

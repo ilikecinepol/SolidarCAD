@@ -247,12 +247,13 @@ std::optional<EdgeSignature> readEdgeSignature(const QJsonValue& value) {
 }
 
 QJsonObject savedFaceReference(const FaceReference& face) {
-  QJsonObject result{{"bodyId", static_cast<qint64>(face.bodyId)},
-                     {"featureId", static_cast<qint64>(face.featureId)},
-                     {"faceIndex", static_cast<qint64>(face.faceIndex)}};
-  if (!face.persistentTag.empty())
-    result["persistentTag"] = QString::fromStdString(face.persistentTag);
-  if (face.signature) result["signature"] = faceSignature(*face.signature);
+  QJsonObject result{{"bodyId", static_cast<qint64>(face.bodyId())},
+                     {"featureId", static_cast<qint64>(face.featureId())},
+                     {"faceIndex", static_cast<qint64>(face.faceIndex())}};
+  if (!face.persistentTag().empty())
+    result["persistentTag"] = QString::fromStdString(face.persistentTag());
+  if (face.signature())
+    result["signature"] = faceSignature(*face.signature());
   return result;
 }
 
@@ -351,9 +352,9 @@ FaceReference loadedFaceReference(const QJsonValue& value) {
   FaceReference result{
       static_cast<BodyId>(saved.value("bodyId").toInteger()),
       static_cast<FeatureId>(saved.value("featureId").toInteger()),
-      static_cast<std::size_t>(saved.value("faceIndex").toInteger())};
-  result.persistentTag = saved.value("persistentTag").toString().toStdString();
-  result.signature = readFaceSignature(saved.value("signature"));
+      static_cast<std::size_t>(saved.value("faceIndex").toInteger()),
+      saved.value("persistentTag").toString().toStdString(),
+      readFaceSignature(saved.value("signature"))};
   return result;
 }
 
@@ -3302,14 +3303,14 @@ static bool encodeCurrentPartV3Root(const QString& path,
   for (const auto& item : document.sketches()) {
     QJsonObject support{{"type", static_cast<int>(item.support.type)}};
     if (item.support.type == SketchSupportType::Face) {
-      support["bodyId"] = static_cast<qint64>(item.support.face.bodyId);
-      support["featureId"] = static_cast<qint64>(item.support.face.featureId);
-      support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex);
-      if (!item.support.face.persistentTag.empty())
+      support["bodyId"] = static_cast<qint64>(item.support.face.bodyId());
+      support["featureId"] = static_cast<qint64>(item.support.face.featureId());
+      support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex());
+      if (!item.support.face.persistentTag().empty())
         support["persistentTag"] =
-            QString::fromStdString(item.support.face.persistentTag);
-      if (item.support.face.signature)
-        support["signature"] = faceSignature(*item.support.face.signature);
+            QString::fromStdString(item.support.face.persistentTag());
+      if (item.support.face.signature())
+        support["signature"] = faceSignature(*item.support.face.signature());
     }
     sketches.append(QJsonObject{
         {"id", static_cast<qint64>(item.id)},
@@ -3493,9 +3494,10 @@ static bool loadDocumentRoot(const QJsonObject& root,
           static_cast<BodyId>(support.value("bodyId").toInteger()),
           static_cast<FeatureId>(support.value("featureId").toInteger()),
           static_cast<std::size_t>(support.value("faceIndex").toInteger())};
-      sketch.support.face.persistentTag =
+      sketch.support.face.persistentTag() =
           support.value("persistentTag").toString().toStdString();
-      sketch.support.face.signature = readFaceSignature(support.value("signature"));
+      sketch.support.face.signature() =
+          readFaceSignature(support.value("signature"));
     }
   }
 

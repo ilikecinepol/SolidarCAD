@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "model/ModelIds.h"
+
 class TopoDS_Shape;
 
 namespace solidar {
@@ -13,13 +15,6 @@ class Document;
 class Body;
 class TopologyIndex;
 class ShapeFeature;
-
-using FeatureId = std::uint64_t;
-inline constexpr FeatureId kInvalidFeatureId = 0;
-using SketchId = std::uint64_t;
-inline constexpr SketchId kInvalidSketchId = 0;
-using ShapeRevision = std::uint64_t;
-inline constexpr ShapeRevision kInvalidShapeRevision = 0;
 
 struct FeatureDependencies {
   std::vector<FeatureId> featureIds;

@@ -216,12 +216,12 @@ int main() {
   CHECK(snapshotFaceSketch.support.type == solidar::SketchSupportType::Face);
   CHECK(near(snapshotFaceSketch.placement.origin.z, 50.0));
 
-  faceSketch.support.face.faceIndex = 9999;
+  faceSketch.support.face.faceIndex() = 9999;
   attachedDocument.updateSketchPlacements();
   // Persistent identity, rather than the compatibility index, owns the link.
   CHECK(faceSketch.supportResolved);
-  faceSketch.support.face.persistentTag.clear();
-  faceSketch.support.face.signature.reset();
+  faceSketch.support.face.persistentTag().clear();
+  faceSketch.support.face.signature().reset();
   attachedDocument.updateSketchPlacements();
   CHECK(!faceSketch.supportResolved);
   CHECK(!faceSketch.geometry.lines().empty());

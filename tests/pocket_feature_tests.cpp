@@ -164,11 +164,11 @@ int main() {
   solidar::Document unresolved = snapshot;
   auto& unresolvedProfile =
       *unresolved.findSketch(snapshot.sketches().back().id);
-  unresolvedProfile.support.face.faceIndex = 9999;
+  unresolvedProfile.support.face.faceIndex() = 9999;
   unresolved.updateSketchPlacements();
   CHECK(unresolvedProfile.supportResolved);
-  unresolvedProfile.support.face.persistentTag.clear();
-  unresolvedProfile.support.face.signature.reset();
+  unresolvedProfile.support.face.persistentTag().clear();
+  unresolvedProfile.support.face.signature().reset();
   unresolved.updateSketchPlacements();
   CHECK(!unresolvedProfile.supportResolved);
   unresolved.activeBody()->activeFeature()->setDirty();

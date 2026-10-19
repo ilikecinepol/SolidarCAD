@@ -530,7 +530,7 @@ int main() {
     CHECK(top);
     const auto planeFace = makeFaceReference(
         *source->shape(), body.id(), sourceId, *top);
-    CHECK(planeFace.signature);
+    CHECK(planeFace.signature());
     mirrored->setPlaneFace(planeFace);
     body.markDirtyFrom(1);
     CHECK(document.recompute());

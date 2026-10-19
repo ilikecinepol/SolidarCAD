@@ -29,7 +29,7 @@ std::size_t topologyReferenceBytes(const EdgeReference& reference) {
 }
 
 std::size_t topologyReferenceBytes(const FaceReference& reference) {
-  return reference.persistentTag.capacity();
+  return reference.persistentTag().capacity();
 }
 
 bool sameSketchDefinition(const std::optional<sketch::Sketch>& left,
@@ -327,7 +327,8 @@ std::size_t bodyOwnedBytes(const Body& body) {
 
 std::size_t documentSketchOwnedBytes(const DocumentSketch& item) {
   return sizeof(DocumentSketch) + item.name.capacity() +
-         item.geometry.ownedBytes() + item.support.face.persistentTag.capacity();
+         item.geometry.ownedBytes() +
+             item.support.face.persistentTag().capacity();
 }
 
 bool sameReferenceImage(const ReferenceImage& left,

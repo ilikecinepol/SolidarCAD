@@ -90,8 +90,7 @@ int main() {
     {
       DocumentSketch p = profile(2);
       p.support.type = SketchSupportType::Face;
-      p.support.face.bodyId = 7;
-      p.support.face.featureId = 11;
+      p.support.face = solidar::FaceReference{7, 11, 0};
       p.supportResolved = true;
       SketchProfileSelectionContext ctx;
       ctx.profile = p;
@@ -153,7 +152,7 @@ int main() {
     {
       DocumentSketch p = profile(4);
       p.support.type = SketchSupportType::Face;
-      p.support.face.bodyId = 7;
+      p.support.face = solidar::FaceReference{7, 0, 0};
       SketchProfileSelectionContext ctx;
       ctx.profile = p;
       ctx.activeBodyId = kInvalidBodyId;

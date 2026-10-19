@@ -7,12 +7,10 @@
 #include <vector>
 #include <optional>
 
+#include "model/ModelIds.h"
 #include "model/ShapeFeature.h"
 
 namespace solidar {
-
-using BodyId = std::uint64_t;
-inline constexpr BodyId kInvalidBodyId = 0;
 
 class Body final {
  public:

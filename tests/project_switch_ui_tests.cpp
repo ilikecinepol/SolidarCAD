@@ -263,7 +263,7 @@ class MainWindowUndoTestAccess {
       if (value->isFaceSource()) {
         const auto face = value->faceReference();
         if (!face) return false;
-        const auto [body, sourceFeature] = source(face->featureId);
+        const auto [body, sourceFeature] = source(face->featureId());
         if (!body || !sourceFeature) return false;
         window.partDesignCoordinator_.beginExtrude(
             body->id(), sourceFeature->id(), sourceFeature->shape(), *face,
@@ -1824,15 +1824,11 @@ std::optional<solidar::Document> makeExpectedEditedDocument(
 template <typename Reference>
 void appendTopologyReference(std::ostringstream& out,
                              const Reference& reference) {
-  out << reference.bodyId << ',' << reference.featureId << ',';
-  if constexpr (std::is_same_v<Reference, solidar::FaceReference>)
-    out << reference.faceIndex;
-  else
-    out << reference.edgeIndex;
-  out << ',' << reference.persistentTag << ',';
-  if (reference.signature) {
-    const auto& signature = *reference.signature;
-    if constexpr (std::is_same_v<Reference, solidar::FaceReference>) {
+  if constexpr (std::is_same_v<Reference, solidar::FaceReference>) {
+    out << reference.bodyId() << ',' << reference.featureId() << ',';
+    out << reference.faceIndex() << ',' << reference.persistentTag() << ',';
+    if (reference.signature()) {
+      const auto& signature = *reference.signature();
       out << static_cast<int>(signature.surface) << ',' << signature.area << ','
           << signature.centroid.x << ',' << signature.centroid.y << ','
           << signature.centroid.z << ',' << signature.normal.x << ','
@@ -1844,6 +1840,13 @@ void appendTopologyReference(std::ostringstream& out,
           << ',' << signature.axis.x << ',' << signature.axis.y << ','
           << signature.axis.z;
     } else {
+      out << "none";
+    }
+  } else {
+    out << reference.bodyId << ',' << reference.featureId << ',';
+    out << reference.edgeIndex << ',' << reference.persistentTag << ',';
+    if (reference.signature) {
+      const auto& signature = *reference.signature;
       out << static_cast<int>(signature.curve) << ',' << signature.length << ','
           << signature.midpoint.x << ',' << signature.midpoint.y << ','
           << signature.midpoint.z << ',' << signature.tangent.x << ','
@@ -1854,9 +1857,9 @@ void appendTopologyReference(std::ostringstream& out,
           << ',' << signature.bounds.maximum.z << ',' << signature.radius
           << ',' << signature.center.x << ',' << signature.center.y << ','
           << signature.center.z;
+    } else {
+      out << "none";
     }
-  } else {
-    out << "none";
   }
 }
 
@@ -1987,13 +1990,13 @@ bool featureBelongsToBody(const solidar::Document& document,
 
 bool faceReferenceResolves(const solidar::Document& document,
                            const solidar::FaceReference& reference) {
-  if (!featureBelongsToBody(document, reference.bodyId,
-                            reference.featureId))
+  if (!featureBelongsToBody(document, reference.bodyId(),
+                            reference.featureId()))
     return false;
   const auto* feature = dynamic_cast<const solidar::ShapeFeature*>(
-      document.findFeature(reference.featureId));
+      document.findFeature(reference.featureId()));
   const auto topology = feature ? feature->lastValidTopologyIndex() : nullptr;
-  return topology && topology->resolveFace(reference.topology());
+  return topology && topology->resolveFace(reference);
 }
 
 bool edgeReferenceResolves(const solidar::Document& document,
@@ -3696,9 +3699,9 @@ int main(int argc, char** argv) {
         faceFixture->after.findFeature(faceFixture->featureId));
     CHECK(validFaceFeature && validFaceFeature->faceReference());
     auto invalidFace = *validFaceFeature->faceReference();
-    invalidFace.faceIndex = 999999;
-    invalidFace.persistentTag = "missing-face";
-    invalidFace.signature.reset();
+    invalidFace.faceIndex() = 999999;
+    invalidFace.persistentTag() = "missing-face";
+    invalidFace.signature().reset();
     auto* invalidOwner = invalidTopology.findBody(faceFixture->bodyId);
     CHECK(invalidOwner != nullptr);
     auto invalidExtrude = std::make_unique<solidar::ExtrudeFeature>(
@@ -4289,13 +4292,13 @@ int main(int argc, char** argv) {
     CHECK(loadedFaceSketch);
     CHECK(loadedFaceSketch->support.type ==
           solidar::SketchSupportType::Face);
-    CHECK(loadedFaceSketch->support.face.bodyId == supportBodyId);
-    CHECK(loadedFaceSketch->support.face.featureId == supportFeatureId);
+    CHECK(loadedFaceSketch->support.face.bodyId() == supportBodyId);
+    CHECK(loadedFaceSketch->support.face.featureId() == supportFeatureId);
     Access::editSketch(editor, faceSketchId);
     const auto editFaceReference = Access::currentSketchFaceReference(editor);
     CHECK(editFaceReference);
-    CHECK(editFaceReference->bodyId == supportBodyId);
-    CHECK(editFaceReference->featureId == supportFeatureId);
+    CHECK(editFaceReference->bodyId() == supportBodyId);
+    CHECK(editFaceReference->featureId() == supportFeatureId);
     CHECK(editor.loadProject(cascadePath, &error));
     const auto bodyPresentationBeforeRollback =
         Access::displayedBodyShape(editor);

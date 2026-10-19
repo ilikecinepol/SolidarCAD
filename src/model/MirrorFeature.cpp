@@ -93,7 +93,9 @@ ShapeFeature::ShapePtr buildMirrorShape(const TopoDS_Shape& source,
     if (error) *error = "Mirror base shape is missing";
     return {};
   }
-  const auto resolved = resolveFaceReference(source, planeFace.topology());
+  const auto* legacy = planeFace.v1();
+  if (!legacy) return {};
+  const auto resolved = resolveFaceReference(source, *legacy);
   if (!resolved) {
     if (error) *error = "Mirror plane face could not be resolved";
     return {};
@@ -159,8 +161,8 @@ bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
   }
   gp_Ax2 mirrorAxis(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0));
   if (planeFace_) {
-    if (!context.body || planeFace_->bodyId != context.body->id() ||
-        planeFace_->featureId != sourceFeatureId_) {
+    if (!context.body || planeFace_->bodyId() != context.body->id() ||
+        planeFace_->featureId() != sourceFeatureId_) {
       markError("Mirror plane face must belong to the source Feature");
       return false;
     }
@@ -170,8 +172,12 @@ bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
                               : error);
       return false;
     }
-    const auto resolved =
-        resolveFaceReference(*sourceIndex, planeFace_->topology());
+    const auto* legacy = planeFace_->v1();
+    if (!legacy) {
+      markError("Mirror v2 face consumption is not enabled");
+      return false;
+    }
+    const auto resolved = sourceIndex->resolveFace(*legacy);
     if (!resolved) {
       markError("Mirror plane face could not be resolved");
       return false;

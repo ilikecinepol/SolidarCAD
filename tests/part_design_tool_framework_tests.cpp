@@ -327,7 +327,7 @@ int main() {
               .effect == solidar::PartDesignTransitionEffect::Activated);
     CHECK(checkCleared(solidar::PartDesignToolKind::Extrude));
     CHECK(coordinator.snapshot(solidar::PartDesignToolKind::Extrude)
-              .face.bodyId == solidar::kInvalidBodyId);
+              .face.bodyId() == solidar::kInvalidBodyId);
     coordinator.cancelAll();
     CHECK(coordinator.dispatchActiveAction(
               solidar::PartDesignAction::ClearSelection, &clearDocument)
@@ -469,9 +469,11 @@ int main() {
           solidar::OperationFailureCode::TopologyReferenceMismatch);
 
     auto face = solidar::makeFaceReference(*box, bodyId, featureId, 0);
-    CHECK(face.signature);
+    CHECK(face.signature());
     auto foreignFace = face;
-    foreignFace.featureId = featureId + 1;
+    auto foreignLegacy = *foreignFace.v1();
+    foreignLegacy.featureId = featureId + 1;
+    foreignFace = solidar::FaceReference::fromV1(std::move(foreignLegacy));
     solidar::ShellToolSession shell;
     shell.begin(bodyId, featureId, box, {foreignFace});
     CHECK(shell.errorCode() ==

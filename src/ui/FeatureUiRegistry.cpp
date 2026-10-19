@@ -104,7 +104,7 @@ QStringList mirrorParameters(const ShapeFeature& feature) {
   const QString reference =
       value->planeFace()
           ? QString::fromUtf8("Грань #%1")
-                .arg(value->planeFace()->faceIndex + 1)
+                .arg(value->planeFace()->faceIndex() + 1)
           : planeText(value->plane());
   return {QString::fromUtf8("Плоскость: %1").arg(reference)};
 }

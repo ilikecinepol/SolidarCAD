@@ -108,10 +108,14 @@ DraftReferenceResolution resolveDraftReferencesIndexed(
                             "Draft neutral face is missing"};
             return false;
           }
-          const auto face = topology
-                                ? topology->resolveFace(plane.face->topology())
-                                : resolveFaceReference(baseShape,
-                                                       plane.face->topology());
+          FaceResolution face;
+          if (const auto* legacy = plane.face->v1())
+            face = topology ? topology->resolveFace(*legacy)
+                            : resolveFaceReference(baseShape, *legacy);
+          else {
+            face.failure = TopologyResolutionFailure::InvalidReference;
+            face.error = "Draft v2 face consumption is not enabled";
+          }
           if (!face) {
             typedFailure = {operationFailureCode(face.failure),
                             "Draft neutral face could not be resolved: " +
@@ -165,10 +169,14 @@ DraftReferenceResolution resolveDraftEdgeAxisIndexed(
                           "Draft topology index does not match the base shape"};
           return false;
         }
-        const auto face = topology
-                              ? topology->resolveFace(draftedFace.topology())
-                              : resolveFaceReference(baseShape,
-                                                     draftedFace.topology());
+        FaceResolution face;
+        if (const auto* legacy = draftedFace.v1())
+          face = topology ? topology->resolveFace(*legacy)
+                          : resolveFaceReference(baseShape, *legacy);
+        else {
+          face.failure = TopologyResolutionFailure::InvalidReference;
+          face.error = "Draft v2 face consumption is not enabled";
+        }
         if (!face) {
           typedFailure = {operationFailureCode(face.failure),
                           "Draft face could not be resolved: " + face.error};
@@ -337,8 +345,8 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   if (ownIndex == 0 || ownIndex == features.size() || features[ownIndex - 1]->id() != sourceFeatureId_) { markError("Draft source Feature could not be resolved"); return false; }
   if (neutralPlane_.type == NeutralPlaneType::BodyFace &&
       (!neutralPlane_.face ||
-       neutralPlane_.face->bodyId != context.body->id() ||
-       neutralPlane_.face->featureId != sourceFeatureId_)) {
+       neutralPlane_.face->bodyId() != context.body->id() ||
+       neutralPlane_.face->featureId() != sourceFeatureId_)) {
     markError("Draft neutral face must belong to the active source Feature");
     return false;
   }
@@ -356,8 +364,10 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   references.reserve(draftedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : draftedFaces_) {
-    if (face.bodyId != context.body->id() || face.featureId != sourceFeatureId_) { markError("Draft faces must belong to the active source Feature"); return false; }
-    references.push_back(face.topology());
+    if (face.bodyId() != context.body->id() || face.featureId() != sourceFeatureId_) { markError("Draft faces must belong to the active source Feature"); return false; }
+    const auto* legacy = face.v1();
+    if (!legacy) { markError("Draft v2 face consumption is not enabled"); return false; }
+    references.push_back(*legacy);
   }
   const auto resolutions = topology->resolveFaces(references);
   for (const auto& resolved : resolutions) {

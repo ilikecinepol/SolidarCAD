@@ -716,6 +716,13 @@ FaceResolution TopologyIndex::resolveFace(
   return failure;
 }
 
+FaceResolution TopologyIndex::resolveFace(
+    const FaceReference& reference) const {
+  return std::visit(
+      [this](const auto& stored) { return resolveFace(stored); },
+      reference.storage());
+}
+
 EdgeResolution TopologyIndex::resolveEdge(
     const TopologyReference& reference) const {
   EdgeResolution failure;
@@ -833,11 +840,88 @@ FaceReferenceCreation TopologyIndex::createFaceReference(
   }
   const auto& candidate =
       data_->faces[data_->faceByRawOrdinal[rawFaceIndex]];
-  result.reference = {bodyId, featureId, candidate.index};
-  result.reference.signature = candidate.signature;
-  result.reference.persistentTag =
-      semanticTag.empty() ? candidate.tag : std::move(semanticTag);
+  result.reference = FaceReference(
+      bodyId, featureId, candidate.index,
+      semanticTag.empty() ? candidate.tag : std::move(semanticTag),
+      candidate.signature);
   return result;
+}
+
+FaceReferenceV2Creation TopologyIndex::createFaceReferenceV2(
+    BodyId bodyId, FeatureId expectedFeatureId,
+    std::size_t rawFaceIndex) const {
+  FaceReferenceV2Creation result;
+  if (bodyId == kInvalidBodyId || expectedFeatureId == kInvalidFeatureId) {
+    result.status = FaceReferenceV2CreationStatus::InvalidReference;
+    result.error = "Topology v2 face owner identity is invalid";
+    return result;
+  }
+  if (rawFaceIndex >= data_->faceByRawOrdinal.size()) {
+    result.status = FaceReferenceV2CreationStatus::Missing;
+    result.error = "Topology v2 face traversal index is out of range";
+    return result;
+  }
+
+  try {
+    const auto& candidate =
+        data_->faces[data_->faceByRawOrdinal[rawFaceIndex]];
+    std::vector<const TopologyProvenanceKey*> faceProvenance;
+    for (const auto& provenance : candidate.provenance) {
+      if (provenance.kind != TopologyKind::Face) continue;
+      faceProvenance.push_back(&provenance);
+    }
+    if (faceProvenance.empty()) {
+      result.status = FaceReferenceV2CreationStatus::Missing;
+      result.error = "Topology v2 face provenance is unavailable";
+      return result;
+    }
+    if (faceProvenance.size() != 1) {
+      result.status = FaceReferenceV2CreationStatus::Ambiguous;
+      result.error =
+          "Topology v2 face has multiple provenance keys";
+      return result;
+    }
+    if (faceProvenance.front()->featureId != expectedFeatureId) {
+      result.status = FaceReferenceV2CreationStatus::InvalidReference;
+      result.error =
+          "Topology v2 face provenance belongs to another Feature";
+      return result;
+    }
+
+    TopologyReferenceV2 reference{bodyId, *faceProvenance.front()};
+    const auto resolved = resolveFace(reference);
+    if (!resolved) {
+      switch (resolved.failure) {
+        case TopologyResolutionFailure::InvalidReference:
+          result.status = FaceReferenceV2CreationStatus::InvalidReference;
+          break;
+        case TopologyResolutionFailure::Missing:
+          result.status = FaceReferenceV2CreationStatus::Missing;
+          break;
+        case TopologyResolutionFailure::Ambiguous:
+          result.status = FaceReferenceV2CreationStatus::Ambiguous;
+          break;
+        default:
+          result.status = FaceReferenceV2CreationStatus::Unexpected;
+          break;
+      }
+      result.error = resolved.error;
+      return result;
+    }
+    if (!resolved.subshape || !resolved.subshape->IsSame(candidate.face)) {
+      result.status = FaceReferenceV2CreationStatus::Ambiguous;
+      result.error =
+          "Topology v2 face provenance resolves to another canonical face";
+      return result;
+    }
+    result.reference = FaceReference::fromV2(std::move(reference));
+    result.status = FaceReferenceV2CreationStatus::Created;
+    return result;
+  } catch (...) {
+    result.status = FaceReferenceV2CreationStatus::Unexpected;
+    result.error = "Unexpected failure while creating topology v2 face reference";
+    return result;
+  }
 }
 
 EdgeReferenceCreation TopologyIndex::createEdgeReference(

@@ -140,8 +140,8 @@ int main() {
     const auto curvedTopReference = solidar::makeFaceReference(
         *curvedBody.resultShape(), curvedBodyId, curvedExtrudeId,
         *curvedTopFace);
-    CHECK(curvedTopReference.signature);
-    CHECK(!curvedTopReference.persistentTag.empty());
+    CHECK(curvedTopReference.signature());
+    CHECK(!curvedTopReference.persistentTag().empty());
 
     auto& curvedPocketSketch =
         curvedDocument.addSketch("Pocket on curved Extrude");
@@ -198,16 +198,16 @@ int main() {
         curvedDocument.findSketch(curvedPocketSketchId);
     CHECK(attachedSketch);
     CHECK(attachedSketch->support.type == solidar::SketchSupportType::Face);
-    CHECK(attachedSketch->support.face.bodyId == curvedBodyId);
-    CHECK(attachedSketch->support.face.featureId == curvedExtrudeId);
-    CHECK(attachedSketch->support.face.persistentTag ==
-          curvedTopReference.persistentTag);
-    CHECK(attachedSketch->support.face.signature);
+    CHECK(attachedSketch->support.face.bodyId() == curvedBodyId);
+    CHECK(attachedSketch->support.face.featureId() == curvedExtrudeId);
+    CHECK(attachedSketch->support.face.persistentTag() ==
+          curvedTopReference.persistentTag());
+    CHECK(attachedSketch->support.face.signature());
     CHECK(!attachedSketch->supportResolved);
     const auto topology = curvedExtrudePtr->topologyIndex();
     CHECK(topology);
     const auto transitioned =
-        topology->resolveFace(curvedTopReference.topology());
+        topology->resolveFace(curvedTopReference);
     CHECK(!transitioned);
     CHECK(transitioned.method == solidar::TopologyMatchMethod::None);
     CHECK(transitioned.error.find("no longer") != std::string::npos);

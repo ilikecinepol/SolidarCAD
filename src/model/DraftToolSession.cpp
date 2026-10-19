@@ -85,8 +85,8 @@ bool DraftToolSession::setRotationEdge(const Document& document, EdgeReference v
     error_ = "Draft rotation edge requires exactly one selected face";
     return false;
   }
-  if (faces_.front().bodyId != bodyId_ ||
-      faces_.front().featureId != sourceFeatureId_ ||
+  if (faces_.front().bodyId() != bodyId_ ||
+      faces_.front().featureId() != sourceFeatureId_ ||
       value.bodyId != bodyId_ || value.featureId != sourceFeatureId_) {
     errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
     error_ = "Draft rotation edge no longer matches the selected surface";
@@ -205,8 +205,8 @@ bool DraftToolSession::updatePreview(const Document& document) {
     return false;
   }
   if (!rotationEdge_ && neutralPlane_->type == NeutralPlaneType::BodyFace &&
-      (neutralPlane_->face->bodyId != bodyId_ ||
-       neutralPlane_->face->featureId != sourceFeatureId_)) {
+      (neutralPlane_->face->bodyId() != bodyId_ ||
+       neutralPlane_->face->featureId() != sourceFeatureId_)) {
     previewShape_.reset();
     errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
     error_ = "Draft neutral face must belong to the active source Feature";
@@ -217,8 +217,10 @@ bool DraftToolSession::updatePreview(const Document& document) {
   references.reserve(faces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : faces_) {
-    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    references.push_back(face.topology());
+    if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    const auto* legacy = face.v1();
+    if (!legacy) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceInvalid; error_ = "Draft v2 face consumption is not enabled"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    references.push_back(*legacy);
   }
   if (rotationEdge_ &&
       (rotationEdge_->bodyId != bodyId_ ||
@@ -295,8 +297,9 @@ std::optional<AngularToolManipulator> DraftToolSession::manipulator(
                                      &direction))
     return std::nullopt;
   Bnd_Box box;
-  if (const auto selected = topologyIndex_->resolveFace(
-          faces_.front().topology()))
+  const auto* legacy = faces_.front().v1();
+  if (!legacy) return std::nullopt;
+  if (const auto selected = topologyIndex_->resolveFace(*legacy))
     BRepBndLib::Add(*selected.subshape, box);
   else
     BRepBndLib::Add(*baseShape_, box);

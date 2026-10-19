@@ -99,7 +99,11 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
     if (!topology.shape() || !topology.shape()->IsEqual(baseShape))
       return fail(OperationFailureCode::TopologyReferenceMismatch,
                   "Face extrude topology index does not match the base shape");
-    const auto resolved = topology.resolveFace(source.topology());
+    const auto* legacy = source.v1();
+    if (!legacy)
+      return fail(OperationFailureCode::TopologyReferenceInvalid,
+                  "Face extrude v2 consumption is not enabled");
+    const auto resolved = topology.resolveFace(*legacy);
     if (!resolved)
       return fail(operationFailureCode(resolved.failure),
                   "Face extrude face could not be resolved: " + resolved.error);

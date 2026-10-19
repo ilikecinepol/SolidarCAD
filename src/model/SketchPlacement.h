@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <string>
 
-#include "model/TopologyReference.h"
+#include "model/FaceReference.h"
 
 class TopoDS_Shape;
 class TopoDS_Face;
@@ -39,27 +39,6 @@ struct SketchPlacement {
   [[nodiscard]] Point3d toWorld(double xMm, double yMm) const noexcept;
   [[nodiscard]] Point2d toLocal(Point3d world) const noexcept;
   [[nodiscard]] Vector3d normal() const noexcept;
-};
-
-struct FaceReference {
-  BodyId bodyId{kInvalidBodyId};
-  FeatureId featureId{kInvalidFeatureId};
-  // Legacy traversal index retained for loading v2 project files.
-  std::size_t faceIndex{};
-  std::string persistentTag;
-  std::optional<FaceSignature> signature;
-
-  [[nodiscard]] TopologyReference topology() const {
-    TopologyReference result;
-    result.bodyId = bodyId;
-    result.featureId = featureId;
-    result.kind = TopologyKind::Face;
-    result.legacyIndex = faceIndex;
-    result.persistentTag = persistentTag;
-    result.faceSignature = signature;
-    return result;
-  }
-  friend bool operator==(const FaceReference&, const FaceReference&) = default;
 };
 
 struct EdgeReference {

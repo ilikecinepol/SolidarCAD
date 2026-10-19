@@ -85,7 +85,7 @@ int main() {
   CHECK(topFace.has_value());
   const auto planeFace = solidar::makeFaceReference(
       *faceSource, faceBody.id(), faceExtrusionId, *topFace);
-  CHECK(planeFace.signature.has_value());
+  CHECK(planeFace.signature().has_value());
 
   solidar::MirrorToolSession faceSession;
   faceSession.begin();
@@ -110,7 +110,9 @@ int main() {
   CHECK(solidar::test::near(committedBounds.maxZ, 10.0));
 
   auto foreignFace = planeFace;
-  foreignFace.bodyId = faceBody.id() + 1;
+  auto foreignLegacy = *foreignFace.v1();
+  foreignLegacy.bodyId = faceBody.id() + 1;
+  foreignFace = solidar::FaceReference::fromV1(std::move(foreignLegacy));
   faceSession.setPlaneFace(foreignFace);
   CHECK(faceSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
   CHECK(!faceSession.previewShape());

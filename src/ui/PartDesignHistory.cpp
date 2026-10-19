@@ -99,7 +99,7 @@ std::vector<HistoryStep> buildPartDesignHistory(const Document& document,
     result.push_back(featureStep(*body, *feature, counts));
     for (const auto& sketch : document.sketches())
       if (sketch.support.type == SketchSupportType::Face &&
-          sketch.support.face.featureId == feature->id()) {
+          sketch.support.face.featureId() == feature->id()) {
         const auto bodySketches = sketchesByBody.find(body->id());
         if (bodySketches == sketchesByBody.end() ||
             !bodySketches->second.contains(sketch.id))

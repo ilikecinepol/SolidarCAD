@@ -1738,8 +1738,10 @@ void SketchCanvas::setSketchEditContext(const SketchEditContext& context) {
   auto referenceBodyMesh = std::make_shared<BodyRenderMesh>();
   referenceBodyMesh->rebuild(*context.supportShape);
   referenceBodyMesh_ = std::move(referenceBodyMesh);
-  const auto resolved = context.supportTopologyIndex->resolveFace(
-      context.supportFace->topology());
+  const auto* legacy = context.supportFace->v1();
+  const auto resolved = legacy
+                            ? context.supportTopologyIndex->resolveFace(*legacy)
+                            : FaceResolution{};
   if (resolved) {
     auto referenceFaceMesh = std::make_shared<BodyRenderMesh>();
     referenceFaceMesh->rebuild(*resolved.subshape);

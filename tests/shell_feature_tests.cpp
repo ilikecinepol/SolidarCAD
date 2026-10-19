@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
   const auto* loadedShell = dynamic_cast<const solidar::ShellFeature*>(
       loaded.activeBody()->activeFeature());
   CHECK(loadedShell && loadedShell->id() == shellId);
-  CHECK(loadedShell->removedFaces().front().signature);
+  CHECK(loadedShell->removedFaces().front().signature());
   CHECK(std::abs(loadedShell->thicknessMm() - 2.0) < 1e-9);
   return 0;
 }

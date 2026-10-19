@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "model/FaceReference.h"
 #include "model/SketchPlacement.h"
 #include "model/OperationFailure.h"
 #include "model/TopologyLineage.h"
@@ -78,9 +79,8 @@ struct FaceReferenceCreation {
   FaceReference reference;
   std::string error;
   [[nodiscard]] explicit operator bool() const noexcept {
-    return reference.bodyId != kInvalidBodyId &&
-           reference.featureId != kInvalidFeatureId &&
-           reference.signature.has_value();
+    const auto* v1 = reference.v1();
+    return v1 && v1->hasValidOwner() && v1->faceSignature.has_value();
   }
 };
 
@@ -130,6 +130,8 @@ class TopologyIndex final {
       const TopologyReference& reference) const;
   [[nodiscard]] FaceResolution resolveFace(
       const TopologyReferenceV2& reference) const;
+  [[nodiscard]] FaceResolution resolveFace(
+      const FaceReference& reference) const;
   [[nodiscard]] EdgeResolution resolveEdge(
       const TopologyReference& reference) const;
   [[nodiscard]] EdgeResolution resolveEdge(
@@ -141,6 +143,9 @@ class TopologyIndex final {
   [[nodiscard]] FaceReferenceCreation createFaceReference(
       BodyId bodyId, FeatureId featureId, std::size_t rawFaceIndex,
       std::string semanticTag = {}) const;
+  [[nodiscard]] FaceReferenceV2Creation createFaceReferenceV2(
+      BodyId bodyId, FeatureId expectedFeatureId,
+      std::size_t rawFaceIndex) const;
   [[nodiscard]] EdgeReferenceCreation createEdgeReference(
       BodyId bodyId, FeatureId featureId, std::size_t rawEdgeIndex,
       std::string semanticTag = {}) const;

@@ -2442,9 +2442,11 @@ void Viewport::setSelectedBodyFaces(const std::vector<FaceReference>& faces) {
   selectedBodyFaceReferences_.clear();
   for (const auto& face : faces)
     for (const auto& range : bodyTopologyRanges_)
-      if (range.bodyId == face.bodyId && range.featureId == face.featureId &&
+      if (range.bodyId == face.bodyId() && range.featureId == face.featureId() &&
           range.topologyIndex) {
-        const auto resolved = range.topologyIndex->resolveFace(face.topology());
+        const auto* legacy = face.v1();
+        if (!legacy) continue;
+        const auto resolved = range.topologyIndex->resolveFace(*legacy);
         if (resolved) {
           selectedBodyFaceIndices_.push_back(range.firstFace + resolved.index);
           selectedBodyFaceReferences_.push_back(face);
@@ -2656,8 +2658,8 @@ void Viewport::commitFaceSelection(std::size_t globalIndex, bool toggle) {
     const auto first =
         faceReferenceForGlobalIndex(selectedBodyFaceIndices_.front());
     if (first && clicked &&
-        (first->bodyId != clicked->bodyId ||
-         first->featureId != clicked->featureId))
+        (first->bodyId() != clicked->bodyId() ||
+         first->featureId() != clicked->featureId()))
       selectedBodyFaceIndices_.clear();
   }
   updateEdgeSelection(selectedBodyFaceIndices_, globalIndex, toggle);
@@ -5405,8 +5407,8 @@ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) 
         feature = ref->featureId;
       }
     } else if (const auto ref = faceReferenceForGlobalIndex(ordinals.front())) {
-      body = ref->bodyId;
-      feature = ref->featureId;
+      body = ref->bodyId();
+      feature = ref->featureId();
     }
     if (!body) return ordinals;
     std::vector<std::size_t> result;
@@ -5417,7 +5419,7 @@ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) 
           result.push_back(index);
       } else {
         const auto ref = faceReferenceForGlobalIndex(index);
-        if (ref && ref->bodyId == *body && ref->featureId == *feature)
+        if (ref && ref->bodyId() == *body && ref->featureId() == *feature)
           result.push_back(index);
       }
     }
@@ -5450,8 +5452,8 @@ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) 
         const auto marqueeFirst =
             faceReferenceForGlobalIndex(eligible.front());
         if (first && marqueeFirst &&
-            (first->bodyId != marqueeFirst->bodyId ||
-             first->featureId != marqueeFirst->featureId))
+            (first->bodyId() != marqueeFirst->bodyId() ||
+             first->featureId() != marqueeFirst->featureId()))
           selectedBodyFaceIndices_.clear();
       }
       for (const auto index : eligible)
@@ -5535,7 +5537,7 @@ void Viewport::updateToolBodyHover(QPointF position) {
     hoveredBodyFaceIndex_ = face->faceIndex;
   if (hoveredBodyFaceIndex_ == static_cast<std::size_t>(-1)) return;
   if (const auto face = faceReferenceForGlobalIndex(hoveredBodyFaceIndex_))
-    hoveredToolBodyId_ = face->bodyId;
+    hoveredToolBodyId_ = face->bodyId();
 }
 
 void Viewport::updateMirrorPlaneHover(QPointF position) {
@@ -5549,11 +5551,11 @@ void Viewport::updateMirrorPlaneHover(QPointF position) {
   if (solidVisible_ && hasDisplayedBodyTriangles()) {
     if (const auto hit = pickingScene().faceAt(position)) {
       const auto reference = faceReferenceForGlobalIndex(hit->faceIndex);
-      if (reference && reference->signature &&
-          reference->signature->surface == SurfaceKind::Plane &&
+      if (reference && reference->signature() &&
+          reference->signature()->surface == SurfaceKind::Plane &&
           (selectedBodyIds_.empty() ||
            std::find(selectedBodyIds_.begin(), selectedBodyIds_.end(),
-                     reference->bodyId) != selectedBodyIds_.end())) {
+                     reference->bodyId()) != selectedBodyIds_.end())) {
         hoveredBodyFaceIndex_ = hit->faceIndex;
         return;
       }

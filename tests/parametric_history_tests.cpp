@@ -400,7 +400,10 @@ int main() {
         *supportOwnerDocument.findSketch(supportedSketchId);
     const auto placementRevision = supportSnapshot.placementRevision;
     auto invalidSupport = supportSnapshot;
-    invalidSupport.support.face.bodyId = independentBodyId;
+    auto invalidSupportLegacy = *invalidSupport.support.face.v1();
+    invalidSupportLegacy.bodyId = independentBodyId;
+    invalidSupport.support.face =
+        solidar::FaceReference::fromV1(std::move(invalidSupportLegacy));
     independentPtr->setFail(false);
     CHECK(supportOwnerDocument.applySketchSlice(0, invalidSupport));
 

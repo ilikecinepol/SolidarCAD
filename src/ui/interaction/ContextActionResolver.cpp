@@ -32,8 +32,8 @@ std::optional<ContextActionCapability> resolveSketchProfileExtrude(
   if (!context.activeBodyShape || context.activeBodyShape->IsNull() ||
       context.profile.support.type != SketchSupportType::Face ||
       !context.profile.supportResolved ||
-      context.profile.support.face.bodyId != context.activeBodyId ||
-      context.profile.support.face.featureId != context.activeFeatureId)
+      context.profile.support.face.bodyId() != context.activeBodyId ||
+      context.profile.support.face.featureId() != context.activeFeatureId)
     return std::nullopt;
   return ContextActionCapability{ContextActionKind::Extrude, context.profile,
                                  context.activeBodyId, context.activeFeatureId,

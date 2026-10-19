@@ -370,7 +370,7 @@ int main() {
     independentSketch.geometry.addCircle({0.5, 0.5}, 0.1);
     const auto supportReference = solidar::makeFaceReference(
         *supportPtr->shape(), placementBody.id(), supportPtr->id(), 0);
-    CHECK(supportReference.signature);
+    CHECK(supportReference.signature());
     CHECK(placementDocument.attachSketchToFace(independentSketchId,
                                                 supportReference));
     const auto* independentState =

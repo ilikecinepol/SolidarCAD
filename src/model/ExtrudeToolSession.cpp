@@ -246,7 +246,7 @@ bool ExtrudeToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
-  if (face_.bodyId != bodyId_ || face_.featureId != sourceFeatureId_) {
+  if (face_.bodyId() != bodyId_ || face_.featureId() != sourceFeatureId_) {
     errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
     error_ = "Extrude face no longer matches the active source Feature";
     lifecycle_ = ToolLifecycle::PreviewInvalid;
@@ -317,7 +317,9 @@ std::optional<LinearToolManipulator> ExtrudeToolSession::manipulator() const {
     if (!baseShape_ || baseShape_->IsNull() || !topologyIndex_)
       return std::nullopt;
     try {
-      const auto resolved = topologyIndex_->resolveFace(face_.topology());
+      const auto* legacy = face_.v1();
+      if (!legacy) return std::nullopt;
+      const auto resolved = topologyIndex_->resolveFace(*legacy);
       if (!resolved) return std::nullopt;
       gp_Pln plane;
       gp_Dir normal;

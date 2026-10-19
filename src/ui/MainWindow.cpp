@@ -616,8 +616,8 @@ void MainWindow::restoreHistorySelection(const HistorySelectionState& state) {
   if (!state.faces.empty()) {
     std::vector<FaceReference> valid;
     for (const auto& face : state.faces)
-      if (document_.findBody(face.bodyId) &&
-          document_.findFeature(face.featureId)) valid.push_back(face);
+      if (document_.findBody(face.bodyId()) &&
+          document_.findFeature(face.featureId())) valid.push_back(face);
     viewport_->setSelectedBodyFaces(valid);
   } else if (!state.edges.empty()) {
     std::vector<EdgeReference> valid;
@@ -1058,17 +1058,18 @@ void MainWindow::finishReferenceImageImport(const SketchPlanePick& pick) {
     placement = legacy->placement;
   } else if (const auto* bodyFace = std::get_if<BodyFacePick>(&pick.source)) {
     const auto& reference = bodyFace->face;
-    const Body* body = document_.findBody(reference.bodyId);
+    const Body* body = document_.findBody(reference.bodyId());
     const ShapeFeature* feature = nullptr;
     if (body)
       for (const auto& candidate : body->features())
-        if (candidate->id() == reference.featureId) {
+        if (candidate->id() == reference.featureId()) {
           feature = candidate.get();
           break;
         }
     const auto topology = feature ? feature->topologyIndex() : nullptr;
-    const auto resolvedFace = topology
-                                  ? topology->resolveFace(reference.topology())
+    const auto* legacyReference = reference.v1();
+    const auto resolvedFace = topology && legacyReference
+                                  ? topology->resolveFace(*legacyReference)
                                   : FaceResolution{};
     const auto resolved = resolvedFace
                               ? resolveFacePlacement(*resolvedFace.subshape)
@@ -3221,17 +3222,17 @@ void MainWindow::buildUi() {
             } else if (const auto* bodyFace =
                            std::get_if<BodyFacePick>(&pick.source)) {
               const FaceReference& faceReference = bodyFace->face;
-              if (faceReference.bodyId == kInvalidBodyId ||
-                  faceReference.featureId == kInvalidFeatureId) {
+              if (faceReference.bodyId() == kInvalidBodyId ||
+                  faceReference.featureId() == kInvalidFeatureId) {
                 QMessageBox::warning(this, QString::fromUtf8("Sketch on Face"),
                                      QString::fromUtf8("Не удалось определить грань Body."));
                 return;
               }
-              const Body* body = document_.findBody(faceReference.bodyId);
+              const Body* body = document_.findBody(faceReference.bodyId());
               const ShapeFeature* feature = nullptr;
               if (body)
                 for (const auto& candidate : body->features())
-                  if (candidate->id() == faceReference.featureId) {
+                  if (candidate->id() == faceReference.featureId()) {
                     feature = candidate.get();
                     break;
                   }
@@ -3243,9 +3244,9 @@ void MainWindow::buildUi() {
                 return;
               }
               const auto topology = feature->topologyIndex();
-              const auto resolvedFace = topology
-                                            ? topology->resolveFace(
-                                                  faceReference.topology())
+              const auto* legacyReference = faceReference.v1();
+              const auto resolvedFace = topology && legacyReference
+                                            ? topology->resolveFace(*legacyReference)
                                             : FaceResolution{};
               const auto resolved = resolvedFace
                                         ? resolveFacePlacement(
@@ -3630,7 +3631,7 @@ void MainWindow::buildUi() {
             partDesignCoordinator_.setMirrorPlaneFace(face);
             partDesignCoordinator_.finishReselection();
             mirrorPlaneValue_->setText(
-                QString::fromUtf8("Грань #%1").arg(face.faceIndex + 1));
+                QString::fromUtf8("Грань #%1").arg(face.faceIndex() + 1));
             updateMirrorToolPreview();
             statusBar()->showMessage(
                 partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror)
@@ -4904,7 +4905,7 @@ void MainWindow::editPatternFeature(FeatureId featureId,
         mirrorBodyValue_->setText(QString::fromStdString(body.name()));
         if (mirror->planeFace())
           mirrorPlaneValue_->setText(QString::fromUtf8("Грань #%1")
-                                         .arg(mirror->planeFace()->faceIndex + 1));
+                                         .arg(mirror->planeFace()->faceIndex() + 1));
         else
           mirrorPlaneValue_->setText(
               mirror->plane() == MirrorPlane::XY
@@ -5859,9 +5860,9 @@ void MainWindow::createShell() {
   resetTransientModelingUi();
   auto faces = viewport_->selectedBodyFaces();
   Body* body = faces.empty() ? document_.activeBody()
-                             : document_.findBody(faces.front().bodyId);
+                             : document_.findBody(faces.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) return;
-  if (!faces.empty() && faces.front().featureId != body->activeFeature()->id())
+  if (!faces.empty() && faces.front().featureId() != body->activeFeature()->id())
     faces.clear();
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginShell(
@@ -5982,9 +5983,9 @@ void MainWindow::createDraft() {
   auto faces = viewport_->selectedBodyFaces();
   if (faces.size() > 1) faces.resize(1);
   Body* body = faces.empty() ? document_.activeBody()
-                             : document_.findBody(faces.front().bodyId);
+                             : document_.findBody(faces.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) return;
-  if (!faces.empty() && faces.front().featureId != body->activeFeature()->id())
+  if (!faces.empty() && faces.front().featureId() != body->activeFeature()->id())
     faces.clear();
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginDraft(
@@ -6178,7 +6179,7 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
   // B-Rep body face (rather than a sketch contour) starts this face-source
   // session. Never interrupt a running revolve profile re-selection.
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle != ToolLifecycle::Inactive) return;
-  Body* body = document_.findBody(face.bodyId);
+  Body* body = document_.findBody(face.bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) {
     statusBar()->showMessage(QString::fromUtf8("Сначала создайте тело."), 3000);
     return;
@@ -6219,7 +6220,7 @@ void MainWindow::updateFaceExtrudeToolPreview() {
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setSelectionCount(
       partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).sketchSource ||
-              partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).face.bodyId != kInvalidBodyId
+              partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).face.bodyId() != kInvalidBodyId
           ? 1
           : 0);
   toolParametersPanel_->setAcceptEnabled(valid);
@@ -6915,11 +6916,11 @@ void MainWindow::applyHistoryPosition(int position) {
 bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
   if (!currentSketchFaceReference_) return true;
   const FaceReference reference = *currentSketchFaceReference_;
-  const Body* body = document_.findBody(reference.bodyId);
+  const Body* body = document_.findBody(reference.bodyId());
   const ShapeFeature* feature = nullptr;
   if (body)
     for (const auto& candidate : body->features())
-      if (candidate->id() == reference.featureId) {
+      if (candidate->id() == reference.featureId()) {
         feature = candidate.get();
         break;
       }
@@ -6931,8 +6932,9 @@ bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
     return false;
   }
   const auto topology = feature->topologyIndex();
-  const auto resolvedFace = topology
-                                ? topology->resolveFace(reference.topology())
+  const auto* legacyReference = reference.v1();
+  const auto resolvedFace = topology && legacyReference
+                                ? topology->resolveFace(*legacyReference)
                                 : FaceResolution{};
   const auto resolved = resolvedFace
                             ? resolveFacePlacement(*resolvedFace.subshape)
@@ -6958,7 +6960,7 @@ bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
 
 void MainWindow::configureSketchSceneReferences(SketchId excludedSketchId) {
   const BodyId supportBodyId = currentSketchFaceReference_
-                                   ? currentSketchFaceReference_->bodyId
+                                   ? currentSketchFaceReference_->bodyId()
                                    : kInvalidBodyId;
   std::vector<ShapeFeature::ShapePtr> bodyShapes;
   bodyShapes.reserve(document_.bodies().size());

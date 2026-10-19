@@ -474,8 +474,11 @@ int main() {
     profile.geometry.addRectangle({5.0, 5.0}, {15.0, 10.0});
     profile.placement.origin.z = 10.0;
     profile.support.type = solidar::SketchSupportType::Face;
-    profile.support.face.bodyId = 1;
-    profile.support.face.featureId = 100;
+    auto invalidOwner = *profile.support.face.v1();
+    invalidOwner.bodyId = 1;
+    invalidOwner.featureId = 100;
+    profile.support.face =
+        solidar::FaceReference::fromV1(std::move(invalidOwner));
     profile.supportResolved = true;
 
     solidar::ExtrudeToolSession session;

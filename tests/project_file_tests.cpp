@@ -334,7 +334,7 @@ int main(int argc, char* argv[]) {
     CHECK(topFace.has_value());
     const auto planeFace = solidar::makeFaceReference(
         *body.resultShape(), body.id(), extrusionId, *topFace);
-    CHECK(planeFace.signature.has_value());
+    CHECK(planeFace.signature().has_value());
     auto mirror =
         std::make_unique<solidar::MirrorFeature>(extrusionId, planeFace);
     const auto mirrorId = mirror->id();
@@ -584,8 +584,8 @@ int main(int argc, char* argv[]) {
     CHECK(topFace.has_value());
     const auto supportReference = solidar::makeFaceReference(
         *sourceExtrude->shape(), kBodyId, kExtrudeId, *topFace);
-    CHECK(!supportReference.persistentTag.empty());
-    CHECK(supportReference.signature.has_value());
+    CHECK(!supportReference.persistentTag().empty());
+    CHECK(supportReference.signature().has_value());
 
     auto& supported =
         source.addSketch(kSupportedSketchId, "Face-supported detail", {});
@@ -785,12 +785,12 @@ int main(int argc, char* argv[]) {
     CHECK(faceSupport.value("featureId").toInteger() ==
           static_cast<qint64>(kExtrudeId));
     CHECK(faceSupport.value("faceIndex").toInteger() ==
-          static_cast<qint64>(supportReference.faceIndex));
+          static_cast<qint64>(supportReference.faceIndex()));
     CHECK(faceSupport.value("persistentTag").toString().toStdString() ==
-          supportReference.persistentTag);
+          supportReference.persistentTag());
 
     const auto signature = faceSupport.value("signature").toObject();
-    const auto& expectedSignature = *supportReference.signature;
+    const auto& expectedSignature = *supportReference.signature();
     CHECK(exactFields(signature,
                       {"surfaceType", "area", "centroid", "normal", "bounds",
                        "radius", "axis"}));
@@ -895,7 +895,7 @@ int main(int argc, char* argv[]) {
     CHECK(restoredExtrude && restoredExtrude->shape());
     const auto& restoredSupport = restored.sketches()[1].support.face;
     const auto resolvedSupport = solidar::resolveFaceReference(
-        *restoredExtrude->shape(), restoredSupport.topology());
+        *restoredExtrude->shape(), *restoredSupport.v1());
     CHECK(resolvedSupport);
     CHECK(resolvedSupport.failure ==
           solidar::TopologyResolutionFailure::None);
@@ -1069,7 +1069,7 @@ int main(int argc, char* argv[]) {
   CHECK(restoredPocketSketch);
   CHECK(restoredPocketSketch->support.type ==
          solidar::SketchSupportType::Face);
-  CHECK(restoredPocketSketch->support.face.featureId == extrudePtr->id());
+  CHECK(restoredPocketSketch->support.face.featureId() == extrudePtr->id());
   CHECK(restoredBody->features().back()->id() == filletId);
   CHECK(restoredBody->features().back()->kind() ==
          solidar::FeatureKind::Fillet);

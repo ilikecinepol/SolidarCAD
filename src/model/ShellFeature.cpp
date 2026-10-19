@@ -65,10 +65,12 @@ bool ShellFeature::rebuildImpl(const RebuildContext& context) {
   references.reserve(removedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : removedFaces_) {
-    if (face.bodyId != context.body->id() || face.featureId != sourceFeatureId_) {
+    if (face.bodyId() != context.body->id() || face.featureId() != sourceFeatureId_) {
       markError("Shell faces must belong to the active source Feature"); return false;
     }
-    references.push_back(face.topology());
+    const auto* legacy = face.v1();
+    if (!legacy) { markError("Shell v2 face consumption is not enabled"); return false; }
+    references.push_back(*legacy);
   }
   const auto resolutions = topology->resolveFaces(references);
   for (const auto& resolved : resolutions) {

@@ -103,8 +103,10 @@ bool ShellToolSession::updatePreview() {
   references.reserve(removedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : removedFaces_) {
-    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_) { errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Shell faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    references.push_back(face.topology());
+    if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_) { errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Shell faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    const auto* legacy = face.v1();
+    if (!legacy) { errorCode_ = OperationFailureCode::TopologyReferenceInvalid; error_ = "Shell v2 face consumption is not enabled"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+    references.push_back(*legacy);
   }
   for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
     if (!resolved) { errorCode_ = operationFailureCode(resolved.failure); error_ = "Shell face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
@@ -119,7 +121,9 @@ bool ShellToolSession::updatePreview() {
 std::optional<LinearToolManipulator> ShellToolSession::manipulator() const {
   if (!baseShape_ || removedFaces_.empty() || !topologyIndex_) return std::nullopt;
   try {
-    const auto face = topologyIndex_->resolveFace(removedFaces_.front().topology());
+    const auto* legacy = removedFaces_.front().v1();
+    if (!legacy) return std::nullopt;
+    const auto face = topologyIndex_->resolveFace(*legacy);
     if (!face) return std::nullopt;
     double u0, u1, v0, v1; BRepTools::UVBounds(*face.subshape, u0, u1, v0, v1);
     BRepAdaptor_Surface surface(*face.subshape);
@@ -185,9 +189,11 @@ bool ShellToolSession::recoverBelowInvalidThickness(double upperInvalid) {
   std::vector<TopologyReference> references;
   references.reserve(removedFaces_.size());
   for (const auto& face : removedFaces_) {
-    if (face.bodyId != bodyId_ || face.featureId != sourceFeatureId_)
+    if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_)
       return false;
-    references.push_back(face.topology());
+    const auto* legacy = face.v1();
+    if (!legacy) return false;
+    references.push_back(*legacy);
   }
   for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
     if (!resolved) return false;

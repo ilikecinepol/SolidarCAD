@@ -242,7 +242,7 @@ int main(int argc, char** argv) {
     const auto* bodyFace =
         std::get_if<solidar::BodyFacePick>(&pickedCap->source);
     CHECK(bodyFace != nullptr);
-    const auto resolved = topology->resolveFace(bodyFace->face.topology());
+    const auto resolved = topology->resolveFace(bodyFace->face);
     CHECK(resolved);
     const auto placement =
         solidar::resolveFacePlacement(*resolved.subshape);
@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
         std::get_if<solidar::BodyFacePick>(&pickedPlane->source);
     CHECK(bodyFace != nullptr);
     const auto resolved =
-        sourceTopology->resolveFace(bodyFace->face.topology());
+        sourceTopology->resolveFace(bodyFace->face);
     CHECK(resolved);
     const auto placement =
         solidar::resolveFacePlacement(*resolved.subshape);
@@ -444,10 +444,10 @@ int main(int argc, char** argv) {
           Qt::LeftButton);
     CHECK(facePicks == 1);
     CHECK(pickedFace.has_value());
-    CHECK(pickedFace->bodyId == bodyId);
-    CHECK(pickedFace->featureId == sourceFeatureId);
-    CHECK(pickedFace->signature.has_value());
-    CHECK(pickedFace->signature->surface == solidar::SurfaceKind::Plane);
+    CHECK(pickedFace->bodyId() == bodyId);
+    CHECK(pickedFace->featureId() == sourceFeatureId);
+    CHECK(pickedFace->signature().has_value());
+    CHECK(pickedFace->signature()->surface == solidar::SurfaceKind::Plane);
     CHECK(!mirrorView.mirrorPlaneSelectionActive());
   }
 
@@ -664,9 +664,9 @@ int main(int argc, char** argv) {
     CHECK(facePicks == 1);
     CHECK(lastSurface.startsWith(
         QString::fromUtf8("\u0413\u0440\u0430\u043d\u044c \u0442\u0435\u043b\u0430")));
-    CHECK(lastFace.bodyId == bodyId);
-    CHECK(lastFace.featureId == sourceFeatureId);
-    CHECK(lastFace.signature.has_value());
+    CHECK(lastFace.bodyId() == bodyId);
+    CHECK(lastFace.featureId() == sourceFeatureId);
+    CHECK(lastFace.signature().has_value());
     CHECK(body.extrusionCandidateSketchIndex() ==
           static_cast<std::size_t>(-1));
     CHECK(!body.extrusionCandidateOnBodyCap());
@@ -706,9 +706,9 @@ int main(int argc, char** argv) {
     const auto faces = view.selectedBodyFaces();
     CHECK(!faces.empty());
     for (const auto& face : faces) {
-      CHECK(face.bodyId == bodyId);
-      CHECK(face.featureId == sourceFeatureId);
-      CHECK(face.signature.has_value());
+      CHECK(face.bodyId() == bodyId);
+      CHECK(face.featureId() == sourceFeatureId);
+      CHECK(face.signature().has_value());
     }
   }
 
@@ -804,9 +804,9 @@ int main(int argc, char** argv) {
     const auto faces = view.selectedBodyFaces();
     CHECK(!faces.empty());
     for (const auto& face : faces) {
-      CHECK(face.bodyId == bodyB);
-      CHECK(face.featureId == featB);
-      CHECK(face.signature.has_value());
+      CHECK(face.bodyId() == bodyB);
+      CHECK(face.featureId() == featB);
+      CHECK(face.signature().has_value());
     }
   }
 
@@ -1005,7 +1005,7 @@ int main(int argc, char** argv) {
     view.setSolidVisible(true);
     const auto faceA = solidar::makeFaceReference(*source, bodyId,
                                                   sourceFeatureId, 0);
-    CHECK(faceA.signature);
+    CHECK(faceA.signature());
     int bodySignals = 0;
     std::vector<solidar::BodyId> lastBodies;
     QObject::connect(&view, &solidar::Viewport::bodiesSelected, &view,
@@ -1194,7 +1194,7 @@ int main(int argc, char** argv) {
     view.setBodyShape(validShape, bodyId, sourceFeatureId);
     const auto selectedFace = solidar::makeFaceReference(
         *validShape, bodyId, sourceFeatureId, 0);
-    CHECK(selectedFace.signature);
+    CHECK(selectedFace.signature());
     view.setSelectedBodyFaces({selectedFace});
     const auto selectedIndicesBefore = view.effectiveSelectedFaceIndices();
     CHECK(!selectedIndicesBefore.empty());

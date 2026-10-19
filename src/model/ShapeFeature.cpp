@@ -71,6 +71,19 @@ ShapeFeature::lastValidTopologyLineage() const noexcept {
   return topologyLineage_;
 }
 
+FaceReferenceV2Creation ShapeFeature::createFaceReferenceV2(
+    BodyId bodyId, std::size_t rawFaceIndex) const {
+  std::string error;
+  const auto index = topologyIndex(&error);
+  if (!index) {
+    FaceReferenceV2Creation result;
+    result.status = FaceReferenceV2CreationStatus::Missing;
+    result.error = std::move(error);
+    return result;
+  }
+  return index->createFaceReferenceV2(bodyId, id(), rawFaceIndex);
+}
+
 std::shared_ptr<const TopologyIndex> ShapeFeature::ensureTopologyIndex(
     std::string* error) const {
   if (!shape_ || shape_->IsNull() ||

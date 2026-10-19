@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
       CHECK(top);
       const auto reference =
           solidar::makeFaceReference(box, 1, 1, *top);
-      CHECK(reference.signature);
+      CHECK(reference.signature());
       TopoDS_Shape result;
       solidar::FaceExtrudeGeometry geometry;
       std::string error;
@@ -409,8 +409,8 @@ int main(int argc, char** argv) {
       CHECK(facePtr->isFaceSource());
       CHECK(facePtr->profileSketchId() == solidar::kInvalidSketchId);
       CHECK(facePtr->faceReference());
-      CHECK(facePtr->faceReference()->bodyId == bodyId);
-      CHECK(facePtr->faceReference()->featureId == basePtr->id());
+      CHECK(facePtr->faceReference()->bodyId() == bodyId);
+      CHECK(facePtr->faceReference()->featureId() == basePtr->id());
       CHECK(!facePtr->dependsOnSketch(sketchId));
       CHECK(near(solidar::test::boundsOf(*body.resultShape()).z(), 30.0));
 
@@ -453,9 +453,9 @@ int main(int argc, char** argv) {
       CHECK(loadedFace && loadedFace->isFaceSource());
       const auto loadedReference = loadedFace->faceReference();
       CHECK(loadedReference);
-      CHECK(loadedReference->bodyId == bodyId);
-      CHECK(loadedReference->featureId == basePtr->id());
-      CHECK(loadedReference->signature);
+      CHECK(loadedReference->bodyId() == bodyId);
+      CHECK(loadedReference->featureId() == basePtr->id());
+      CHECK(loadedReference->signature());
       // Saved after J: base length 30 + face length 10.
       CHECK(near(volumeOf(*loadedBody->resultShape()), 40.0 * 30.0 * 40.0,
                  1e-2));
@@ -479,7 +479,7 @@ int main(int argc, char** argv) {
       CHECK(top);
       const auto baseReference = solidar::makeFaceReference(
           *basePtr->shape(), ownerBody.id(), basePtr->id(), *top);
-      CHECK(baseReference.signature);
+      CHECK(baseReference.signature());
 
       auto move = std::make_unique<solidar::MoveFeature>(
           basePtr->id(), solidar::Vector3d{}, "Identity move");
@@ -501,7 +501,7 @@ int main(int argc, char** argv) {
       const auto movedReference = solidar::makeFaceReference(
           *movePtr->lastValidShape(), ownerBody.id(), movePtr->id(),
           *movedTop);
-      CHECK(movedReference.signature);
+      CHECK(movedReference.signature());
       const auto cachedIndex = movePtr->lastValidTopologyIndex();
       CHECK(cachedIndex);
       const auto beforeSessionBuilds =

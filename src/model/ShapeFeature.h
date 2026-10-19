@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 
+#include "model/FaceReference.h"
 #include "model/Feature.h"
 
 class TopoDS_Shape;
@@ -35,6 +38,8 @@ public:
       const noexcept;
   [[nodiscard]] const std::shared_ptr<const TopologyLineage>&
   lastValidTopologyLineage() const noexcept;
+  [[nodiscard]] FaceReferenceV2Creation createFaceReferenceV2(
+      BodyId bodyId, std::size_t rawFaceIndex) const;
   void discardResult() noexcept;
   // Converts a retained history definition to a cold, recomputable payload.
   // The base implementation drops all runtime B-Rep/topology caches.

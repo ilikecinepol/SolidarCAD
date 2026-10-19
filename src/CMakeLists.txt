@@ -58,6 +58,7 @@ add_library(solidar_model
   model/MoveFeature.h
   model/MoveToolSession.cpp
   model/MoveToolSession.h
+  model/ModelIds.h
   model/LinearPatternFeature.cpp
   model/LinearPatternFeature.h
   model/LinearPatternToolSession.cpp
@@ -85,6 +86,7 @@ add_library(solidar_model
   model/ShapeFeature.h
   model/ShapeContainerUtils.cpp
   model/ShapeContainerUtils.h
+  model/FaceReference.h
   model/ShellBuilder.cpp
   model/ShellBuilder.h
   model/ShellFeature.cpp

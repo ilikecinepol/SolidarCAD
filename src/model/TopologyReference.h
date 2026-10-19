@@ -4,8 +4,7 @@
 #include <optional>
 #include <string>
 
-#include "model/Body.h"
-#include "model/Feature.h"
+#include "model/ModelIds.h"
 
 namespace solidar {
 

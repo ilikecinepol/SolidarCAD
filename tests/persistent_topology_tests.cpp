@@ -114,14 +114,14 @@ int main() {
     for (std::size_t index = 0; index < 16; ++index) {
       auto reference = solidar::makeFaceReference(
           original, bodyId, featureId, index);
-      if (reference.persistentTag == "planar:max-z") {
+      if (reference.persistentTag() == "planar:max-z") {
         top = std::move(reference);
         break;
       }
     }
-    CHECK(top && top->signature);
+    CHECK(top && top->signature());
     const auto resolvedTop =
-        solidar::resolveFaceReference(resized, top->topology());
+        solidar::resolveFaceReference(resized, *top->v1());
     CHECK(resolvedTop);
     CHECK(resolvedTop.method == solidar::TopologyMatchMethod::SemanticTag);
     const auto placement =
@@ -137,22 +137,22 @@ int main() {
     for (std::size_t index = 0; index < 16; ++index) {
       auto reference = solidar::makeFaceReference(
           original, bodyId, featureId, index);
-      if (reference.persistentTag == "planar:max-x") {
+      if (reference.persistentTag() == "planar:max-x") {
         maxX = std::move(reference);
         break;
       }
     }
     CHECK(maxX);
     auto conflictingTag = *top;
-    conflictingTag.persistentTag = maxX->persistentTag;
+    conflictingTag.persistentTag() = maxX->persistentTag();
     const auto resolvedConflictingTag =
-        solidar::resolveFaceReference(original, conflictingTag.topology());
+        solidar::resolveFaceReference(original, *conflictingTag.v1());
     CHECK(resolvedConflictingTag);
     CHECK(resolvedConflictingTag.method ==
           solidar::TopologyMatchMethod::GeometricSignature);
-    const solidar::FaceReference legacyTop{bodyId, featureId, top->faceIndex};
+    const solidar::FaceReference legacyTop{bodyId, featureId, top->faceIndex()};
     const auto expectedTop =
-        solidar::resolveFaceReference(original, legacyTop.topology());
+        solidar::resolveFaceReference(original, *legacyTop.v1());
     CHECK(expectedTop && expectedTop.subshape &&
           resolvedConflictingTag.subshape);
     CHECK(resolvedConflictingTag.subshape->IsSame(*expectedTop.subshape));
@@ -160,10 +160,10 @@ int main() {
     // A tag-only native reference must fail closed when its tag disappeared.
     // Only genuinely legacy references (no tag and no signature) may use the
     // raw traversal ordinal fallback.
-    solidar::FaceReference missingTagOnly{bodyId, featureId, top->faceIndex};
-    missingTagOnly.persistentTag = "planar:missing-regression-tag";
+    solidar::FaceReference missingTagOnly{bodyId, featureId, top->faceIndex()};
+    missingTagOnly.persistentTag() = "planar:missing-regression-tag";
     const auto missingTagOnlyResolution =
-        solidar::resolveFaceReference(original, missingTagOnly.topology());
+        solidar::resolveFaceReference(original, *missingTagOnly.v1());
     CHECK(!missingTagOnlyResolution);
     CHECK(missingTagOnlyResolution.method == solidar::TopologyMatchMethod::None);
 
@@ -199,7 +199,7 @@ int main() {
     // scalar resolution against the same immutable snapshot.
     {
       const std::vector<solidar::TopologyReference> faceReferences{
-          top->topology(), missingTagOnly.topology(), legacyTop.topology()};
+          *top->v1(), *missingTagOnly.v1(), *legacyTop.v1()};
       const auto batch =
           solidar::resolveFaceReferences(*originalIndex, faceReferences);
       CHECK(batch.size() == faceReferences.size());
@@ -242,14 +242,14 @@ int main() {
       CHECK(solidar::makeEdgeReference(original, bodyId, featureId, 9999) ==
             solidar::EdgeReference{});
       CHECK(solidar::makeFaceReference(original, solidar::kInvalidBodyId,
-                                       featureId, top->faceIndex) ==
+                                       featureId, top->faceIndex()) ==
             solidar::FaceReference{});
       CHECK(solidar::makeEdgeReference(original, bodyId,
                                        solidar::kInvalidFeatureId, 0) ==
             solidar::EdgeReference{});
 
       const auto invalidOwner = originalIndex->createFaceReference(
-          solidar::kInvalidBodyId, featureId, top->faceIndex);
+          solidar::kInvalidBodyId, featureId, top->faceIndex());
       CHECK(!invalidOwner);
       CHECK(invalidOwner.reference == solidar::FaceReference{});
       CHECK(!invalidOwner.error.empty());
@@ -260,12 +260,12 @@ int main() {
       CHECK(outOfRange.error.find("out of range") != std::string::npos);
 
       const auto strictFace = originalIndex->createFaceReference(
-          bodyId, featureId, top->faceIndex);
+          bodyId, featureId, top->faceIndex());
       CHECK(strictFace);
       CHECK(strictFace.error.empty());
       CHECK(strictFace.reference == solidar::makeFaceReference(
                                           original, bodyId, featureId,
-                                          top->faceIndex));
+                                          top->faceIndex()));
 
       indexError.clear();
       const auto nullIndex = solidar::TopologyIndex::build(
@@ -319,7 +319,7 @@ int main() {
     // Persisted non-finite input is rejected with a stable diagnostic before
     // any scoring or fallback can take place.
     {
-      auto nonFiniteFace = top->topology();
+      auto nonFiniteFace = *top->v1();
       nonFiniteFace.faceSignature->centroid.x =
           std::numeric_limits<double>::quiet_NaN();
       const auto faceFailure = originalIndex->resolveFace(nonFiniteFace);
@@ -405,7 +405,7 @@ int main() {
       for (std::size_t index = 0; index < 32; ++index) {
         auto reference = solidar::makeFaceReference(fused, bodyId, featureId,
                                                     index);
-        if (reference.persistentTag == "planar:max-z" && reference.signature)
+        if (reference.persistentTag() == "planar:max-z" && reference.signature())
           tops.push_back(std::move(reference));
       }
       CHECK(tops.size() == 2);
@@ -413,7 +413,7 @@ int main() {
       // Unique best: the saved signature resolves to its own face.
       const solidar::FaceReference& saved = tops[0];
       const auto resolved =
-          solidar::resolveFaceReference(fused, saved.topology());
+          solidar::resolveFaceReference(fused, *saved.v1());
       CHECK(resolved);
       CHECK(resolved.method ==
             solidar::TopologyMatchMethod::GeometricSignature);
@@ -421,20 +421,20 @@ int main() {
       GProp_GProps properties;
       BRepGProp::SurfaceProperties(*resolved.subshape, properties);
       CHECK(std::abs(properties.CentreOfMass().X() -
-                     saved.signature->centroid.x) < 1e-3);
+                     saved.signature()->centroid.x) < 1e-3);
 
       // True symmetric ambiguity: a midpoint signature scores both equally.
       solidar::FaceReference ambiguous = tops[0];
-      ambiguous.signature->centroid.x =
-          (tops[0].signature->centroid.x + tops[1].signature->centroid.x) * 0.5;
-      ambiguous.signature->bounds.minimum.x =
-          (tops[0].signature->bounds.minimum.x +
-           tops[1].signature->bounds.minimum.x) * 0.5;
-      ambiguous.signature->bounds.maximum.x =
-          (tops[0].signature->bounds.maximum.x +
-           tops[1].signature->bounds.maximum.x) * 0.5;
+      ambiguous.signature()->centroid.x =
+          (tops[0].signature()->centroid.x + tops[1].signature()->centroid.x) * 0.5;
+      ambiguous.signature()->bounds.minimum.x =
+          (tops[0].signature()->bounds.minimum.x +
+           tops[1].signature()->bounds.minimum.x) * 0.5;
+      ambiguous.signature()->bounds.maximum.x =
+          (tops[0].signature()->bounds.maximum.x +
+           tops[1].signature()->bounds.maximum.x) * 0.5;
       const auto ambiguity =
-          solidar::resolveFaceReference(fused, ambiguous.topology());
+          solidar::resolveFaceReference(fused, *ambiguous.v1());
       CHECK(!ambiguity);
       CHECK(ambiguity.failure ==
             solidar::TopologyResolutionFailure::Ambiguous);
@@ -442,9 +442,9 @@ int main() {
 
       // Duplicate tag without a signature keeps the hard semantic-tag failure.
       solidar::FaceReference noSignature{bodyId, featureId, 0};
-      noSignature.persistentTag = "planar:max-z";
+      noSignature.persistentTag() = "planar:max-z";
       const auto noSignatureResolved =
-          solidar::resolveFaceReference(fused, noSignature.topology());
+          solidar::resolveFaceReference(fused, *noSignature.v1());
       CHECK(!noSignatureResolved);
       CHECK(noSignatureResolved.failure ==
             solidar::TopologyResolutionFailure::Ambiguous);
@@ -461,12 +461,12 @@ int main() {
       for (std::size_t index = 0; index < 16; ++index) {
         auto reference = solidar::makeFaceReference(cube, bodyId, featureId,
                                                     index);
-        if (reference.persistentTag == "planar:max-z") {
+        if (reference.persistentTag() == "planar:max-z") {
           cubeTop = std::move(reference);
           break;
         }
       }
-      CHECK(cubeTop && cubeTop->signature);
+      CHECK(cubeTop && cubeTop->signature());
       const double diagonal = std::sqrt(300.0);
       const double insideShift =
           diagonal * (solidar::kTopologyPositionRelativeTolerance - 0.005);
@@ -477,22 +477,22 @@ int main() {
       const TopoDS_Shape outside = BRepPrimAPI_MakeBox(
           gp_Pnt(outsideShift, 0.0, 0.0), 10.0, 10.0, 10.0).Shape();
       const auto insideResolution =
-          solidar::resolveFaceReference(inside, cubeTop->topology());
+          solidar::resolveFaceReference(inside, *cubeTop->v1());
       CHECK(insideResolution);
       CHECK(insideResolution.method ==
             solidar::TopologyMatchMethod::SemanticTag);
       const auto outsideResolution =
-          solidar::resolveFaceReference(outside, cubeTop->topology());
+          solidar::resolveFaceReference(outside, *cubeTop->v1());
       CHECK(!outsideResolution);
       CHECK(outsideResolution.method == solidar::TopologyMatchMethod::None);
       CHECK(outsideResolution.error.find("no longer") != std::string::npos);
 
-      auto boundsInside = cubeTop->topology();
+      auto boundsInside = *cubeTop->v1();
       const double insideExtent =
           10.0 / (1.0 - solidar::kTopologyMeasureRelativeTolerance + 0.005);
       boundsInside.faceSignature->bounds.maximum.x = insideExtent;
       CHECK(solidar::resolveFaceReference(cube, boundsInside));
-      auto boundsOutside = cubeTop->topology();
+      auto boundsOutside = *cubeTop->v1();
       const double outsideExtent =
           10.0 / (1.0 - solidar::kTopologyMeasureRelativeTolerance - 0.005);
       boundsOutside.faceSignature->bounds.maximum.x = outsideExtent;
@@ -511,12 +511,12 @@ int main() {
       for (std::size_t index = 0; index < 16; ++index) {
         auto reference = solidar::makeFaceReference(
             beforeSplit, bodyId, featureId, index);
-        if (reference.persistentTag == "planar:max-z") {
+        if (reference.persistentTag() == "planar:max-z") {
           splitTop = std::move(reference);
           break;
         }
       }
-      CHECK(splitTop && splitTop->signature);
+      CHECK(splitTop && splitTop->signature());
       BRepAlgoAPI_Cut split(
           beforeSplit,
           BRepPrimAPI_MakeBox(gp_Pnt(9.0, -1.0, 5.0), 2.0, 12.0, 6.0)
@@ -524,7 +524,7 @@ int main() {
       split.Build();
       CHECK(split.IsDone());
       const auto splitResolution =
-          solidar::resolveFaceReference(split.Shape(), splitTop->topology());
+          solidar::resolveFaceReference(split.Shape(), *splitTop->v1());
       CHECK(!splitResolution);
       CHECK(splitResolution.method == solidar::TopologyMatchMethod::None);
       CHECK(splitResolution.error.find("no longer") != std::string::npos ||
@@ -541,17 +541,17 @@ int main() {
       for (std::size_t index = 0; index < 32; ++index) {
         auto reference = solidar::makeFaceReference(
             beforeMergeBuilder.Shape(), bodyId, featureId, index);
-        if (reference.persistentTag == "planar:max-z" &&
-            reference.signature && reference.signature->area < 150.0) {
+        if (reference.persistentTag() == "planar:max-z" &&
+            reference.signature() && reference.signature()->area < 150.0) {
           mergeTop = std::move(reference);
           break;
         }
       }
-      CHECK(mergeTop && mergeTop->signature);
+      CHECK(mergeTop && mergeTop->signature());
       const TopoDS_Shape afterMerge =
           BRepPrimAPI_MakeBox(20.0, 10.0, 10.0).Shape();
       const auto mergeResolution =
-          solidar::resolveFaceReference(afterMerge, mergeTop->topology());
+          solidar::resolveFaceReference(afterMerge, *mergeTop->v1());
       CHECK(!mergeResolution);
       CHECK(mergeResolution.method == solidar::TopologyMatchMethod::None);
       CHECK(mergeResolution.error.find("no longer") != std::string::npos);

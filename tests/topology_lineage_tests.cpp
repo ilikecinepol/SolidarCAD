@@ -934,7 +934,8 @@ int main() {
     const auto tagged =
         baselineIndex->createFaceReference(bodyId, featureId, 0);
     CHECK(tagged);
-    auto signatureOnly = tagged.reference.topology();
+    CHECK(tagged.reference.v1());
+    auto signatureOnly = *tagged.reference.v1();
     signatureOnly.persistentTag.clear();
 
     const auto compareV1 = [&](const solidar::TopologyReference& reference,
@@ -951,7 +952,7 @@ int main() {
       CHECK(baseline.subshape->IsSame(*carrier.subshape));
     };
     compareV1(legacy, solidar::TopologyMatchMethod::LegacyIndex);
-    compareV1(tagged.reference.topology(),
+    compareV1(*tagged.reference.v1(),
               solidar::TopologyMatchMethod::SemanticTag);
     compareV1(signatureOnly,
               solidar::TopologyMatchMethod::GeometricSignature);
@@ -1041,6 +1042,179 @@ int main() {
     CHECK(ambiguous.method == solidar::TopologyMatchMethod::None);
     CHECK(ambiguous.failure ==
           solidar::TopologyResolutionFailure::Ambiguous);
+  }
+
+  // FaceReference is a closed v1|v2 carrier. Its active alternative is
+  // preserved by copy/move and equality never collapses different versions
+  // that happen to share the same owner.
+  {
+    const solidar::FaceReference invalid;
+    CHECK(invalid.isV1());
+    CHECK(invalid.bodyId() == solidar::kInvalidBodyId);
+    CHECK(invalid.featureId() == solidar::kInvalidFeatureId);
+
+    const auto key =
+        makeKey(featureId, solidar::TopologyKind::Face, "carrier:face");
+    const solidar::FaceReference v1(bodyId, featureId, 3, "legacy:face");
+    const auto v2 = solidar::FaceReference::fromV2({bodyId, key});
+    CHECK(v1.version() == solidar::FaceReferenceVersion::V1);
+    CHECK(v1.isV1());
+    CHECK(!v1.isV2());
+    CHECK(v1.bodyId() == bodyId);
+    CHECK(v1.featureId() == featureId);
+    CHECK(v1.v1());
+    CHECK(!v1.v2());
+    CHECK(v1.faceIndex() == 3);
+    CHECK(v2.version() == solidar::FaceReferenceVersion::V2);
+    CHECK(v2.isV2());
+    CHECK(v2.bodyId() == bodyId);
+    CHECK(v2.featureId() == featureId);
+    CHECK(v2.v2());
+    CHECK(!v2.v1());
+    CHECK(v1 != v2);
+
+    const auto copied = v2;
+    CHECK(copied == v2);
+    auto moved = copied;
+    const auto movedAgain = std::move(moved);
+    CHECK(movedAgain == v2);
+  }
+
+  // V2 creation names the selected canonical face only when exactly one Face
+  // provenance key exists, that key is owned by the expected producer, and
+  // the complete key resolves globally to exactly one face. Raw IsSame
+  // orientation aliases are idempotent.
+  {
+    const TopoDS_Shape box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape();
+    const auto boxFaces = subshapes(box, TopAbs_FACE, 2);
+    CHECK(boxFaces.size() == 2);
+    const auto uniqueKey =
+        makeKey(featureId, solidar::TopologyKind::Face, "factory:unique");
+    const auto lineage = solidar::TopologyLineage::create(
+        {{uniqueKey, boxFaces[0]}}, kPartialFaceCoverage);
+    CHECK(lineage);
+    const auto index = solidar::TopologyIndex::build(
+        std::make_shared<TopoDS_Shape>(box), 801, lineage);
+    CHECK(index);
+
+    const auto created =
+        index->createFaceReferenceV2(bodyId, featureId, 0);
+    CHECK(created);
+    CHECK(created.status ==
+          solidar::FaceReferenceV2CreationStatus::Created);
+    CHECK(created.reference.isV2());
+    CHECK(created.reference.v2()->provenance == uniqueKey);
+    const auto resolved = index->resolveFace(created.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*boxFaces[0]));
+
+    const auto unnamed =
+        index->createFaceReferenceV2(bodyId, featureId, 1);
+    CHECK(!unnamed);
+    CHECK(unnamed.status ==
+          solidar::FaceReferenceV2CreationStatus::Missing);
+    const auto wrongOwner =
+        index->createFaceReferenceV2(bodyId, featureId + 1, 0);
+    CHECK(!wrongOwner);
+    CHECK(wrongOwner.status ==
+          solidar::FaceReferenceV2CreationStatus::InvalidReference);
+    const auto invalidOwner = index->createFaceReferenceV2(
+        solidar::kInvalidBodyId, featureId, 0);
+    CHECK(!invalidOwner);
+    CHECK(invalidOwner.status ==
+          solidar::FaceReferenceV2CreationStatus::InvalidReference);
+
+    auto missingKey = uniqueKey;
+    missingKey.localName = "factory:missing";
+    const auto missingCarrier =
+        solidar::FaceReference::fromV2({bodyId, missingKey});
+    const auto missing = index->resolveFace(missingCarrier);
+    CHECK(!missing);
+    CHECK(missing.failure == solidar::TopologyResolutionFailure::Missing);
+    // A v1 geometric reference to the same face still succeeds, proving the
+    // v2 visit did not fall back across alternatives.
+    const auto geometric =
+        index->createFaceReference(bodyId, featureId, 0);
+    CHECK(geometric);
+    CHECK(index->resolveFace(geometric.reference));
+
+    auto secondKey = uniqueKey;
+    secondKey.localName = "factory:second";
+    const auto multipleLineage = solidar::TopologyLineage::create(
+        {{uniqueKey, boxFaces[0]}, {secondKey, boxFaces[0]}},
+        kPartialFaceCoverage);
+    CHECK(multipleLineage);
+    const auto multipleIndex = solidar::TopologyIndex::build(
+        std::make_shared<TopoDS_Shape>(box), 802, multipleLineage);
+    CHECK(multipleIndex);
+    const auto multiple =
+        multipleIndex->createFaceReferenceV2(bodyId, featureId, 0);
+    CHECK(!multiple);
+    CHECK(multiple.status ==
+          solidar::FaceReferenceV2CreationStatus::Ambiguous);
+
+    auto foreignKey = uniqueKey;
+    foreignKey.featureId = featureId + 1;
+    foreignKey.localName = "factory:foreign";
+    const auto expectedFirstLineage = solidar::TopologyLineage::create(
+        {{uniqueKey, boxFaces[0]}, {foreignKey, boxFaces[0]}},
+        kPartialFaceCoverage);
+    const auto foreignFirstLineage = solidar::TopologyLineage::create(
+        {{foreignKey, boxFaces[0]}, {uniqueKey, boxFaces[0]}},
+        kPartialFaceCoverage);
+    CHECK(expectedFirstLineage);
+    CHECK(foreignFirstLineage);
+    for (const auto& mixedLineage :
+         {expectedFirstLineage, foreignFirstLineage}) {
+      const auto mixedIndex = solidar::TopologyIndex::build(
+          std::make_shared<TopoDS_Shape>(box), 805, mixedLineage);
+      CHECK(mixedIndex);
+      const auto mixed =
+          mixedIndex->createFaceReferenceV2(bodyId, featureId, 0);
+      CHECK(!mixed);
+      CHECK(mixed.status ==
+            solidar::FaceReferenceV2CreationStatus::Ambiguous);
+    }
+
+    const auto duplicateLineage = solidar::TopologyLineage::create(
+        {{uniqueKey, boxFaces[0]}, {uniqueKey, boxFaces[1]}},
+        kPartialFaceCoverage);
+    CHECK(duplicateLineage);
+    const auto duplicateIndex = solidar::TopologyIndex::build(
+        std::make_shared<TopoDS_Shape>(box), 803, duplicateLineage);
+    CHECK(duplicateIndex);
+    const auto duplicate =
+        duplicateIndex->createFaceReferenceV2(bodyId, featureId, 0);
+    CHECK(!duplicate);
+    CHECK(duplicate.status ==
+          solidar::FaceReferenceV2CreationStatus::Ambiguous);
+    const auto duplicateCarrier =
+        solidar::FaceReference::fromV2({bodyId, uniqueKey});
+    const auto duplicateResolution =
+        duplicateIndex->resolveFace(duplicateCarrier);
+    CHECK(!duplicateResolution);
+    CHECK(duplicateResolution.failure ==
+          solidar::TopologyResolutionFailure::Ambiguous);
+
+    const auto reversed =
+        std::make_shared<TopoDS_Shape>(boxFaces[0]->Reversed());
+    const auto aliasShape = faceCompound(boxFaces[0], reversed);
+    const auto aliasLineage = solidar::TopologyLineage::create(
+        {{uniqueKey, boxFaces[0]}}, kPartialFaceCoverage);
+    CHECK(aliasLineage);
+    const auto aliasIndex =
+        solidar::TopologyIndex::build(aliasShape, 804, aliasLineage);
+    CHECK(aliasIndex);
+    CHECK(aliasIndex->rawFaceCount() == 2);
+    const auto firstAlias =
+        aliasIndex->createFaceReferenceV2(bodyId, featureId, 0);
+    const auto secondAlias =
+        aliasIndex->createFaceReferenceV2(bodyId, featureId, 1);
+    CHECK(firstAlias);
+    CHECK(secondAlias);
+    CHECK(firstAlias.reference == secondAlias.reference);
   }
 
   // Candidate traversal and binding insertion order do not change exact
@@ -1192,6 +1366,10 @@ int main() {
     CHECK(firstIndex->revision() == firstRevision);
     CHECK(firstIndex->lineage() == firstLineage);
     CHECK(firstIndex->resolveFace(feature.reference("side:first")));
+    const auto ownedReference = feature.createFaceReferenceV2(bodyId, 0);
+    CHECK(ownedReference);
+    CHECK(ownedReference.reference.isV2());
+    CHECK(ownedReference.reference.featureId() == feature.id());
 
     for (const SyntheticMode failureMode : {
              SyntheticMode::FailAfterStaging,

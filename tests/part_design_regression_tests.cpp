@@ -305,8 +305,8 @@ int main(int argc, char* argv[]) {
     const auto pocketSketchId = pocketSketch.id;
     const auto topFaceReference = solidar::makeFaceReference(
         *partBody.resultShape(), partBodyId, extrudeId, *topFace);
-    CHECK(topFaceReference.signature);
-    CHECK(!topFaceReference.persistentTag.empty());
+    CHECK(topFaceReference.signature());
+    CHECK(!topFaceReference.persistentTag().empty());
     CHECK(document.attachSketchToFace(pocketSketchId, topFaceReference));
     const auto cornerA =
         toLocal(pocketSketch.placement, {20.0, 10.0, 50.0});
@@ -535,11 +535,11 @@ int main(int argc, char* argv[]) {
     CHECK(restored.findSketch(revolveSketchId));
     CHECK(restoredPocketSketch->support.type ==
           solidar::SketchSupportType::Face);
-    CHECK(restoredPocketSketch->support.face.bodyId == partBodyId);
-    CHECK(restoredPocketSketch->support.face.featureId == extrudeId);
-    CHECK(restoredPocketSketch->support.face.persistentTag ==
-          topFaceReference.persistentTag);
-    CHECK(restoredPocketSketch->support.face.signature);
+    CHECK(restoredPocketSketch->support.face.bodyId() == partBodyId);
+    CHECK(restoredPocketSketch->support.face.featureId() == extrudeId);
+    CHECK(restoredPocketSketch->support.face.persistentTag() ==
+          topFaceReference.persistentTag());
+    CHECK(restoredPocketSketch->support.face.signature());
 
     const auto* restoredExtrude = dynamic_cast<const solidar::ExtrudeFeature*>(
         restoredPart->features()[0].get());

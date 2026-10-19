@@ -138,9 +138,9 @@ int main(int argc, char** argv) {
   // separate deterministic input/geometry failure.
   {
     auto missingFace = face;
-    missingFace.signature->centroid.x += 100000.0;
-    missingFace.signature->bounds.minimum.x += 100000.0;
-    missingFace.signature->bounds.maximum.x += 100000.0;
+    missingFace.signature()->centroid.x += 100000.0;
+    missingFace.signature()->bounds.minimum.x += 100000.0;
+    missingFace.signature()->bounds.maximum.x += 100000.0;
     solidar::PlaneReference missingPlane{
         solidar::NeutralPlaneType::BodyFace, missingFace};
     solidar::DraftToolSession missingSession;
@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
           solidar::OperationFailureCode::TopologyReferenceMissing);
 
     auto invalidFace = face;
-    invalidFace.signature->centroid.x =
+    invalidFace.signature()->centroid.x =
         std::numeric_limits<double>::quiet_NaN();
     solidar::PlaneReference invalidPlane{
         solidar::NeutralPlaneType::BodyFace, invalidFace};
@@ -177,9 +177,9 @@ int main(int argc, char** argv) {
     CHECK(compoundIndex);
     const auto drafted = solidar::makeFaceReference(
         *compound, bodyId, sourceId, 0);
-    CHECK(drafted.signature);
+    CHECK(drafted.signature());
     solidar::FaceReference ambiguousFace{bodyId, sourceId, 0};
-    ambiguousFace.persistentTag = "planar:max-z";
+    ambiguousFace.persistentTag() = "planar:max-z";
     solidar::PlaneReference ambiguousPlane{
         solidar::NeutralPlaneType::BodyFace, ambiguousFace};
     solidar::DraftToolSession ambiguousSession;
@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
     for (std::size_t faceIndex = 0; faceIndex < 3; ++faceIndex) {
       auto candidate = solidar::makeFaceReference(
           *cylinder, bodyId, sourceId, faceIndex);
-      const auto resolved = cylinderIndex->resolveFace(candidate.topology());
+      const auto resolved = cylinderIndex->resolveFace(candidate);
       if (!resolved) continue;
       BRepAdaptor_Surface surface(*resolved.subshape);
       if (surface.GetType() != GeomAbs_Plane) {
@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
   // feature, rather than relying on an unstable OCCT edge ordinal.
   std::optional<solidar::EdgeReference> adjacentEdge;
   const auto resolvedChosenFace =
-      solidar::resolveFaceReference(*retainedSource->shape(), face.topology());
+      solidar::resolveFaceReference(*retainedSource->shape(), *face.v1());
   CHECK(resolvedChosenFace);
   std::size_t edgeIndex = 0;
   for (TopExp_Explorer edges(*retainedSource->shape(), TopAbs_EDGE); edges.More();
@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
   const auto* loadedDraft = dynamic_cast<const solidar::DraftFeature*>(
       loaded.activeBody()->activeFeature());
   CHECK(loadedDraft && loadedDraft->id() == draftId);
-  CHECK(loadedDraft->draftedFaces().front().signature);
+    CHECK(loadedDraft->draftedFaces().front().signature());
   CHECK(loadedDraft->rotationEdge());
   CHECK(loadedDraft->rotationEdge()->signature);
   CHECK(loadedDraft->rotationEdge()->bodyId == bodyId);
@@ -390,7 +390,7 @@ int main(int argc, char** argv) {
         *firstSource->shape(), firstBodyId, firstSource->id(), 0);
     const auto foreignNeutral = solidar::makeFaceReference(
         *secondSource->shape(), secondBodyId, secondSource->id(), 0);
-    CHECK(drafted.signature && foreignNeutral.signature);
+    CHECK(drafted.signature() && foreignNeutral.signature());
     solidar::PlaneReference foreignPlane{
         solidar::NeutralPlaneType::BodyFace, foreignNeutral};
     solidar::AxisReference globalDirection{
@@ -422,8 +422,11 @@ int main(int argc, char** argv) {
     // resolvable topology payload but foreign owner IDs to prove both the
     // Feature boundary and the live session reject the enum itself first.
     auto foreignOwnedLocalFace = drafted;
-    foreignOwnedLocalFace.bodyId = secondBodyId;
-    foreignOwnedLocalFace.featureId = secondSource->id();
+    auto foreignOwnedLegacy = *foreignOwnedLocalFace.v1();
+    foreignOwnedLegacy.bodyId = secondBodyId;
+    foreignOwnedLegacy.featureId = secondSource->id();
+    foreignOwnedLocalFace =
+        solidar::FaceReference::fromV1(std::move(foreignOwnedLegacy));
     const solidar::PlaneReference unknownPlane{
         static_cast<solidar::NeutralPlaneType>(999), foreignOwnedLocalFace};
     foreignDraftPtr->setNeutralPlane(unknownPlane);
