@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -11,6 +12,9 @@
 class TopoDS_Shape;
 
 namespace solidar {
+
+// Shared in-memory/persistence contract for bounded immediate ancestry.
+inline constexpr std::size_t kMaximumTopologyImmediateOrigins = 256;
 
 // Typed, part-local identity evidence for persistent topology v2.  These
 // values are deliberately independent from OCCT traversal order and geometric
