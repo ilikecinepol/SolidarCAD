@@ -27,6 +27,7 @@
 #include "model/LinearPatternFeature.h"
 #include "model/MirrorFeature.h"
 #include "model/MoveFeature.h"
+#include "model/PocketFeature.h"
 #include "model/TopologyLineageBuilder.h"
 #include "model/TopologyReferenceResolver.h"
 #include "model/TransformFeatureHistoryBuilder.h"
@@ -353,6 +354,182 @@ void checkPartialConsumerFailsClosed(PartialConsumer kind) {
   CHECK(!consumerPtr->shape());
   CHECK(!consumerPtr->topologyLineage());
   CHECK(consumerPtr->error().find("incomplete") != std::string::npos);
+}
+
+using namespace solidar;
+
+struct FacePocketChain {
+  FaceReference reference;
+  Point2d circleCenter;
+  double radiusMm{};
+  double depthMm{};
+  SketchId sketchId{kInvalidSketchId};
+  FeatureId pocketId{kInvalidFeatureId};
+  PocketFeature* pocket{};
+};
+
+FaceReference createExactFaceReferenceV2(
+    Document& document, const Body& body, const ShapeFeature& owner,
+    const TopologyProvenanceKey& key) {
+  std::string error;
+  const auto index = owner.topologyIndex(&error);
+  CHECK(index);
+  CHECK(error.empty());
+  const auto resolved = index->resolveFace(TopologyReferenceV2{body.id(), key});
+  CHECK(resolved);
+  CHECK(resolved.method == TopologyMatchMethod::OperationProvenance);
+
+  // The resolver supplies the canonical raw traversal ordinal. The test does
+  // not couple persistent identity to a hard-coded OCCT face order.
+  const auto created = document.createFaceReferenceV2(
+      body.id(), owner.id(), resolved.index);
+  CHECK(created);
+  CHECK(created.error.empty());
+  CHECK(created.reference.isV2());
+  CHECK(created.reference.bodyId() == body.id());
+  CHECK(created.reference.featureId() == owner.id());
+  CHECK(created.reference.v2());
+  CHECK(created.reference.v2()->provenance == key);
+
+  const auto wrongProducer =
+      index->createFaceReferenceV2(body.id(), owner.id() + 1000000,
+                                   resolved.index);
+  CHECK(!wrongProducer);
+  CHECK(wrongProducer.status == FaceReferenceV2CreationStatus::InvalidReference);
+  CHECK(!wrongProducer.reference.isV2());
+  const auto wrongOwner = document.createFaceReferenceV2(
+      kInvalidBodyId, owner.id(), resolved.index);
+  CHECK(!wrongOwner);
+  CHECK(wrongOwner.status == FaceReferenceV2CreationStatus::InvalidReference);
+  return created.reference;
+}
+
+FacePocketChain addPocketOnExactFace(
+    Document& document, Body& body, ShapeFeature& owner,
+    const TopologyProvenanceKey& key, double radiusMm, double depthMm,
+    std::string name) {
+  const FaceReference reference =
+      createExactFaceReferenceV2(document, body, owner, key);
+  const auto resolved = owner.topologyIndex()->resolveFace(reference);
+  CHECK(resolved);
+  const gp_Pnt center = faceCenter(*resolved.subshape);
+
+  auto& sketch = document.addSketch(name + " profile");
+  CHECK(document.attachSketchToFace(sketch.id, reference));
+  CHECK(sketch.support.type == SketchSupportType::Face);
+  CHECK(sketch.support.face == reference);
+  CHECK(sketch.supportResolved);
+  const Point2d local = sketch.placement.toLocal(
+      {center.X(), center.Y(), center.Z()});
+  sketch.geometry.addCircle({local.x, local.y}, radiusMm);
+  CHECK(sketch.geometry.circles().size() == 1);
+  CHECK(test::near(sketch.geometry.circles().front().center.xMm, local.x));
+  CHECK(test::near(sketch.geometry.circles().front().center.yMm, local.y));
+  CHECK(test::near(sketch.geometry.circles().front().radiusMm, radiusMm));
+
+  auto pocket = std::make_unique<PocketFeature>(sketch.id, depthMm,
+                                                std::move(name));
+  auto* pocketPtr = pocket.get();
+  const FeatureId pocketId = pocketPtr->id();
+  body.addFeature(std::move(pocket));
+  return {reference, local, radiusMm, depthMm, sketch.id, pocketId,
+          pocketPtr};
+}
+
+void checkSupportAtExactFace(const Document& document,
+                             const DocumentSketch& sketch,
+                             const ShapeFeature& owner,
+                             const FaceReference& reference,
+                             Point2d circleCenter,
+                             const gp_Pnt& expectedCenter) {
+  CHECK(sketch.support.type == SketchSupportType::Face);
+  CHECK(sketch.support.face == reference);
+  CHECK(sketch.supportResolved);
+  CHECK(sketch.support.face.isV2());
+  const auto resolved = owner.topologyIndex()->resolveFace(reference);
+  CHECK(resolved);
+  const auto actualCenter = faceCenter(*resolved.subshape);
+  CHECK(test::near(actualCenter.X(), expectedCenter.X(), 1e-5));
+  CHECK(test::near(actualCenter.Y(), expectedCenter.Y(), 1e-5));
+  CHECK(test::near(actualCenter.Z(), expectedCenter.Z(), 1e-5));
+  const Point3d reconstructed =
+      sketch.placement.toWorld(circleCenter.x, circleCenter.y);
+  CHECK(test::near(reconstructed.x, actualCenter.X(), 1e-5));
+  CHECK(test::near(reconstructed.y, actualCenter.Y(), 1e-5));
+  CHECK(test::near(reconstructed.z, actualCenter.Z(), 1e-5));
+  CHECK(document.findSketch(sketch.id) == &sketch);
+}
+
+void checkSamePlacement(const SketchPlacement& actual,
+                        const SketchPlacement& expected) {
+  CHECK(test::near(actual.origin.x, expected.origin.x));
+  CHECK(test::near(actual.origin.y, expected.origin.y));
+  CHECK(test::near(actual.origin.z, expected.origin.z));
+  CHECK(test::near(actual.xDirection.x, expected.xDirection.x));
+  CHECK(test::near(actual.xDirection.y, expected.xDirection.y));
+  CHECK(test::near(actual.xDirection.z, expected.xDirection.z));
+  CHECK(test::near(actual.yDirection.x, expected.yDirection.x));
+  CHECK(test::near(actual.yDirection.y, expected.yDirection.y));
+  CHECK(test::near(actual.yDirection.z, expected.yDirection.z));
+}
+
+void checkPocketGeometry(const Body& body, const ShapeFeature& base,
+                         const FacePocketChain& chain) {
+  CHECK(base.shape());
+  CHECK(chain.pocket);
+  CHECK(chain.pocket->isValid());
+  CHECK(chain.pocket->shape());
+  CHECK(body.resultShape());
+  CHECK(body.resultShape()->IsSame(*chain.pocket->shape()));
+  CHECK(test::solidCount(*base.shape()) ==
+        test::solidCount(*chain.pocket->shape()));
+  const double removed = test::volumeOf(*base.shape()) -
+                         test::volumeOf(*chain.pocket->shape());
+  const double expected =
+      std::numbers::pi * chain.radiusMm * chain.radiusMm * chain.depthMm;
+  const double tolerance = std::max(1e-5, expected * 1e-5);
+  CHECK(test::near(removed, expected, tolerance));
+}
+
+void checkFailedAttachIsAtomic(Document& document, Body& body,
+                               DocumentSketch& sketch,
+                               PocketFeature& pocket,
+                               const FaceReference& invalidReplacement) {
+  const FaceReference support = sketch.support.face;
+  const SketchPlacement placement = sketch.placement;
+  const std::uint64_t placementRevision = sketch.placementRevision;
+  const bool supportResolved = sketch.supportResolved;
+  const bool placementDirty = sketch.placementDirty;
+  const SketchId sketchId = sketch.id;
+  const FeatureId pocketId = pocket.id();
+  const auto currentPocket = pocket.shape();
+  const auto lastValidPocket = pocket.lastValidShape();
+  const auto currentBody = body.resultShape();
+  const auto lastValidBody = body.lastValidResultShape();
+  CHECK(currentPocket);
+  CHECK(lastValidPocket);
+  CHECK(currentBody);
+  CHECK(lastValidBody);
+
+  CHECK(!document.attachSketchToFace(sketch.id, invalidReplacement));
+  CHECK(sketch.id == sketchId);
+  CHECK(sketch.support.face == support);
+  CHECK(sketch.support.type == SketchSupportType::Face);
+  CHECK(sketch.supportResolved == supportResolved);
+  CHECK(sketch.placementDirty == placementDirty);
+  checkSamePlacement(sketch.placement, placement);
+  CHECK(sketch.placementRevision == placementRevision);
+  CHECK(document.findSketch(sketchId) == &sketch);
+  CHECK(pocket.id() == pocketId);
+  CHECK(document.findFeature(body.id(), pocketId) == &pocket);
+  CHECK(pocket.shape() == currentPocket);
+  CHECK(pocket.lastValidShape() == lastValidPocket);
+  CHECK(body.resultShape() == currentBody);
+  CHECK(body.lastValidResultShape() == lastValidBody);
+  CHECK(pocket.shape()->IsSame(*currentPocket));
+  CHECK(pocket.lastValidShape()->IsSame(*lastValidPocket));
+  CHECK(body.resultShape()->IsSame(*currentBody));
+  CHECK(body.lastValidResultShape()->IsSame(*lastValidBody));
 }
 
 }  // namespace
@@ -945,6 +1122,314 @@ int main() {
     CHECK(test::near(faceCenter(*regrown.subshape).Z(), 4.0));
     checkAllFaceBranches(*source, *linear, targetBodyId,
                          linearNewBodyBranches);
+  }
+
+  // A reflected v2 cap remains the authoritative support for a downstream
+  // Sketch/Pocket chain when the source Extrude changes. The profile is
+  // authored at the selected face's center of mass in face-local coordinates.
+  {
+    Document document;
+    auto& sourceSketch = document.addSketch("Mirror pocket source");
+    sourceSketch.geometry.addRectangle({10.0, 2.0}, {18.0, 10.0});
+    auto& body = document.addBody("Mirror pocket body");
+    const BodyId bodyId = body.id();
+    auto extrusion = std::make_unique<ExtrudeFeature>(sourceSketch.id, 5.0);
+    auto* source = extrusion.get();
+    const auto sourceId = source->id();
+    body.addFeature(std::move(extrusion));
+    auto mirror = std::make_unique<MirrorFeature>(sourceId, MirrorPlane::YZ);
+    auto* mirrored = mirror.get();
+    body.addFeature(std::move(mirror));
+    CHECK(document.recompute());
+
+    const auto sourceCap = authoredKey(
+        AuthoredTopologySourceKind::ProfileEndCap, sourceSketch.id,
+        sketch::kInvalidGeometryId, sourceId);
+    const auto reflectedCap = transformedKey(
+        sourceCap, mirrored->id(), TopologyProvenanceOperation::Modified,
+        TopologySemanticRole::Reflected, 1);
+    const auto initialFace = resolve(*mirrored, body.id(), reflectedCap);
+    CHECK(initialFace);
+    const gp_Pnt initialCenter = faceCenter(*initialFace.subshape);
+    const auto chain = addPocketOnExactFace(
+        document, body, *mirrored, reflectedCap, 1.25, 2.0,
+        "Reflected cap pocket");
+    CHECK(document.recompute());
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->isValid());
+    CHECK(chain.pocket->shape());
+    checkPocketGeometry(body, *mirrored, chain);
+    const auto* attached = document.findSketch(chain.sketchId);
+    CHECK(attached);
+    checkSupportAtExactFace(document, *attached, *mirrored, chain.reference,
+                            chain.circleCenter, initialCenter);
+    const double initialPlacementZ = attached->placement.origin.z;
+
+    source->setLengthMm(8.0);
+    CHECK(document.recompute());
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->isValid());
+    CHECK(chain.pocket->shape());
+    CHECK(attached->support.face == chain.reference);
+    const auto movedFace =
+        mirrored->topologyIndex()->resolveFace(chain.reference);
+    CHECK(movedFace);
+    const gp_Pnt movedCenter = faceCenter(*movedFace.subshape);
+    CHECK(!test::near(movedCenter.Z(), initialCenter.Z()));
+    CHECK(!test::near(attached->placement.origin.z, initialPlacementZ));
+    checkSupportAtExactFace(document, *attached, *mirrored, chain.reference,
+                            chain.circleCenter, movedCenter);
+    checkPocketGeometry(body, *mirrored, chain);
+
+    // Failed reattachment is transactional even when both IDs exist but do
+    // not form the owning Body/Feature pair, and when the Feature is another
+    // real v2 producer.
+    auto& foreignSketch = document.addSketch("Foreign v2 producer source");
+    foreignSketch.geometry.addRectangle({30.0, 2.0}, {36.0, 8.0});
+    const SketchId foreignSketchId = foreignSketch.id;
+    auto& foreignBody = document.addBody("Foreign v2 producer body");
+    const BodyId foreignBodyId = foreignBody.id();
+    auto foreignExtrusion =
+        std::make_unique<ExtrudeFeature>(foreignSketchId, 4.0);
+    auto* foreignProducer = foreignExtrusion.get();
+    foreignBody.addFeature(std::move(foreignExtrusion));
+    CHECK(document.recompute());
+    const auto foreignCap = authoredKey(
+        AuthoredTopologySourceKind::ProfileEndCap, foreignSketchId,
+        sketch::kInvalidGeometryId, foreignProducer->id());
+    const FaceReference foreignReference = createExactFaceReferenceV2(
+        document, foreignBody, *foreignProducer, foreignCap);
+    CHECK(foreignReference.v2());
+
+    auto* primaryBody = document.findBody(bodyId);
+    auto* currentAttached = document.findSketch(chain.sketchId);
+    CHECK(primaryBody);
+    CHECK(currentAttached);
+    CHECK(document.findBody(foreignBodyId));
+    CHECK(document.findFeature(bodyId, mirrored->id()) == mirrored);
+    CHECK(document.findFeature(foreignBodyId, foreignProducer->id()) ==
+          foreignProducer);
+    const FaceReference mismatchedBody = FaceReference::fromV2(
+        {foreignBodyId, chain.reference.v2()->provenance});
+    CHECK(mismatchedBody.isV2());
+    CHECK(!document.findFeature(mismatchedBody.bodyId(),
+                                mismatchedBody.featureId()));
+    checkFailedAttachIsAtomic(document, *primaryBody, *currentAttached,
+                              *chain.pocket, mismatchedBody);
+    const FaceReference mismatchedProducer = FaceReference::fromV2(
+        {bodyId, foreignReference.v2()->provenance});
+    CHECK(mismatchedProducer.isV2());
+    CHECK(!document.findFeature(mismatchedProducer.bodyId(),
+                                mismatchedProducer.featureId()));
+    checkFailedAttachIsAtomic(document, *primaryBody, *currentAttached,
+                              *chain.pocket, mismatchedProducer);
+  }
+
+  // Linear slot 4 can disappear and recover without weakening the saved v2
+  // identity or silently selecting another face. A missing support blocks the
+  // Pocket while retaining its last valid result and the last valid placement.
+  {
+    Document document;
+    auto& sourceSketch = document.addSketch("Linear pocket source");
+    sourceSketch.geometry.addRectangle({1.0, 2.0}, {7.0, 8.0});
+    auto& body = document.addBody("Linear pocket body");
+    auto extrusion = std::make_unique<ExtrudeFeature>(sourceSketch.id, 5.0);
+    auto* source = extrusion.get();
+    const auto sourceId = source->id();
+    body.addFeature(std::move(extrusion));
+    auto pattern = std::make_unique<LinearPatternFeature>(
+        sourceId, PrincipalAxis::X, 5, 12.0);
+    auto* linear = pattern.get();
+    body.addFeature(std::move(pattern));
+    CHECK(document.recompute());
+
+    const auto sourceCap = authoredKey(
+        AuthoredTopologySourceKind::ProfileEndCap, sourceSketch.id,
+        sketch::kInvalidGeometryId, sourceId);
+    const auto slot4 = transformedKey(
+        sourceCap, linear->id(), TopologyProvenanceOperation::Modified,
+        TopologySemanticRole::PatternInstance, 4);
+    const gp_Pnt sourceCenter =
+        faceCenter(*bindingFor(*source->topologyLineage(), sourceCap).subshape);
+    const auto chain = addPocketOnExactFace(
+        document, body, *linear, slot4, 1.0, 2.0, "Linear slot pocket");
+    CHECK(document.recompute());
+    CHECK(chain.pocket->isValid());
+    CHECK(chain.pocket->id() == chain.pocketId);
+    checkPocketGeometry(body, *linear, chain);
+    auto* attached = document.findSketch(chain.sketchId);
+    CHECK(attached);
+    const auto initial = linear->topologyIndex()->resolveFace(chain.reference);
+    CHECK(initial);
+    const gp_Pnt initialCenter = faceCenter(*initial.subshape);
+    CHECK(test::near(initialCenter.X(), sourceCenter.X() + 48.0, 1e-5));
+    const gp_Pnt expectedInitial{sourceCenter.X() + 48.0, sourceCenter.Y(),
+                                 sourceCenter.Z()};
+    checkSupportAtExactFace(document, *attached, *linear, chain.reference,
+                            chain.circleCenter, expectedInitial);
+
+    linear->setSpacingMm(15.0);
+    CHECK(document.recompute());
+    CHECK(attached->support.face == chain.reference);
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->isValid());
+    const auto spaced = linear->topologyIndex()->resolveFace(chain.reference);
+    CHECK(spaced);
+    const gp_Pnt spacedCenter = faceCenter(*spaced.subshape);
+    CHECK(test::near(spacedCenter.X(), initialCenter.X() + 12.0, 1e-5));
+    checkSupportAtExactFace(document, *attached, *linear, chain.reference,
+                            chain.circleCenter, spacedCenter);
+    checkPocketGeometry(body, *linear, chain);
+    const auto lastValidPocket = chain.pocket->shape();
+    CHECK(lastValidPocket);
+    const SketchPlacement lastValidPlacement = attached->placement;
+
+    linear->setCount(3);
+    CHECK(!document.recompute());
+    const auto missing = linear->topologyIndex()->resolveFace(chain.reference);
+    CHECK(!missing);
+    CHECK(missing.failure == TopologyResolutionFailure::Missing);
+    CHECK(!attached->supportResolved);
+    CHECK(attached->support.face == chain.reference);
+    checkSamePlacement(attached->placement, lastValidPlacement);
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->state() == FeatureState::Error);
+    CHECK(chain.pocket->error().find("Blocked") != std::string::npos);
+    CHECK(!chain.pocket->shape());
+    CHECK(chain.pocket->lastValidShape() == lastValidPocket);
+    CHECK(!body.resultShape());
+    CHECK(body.lastValidResultShape());
+    CHECK(body.lastValidResultShape()->IsSame(*lastValidPocket));
+    for (std::uint64_t remainingSlot = 0; remainingSlot < 3;
+         ++remainingSlot) {
+      const double remainingCenterX =
+          sourceCenter.X() + 15.0 * remainingSlot;
+      CHECK(std::abs(spacedCenter.X() - remainingCenterX) >
+            3.0 + chain.radiusMm);
+    }
+
+    linear->setSpacingMm(18.0);
+    linear->setCount(5);
+    CHECK(document.recompute());
+    CHECK(attached->supportResolved);
+    CHECK(attached->support.face == chain.reference);
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->isValid());
+    CHECK(chain.pocket->shape());
+    const auto regrown = linear->topologyIndex()->resolveFace(chain.reference);
+    CHECK(regrown);
+    const gp_Pnt regrownCenter = faceCenter(*regrown.subshape);
+    CHECK(test::near(regrownCenter.X(), initialCenter.X() + 24.0, 1e-5));
+    checkSupportAtExactFace(document, *attached, *linear, chain.reference,
+                            chain.circleCenter, regrownCenter);
+    for (std::uint64_t otherSlot = 0; otherSlot < 4; ++otherSlot) {
+      const double otherCenterX = sourceCenter.X() + 18.0 * otherSlot;
+      CHECK(std::abs(spacedCenter.X() - otherCenterX) >
+            3.0 + chain.radiusMm);
+    }
+    checkPocketGeometry(body, *linear, chain);
+  }
+
+  // Circular slot 4 likewise survives angular edits and a count-driven
+  // disappearance/regrowth cycle with the exact same v2 carrier.
+  {
+    Document document;
+    auto& sourceSketch = document.addSketch("Circular pocket source");
+    sourceSketch.geometry.addRectangle({10.0, 2.0}, {16.0, 8.0});
+    auto& body = document.addBody("Circular pocket body");
+    auto extrusion = std::make_unique<ExtrudeFeature>(sourceSketch.id, 5.0);
+    auto* source = extrusion.get();
+    const auto sourceId = source->id();
+    body.addFeature(std::move(extrusion));
+    auto pattern = std::make_unique<CircularPatternFeature>(
+        sourceId, PrincipalAxis::Z, 5, 360.0);
+    auto* circular = pattern.get();
+    body.addFeature(std::move(pattern));
+    CHECK(document.recompute());
+
+    const auto sourceCap = authoredKey(
+        AuthoredTopologySourceKind::ProfileEndCap, sourceSketch.id,
+        sketch::kInvalidGeometryId, sourceId);
+    const auto slot4 = transformedKey(
+        sourceCap, circular->id(), TopologyProvenanceOperation::Modified,
+        TopologySemanticRole::PatternInstance, 4);
+    const gp_Pnt sourceCenter =
+        faceCenter(*bindingFor(*source->topologyLineage(), sourceCap).subshape);
+    const auto chain = addPocketOnExactFace(
+        document, body, *circular, slot4, 1.0, 2.0,
+        "Circular slot pocket");
+    CHECK(document.recompute());
+    CHECK(chain.pocket->isValid());
+    CHECK(chain.pocket->id() == chain.pocketId);
+    checkPocketGeometry(body, *circular, chain);
+    auto* attached = document.findSketch(chain.sketchId);
+    CHECK(attached);
+    const auto initial = circular->topologyIndex()->resolveFace(chain.reference);
+    CHECK(initial);
+    const gp_Pnt initialCenter = faceCenter(*initial.subshape);
+    const gp_Pnt expectedInitial = rotateZ(
+        sourceCenter, 8.0 * std::numbers::pi / 5.0);
+    checkSupportAtExactFace(document, *attached, *circular, chain.reference,
+                            chain.circleCenter, expectedInitial);
+
+    circular->setAngleDeg(240.0);
+    CHECK(document.recompute());
+    CHECK(attached->support.face == chain.reference);
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->isValid());
+    const auto angled = circular->topologyIndex()->resolveFace(chain.reference);
+    CHECK(angled);
+    const gp_Pnt angledCenter = faceCenter(*angled.subshape);
+    const gp_Pnt expectedAngled =
+        rotateZ(sourceCenter, 4.0 * std::numbers::pi / 3.0);
+    CHECK(test::near(angledCenter.X(), expectedAngled.X(), 1e-5));
+    CHECK(test::near(angledCenter.Y(), expectedAngled.Y(), 1e-5));
+    CHECK(test::near(angledCenter.Z(), expectedAngled.Z(), 1e-5));
+    CHECK(!test::near(angledCenter.X(), initialCenter.X()) ||
+          !test::near(angledCenter.Y(), initialCenter.Y()));
+    checkSupportAtExactFace(document, *attached, *circular, chain.reference,
+                            chain.circleCenter, expectedAngled);
+    checkPocketGeometry(body, *circular, chain);
+    const auto lastValidPocket = chain.pocket->shape();
+    CHECK(lastValidPocket);
+    const SketchPlacement lastValidPlacement = attached->placement;
+
+    circular->setCount(3);
+    CHECK(!document.recompute());
+    const auto missing = circular->topologyIndex()->resolveFace(chain.reference);
+    CHECK(!missing);
+    CHECK(missing.failure == TopologyResolutionFailure::Missing);
+    CHECK(!attached->supportResolved);
+    CHECK(attached->support.face == chain.reference);
+    checkSamePlacement(attached->placement, lastValidPlacement);
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->state() == FeatureState::Error);
+    CHECK(chain.pocket->error().find("Blocked") != std::string::npos);
+    CHECK(!chain.pocket->shape());
+    CHECK(chain.pocket->lastValidShape() == lastValidPocket);
+    CHECK(!body.resultShape());
+    CHECK(body.lastValidResultShape());
+    CHECK(body.lastValidResultShape()->IsSame(*lastValidPocket));
+
+    circular->setAngleDeg(300.0);
+    circular->setCount(5);
+    CHECK(document.recompute());
+    CHECK(attached->supportResolved);
+    CHECK(attached->support.face == chain.reference);
+    CHECK(chain.pocket->id() == chain.pocketId);
+    CHECK(chain.pocket->isValid());
+    CHECK(chain.pocket->shape());
+    const auto regrown = circular->topologyIndex()->resolveFace(chain.reference);
+    CHECK(regrown);
+    const gp_Pnt regrownCenter = faceCenter(*regrown.subshape);
+    const gp_Pnt expectedRegrown = rotateZ(
+        sourceCenter, 5.0 * std::numbers::pi / 3.0);
+    CHECK(test::near(regrownCenter.X(), expectedRegrown.X(), 1e-5));
+    CHECK(test::near(regrownCenter.Y(), expectedRegrown.Y(), 1e-5));
+    CHECK(test::near(regrownCenter.Z(), expectedRegrown.Z(), 1e-5));
+    checkSupportAtExactFace(document, *attached, *circular, chain.reference,
+                            chain.circleCenter, expectedRegrown);
+    checkPocketGeometry(body, *circular, chain);
   }
 
   // A full production chain retains only immediate origins while nested
