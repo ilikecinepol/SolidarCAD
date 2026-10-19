@@ -80,6 +80,21 @@ std::vector<std::unique_ptr<solidar::ShapeFeature>> allFeatureKinds() {
   return features;
 }
 
+solidar::FaceReference historyV2Face(std::string localName,
+                                     std::string originName) {
+  using namespace solidar;
+  std::vector<TopologyProvenanceOrigin> origins;
+  origins.emplace_back(40, TopologyKind::Face,
+                       TopologyProvenanceOperation::Seed,
+                       TopologySemanticRole::SketchBoundary,
+                       std::move(originName));
+  return FaceReference::fromV2(
+      {30, TopologyProvenanceKey{50, TopologyKind::Face,
+                                 TopologyProvenanceOperation::Generated,
+                                 TopologySemanticRole::Side,
+                                 std::move(localName), std::move(origins)}});
+}
+
 }  // namespace
 
 int main() {
@@ -339,6 +354,76 @@ int main() {
     CHECK(history.recordTransition(current, std::move(branchBase), {}, {}).status ==
           HistoryCommitStatus::Accepted);
     CHECK(!history.canRedo());
+  }
+
+  // History retains the exact v2 carrier through copy/undo/redo and accounts
+  // for producer and origin strings instead of calling v1-only accessors.
+  {
+    const auto longReference =
+        historyV2Face(std::string(2048, 'p'), std::string(1536, 'o'));
+    const auto shortReference = historyV2Face("p", "o");
+    Document longDocument;
+    EditorCommittedState before;
+    EditorCommittedState after;
+    after.presentation.originVisible = false;
+    after.faces = {longReference};
+    ModelCommandHistory longHistory;
+    CHECK(longHistory.recordTransition(longDocument, Document(longDocument),
+                                       before, after)
+              .status == HistoryCommitStatus::Accepted);
+    const auto retainedLong = longHistory.retainedBytes();
+    const auto undone = longHistory.undo(longDocument, after);
+    CHECK(undone.changed);
+    CHECK(undone.state.faces.empty());
+    const auto redone = longHistory.redo(longDocument, before);
+    CHECK(redone.changed);
+    CHECK(redone.state.faces ==
+          std::vector<FaceReference>{longReference});
+
+    Document shortDocument;
+    EditorCommittedState shortAfter;
+    shortAfter.presentation.originVisible = false;
+    shortAfter.faces = {shortReference};
+    ModelCommandHistory shortHistory;
+    CHECK(shortHistory.recordTransition(shortDocument,
+                                        Document(shortDocument), before,
+                                        shortAfter)
+              .status == HistoryCommitStatus::Accepted);
+    CHECK(retainedLong > shortHistory.retainedBytes() + 3000);
+  }
+
+  // A v2 reference embedded in Document state also survives the cold delta
+  // clone and the recompute performed by both undo and redo.
+  {
+    Document before;
+    auto& profile = before.addSketch("history profile");
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 8.0});
+    auto& body = before.addBody("history body");
+    auto source = std::make_unique<ExtrudeFeature>(
+        profile.id, 5.0, "history source");
+    const auto sourceId = source->id();
+    const auto bodyId = body.id();
+    body.addFeature(std::move(source));
+    CHECK(before.recompute());
+
+    Document current = before;
+    const auto reference =
+        current.createFaceReferenceV2(bodyId, sourceId, 0);
+    CHECK(reference);
+    auto& supported = current.addSketch("history supported");
+    const auto supportedId = supported.id;
+    CHECK(current.attachSketchToFace(supportedId, reference.reference));
+    ModelCommandHistory history;
+    CHECK(history.recordTransition(current, std::move(before), {}, {}).status ==
+          HistoryCommitStatus::Accepted);
+    CHECK(history.undo(current, {}).changed);
+    CHECK(!current.findSketch(supportedId));
+    CHECK(history.redo(current, {}).changed);
+    const auto* restored = current.findSketch(supportedId);
+    CHECK(restored);
+    CHECK(restored->support.type == SketchSupportType::Face);
+    CHECK(restored->support.face == reference.reference);
+    CHECK(restored->supportResolved);
   }
 
   return EXIT_SUCCESS;

@@ -4,12 +4,16 @@
 
 #include <utility>
 
+#include "model/TopologyReferenceResolver.h"
+
 namespace solidar {
 
 void MirrorToolSession::begin(std::optional<FeatureId> editingFeatureId) {
   bodyId_ = kInvalidBodyId;
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   plane_.reset();
   planeFace_.reset();
   editingFeatureId_ = editingFeatureId;
@@ -19,10 +23,20 @@ void MirrorToolSession::begin(std::optional<FeatureId> editingFeatureId) {
 }
 
 void MirrorToolSession::setBody(BodyId bodyId, FeatureId sourceFeatureId,
-                                ShapeFeature::ShapePtr sourceShape) {
+                                ShapeFeature::ShapePtr sourceShape,
+                                std::shared_ptr<const TopologyIndex> topologyIndex) {
   bodyId_ = bodyId;
   sourceFeatureId_ = sourceFeatureId;
   sourceShape_ = std::move(sourceShape);
+  topologyIndexError_.clear();
+  topologyIndex_ = std::move(topologyIndex);
+  if (topologyIndex_ &&
+      (!sourceShape_ || sourceShape_->IsNull() || !topologyIndex_->shape() ||
+       topologyIndex_->shape().get() != sourceShape_.get()))
+    topologyIndex_.reset();
+  if (!topologyIndex_ && sourceShape_ && !sourceShape_->IsNull())
+    topologyIndex_ = TopologyIndex::build(
+        sourceShape_, kInvalidShapeRevision, &topologyIndexError_);
   plane_.reset();
   planeFace_.reset();
   updatePreview();
@@ -32,6 +46,8 @@ void MirrorToolSession::clearBody() {
   bodyId_ = kInvalidBodyId;
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   plane_.reset();
   planeFace_.reset();
   updatePreview();
@@ -120,8 +136,15 @@ bool MirrorToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
+  if (planeFace_ && !topologyIndex_) {
+    error_ = "Mirror topology could not be indexed";
+    if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
   previewShape_ = planeFace_
-                      ? buildMirrorShape(*sourceShape_, *planeFace_, &error_)
+                      ? buildMirrorShape(*sourceShape_, *topologyIndex_,
+                                         *planeFace_, &error_)
                       : buildMirrorShape(*sourceShape_, *plane_, &error_);
   lifecycle_ = previewShape_ ? ToolLifecycle::PreviewValid
                              : ToolLifecycle::PreviewInvalid;
@@ -132,6 +155,8 @@ void MirrorToolSession::cancel() noexcept {
   bodyId_ = kInvalidBodyId;
   sourceFeatureId_ = kInvalidFeatureId;
   sourceShape_.reset();
+  topologyIndex_.reset();
+  topologyIndexError_.clear();
   plane_.reset();
   planeFace_.reset();
   editingFeatureId_.reset();

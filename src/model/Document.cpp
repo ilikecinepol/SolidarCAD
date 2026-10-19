@@ -630,6 +630,20 @@ const ShapeFeature* Document::findFeature(FeatureId id) const noexcept {
   const auto index = body->featureIndex(id);
   return index ? body->features()[*index].get() : nullptr;
 }
+ShapeFeature* Document::findFeature(BodyId bodyId,
+                                    FeatureId featureId) noexcept {
+  Body* body = findBody(bodyId);
+  if (!body) return nullptr;
+  const auto index = body->featureIndex(featureId);
+  return index ? body->features_[*index].get() : nullptr;
+}
+const ShapeFeature* Document::findFeature(BodyId bodyId,
+                                          FeatureId featureId) const noexcept {
+  const Body* body = findBody(bodyId);
+  if (!body) return nullptr;
+  const auto index = body->featureIndex(featureId);
+  return index ? body->features()[*index].get() : nullptr;
+}
 Body* Document::findBodyForFeature(FeatureId id) noexcept {
   const auto found = std::find_if(
       bodies_.begin(), bodies_.end(), [id](const Body& body) {
@@ -995,26 +1009,46 @@ bool Document::recomputeFrom(FeatureId featureId) {
 
 bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
   auto* sketch = findSketch(sketchId);
-  if (!sketch || !reference.isV1()) return false;
-  const Body* body = findBody(reference.bodyId());
-  if (body && !reference.signature()) {
-    for (const auto& feature : body->features())
-      if (feature->id() == reference.featureId() && feature->shape()) {
-        std::string indexError;
-        const auto topology = feature->topologyIndex(&indexError);
-        if (!topology) return false;
-        const auto created = topology->createFaceReference(
-            reference.bodyId(), reference.featureId(), reference.faceIndex());
-        if (!created) return false;
-        reference = created.reference;
-        break;
-      }
+  if (!sketch) return false;
+  const ShapeFeature* feature =
+      findFeature(reference.bodyId(), reference.featureId());
+  if (!feature || !feature->isValid() || !feature->shape()) return false;
+  std::string indexError;
+  const auto topology = feature->topologyIndex(&indexError);
+  if (!topology) return false;
+  const auto resolution = topology->resolveFace(reference);
+  if (!resolution) return false;
+  if (const auto* legacy = reference.v1();
+      legacy && !legacy->faceSignature) {
+    const auto created = topology->createFaceReference(
+        reference.bodyId(), reference.featureId(), resolution.index);
+    if (!created) return false;
+    reference = created.reference;
   }
-  sketch->support = {SketchSupportType::Face, reference};
-  sketch->placementDirty = true;
+  const auto resolvedPlacement = resolveFacePlacement(*resolution.subshape);
+  if (!resolvedPlacement.resolved || !resolvedPlacement.planar) return false;
+
+  // Commit support, placement and dirty state only after the entire reference
+  // has resolved. A failed attachment must not replace the previous support.
+  sketch->support = {SketchSupportType::Face, std::move(reference)};
+  sketch->placement = resolvedPlacement.placement;
+  sketch->supportResolved = true;
+  sketch->placementDirty = false;
+  ++sketch->placementRevision;
   markSketchDirty(sketchId);
-  updateSketchPlacement(*sketch);
-  return sketch->supportResolved;
+  return true;
+}
+
+FaceReferenceV2Creation Document::createFaceReferenceV2(
+    BodyId bodyId, FeatureId featureId, std::size_t rawFaceIndex) const {
+  const ShapeFeature* feature = findFeature(bodyId, featureId);
+  if (!feature) {
+    FaceReferenceV2Creation result;
+    result.status = FaceReferenceV2CreationStatus::InvalidReference;
+    result.error = "Face owner Body/Feature pair was not found";
+    return result;
+  }
+  return feature->createFaceReferenceV2(bodyId, rawFaceIndex);
 }
 
 bool Document::updateSketchPlacement(DocumentSketch& sketch) {
@@ -1025,41 +1059,40 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
     return true;
   }
   auto& reference = sketch.support.face;
-  const Body* body = findBody(reference.bodyId());
-  const ShapeFeature* feature = nullptr;
-  if (body)
-    for (const auto& candidate : body->features())
-      if (candidate->id() == reference.featureId()) {
-        feature = candidate.get();
-        break;
-      }
+  const ShapeFeature* feature =
+      findFeature(reference.bodyId(), reference.featureId());
   if (!feature || !feature->isValid() || !feature->shape()) {
     sketch.supportResolved = false;
     return false;
   }
   std::string indexError;
   const auto topology = feature->topologyIndex(&indexError);
-  if (!topology || !reference.isV1()) {
+  if (!topology) {
     sketch.supportResolved = false;
     return false;
   }
-  const auto resolution = topology->resolveFace(*reference.v1());
+  const auto resolution = topology->resolveFace(reference);
   if (!resolution) {
     sketch.supportResolved = false;
     return false;
   }
-  if (!reference.signature()) {
+  FaceReference candidate = reference;
+  const auto* legacy = candidate.v1();
+  if (legacy && !legacy->faceSignature) {
     const auto created = topology->createFaceReference(
-        reference.bodyId(), reference.featureId(), resolution.index);
+        candidate.bodyId(), candidate.featureId(), resolution.index);
     if (!created) {
       sketch.supportResolved = false;
       return false;
     }
-    reference = created.reference;
+    candidate = created.reference;
   }
   const auto resolved = resolveFacePlacement(*resolution.subshape);
   sketch.supportResolved = resolved.resolved && resolved.planar;
-  if (sketch.supportResolved) sketch.placement = resolved.placement;
+  if (sketch.supportResolved) {
+    reference = std::move(candidate);
+    sketch.placement = resolved.placement;
+  }
   return sketch.supportResolved;
 }
 

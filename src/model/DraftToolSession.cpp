@@ -213,14 +213,9 @@ bool DraftToolSession::updatePreview(const Document& document) {
     lifecycle_ = ToolLifecycle::PreviewInvalid;
     return false;
   }
-  std::vector<TopologyReference> references;
-  references.reserve(faces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : faces_) {
     if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    const auto* legacy = face.v1();
-    if (!legacy) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceInvalid; error_ = "Draft v2 face consumption is not enabled"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    references.push_back(*legacy);
   }
   if (rotationEdge_ &&
       (rotationEdge_->bodyId != bodyId_ ||
@@ -232,7 +227,8 @@ bool DraftToolSession::updatePreview(const Document& document) {
     return false;
   }
   if (!topologyIndex_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyIndexUnavailable; error_ = "Draft topology could not be indexed"; if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-  for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
+  for (const auto& face : faces_) {
+    const auto resolved = topologyIndex_->resolveFace(face);
     if (!resolved) { previewShape_.reset(); errorCode_ = operationFailureCode(resolved.failure); error_ = "Draft face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
     indices.push_back(resolved.index);
   }
@@ -297,9 +293,7 @@ std::optional<AngularToolManipulator> DraftToolSession::manipulator(
                                      &direction))
     return std::nullopt;
   Bnd_Box box;
-  const auto* legacy = faces_.front().v1();
-  if (!legacy) return std::nullopt;
-  if (const auto selected = topologyIndex_->resolveFace(*legacy))
+  if (const auto selected = topologyIndex_->resolveFace(faces_.front()))
     BRepBndLib::Add(*selected.subshape, box);
   else
     BRepBndLib::Add(*baseShape_, box);

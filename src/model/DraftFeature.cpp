@@ -109,12 +109,14 @@ DraftReferenceResolution resolveDraftReferencesIndexed(
             return false;
           }
           FaceResolution face;
-          if (const auto* legacy = plane.face->v1())
-            face = topology ? topology->resolveFace(*legacy)
-                            : resolveFaceReference(baseShape, *legacy);
-          else {
+          if (topology) {
+            face = topology->resolveFace(*plane.face);
+          } else if (const auto* legacy = plane.face->v1()) {
+            face = resolveFaceReference(baseShape, *legacy);
+          } else {
             face.failure = TopologyResolutionFailure::InvalidReference;
-            face.error = "Draft v2 face consumption is not enabled";
+            face.error =
+                "Draft v2 neutral face requires its owning topology index";
           }
           if (!face) {
             typedFailure = {operationFailureCode(face.failure),
@@ -170,12 +172,13 @@ DraftReferenceResolution resolveDraftEdgeAxisIndexed(
           return false;
         }
         FaceResolution face;
-        if (const auto* legacy = draftedFace.v1())
-          face = topology ? topology->resolveFace(*legacy)
-                          : resolveFaceReference(baseShape, *legacy);
-        else {
+        if (topology) {
+          face = topology->resolveFace(draftedFace);
+        } else if (const auto* legacy = draftedFace.v1()) {
+          face = resolveFaceReference(baseShape, *legacy);
+        } else {
           face.failure = TopologyResolutionFailure::InvalidReference;
-          face.error = "Draft v2 face consumption is not enabled";
+          face.error = "Draft v2 face requires its owning topology index";
         }
         if (!face) {
           typedFailure = {operationFailureCode(face.failure),
@@ -360,17 +363,10 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
     markError("Draft topology could not be indexed: " + topologyError);
     return false;
   }
-  std::vector<TopologyReference> references;
-  references.reserve(draftedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : draftedFaces_) {
     if (face.bodyId() != context.body->id() || face.featureId() != sourceFeatureId_) { markError("Draft faces must belong to the active source Feature"); return false; }
-    const auto* legacy = face.v1();
-    if (!legacy) { markError("Draft v2 face consumption is not enabled"); return false; }
-    references.push_back(*legacy);
-  }
-  const auto resolutions = topology->resolveFaces(references);
-  for (const auto& resolved : resolutions) {
+    const auto resolved = topology->resolveFace(face);
     if (!resolved) { markError("Draft face could not be resolved: " + resolved.error); return false; }
     indices.push_back(resolved.index);
   }

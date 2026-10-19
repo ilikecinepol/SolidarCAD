@@ -116,5 +116,40 @@ int main() {
   faceSession.setPlaneFace(foreignFace);
   CHECK(faceSession.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
   CHECK(!faceSession.previewShape());
+
+  // The indexed path consumes the closed v2 carrier exactly. The shape-only
+  // overload fails closed because it cannot reconstruct operation lineage.
+  solidar::Document v2Document;
+  auto& v2Sketch = v2Document.addSketch("v2 mirror profile");
+  v2Sketch.geometry.addRectangle({10, 0}, {20, 10});
+  auto& v2Body = v2Document.addBody();
+  auto v2Extrusion =
+      std::make_unique<solidar::ExtrudeFeature>(v2Sketch.id, 5.0);
+  const auto v2SourceId = v2Extrusion->id();
+  v2Body.addFeature(std::move(v2Extrusion));
+  CHECK(v2Document.recompute());
+  const auto v2Source = v2Body.resultShape();
+  const auto v2Top = solidar::test::topPlanarFace(*v2Source, 5.0);
+  CHECK(v2Top);
+  const auto v2Plane =
+      v2Document.createFaceReferenceV2(v2Body.id(), v2SourceId, *v2Top);
+  CHECK(v2Plane);
+  const auto v2Index = v2Body.activeFeature()->topologyIndex();
+  CHECK(v2Index);
+  std::string bareV2Error;
+  CHECK(!solidar::buildMirrorShape(*v2Source, v2Plane.reference,
+                                    &bareV2Error));
+  CHECK(bareV2Error.find("owning topology index") != std::string::npos);
+  solidar::MirrorToolSession v2Session;
+  v2Session.begin();
+  v2Session.setBody(v2Body.id(), v2SourceId, v2Source, v2Index);
+  v2Session.setPlaneFace(v2Plane.reference);
+  CHECK(v2Session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  auto v2Mirror = std::make_unique<solidar::MirrorFeature>(
+      v2SourceId, v2Plane.reference, "v2 mirror");
+  auto* v2MirrorPtr = v2Mirror.get();
+  v2Body.addFeature(std::move(v2Mirror));
+  CHECK(v2Document.recompute());
+  CHECK(v2MirrorPtr->planeFace() == v2Plane.reference);
   return EXIT_SUCCESS;
 }

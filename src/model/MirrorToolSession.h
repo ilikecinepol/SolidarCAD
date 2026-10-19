@@ -11,7 +11,8 @@ class MirrorToolSession final : public ToolSession {
  public:
   void begin(std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setBody(BodyId bodyId, FeatureId sourceFeatureId,
-               ShapeFeature::ShapePtr sourceShape);
+               ShapeFeature::ShapePtr sourceShape,
+               std::shared_ptr<const TopologyIndex> topologyIndex = {});
   void clearBody();
   void setPlane(MirrorPlane plane);
   void setPlaneFace(FaceReference planeFace);
@@ -35,6 +36,8 @@ class MirrorToolSession final : public ToolSession {
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   ShapeFeature::ShapePtr sourceShape_;
+  std::shared_ptr<const TopologyIndex> topologyIndex_;
+  std::string topologyIndexError_;
   std::optional<MirrorPlane> plane_;
   std::optional<FaceReference> planeFace_;
   std::optional<FeatureId> editingFeatureId_;

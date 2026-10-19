@@ -9,12 +9,17 @@
 
 namespace solidar {
 
+class TopologyIndex;
+
 [[nodiscard]] ShapeFeature::ShapePtr buildMirrorShape(
     const TopoDS_Shape& source, MirrorPlane plane,
     std::string* error = nullptr);
 [[nodiscard]] ShapeFeature::ShapePtr buildMirrorShape(
     const TopoDS_Shape& source, const FaceReference& planeFace,
     std::string* error = nullptr);
+[[nodiscard]] ShapeFeature::ShapePtr buildMirrorShape(
+    const TopoDS_Shape& source, const TopologyIndex& topology,
+    const FaceReference& planeFace, std::string* error = nullptr);
 
 class MirrorFeature final : public ShapeFeature {
  public:

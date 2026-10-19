@@ -61,19 +61,12 @@ bool ShellFeature::rebuildImpl(const RebuildContext& context) {
     markError("Shell topology could not be indexed: " + topologyError);
     return false;
   }
-  std::vector<TopologyReference> references;
-  references.reserve(removedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : removedFaces_) {
     if (face.bodyId() != context.body->id() || face.featureId() != sourceFeatureId_) {
       markError("Shell faces must belong to the active source Feature"); return false;
     }
-    const auto* legacy = face.v1();
-    if (!legacy) { markError("Shell v2 face consumption is not enabled"); return false; }
-    references.push_back(*legacy);
-  }
-  const auto resolutions = topology->resolveFaces(references);
-  for (const auto& resolved : resolutions) {
+    const auto resolved = topology->resolveFace(face);
     if (!resolved) { markError("Shell face could not be resolved: " + resolved.error); return false; }
     indices.push_back(resolved.index);
   }

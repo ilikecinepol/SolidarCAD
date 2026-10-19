@@ -135,6 +135,49 @@ int main(int argc, char** argv) {
   CHECK(boundedSession.previewBuildAttemptCount() <=
         buildsBeforeBoundary + 27);
 
+  // V2 faces are resolved as a batch against the owning source index. A
+  // single missing member invalidates the preview before any shell build.
+  solidar::FeatureId v2SourceId;
+  solidar::FaceReference ignoredOpening;
+  auto v2Document = boxDocument(&v2SourceId, &ignoredOpening);
+  auto* v2Body = v2Document.activeBody();
+  CHECK(v2Body && v2Body->activeFeature());
+  const auto v2SourceShape = v2Body->resultShape();
+  const auto v2Opening = v2Document.createFaceReferenceV2(
+      v2Body->id(), v2SourceId, topFace(*v2SourceShape));
+  CHECK(v2Opening);
+  const auto v2Topology = v2Body->activeFeature()->topologyIndex();
+  CHECK(v2Topology);
+  solidar::ShellToolSession v2Batch;
+  auto missingV2 = *v2Opening.reference.v2();
+  missingV2.provenance.localName += ":missing";
+  v2Batch.begin(
+      v2Body->id(), v2SourceId, v2SourceShape,
+      {v2Opening.reference,
+       solidar::FaceReference::fromV2(std::move(missingV2))},
+      2.0, false, std::nullopt, v2Topology);
+  CHECK(v2Batch.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!v2Batch.previewShape());
+  CHECK(v2Batch.previewBuildAttemptCount() == 0);
+  v2Batch.setRemovedFaces({v2Opening.reference});
+  CHECK(v2Batch.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  CHECK(v2Batch.manipulator());
+  auto wrongBodyV2 = *v2Opening.reference.v2();
+  wrongBodyV2.bodyId += 1000;
+  v2Batch.setRemovedFaces(
+      {solidar::FaceReference::fromV2(std::move(wrongBodyV2))});
+  CHECK(v2Batch.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+  CHECK(!v2Batch.manipulator());
+  v2Batch.setRemovedFaces({v2Opening.reference});
+  CHECK(v2Batch.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+  auto v2Shell = std::make_unique<solidar::ShellFeature>(
+      v2SourceId, std::vector{v2Opening.reference}, 2.0, false, "v2 shell");
+  auto* v2ShellPtr = v2Shell.get();
+  v2Body->addFeature(std::move(v2Shell));
+  CHECK(v2Document.recompute());
+  CHECK(v2ShellPtr->removedFaces() ==
+        std::vector<solidar::FaceReference>{v2Opening.reference});
+
   QTemporaryDir temporary(QDir::current().filePath(
       QStringLiteral("shell-feature-tests-XXXXXX")));
   CHECK(temporary.isValid());

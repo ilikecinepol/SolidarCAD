@@ -1,4 +1,5 @@
 #include "model/Document.h"
+#include "model/ExtrudeFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "sketch/Sketch.h"
 
@@ -104,6 +105,89 @@ class GuardedShapeFeature final : public solidar::ShapeFeature {
 }  // namespace
 
 int main() {
+  // Document is the owner-aware authority for creating and consuming v2 face
+  // references. A wrong Body/Feature pair fails without rewriting an existing
+  // sketch support, while a valid v2 reference remains byte-for-byte exact.
+  {
+    solidar::Document topologyDocument;
+    auto& profile = topologyDocument.addSketch("profile");
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 8.0});
+    auto& body = topologyDocument.addBody("v2 owner");
+    auto source = std::make_unique<solidar::ExtrudeFeature>(
+        profile.id, 5.0, "source");
+    const auto sourceId = source->id();
+    body.addFeature(std::move(source));
+    CHECK(topologyDocument.recompute());
+
+    const auto created = topologyDocument.createFaceReferenceV2(
+        body.id(), sourceId, 0);
+    CHECK(created);
+    CHECK(created.reference.isV2());
+    CHECK(created.reference.bodyId() == body.id());
+    CHECK(created.reference.featureId() == sourceId);
+    CHECK(!topologyDocument.createFaceReferenceV2(body.id() + 1000,
+                                                   sourceId, 0));
+    CHECK(!topologyDocument.createFaceReferenceV2(body.id(), sourceId + 1000,
+                                                   0));
+
+    auto& supported = topologyDocument.addSketch("supported");
+    const auto supportedId = supported.id;
+    CHECK(topologyDocument.attachSketchToFace(supportedId,
+                                               created.reference));
+    CHECK(topologyDocument.findSketch(supportedId)->support.face ==
+          created.reference);
+    topologyDocument.updateSketchPlacements();
+    CHECK(topologyDocument.findSketch(supportedId)->supportResolved);
+    CHECK(topologyDocument.findSketch(supportedId)->support.face ==
+          created.reference);
+
+    auto wrongOwner = *created.reference.v2();
+    wrongOwner.bodyId += 1000;
+    CHECK(!topologyDocument.attachSketchToFace(
+        supportedId, solidar::FaceReference::fromV2(std::move(wrongOwner))));
+    CHECK(topologyDocument.findSketch(supportedId)->support.face ==
+          created.reference);
+
+    // V1 enrichment is transactional too: resolving an index-only curved
+    // face must not leave a signature/tag behind when placement rejects it.
+    solidar::Document curvedDocument;
+    auto& circle = curvedDocument.addSketch("circle");
+    circle.geometry.addCircle({0.0, 0.0}, 5.0);
+    auto& curvedBody = curvedDocument.addBody("curved owner");
+    auto curvedSource = std::make_unique<solidar::ExtrudeFeature>(
+        circle.id, 5.0, "cylinder");
+    const auto curvedSourceId = curvedSource->id();
+    curvedBody.addFeature(std::move(curvedSource));
+    CHECK(curvedDocument.recompute());
+    std::size_t curvedIndex = static_cast<std::size_t>(-1);
+    const auto curvedShape = curvedBody.resultShape();
+    const auto curvedTopology = curvedBody.activeFeature()->topologyIndex();
+    CHECK(curvedShape && curvedTopology);
+    for (std::size_t faceIndex = 0;
+         faceIndex < curvedTopology->rawFaceCount(); ++faceIndex)
+      if (const auto placement =
+              solidar::resolveFacePlacement(*curvedShape, faceIndex);
+          placement.resolved && !placement.planar) {
+        curvedIndex = faceIndex;
+        break;
+      }
+    CHECK(curvedIndex != static_cast<std::size_t>(-1));
+    auto& curvedSupport = curvedDocument.addSketch("curved support");
+    curvedSupport.support = {
+        solidar::SketchSupportType::Face,
+        solidar::FaceReference(curvedBody.id(), curvedSourceId, curvedIndex)};
+    const auto supportBefore = curvedSupport.support.face;
+    const auto revisionBefore = curvedSupport.placementRevision;
+    curvedDocument.updateSketchPlacements();
+    const auto* curvedState = curvedDocument.findSketch(curvedSupport.id);
+    CHECK(curvedState);
+    CHECK(!curvedState->supportResolved);
+    CHECK(curvedState->placementRevision == revisionBefore + 1);
+    CHECK(curvedState->support.face == supportBefore);
+    CHECK(curvedState->support.face.isV1());
+    CHECK(!curvedState->support.face.signature());
+  }
+
   {
     solidar::Document imageDocument;
     auto& image = imageDocument.addReferenceImage(

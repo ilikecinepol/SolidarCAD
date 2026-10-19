@@ -99,16 +99,10 @@ bool ShellToolSession::updatePreview() {
   if (!baseShape_ || baseShape_->IsNull()) { errorCode_ = OperationFailureCode::MissingSource; error_ = "Shell base shape is missing"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
   if (removedFaces_.empty()) { lifecycle_ = ToolLifecycle::SelectingInput; return false; }
   if (!topologyIndex_) { errorCode_ = OperationFailureCode::TopologyIndexUnavailable; error_ = "Shell topology could not be indexed"; if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-  std::vector<TopologyReference> references;
-  references.reserve(removedFaces_.size());
   std::vector<std::size_t> indices;
   for (const auto& face : removedFaces_) {
     if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_) { errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Shell faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    const auto* legacy = face.v1();
-    if (!legacy) { errorCode_ = OperationFailureCode::TopologyReferenceInvalid; error_ = "Shell v2 face consumption is not enabled"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
-    references.push_back(*legacy);
-  }
-  for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
+    const auto resolved = topologyIndex_->resolveFace(face);
     if (!resolved) { errorCode_ = operationFailureCode(resolved.failure); error_ = "Shell face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
     indices.push_back(resolved.index);
   }
@@ -119,11 +113,14 @@ bool ShellToolSession::updatePreview() {
   return static_cast<bool>(previewShape_);
 }
 std::optional<LinearToolManipulator> ShellToolSession::manipulator() const {
-  if (!baseShape_ || removedFaces_.empty() || !topologyIndex_) return std::nullopt;
+  if (!baseShape_ || baseShape_->IsNull() || removedFaces_.empty() ||
+      !topologyIndex_ || !topologyIndex_->shape() ||
+      topologyIndex_->shape().get() != baseShape_.get() ||
+      removedFaces_.front().bodyId() != bodyId_ ||
+      removedFaces_.front().featureId() != sourceFeatureId_)
+    return std::nullopt;
   try {
-    const auto* legacy = removedFaces_.front().v1();
-    if (!legacy) return std::nullopt;
-    const auto face = topologyIndex_->resolveFace(*legacy);
+    const auto face = topologyIndex_->resolveFace(removedFaces_.front());
     if (!face) return std::nullopt;
     double u0, u1, v0, v1; BRepTools::UVBounds(*face.subshape, u0, u1, v0, v1);
     BRepAdaptor_Surface surface(*face.subshape);
@@ -186,16 +183,10 @@ bool ShellToolSession::recoverBelowInvalidThickness(double upperInvalid) {
   std::vector<std::size_t> indices;
   indices.reserve(removedFaces_.size());
   if (!topologyIndex_) return false;
-  std::vector<TopologyReference> references;
-  references.reserve(removedFaces_.size());
   for (const auto& face : removedFaces_) {
     if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_)
       return false;
-    const auto* legacy = face.v1();
-    if (!legacy) return false;
-    references.push_back(*legacy);
-  }
-  for (const auto& resolved : topologyIndex_->resolveFaces(references)) {
+    const auto resolved = topologyIndex_->resolveFace(face);
     if (!resolved) return false;
     indices.push_back(resolved.index);
   }

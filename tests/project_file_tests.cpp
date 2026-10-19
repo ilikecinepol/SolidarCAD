@@ -57,6 +57,17 @@ class UnsupportedFeature final : public solidar::ShapeFeature {
   bool rebuildImpl(const solidar::RebuildContext&) override { return false; }
 };
 
+solidar::FaceReference v2Face(solidar::BodyId bodyId,
+                              solidar::FeatureId featureId,
+                              std::string localName) {
+  return solidar::FaceReference::fromV2(
+      {bodyId,
+       solidar::TopologyProvenanceKey{
+           featureId, solidar::TopologyKind::Face,
+           solidar::TopologyProvenanceOperation::Generated,
+           solidar::TopologySemanticRole::Custom, std::move(localName)}});
+}
+
 bool storeReferenceDimension(solidar::sketch::Sketch& geometry,
                              solidar::sketch::Dimension dimension) {
   using namespace solidar::sketch;
@@ -121,6 +132,85 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "QTemporaryDir failed: %s\n",
                  directory.errorString().toUtf8().constData());
     return 1;
+  }
+
+  // v3 has no representation for persistent face references v2. Every
+  // embedding site must reject before QSaveFile touches the destination.
+  {
+    using Fixture = std::pair<
+        const char*, std::function<void(solidar::Document&, solidar::Body&)>>;
+    const std::array<Fixture, 6> fixtures{{
+        {"sketch", [](solidar::Document& document, solidar::Body& body) {
+           auto& sketch = document.addSketch("supported");
+           sketch.support = {solidar::SketchSupportType::Face,
+                             v2Face(body.id(), 101, "sketch")};
+         }},
+        {"extrude", [](solidar::Document&, solidar::Body& body) {
+           body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+               v2Face(body.id(), 102, "extrude"), 2.0, "Face extrude",
+               solidar::ExtrudeOperation::Join, false));
+         }},
+        {"mirror", [](solidar::Document&, solidar::Body& body) {
+           body.addFeature(std::make_unique<solidar::MirrorFeature>(
+               103, v2Face(body.id(), 103, "mirror"), "Mirror"));
+         }},
+        {"shell", [](solidar::Document&, solidar::Body& body) {
+           body.addFeature(std::make_unique<solidar::ShellFeature>(
+               104,
+               std::vector<solidar::FaceReference>{
+                   v2Face(body.id(), 104, "shell")},
+               1.0, false, "Shell"));
+         }},
+        {"draft-list", [](solidar::Document&, solidar::Body& body) {
+           body.addFeature(std::make_unique<solidar::DraftFeature>(
+               105,
+               std::vector<solidar::FaceReference>{
+                   v2Face(body.id(), 105, "draft-list")},
+               solidar::PlaneReference{},
+               solidar::AxisReference{solidar::AxisReferenceType::GlobalZ},
+               3.0, false, "Draft"));
+         }},
+        {"draft-neutral", [](solidar::Document&, solidar::Body& body) {
+           solidar::PlaneReference neutral{
+               solidar::NeutralPlaneType::BodyFace,
+               v2Face(body.id(), 106, "draft-neutral")};
+           body.addFeature(std::make_unique<solidar::DraftFeature>(
+               106,
+               std::vector<solidar::FaceReference>{
+                   solidar::FaceReference(body.id(), 106, 0)},
+               std::move(neutral),
+               solidar::AxisReference{solidar::AxisReferenceType::GlobalZ},
+               3.0, false, "Draft"));
+         }},
+    }};
+    for (const auto& [name, populate] : fixtures) {
+      solidar::Document document;
+      auto& body = document.addBody(name);
+      populate(document, body);
+      const QString existing = directory.filePath(
+          QStringLiteral("v3-v2-%1-existing.solidar")
+              .arg(QString::fromLatin1(name)));
+      QFile sentinel(existing);
+      CHECK(sentinel.open(QIODevice::WriteOnly));
+      CHECK(sentinel.write("sentinel-v3") == 11);
+      sentinel.close();
+      QString saveError;
+      CHECK(!solidar::project::ProjectFile::saveDocument(
+          existing, document, &saveError));
+      CHECK(saveError == QString::fromUtf8(
+                             "Формат проекта v3 не поддерживает устойчивые ссылки на грани v2."));
+      CHECK(sentinel.open(QIODevice::ReadOnly));
+      CHECK(sentinel.readAll() == QByteArray("sentinel-v3"));
+      sentinel.close();
+
+      const QString fresh = directory.filePath(
+          QStringLiteral("v3-v2-%1-new.solidar")
+              .arg(QString::fromLatin1(name)));
+      CHECK(!QFile::exists(fresh));
+      CHECK(!solidar::project::ProjectFile::saveDocument(fresh, document,
+                                                         &saveError));
+      CHECK(!QFile::exists(fresh));
+    }
   }
 
   // The load result has three independent axes. These migration fixtures are

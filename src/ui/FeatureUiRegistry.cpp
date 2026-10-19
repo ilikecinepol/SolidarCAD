@@ -103,8 +103,10 @@ QStringList mirrorParameters(const ShapeFeature& feature) {
   if (!value) return {};
   const QString reference =
       value->planeFace()
-          ? QString::fromUtf8("Грань #%1")
-                .arg(value->planeFace()->faceIndex() + 1)
+          ? (value->planeFace()->isV1()
+                 ? QString::fromUtf8("Грань #%1")
+                       .arg(value->planeFace()->faceIndex() + 1)
+                 : QString::fromUtf8("Грань (устойчивая ссылка)"))
           : planeText(value->plane());
   return {QString::fromUtf8("Плоскость: %1").arg(reference)};
 }

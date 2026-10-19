@@ -505,5 +505,74 @@ int main(int argc, char** argv) {
         foreignPath, &rejected, &error));
     CHECK(!error.isEmpty());
   }
+
+  // Draft's indexed paths consume v2 both for the drafted-face list and for
+  // a BodyFace neutral plane. Batch resolution is atomic before OCCT build.
+  {
+    solidar::Document v2Document;
+    auto& profile = v2Document.addSketch("v2 draft profile");
+    profile.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+    auto& v2Body = v2Document.addBody();
+    auto& v2Source = v2Body.addFeature(
+        std::make_unique<solidar::ExtrudeFeature>(
+            profile.id, 20.0, "v2 box", solidar::ExtrudeOperation::NewBody));
+    const auto v2BodyId = v2Body.id();
+    const auto v2SourceId = v2Source.id();
+    CHECK(v2Document.recompute());
+    std::size_t v2Chosen = static_cast<std::size_t>(-1);
+    std::size_t v2Index = 0;
+    for (TopExp_Explorer faces(*v2Source.shape(), TopAbs_FACE); faces.More();
+         faces.Next(), ++v2Index) {
+      BRepAdaptor_Surface surface(TopoDS::Face(faces.Current()));
+      if (surface.GetType() != GeomAbs_Plane ||
+          std::abs(surface.Plane().Axis().Direction().Z()) > 0.1)
+        continue;
+      std::string ignored;
+      if (solidar::buildDraftShape(
+              *v2Source.shape(), {v2Index},
+              gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), gp_Dir(0, 0, 1),
+              5.0, false, &ignored)) {
+        v2Chosen = v2Index;
+        break;
+      }
+    }
+    CHECK(v2Chosen != static_cast<std::size_t>(-1));
+    const auto v2Face = v2Document.createFaceReferenceV2(
+        v2BodyId, v2SourceId, v2Chosen);
+    CHECK(v2Face);
+    const auto topology = v2Source.topologyIndex();
+    CHECK(topology);
+
+    gp_Pln resolvedPlane;
+    gp_Dir resolvedDirection;
+    const solidar::PlaneReference bodyPlane{
+        solidar::NeutralPlaneType::BodyFace, v2Face.reference};
+    const solidar::AxisReference globalZ{
+        solidar::AxisReferenceType::GlobalZ};
+    CHECK(solidar::resolveDraftReferences(
+        v2Document, *v2Source.shape(), *topology, bodyPlane, globalZ,
+        &resolvedPlane, &resolvedDirection));
+
+    auto missing = *v2Face.reference.v2();
+    missing.provenance.localName += ":missing";
+    solidar::DraftToolSession batch;
+    batch.begin(v2Document, v2BodyId, v2SourceId, v2Source.shape(),
+                {v2Face.reference,
+                 solidar::FaceReference::fromV2(std::move(missing))},
+                solidar::PlaneReference{solidar::NeutralPlaneType::GlobalXY},
+                globalZ, 5.0, false, std::nullopt, std::nullopt, topology);
+    CHECK(batch.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+    CHECK(!batch.previewShape());
+
+    auto v2Draft = std::make_unique<solidar::DraftFeature>(
+        v2SourceId, std::vector{v2Face.reference},
+        solidar::PlaneReference{solidar::NeutralPlaneType::GlobalXY}, globalZ,
+        5.0, false, "v2 draft");
+    auto* v2DraftPtr = v2Draft.get();
+    v2Body.addFeature(std::move(v2Draft));
+    CHECK(v2Document.recompute());
+    CHECK(v2DraftPtr->draftedFaces() ==
+          std::vector<solidar::FaceReference>{v2Face.reference});
+  }
   return 0;
 }

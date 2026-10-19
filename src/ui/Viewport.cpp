@@ -2444,9 +2444,7 @@ void Viewport::setSelectedBodyFaces(const std::vector<FaceReference>& faces) {
     for (const auto& range : bodyTopologyRanges_)
       if (range.bodyId == face.bodyId() && range.featureId == face.featureId() &&
           range.topologyIndex) {
-        const auto* legacy = face.v1();
-        if (!legacy) continue;
-        const auto resolved = range.topologyIndex->resolveFace(*legacy);
+        const auto resolved = range.topologyIndex->resolveFace(face);
         if (resolved) {
           selectedBodyFaceIndices_.push_back(range.firstFace + resolved.index);
           selectedBodyFaceReferences_.push_back(face);
@@ -5551,8 +5549,9 @@ void Viewport::updateMirrorPlaneHover(QPointF position) {
   if (solidVisible_ && hasDisplayedBodyTriangles()) {
     if (const auto hit = pickingScene().faceAt(position)) {
       const auto reference = faceReferenceForGlobalIndex(hit->faceIndex);
-      if (reference && reference->signature() &&
-          reference->signature()->surface == SurfaceKind::Plane &&
+      const auto* legacy = reference ? reference->v1() : nullptr;
+      if (reference && legacy && legacy->faceSignature &&
+          legacy->faceSignature->surface == SurfaceKind::Plane &&
           (selectedBodyIds_.empty() ||
            std::find(selectedBodyIds_.begin(), selectedBodyIds_.end(),
                      reference->bodyId()) != selectedBodyIds_.end())) {

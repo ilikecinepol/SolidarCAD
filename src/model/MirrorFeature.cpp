@@ -94,10 +94,42 @@ ShapeFeature::ShapePtr buildMirrorShape(const TopoDS_Shape& source,
     return {};
   }
   const auto* legacy = planeFace.v1();
-  if (!legacy) return {};
+  if (!legacy) {
+    if (error)
+      *error = "Mirror v2 plane face requires its owning topology index";
+    return {};
+  }
   const auto resolved = resolveFaceReference(source, *legacy);
   if (!resolved) {
     if (error) *error = "Mirror plane face could not be resolved";
+    return {};
+  }
+  BRepAdaptor_Surface surface(*resolved.subshape);
+  if (surface.GetType() != GeomAbs_Plane) {
+    if (error) *error = "Mirror reference face must be planar";
+    return {};
+  }
+  const gp_Pln plane = surface.Plane();
+  return buildMirrorShape(
+      source, gp_Ax2(plane.Location(), plane.Axis().Direction()), error);
+}
+
+ShapeFeature::ShapePtr buildMirrorShape(const TopoDS_Shape& source,
+                                        const TopologyIndex& topology,
+                                        const FaceReference& planeFace,
+                                        std::string* error) {
+  if (source.IsNull()) {
+    if (error) *error = "Mirror base shape is missing";
+    return {};
+  }
+  if (!topology.shape() || !topology.shape()->IsEqual(source)) {
+    if (error) *error = "Mirror topology index does not match the base shape";
+    return {};
+  }
+  const auto resolved = topology.resolveFace(planeFace);
+  if (!resolved) {
+    if (error)
+      *error = "Mirror plane face could not be resolved: " + resolved.error;
     return {};
   }
   BRepAdaptor_Surface surface(*resolved.subshape);
@@ -172,12 +204,7 @@ bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
                               : error);
       return false;
     }
-    const auto* legacy = planeFace_->v1();
-    if (!legacy) {
-      markError("Mirror v2 face consumption is not enabled");
-      return false;
-    }
-    const auto resolved = sourceIndex->resolveFace(*legacy);
+    const auto resolved = sourceIndex->resolveFace(*planeFace_);
     if (!resolved) {
       markError("Mirror plane face could not be resolved");
       return false;

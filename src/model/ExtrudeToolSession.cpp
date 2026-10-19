@@ -310,16 +310,19 @@ std::optional<LinearToolManipulator> ExtrudeToolSession::manipulator() const {
                                  true};
   }
 
+  if (face_.bodyId() != bodyId_ ||
+      face_.featureId() != sourceFeatureId_)
+    return std::nullopt;
   FaceExtrudeGeometry geometry;
   if (geometry_) {
     geometry = *geometry_;
   } else {
-    if (!baseShape_ || baseShape_->IsNull() || !topologyIndex_)
+    if (!baseShape_ || baseShape_->IsNull() || !topologyIndex_ ||
+        !topologyIndex_->shape() ||
+        topologyIndex_->shape().get() != baseShape_.get())
       return std::nullopt;
     try {
-      const auto* legacy = face_.v1();
-      if (!legacy) return std::nullopt;
-      const auto resolved = topologyIndex_->resolveFace(*legacy);
+      const auto resolved = topologyIndex_->resolveFace(face_);
       if (!resolved) return std::nullopt;
       gp_Pln plane;
       gp_Dir normal;

@@ -531,6 +531,59 @@ int main(int argc, char** argv) {
       CHECK(rejectedSession.errorCode() ==
             solidar::OperationFailureCode::TopologyReferenceMismatch);
     }
+
+    // Indexed face extrusion resolves v2 provenance exactly; the convenience
+    // shape-only overload cannot and must fail without geometric fallback.
+    {
+      solidar::Document v2Document;
+      auto& profile = v2Document.addSketch("v2 face extrusion");
+      profile.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+      auto& body = v2Document.addBody("v2 body");
+      auto base = std::make_unique<solidar::ExtrudeFeature>(
+          profile.id, 10.0, "Base", ExtrudeOperation::NewBody);
+      const auto baseId = base->id();
+      body.addFeature(std::move(base));
+      CHECK(v2Document.recompute());
+      const auto top = solidar::test::topPlanarFace(*body.resultShape(), 10.0);
+      CHECK(top);
+      const auto reference =
+          v2Document.createFaceReferenceV2(body.id(), baseId, *top);
+      CHECK(reference);
+      const auto index = body.activeFeature()->topologyIndex();
+      CHECK(index);
+
+      TopoDS_Shape ignored;
+      std::string bareError;
+      solidar::OperationFailureCode bareCode{};
+      CHECK(!solidar::buildExtrusionFromFace(
+          *body.resultShape(), reference.reference, 2.0,
+          ExtrudeOperation::Join, false, &ignored, nullptr, &bareError,
+          nullptr, &bareCode));
+      CHECK(bareCode ==
+            solidar::OperationFailureCode::TopologyIndexUnavailable);
+
+      solidar::ExtrudeToolSession session;
+      session.begin(body.id(), baseId, body.resultShape(), reference.reference,
+                    2.0, ExtrudeOperation::Join, false, std::nullopt, index);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+      CHECK(session.manipulator());
+      auto wrongBody = *reference.reference.v2();
+      wrongBody.bodyId += 1000;
+      session.setFace(
+          solidar::FaceReference::fromV2(std::move(wrongBody)));
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
+      CHECK(!session.manipulator());
+      session.setFace(reference.reference);
+      CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
+
+      auto faceExtrude = std::make_unique<solidar::ExtrudeFeature>(
+          reference.reference, 2.0, "v2 face", ExtrudeOperation::Join,
+          false);
+      auto* faceExtrudePtr = faceExtrude.get();
+      body.addFeature(std::move(faceExtrude));
+      CHECK(v2Document.recompute());
+      CHECK(faceExtrudePtr->faceReference() == reference.reference);
+    }
   } catch (const std::exception& error) {
     std::cerr << "face extrude regression failure: " << error.what() << '\n';
     return EXIT_FAILURE;

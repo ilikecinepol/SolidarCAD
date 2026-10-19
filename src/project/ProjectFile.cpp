@@ -3384,9 +3384,52 @@ static bool encodeCurrentPartV3Root(const QString& path,
   return true;
 }
 
+static bool containsV2FaceReference(const Document& document) {
+  for (const auto& sketch : document.sketches())
+    if (sketch.support.type == SketchSupportType::Face &&
+        sketch.support.face.isV2())
+      return true;
+
+  for (const auto& body : document.bodies())
+    for (const auto& feature : body.features()) {
+      if (const auto* extrude =
+              dynamic_cast<const ExtrudeFeature*>(feature.get())) {
+        if (const auto reference = extrude->faceReference();
+            reference && reference->isV2())
+          return true;
+      } else if (const auto* mirror =
+                     dynamic_cast<const MirrorFeature*>(feature.get())) {
+        if (mirror->planeFace() && mirror->planeFace()->isV2()) return true;
+      } else if (const auto* shell =
+                     dynamic_cast<const ShellFeature*>(feature.get())) {
+        if (std::any_of(shell->removedFaces().begin(),
+                        shell->removedFaces().end(),
+                        [](const FaceReference& face) { return face.isV2(); }))
+          return true;
+      } else if (const auto* draft =
+                     dynamic_cast<const DraftFeature*>(feature.get())) {
+        if (std::any_of(draft->draftedFaces().begin(),
+                        draft->draftedFaces().end(),
+                        [](const FaceReference& face) { return face.isV2(); }) ||
+            (draft->neutralPlane().face &&
+             draft->neutralPlane().face->isV2()))
+          return true;
+      }
+    }
+  return false;
+}
+
 bool ProjectFile::saveDocument(const QString& path, const Document& document,
                                QString* error) {
   const auto saveOperation = [&]() -> bool {
+    // v3 has only the legacy geometric face-reference schema. Reject the
+    // whole document before constructing QSaveFile so an existing target is
+    // left byte-for-byte untouched instead of silently downgrading v2.
+    if (containsV2FaceReference(document)) {
+      setError(error, QString::fromUtf8(
+                          "Формат проекта v3 не поддерживает устойчивые ссылки на грани v2."));
+      return false;
+    }
     QJsonObject root;
     if (!encodeCurrentPartV3Root(path, document, &root, error)) return false;
     ProjectData restoredLegacy;

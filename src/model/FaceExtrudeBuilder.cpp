@@ -99,11 +99,7 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
     if (!topology.shape() || !topology.shape()->IsEqual(baseShape))
       return fail(OperationFailureCode::TopologyReferenceMismatch,
                   "Face extrude topology index does not match the base shape");
-    const auto* legacy = source.v1();
-    if (!legacy)
-      return fail(OperationFailureCode::TopologyReferenceInvalid,
-                  "Face extrude v2 consumption is not enabled");
-    const auto resolved = topology.resolveFace(*legacy);
+    const auto resolved = topology.resolveFace(source);
     if (!resolved)
       return fail(operationFailureCode(resolved.failure),
                   "Face extrude face could not be resolved: " + resolved.error);
@@ -222,6 +218,13 @@ bool buildExtrusionFromFace(const TopoDS_Shape& baseShape,
                             FaceExtrudeGeometry* geometry, std::string* error,
                             TopoDS_Shape* sweptTool,
                             OperationFailureCode* code) {
+  if (!source.isV1()) {
+    if (code) *code = OperationFailureCode::TopologyIndexUnavailable;
+    if (error)
+      *error =
+          "Face extrude v2 reference requires its owning topology index";
+    return false;
+  }
   std::string topologyError;
   const auto topology = TopologyIndex::build(
       baseShape, kInvalidShapeRevision, &topologyError);

@@ -246,7 +246,8 @@ class PartDesignCoordinator final {
   void setRevolveReversed(const Document&, bool);
 
   PartDesignTransitionOutcome beginMirror(std::optional<FeatureId> = std::nullopt);
-  void setMirrorBody(BodyId, FeatureId, ShapeFeature::ShapePtr);
+  void setMirrorBody(BodyId, FeatureId, ShapeFeature::ShapePtr,
+                     std::shared_ptr<const TopologyIndex> = {});
   void clearMirrorBody();
   void setMirrorPlane(MirrorPlane);
   void setMirrorPlaneFace(FaceReference);

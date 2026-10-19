@@ -573,7 +573,7 @@ void PartDesignCoordinator::setRevolveAngleFromManipulator(const Document& d, do
 void PartDesignCoordinator::setRevolveOperation(const Document& d, ExtrudeOperation v) { REQUIRE_ACTIVE(Revolve); revolve_.setOperation(d,v); }
 void PartDesignCoordinator::setRevolveReversed(const Document& d, bool v) { REQUIRE_ACTIVE(Revolve); revolve_.setReversed(d,v); }
 PartDesignTransitionOutcome PartDesignCoordinator::beginMirror(std::optional<FeatureId> v) { return beginAtomic(PartDesignToolKind::Mirror, [&] { mirror_.begin(v); }); }
-void PartDesignCoordinator::setMirrorBody(BodyId a, FeatureId b, ShapeFeature::ShapePtr c) { REQUIRE_ACTIVE(Mirror); mirror_.setBody(a,b,std::move(c)); }
+void PartDesignCoordinator::setMirrorBody(BodyId a, FeatureId b, ShapeFeature::ShapePtr c, std::shared_ptr<const TopologyIndex> d) { REQUIRE_ACTIVE(Mirror); mirror_.setBody(a,b,std::move(c),std::move(d)); }
 void PartDesignCoordinator::clearMirrorBody() { REQUIRE_ACTIVE(Mirror); mirror_.clearBody(); }
 void PartDesignCoordinator::setMirrorPlane(MirrorPlane v) { REQUIRE_ACTIVE(Mirror); mirror_.setPlane(v); }
 void PartDesignCoordinator::setMirrorPlaneFace(FaceReference v) { REQUIRE_ACTIVE(Mirror); mirror_.setPlaneFace(std::move(v)); }

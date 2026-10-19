@@ -111,6 +111,10 @@ class Document final {
   [[nodiscard]] const Body* findBody(BodyId id) const noexcept;
   [[nodiscard]] ShapeFeature* findFeature(FeatureId id) noexcept;
   [[nodiscard]] const ShapeFeature* findFeature(FeatureId id) const noexcept;
+  [[nodiscard]] ShapeFeature* findFeature(BodyId bodyId,
+                                          FeatureId featureId) noexcept;
+  [[nodiscard]] const ShapeFeature* findFeature(
+      BodyId bodyId, FeatureId featureId) const noexcept;
   [[nodiscard]] Body* findBodyForFeature(FeatureId id) noexcept;
   [[nodiscard]] const Body* findBodyForFeature(FeatureId id) const noexcept;
   [[nodiscard]] Body* activeBody() noexcept;
@@ -134,6 +138,8 @@ class Document final {
                            std::string* error = nullptr);
   bool removeBodyCascade(BodyId bodyId, std::string* error = nullptr);
   bool attachSketchToFace(SketchId sketchId, FaceReference reference);
+  [[nodiscard]] FaceReferenceV2Creation createFaceReferenceV2(
+      BodyId bodyId, FeatureId featureId, std::size_t rawFaceIndex) const;
   void updateSketchPlacements();
   [[nodiscard]] const BoxParameters& box() const noexcept;
   void setBox(BoxParameters parameters);

@@ -1058,19 +1058,11 @@ void MainWindow::finishReferenceImageImport(const SketchPlanePick& pick) {
     placement = legacy->placement;
   } else if (const auto* bodyFace = std::get_if<BodyFacePick>(&pick.source)) {
     const auto& reference = bodyFace->face;
-    const Body* body = document_.findBody(reference.bodyId());
-    const ShapeFeature* feature = nullptr;
-    if (body)
-      for (const auto& candidate : body->features())
-        if (candidate->id() == reference.featureId()) {
-          feature = candidate.get();
-          break;
-        }
+    const ShapeFeature* feature =
+        document_.findFeature(reference.bodyId(), reference.featureId());
     const auto topology = feature ? feature->topologyIndex() : nullptr;
-    const auto* legacyReference = reference.v1();
-    const auto resolvedFace = topology && legacyReference
-                                  ? topology->resolveFace(*legacyReference)
-                                  : FaceResolution{};
+    const auto resolvedFace =
+        topology ? topology->resolveFace(reference) : FaceResolution{};
     const auto resolved = resolvedFace
                               ? resolveFacePlacement(*resolvedFace.subshape)
                               : ResolvedFacePlacement{};
@@ -3228,14 +3220,8 @@ void MainWindow::buildUi() {
                                      QString::fromUtf8("Не удалось определить грань Body."));
                 return;
               }
-              const Body* body = document_.findBody(faceReference.bodyId());
-              const ShapeFeature* feature = nullptr;
-              if (body)
-                for (const auto& candidate : body->features())
-                  if (candidate->id() == faceReference.featureId()) {
-                    feature = candidate.get();
-                    break;
-                  }
+              const ShapeFeature* feature = document_.findFeature(
+                  faceReference.bodyId(), faceReference.featureId());
               const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
               if (!shape) {
                 QMessageBox::warning(
@@ -3244,9 +3230,8 @@ void MainWindow::buildUi() {
                 return;
               }
               const auto topology = feature->topologyIndex();
-              const auto* legacyReference = faceReference.v1();
-              const auto resolvedFace = topology && legacyReference
-                                            ? topology->resolveFace(*legacyReference)
+              const auto resolvedFace = topology
+                                            ? topology->resolveFace(faceReference)
                                             : FaceResolution{};
               const auto resolved = resolvedFace
                                         ? resolveFacePlacement(
@@ -3593,7 +3578,8 @@ void MainWindow::buildUi() {
               return;
             }
             partDesignCoordinator_.setMirrorBody(body->id(), body->activeFeature()->id(),
-                                       body->resultShape());
+                                       body->resultShape(),
+                                       body->activeFeature()->topologyIndex());
             partDesignCoordinator_.finishReselection();
             mirrorBodyValue_->setText(QString::fromStdString(body->name()));
             mirrorPlaneValue_->setText(QString::fromUtf8("Не выбрана"));
@@ -3631,7 +3617,9 @@ void MainWindow::buildUi() {
             partDesignCoordinator_.setMirrorPlaneFace(face);
             partDesignCoordinator_.finishReselection();
             mirrorPlaneValue_->setText(
-                QString::fromUtf8("Грань #%1").arg(face.faceIndex() + 1));
+                face.isV1()
+                    ? QString::fromUtf8("Грань #%1").arg(face.faceIndex() + 1)
+                    : QString::fromUtf8("Грань (устойчивая ссылка)"));
             updateMirrorToolPreview();
             statusBar()->showMessage(
                 partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror)
@@ -4897,15 +4885,19 @@ void MainWindow::editPatternFeature(FeatureId featureId,
                 PartDesignToolKind::Mirror))
           return;
         partDesignCoordinator_.setMirrorBody(body.id(), body.features()[index - 1]->id(),
-                                   source);
+                                   source,
+                                   body.features()[index - 1]->topologyIndex());
         if (mirror->planeFace())
           partDesignCoordinator_.setMirrorPlaneFace(*mirror->planeFace());
         else
           partDesignCoordinator_.setMirrorPlane(mirror->plane());
         mirrorBodyValue_->setText(QString::fromStdString(body.name()));
         if (mirror->planeFace())
-          mirrorPlaneValue_->setText(QString::fromUtf8("Грань #%1")
-                                         .arg(mirror->planeFace()->faceIndex() + 1));
+          mirrorPlaneValue_->setText(
+              mirror->planeFace()->isV1()
+                  ? QString::fromUtf8("Грань #%1")
+                        .arg(mirror->planeFace()->faceIndex() + 1)
+                  : QString::fromUtf8("Грань (устойчивая ссылка)"));
         else
           mirrorPlaneValue_->setText(
               mirror->plane() == MirrorPlane::XY
@@ -6916,14 +6908,8 @@ void MainWindow::applyHistoryPosition(int position) {
 bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
   if (!currentSketchFaceReference_) return true;
   const FaceReference reference = *currentSketchFaceReference_;
-  const Body* body = document_.findBody(reference.bodyId());
-  const ShapeFeature* feature = nullptr;
-  if (body)
-    for (const auto& candidate : body->features())
-      if (candidate->id() == reference.featureId()) {
-        feature = candidate.get();
-        break;
-      }
+  const ShapeFeature* feature =
+      document_.findFeature(reference.bodyId(), reference.featureId());
   const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
   if (!shape) {
     QMessageBox::warning(
@@ -6932,10 +6918,8 @@ bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
     return false;
   }
   const auto topology = feature->topologyIndex();
-  const auto* legacyReference = reference.v1();
-  const auto resolvedFace = topology && legacyReference
-                                ? topology->resolveFace(*legacyReference)
-                                : FaceResolution{};
+  const auto resolvedFace =
+      topology ? topology->resolveFace(reference) : FaceResolution{};
   const auto resolved = resolvedFace
                             ? resolveFacePlacement(*resolvedFace.subshape)
                             : ResolvedFacePlacement{};
