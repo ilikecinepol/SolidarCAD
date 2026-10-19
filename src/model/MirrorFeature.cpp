@@ -9,9 +9,12 @@
 #include <gp_Ax2.hxx>
 #include <gp_Trsf.hxx>
 
+#include <array>
+
 #include "model/Body.h"
 #include "model/GeometryOperation.h"
 #include "model/TopologyReferenceResolver.h"
+#include "model/TransformFeatureHistoryBuilder.h"
 
 namespace solidar {
 namespace {
@@ -147,17 +150,79 @@ bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
     return false;
   }
   std::string error;
-  ShapePtr result;
+  const auto* sourceFeature = context.previousFeature;
+  if (!sourceFeature || sourceFeature->id() != sourceFeatureId_ ||
+      !sourceFeature->shape() ||
+      !sourceFeature->shape()->IsSame(*context.previousShape)) {
+    markError("Mirror source snapshot is incoherent");
+    return false;
+  }
+  gp_Ax2 mirrorAxis(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0));
   if (planeFace_) {
     if (!context.body || planeFace_->bodyId != context.body->id() ||
         planeFace_->featureId != sourceFeatureId_) {
       markError("Mirror plane face must belong to the source Feature");
       return false;
     }
-    result = buildMirrorShape(*context.previousShape, *planeFace_, &error);
+    const auto sourceIndex = sourceFeature->topologyIndex(&error);
+    if (!sourceIndex) {
+      markError(error.empty() ? "Mirror source topology is unavailable"
+                              : error);
+      return false;
+    }
+    const auto resolved =
+        resolveFaceReference(*sourceIndex, planeFace_->topology());
+    if (!resolved) {
+      markError("Mirror plane face could not be resolved");
+      return false;
+    }
+    BRepAdaptor_Surface surface(*resolved.subshape);
+    if (surface.GetType() != GeomAbs_Plane) {
+      markError("Mirror reference face must be planar");
+      return false;
+    }
+    const gp_Pln plane = surface.Plane();
+    mirrorAxis = gp_Ax2(plane.Location(), plane.Axis().Direction());
+  } else if (!validMirrorPlane(plane_)) {
+    markError("Mirror plane is invalid");
+    return false;
   } else {
-    result = buildMirrorShape(*context.previousShape, plane_, &error);
+    mirrorAxis = gp_Ax2(gp_Pnt(0, 0, 0), normal(plane_));
   }
+
+  const auto sourceLineage = sourceFeature->topologyLineage();
+  if (sourceLineage) {
+    if (sourceLineage->coverage() !=
+        TopologyLineageCoverage::CompleteFaces) {
+      markError("Mirror source face lineage is incomplete");
+      return false;
+    }
+    gp_Trsf transform;
+    transform.SetMirror(mirrorAxis);
+    const std::array instances{
+        TransformFeatureInstanceRequest{
+            TransformFeatureInstanceRelation::RetainedSource, gp_Trsf{},
+            TopologySemanticRole::Original,
+            TopologyOccurrenceKey{id(), 0}},
+        TransformFeatureInstanceRequest{
+            TransformFeatureInstanceRelation::ModifiedCopy, transform,
+            TopologySemanticRole::Reflected,
+            TopologyOccurrenceKey{id(), 1}}};
+    TransformFeatureHistoryBuild built;
+    if (!buildTransformFeatureHistory(
+            {sourceFeature->id(), sourceFeature->shape(), sourceLineage}, id(),
+            instances, false, &built, &error)) {
+      markError(error);
+      return false;
+    }
+    setShapeAndTopologyLineage(std::move(built.shape),
+                               std::move(built.lineage));
+    markValid();
+    return true;
+  }
+
+  const auto result =
+      buildMirrorShape(*context.previousShape, mirrorAxis, &error);
   if (!result) {
     markError(error);
     return false;

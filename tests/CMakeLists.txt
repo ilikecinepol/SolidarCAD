@@ -106,6 +106,8 @@ solidar_add_test(extrude_feature_tests
   LIBRARIES solidar_model LABELS unit)
 solidar_add_test(extrude_topology_lineage_tests
   LIBRARIES solidar_model LABELS unit regression topology)
+solidar_add_test(transformed_feature_topology_lineage_tests
+  LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(revolve_feature_tests
   LIBRARIES solidar_model LABELS regression)
 solidar_add_test(part_design_tool_framework_tests

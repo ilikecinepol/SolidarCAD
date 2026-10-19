@@ -7,9 +7,12 @@
 #include <gp_Trsf.hxx>
 
 #include <cmath>
+#include <cstdint>
+#include <vector>
 #include "model/Body.h"
 #include "model/Document.h"
 #include "model/GeometryOperation.h"
+#include "model/TransformFeatureHistoryBuilder.h"
 
 namespace solidar {
 namespace {
@@ -21,25 +24,34 @@ bool validSource(const ShapeFeature* self, const RebuildContext& context,
     if (features[i].get() == self) return features[i - 1]->id() == source;
   return false;
 }
-const TopoDS_Shape* resolvedSource(const ShapeFeature* self,
-                                   const RebuildContext& context,
-                                   BodyId sourceBodyId,
-                                   FeatureId sourceFeatureId,
-                                   PatternOperation operation) {
-  if (operation == PatternOperation::Join)
-    return validSource(self, context, sourceFeatureId)
-               ? context.previousShape
-               : nullptr;
+struct PatternSource {
+  const ShapeFeature* feature{};
+  ShapeFeature::ShapePtr shape;
+};
+
+PatternSource resolvedSource(const ShapeFeature* self,
+                             const RebuildContext& context,
+                             BodyId sourceBodyId,
+                             FeatureId sourceFeatureId,
+                             PatternOperation operation) {
+  if (operation == PatternOperation::Join) {
+    if (!validSource(self, context, sourceFeatureId) ||
+        !context.previousFeature || !context.previousShape ||
+        !context.previousFeature->shape() ||
+        !context.previousFeature->shape()->IsSame(*context.previousShape))
+      return {};
+    return {context.previousFeature, context.previousFeature->shape()};
+  }
   if (context.previousShape || sourceBodyId == kInvalidBodyId ||
       !context.body || context.body->id() == sourceBodyId)
-    return nullptr;
+    return {};
   const Body* sourceBody = context.document.findBody(sourceBodyId);
-  if (!sourceBody) return nullptr;
+  if (!sourceBody) return {};
   for (const auto& feature : sourceBody->features())
     if (feature->id() == sourceFeatureId && feature->isValid() &&
         feature->shape() && !feature->shape()->IsNull())
-      return feature->shape().get();
-  return nullptr;
+      return {feature.get(), feature->shape()};
+  return {};
 }
 gp_Vec directionVector(PrincipalAxis axis, double distance) {
   if (axis == PrincipalAxis::X) return {distance, 0, 0};
@@ -156,15 +168,64 @@ bool LinearPatternFeature::rebuildImpl(const RebuildContext& context) {
     markError("Linear Pattern operation is invalid");
     return false;
   }
-  const TopoDS_Shape* source = resolvedSource(
+  const auto source = resolvedSource(
       this, context, sourceBodyId_, sourceFeatureId_, operation_);
-  if (!source || source->IsNull()) {
+  if (!source.feature || !source.shape || source.shape->IsNull()) {
     markError("Linear Pattern source Feature could not be resolved");
     return false;
   }
   std::string error;
+  const auto sourceLineage = source.feature->topologyLineage();
+  if (sourceLineage) {
+    if (sourceLineage->coverage() !=
+        TopologyLineageCoverage::CompleteFaces) {
+      markError("Linear Pattern source face lineage is incomplete");
+      return false;
+    }
+    if (!validPatternCount(count_)) {
+      markError("Linear Pattern count must be in [2, 100]");
+      return false;
+    }
+    if (!validPatternSpacing(spacingMm_)) {
+      markError(
+          "Linear Pattern spacing must be finite and in [0.01, 100000]");
+      return false;
+    }
+    if (!validPrincipalAxis(direction_)) {
+      markError("Linear Pattern direction is invalid");
+      return false;
+    }
+    std::vector<TransformFeatureInstanceRequest> instances;
+    instances.reserve(static_cast<std::size_t>(count_));
+    if (operation_ == PatternOperation::Join) {
+      instances.push_back(
+          {TransformFeatureInstanceRelation::RetainedSource, gp_Trsf{},
+           TopologySemanticRole::PatternInstance,
+           TopologyOccurrenceKey{id(), 0}});
+    }
+    for (int index = 1; index < count_; ++index) {
+      gp_Trsf transform;
+      transform.SetTranslation(directionVector(
+          direction_, spacingMm_ * static_cast<double>(index)));
+      instances.push_back(
+          {TransformFeatureInstanceRelation::ModifiedCopy, transform,
+           TopologySemanticRole::PatternInstance,
+           TopologyOccurrenceKey{id(), static_cast<std::uint64_t>(index)}});
+    }
+    TransformFeatureHistoryBuild built;
+    if (!buildTransformFeatureHistory(
+            {source.feature->id(), source.shape, sourceLineage}, id(),
+            instances, false, &built, &error)) {
+      markError(error);
+      return false;
+    }
+    setShapeAndTopologyLineage(std::move(built.shape),
+                               std::move(built.lineage));
+    markValid();
+    return true;
+  }
   const auto result = buildLinearPatternShape(
-      *source, direction_, count_, spacingMm_, &error,
+      *source.shape, direction_, count_, spacingMm_, &error,
       operation_ == PatternOperation::Join);
   if (!result) {
     markError(error);

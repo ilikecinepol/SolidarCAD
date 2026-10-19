@@ -99,6 +99,8 @@ add_library(solidar_model
   model/TopologyLineage.h
   model/TopologyLineageBuilder.cpp
   model/TopologyLineageBuilder.h
+  model/TransformFeatureHistoryBuilder.cpp
+  model/TransformFeatureHistoryBuilder.h
   model/TopologyReferenceResolver.cpp
   model/TopologyReferenceResolver.h
   model/TopologyReference.h

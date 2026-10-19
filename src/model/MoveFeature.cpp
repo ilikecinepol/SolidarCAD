@@ -11,6 +11,7 @@
 
 #include "model/Body.h"
 #include "model/GeometryOperation.h"
+#include "model/TransformFeatureHistoryBuilder.h"
 
 namespace solidar {
 namespace {
@@ -113,6 +114,43 @@ bool MoveFeature::rebuildImpl(const RebuildContext& context) {
     return false;
   }
   std::string error;
+  const auto* sourceFeature = context.previousFeature;
+  if (!sourceFeature || sourceFeature->id() != sourceFeatureId_ ||
+      !sourceFeature->shape() ||
+      !sourceFeature->shape()->IsSame(*context.previousShape)) {
+    markError("Move source snapshot is incoherent");
+    return false;
+  }
+  const auto sourceLineage = sourceFeature->topologyLineage();
+  if (sourceLineage) {
+    if (sourceLineage->coverage() !=
+        TopologyLineageCoverage::CompleteFaces) {
+      markError("Move source face lineage is incomplete");
+      return false;
+    }
+    if (!finite(offsetMm_)) {
+      markError("Move offset must be finite");
+      return false;
+    }
+    gp_Trsf transform;
+    transform.SetTranslation(
+        gp_Vec(offsetMm_.x, offsetMm_.y, offsetMm_.z));
+    const TransformFeatureInstanceRequest instance{
+        TransformFeatureInstanceRelation::ModifiedCopy, transform,
+        TopologySemanticRole::Original, std::nullopt};
+    TransformFeatureHistoryBuild built;
+    if (!buildTransformFeatureHistory(
+            {sourceFeature->id(), sourceFeature->shape(), sourceLineage}, id(),
+            std::span<const TransformFeatureInstanceRequest>(&instance, 1),
+            true, &built, &error)) {
+      markError(error);
+      return false;
+    }
+    setShapeAndTopologyLineage(std::move(built.shape),
+                               std::move(built.lineage));
+    markValid();
+    return true;
+  }
   const auto result = buildMovedShape(*context.previousShape, offsetMm_, &error);
   if (!result) {
     markError(error);
