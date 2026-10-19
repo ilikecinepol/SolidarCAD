@@ -104,6 +104,8 @@ solidar_add_test(settings_ui_tests
   LIBRARIES solidar_home solidar_theme Qt6::Widgets LABELS ui-smoke)
 solidar_add_test(extrude_feature_tests
   LIBRARIES solidar_model LABELS unit)
+solidar_add_test(extrude_topology_lineage_tests
+  LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(revolve_feature_tests
   LIBRARIES solidar_model LABELS regression)
 solidar_add_test(part_design_tool_framework_tests

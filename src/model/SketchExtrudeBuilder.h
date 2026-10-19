@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,7 @@
 
 #include "model/ExtrudeFeature.h"
 #include "model/OperationFailure.h"
+#include "model/TopologyLineage.h"
 
 namespace solidar {
 struct DocumentSketch;
@@ -18,6 +20,19 @@ struct SketchExtrudeGeometry {
   gp_Pnt centroid;
   gp_Dir normal;
 };
+
+struct SketchExtrusionWithLineage {
+  std::shared_ptr<const TopoDS_Shape> shape;
+  std::shared_ptr<const TopologyLineage> lineage;
+};
+
+// Strict RT1 producer path: one simple sketch contour, one live prism maker,
+// complete face lineage. No boolean, fuse, unify or fallback is performed.
+[[nodiscard]] bool buildSimpleNewBodyExtrusionWithLineage(
+    const DocumentSketch& profile, FeatureId producerFeatureId,
+    double lengthMm, bool reversed, SketchExtrusionWithLineage* result,
+    std::string* error,
+    OperationFailureCode* code = nullptr);
 
 // V1 direct-interaction profile contract: one solid closed line wire or one
 // solid circle. Construction geometry is ignored; multiple loops and holes are

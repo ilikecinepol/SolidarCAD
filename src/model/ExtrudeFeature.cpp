@@ -301,6 +301,43 @@ bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
 
   try {
     std::string profileError;
+    if (operation_ == ExtrudeOperation::NewBody && !profileOverride_) {
+      OperationFailureCode eligibilityCode = OperationFailureCode::None;
+      std::string eligibilityError;
+      if (isSupportedSingleSketchProfile(selectedProfile, &eligibilityError,
+                                         &eligibilityCode)) {
+        if (context.previousShape && !context.previousShape->IsNull()) {
+          markError("Extrude New Body must be the first feature of a Body");
+          return false;
+        }
+        SketchExtrusionWithLineage built;
+        if (!buildSimpleNewBodyExtrusionWithLineage(
+                selectedProfile, id(), lengthMm_, reversed_, &built,
+                &profileError)) {
+          markError("Extrude " + profileError);
+          return false;
+        }
+        setShapeAndTopologyLineage(std::move(built.shape),
+                                   std::move(built.lineage));
+        markValid();
+        return true;
+      }
+      // Only a profile that is valid under the existing multi-region
+      // contract may intentionally remain on the legacy builder. Malformed
+      // single-profile input must not turn a failed v2 eligibility check into
+      // an implicit legacy retry.
+      std::string legacyEligibilityError;
+      OperationFailureCode legacyEligibilityCode = OperationFailureCode::None;
+      if (!isSupportedSketchProfile(selectedProfile,
+                                    &legacyEligibilityError,
+                                    &legacyEligibilityCode)) {
+        markError("Extrude " +
+                  (legacyEligibilityError.empty() ? eligibilityError
+                                                  : legacyEligibilityError));
+        return false;
+      }
+    }
+
     TopoDS_Shape result;
     if (!buildExtrusionFromSketch(selectedProfile, context.previousShape,
                                   lengthMm_, operation_, reversed_, &result,

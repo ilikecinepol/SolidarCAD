@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "model/OcctTopologyHistoryCapture.h"
 #include "model/SketchProfileBuilder.h"
 
 namespace solidar {
@@ -511,6 +512,94 @@ bool buildSketchProfileFaces(const DocumentSketch& profile,
     if (code) *code = OperationFailureCode::GeometryOperationFailed;
     if (error) *error = "Unexpected profile region geometry error";
     return false;
+  }
+}
+
+bool buildSimpleNewBodyExtrusionWithLineage(
+    const DocumentSketch& profile, FeatureId producerFeatureId,
+    double lengthMm, bool reversed, SketchExtrusionWithLineage* result,
+    std::string* error, OperationFailureCode* code) {
+  if (error) error->clear();
+  if (code) *code = OperationFailureCode::None;
+  const auto fail = [&](std::string message,
+                        OperationFailureCode failureCode =
+                            OperationFailureCode::GeometryOperationFailed) {
+    if (error) *error = std::move(message);
+    if (code) *code = failureCode;
+    return false;
+  };
+  if (!result || producerFeatureId == kInvalidFeatureId)
+    return fail("Lineage extrusion output identity is invalid",
+                OperationFailureCode::InvalidInput);
+  if (!std::isfinite(lengthMm) || lengthMm <= 0.0)
+    return fail("Extrude length must be a finite positive value",
+                OperationFailureCode::InvalidInput);
+  if (!isSupportedSingleSketchProfile(profile, error, code)) return false;
+
+  try {
+    SketchProfileFaceBuild profileBuild;
+    if (!buildPlanarFaceFromSketchWithEdges(profile, &profileBuild, error)) {
+      if (code && *code == OperationFailureCode::None)
+        *code = OperationFailureCode::InvalidProfile;
+      return false;
+    }
+    std::vector<PrismProfileEdgeSeed> edgeSeeds;
+    edgeSeeds.reserve(profileBuild.edges.size());
+    for (const auto& mapping : profileBuild.edges)
+      edgeSeeds.push_back({mapping.geometryId, mapping.edge});
+
+    const auto normal = profile.placement.normal();
+    const double sign = reversed ? -1.0 : 1.0;
+    BRepPrimAPI_MakePrism maker(
+        *profileBuild.face,
+        gp_Vec(sign * normal.x * lengthMm, sign * normal.y * lengthMm,
+               sign * normal.z * lengthMm));
+    maker.Build();
+    if (!maker.IsDone() || maker.Shape().IsNull())
+      return fail("Could not build a solid prism");
+    TopoDS_Shape onlySolid;
+    if (!exactlyOneSolid(maker.Shape(), &onlySolid, error, code)) return false;
+    if (maker.Shape().ShapeType() != TopAbs_SOLID ||
+        !maker.Shape().IsSame(onlySolid))
+      return fail("Extrusion prism output root is not the exact solid");
+    BRepCheck_Analyzer analyzer(maker.Shape());
+    if (!analyzer.IsValid()) return fail("Extrusion prism is invalid");
+
+    const auto history = capturePrismFaceHistory(
+        maker, producerFeatureId, profile.id, profileBuild.face, edgeSeeds,
+        error);
+    if (!history) {
+      if (code) *code = OperationFailureCode::GeometryOperationFailed;
+      return false;
+    }
+    if (!history->artifact().outputShape ||
+        !history->artifact().outputShape->IsSame(maker.Shape()))
+      return fail("Extrusion history output root changed during capture");
+    const auto lineage = history->build(error);
+    if (!lineage ||
+        lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+      if (code) *code = OperationFailureCode::GeometryOperationFailed;
+      if (error && error->empty())
+        *error = "Extrusion face lineage is incomplete";
+      return false;
+    }
+    SketchExtrusionWithLineage built{
+        history->artifact().outputShape, lineage};
+    if (!built.shape || built.shape->IsNull())
+      return fail("Extrusion history output shape is invalid");
+    *result = std::move(built);
+    if (error) error->clear();
+    if (code) *code = OperationFailureCode::None;
+    return true;
+  } catch (const Standard_Failure& failure) {
+    const char* message = failure.what();
+    return fail(message && *message
+                    ? std::string("OCCT lineage extrusion error: ") + message
+                    : "OCCT lineage extrusion operation failed");
+  } catch (const std::exception& failure) {
+    return fail(std::string("Lineage extrusion error: ") + failure.what());
+  } catch (...) {
+    return fail("Unexpected lineage extrusion geometry error");
   }
 }
 

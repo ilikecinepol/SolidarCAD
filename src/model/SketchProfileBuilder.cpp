@@ -6,7 +6,9 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <Standard_Failure.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
@@ -15,20 +17,88 @@
 #include <Geom_BezierCurve.hxx>
 #include <NCollection_Array1.hxx>
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "model/Document.h"
 
 namespace solidar {
 
-bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
-                               TopoDS_Face* face, std::string* error) {
+namespace {
+
+bool reconcileFaceEdges(
+    const TopoDS_Face& face,
+    const std::vector<std::pair<sketch::GeometryId, TopoDS_Edge>>& authored,
+    std::vector<SketchProfileEdgeBuild>* edges, std::string* error) {
+  const auto fail = [&](const char* message) {
+    if (error) *error = message;
+    return false;
+  };
+  if (!edges || authored.empty())
+    return fail("Profile edge identity mapping is empty");
+  std::vector<TopoDS_Edge> faceEdges;
+  for (TopExp_Explorer explorer(face, TopAbs_EDGE); explorer.More();
+       explorer.Next()) {
+    const auto candidate = TopoDS::Edge(explorer.Current());
+    if (std::none_of(faceEdges.begin(), faceEdges.end(),
+                     [&](const auto& existing) {
+                       return existing.IsSame(candidate);
+                     }))
+      faceEdges.push_back(candidate);
+  }
+  if (faceEdges.size() != authored.size())
+    return fail("Profile face edge identity coverage is incomplete");
+
+  std::vector<SketchProfileEdgeBuild> mapped;
+  mapped.reserve(authored.size());
+  for (const auto& [geometryId, authoredEdge] : authored) {
+    if (geometryId == sketch::kInvalidGeometryId || authoredEdge.IsNull())
+      return fail("Profile edge identity is invalid");
+    if (std::any_of(mapped.begin(), mapped.end(), [&](const auto& existing) {
+          return existing.geometryId == geometryId;
+        }))
+      return fail("Profile geometry identity is duplicated");
+    const TopoDS_Edge* match = nullptr;
+    for (const auto& faceEdge : faceEdges) {
+      if (!faceEdge.IsSame(authoredEdge)) continue;
+      if (match != nullptr)
+        return fail("Profile edge identity is ambiguous");
+      match = &faceEdge;
+    }
+    if (match == nullptr)
+      return fail("Profile edge identity is missing from the face");
+    if (std::any_of(mapped.begin(), mapped.end(), [&](const auto& existing) {
+          return existing.edge->IsSame(*match);
+        }))
+      return fail("Profile face edge is mapped more than once");
+    mapped.push_back(
+        {geometryId, std::make_shared<TopoDS_Edge>(*match)});
+  }
+  for (const auto& faceEdge : faceEdges) {
+    if (std::none_of(mapped.begin(), mapped.end(), [&](const auto& mapping) {
+          return mapping.edge->IsSame(faceEdge);
+        }))
+      return fail("Profile face contains an uncovered edge");
+  }
+  *edges = std::move(mapped);
+  return true;
+}
+
+}  // namespace
+
+static bool buildPlanarFaceFromSketchImpl(const DocumentSketch& profile,
+                                          bool requireEdgeMapping,
+                                          SketchProfileFaceBuild* result,
+                                          std::string* error) {
+  if (error) error->clear();
   const auto fail = [&](std::string message) {
     if (error) *error = std::move(message);
     return false;
   };
-  if (!face) return fail("Profile output face is missing");
+  if (!result) return fail("Profile face build output is missing");
   if (!profile.supportResolved) return fail("Profile support is unresolved");
   const auto& geometry = profile.geometry;
   std::size_t solidLines = 0;
@@ -36,11 +106,15 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     if (!line.dashed) ++solidLines;
   std::size_t solidCircles = 0;
   const sketch::Circle* circle = nullptr;
-  for (const auto& candidate : geometry.circles())
+  sketch::GeometryId circleId = sketch::kInvalidGeometryId;
+  for (std::size_t index = 0; index < geometry.circles().size(); ++index) {
+    const auto& candidate = geometry.circles()[index];
     if (!candidate.dashed) {
       ++solidCircles;
       circle = &candidate;
+      circleId = geometry.circleId(index);
     }
+  }
   std::size_t solidArcs = 0;
   for (const auto& arc : geometry.arcs())
     if (!arc.dashed) ++solidArcs;
@@ -79,7 +153,13 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       const TopoDS_Face builtFace = circleFace.Face();
       BRepCheck_Analyzer analyzer(builtFace);
       if (!analyzer.IsValid()) return fail("Profile face is invalid");
-      *face = builtFace;
+      SketchProfileFaceBuild built;
+      built.face = std::make_shared<TopoDS_Face>(builtFace);
+      if (requireEdgeMapping &&
+          !reconcileFaceEdges(builtFace, {{circleId, edgeBuilder.Edge()}},
+                              &built.edges, error))
+        return false;
+      *result = std::move(built);
       return true;
     }
 
@@ -89,6 +169,7 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     };
 
     struct PendingEdge {
+      sketch::GeometryId geometryId{sketch::kInvalidGeometryId};
       gp_Pnt start;
       gp_Pnt end;
       TopoDS_Edge edge;
@@ -120,13 +201,15 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       return point;
     };
 
-    for (const auto& line : geometry.lines()) {
+    for (std::size_t index = 0; index < geometry.lines().size(); ++index) {
+      const auto& line = geometry.lines()[index];
       if (line.dashed) continue;
       const gp_Pnt start = toWorldPoint(canonicalPoint(line.start));
       const gp_Pnt end = toWorldPoint(canonicalPoint(line.end));
       BRepBuilderAPI_MakeEdge edgeBuilder(start, end);
       if (!edgeBuilder.IsDone()) return fail("Could not build a profile edge");
-      pending.push_back({start, end, edgeBuilder.Edge()});
+      pending.push_back(
+          {geometry.lineId(index), start, end, edgeBuilder.Edge()});
     }
 
     const auto normal = profile.placement.normal();
@@ -134,7 +217,8 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     const gp_Dir normalDir(normal.x, normal.y, normal.z);
     const gp_Dir xDir(xDirection.x, xDirection.y, xDirection.z);
 
-    for (const auto& arc : geometry.arcs()) {
+    for (std::size_t index = 0; index < geometry.arcs().size(); ++index) {
+      const auto& arc = geometry.arcs()[index];
       if (arc.dashed) continue;
       if (!std::isfinite(arc.radiusMm) || arc.radiusMm <= 0.0 ||
           !std::isfinite(arc.center.xMm) || !std::isfinite(arc.center.yMm))
@@ -146,12 +230,14 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
           gp_Circ(axes, arc.radiusMm), arc.startAngleRad,
           arc.startAngleRad + arc.sweepAngleRad);
       if (!edgeBuilder.IsDone()) return fail("Could not build an arc edge");
-      pending.push_back({toWorldPoint(sketch::arcStartPoint(arc)),
+      pending.push_back({geometry.arcId(index),
+                         toWorldPoint(sketch::arcStartPoint(arc)),
                          toWorldPoint(sketch::arcEndPoint(arc)),
                          edgeBuilder.Edge()});
     }
 
-    for (const auto& bezier : geometry.beziers()) {
+    for (std::size_t index = 0; index < geometry.beziers().size(); ++index) {
+      const auto& bezier = geometry.beziers()[index];
       if (bezier.dashed) continue;
       NCollection_Array1<gp_Pnt> poles(1, 4);
       for (int pole = 1; pole <= 4; ++pole)
@@ -160,7 +246,8 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       BRepBuilderAPI_MakeEdge edgeBuilder(curve);
       if (!edgeBuilder.IsDone())
         return fail("Could not build a Bezier profile edge");
-      pending.push_back({toWorldPoint(canonicalPoint(bezier.points[0])),
+      pending.push_back({geometry.bezierId(index),
+                         toWorldPoint(canonicalPoint(bezier.points[0])),
                          toWorldPoint(canonicalPoint(bezier.points[3])),
                          edgeBuilder.Edge()});
     }
@@ -181,6 +268,7 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
       if (used[seed]) continue;
       used[seed] = true;
       wireBuilder.Add(pending[seed].edge);
+      pending[seed].edge = wireBuilder.Edge();
       gp_Pnt cursor = pending[seed].end;
 
       bool progressed = true;
@@ -190,11 +278,13 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
           if (used[index]) continue;
           if (closeEnough(pending[index].start, cursor)) {
             wireBuilder.Add(pending[index].edge);
+            pending[index].edge = wireBuilder.Edge();
             cursor = pending[index].end;
             used[index] = true;
             progressed = true;
           } else if (closeEnough(pending[index].end, cursor)) {
             wireBuilder.Add(TopoDS::Edge(pending[index].edge.Reversed()));
+            pending[index].edge = wireBuilder.Edge();
             cursor = pending[index].start;
             used[index] = true;
             progressed = true;
@@ -210,7 +300,16 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
     const TopoDS_Face builtFace = faceBuilder.Face();
     BRepCheck_Analyzer analyzer(builtFace);
     if (!analyzer.IsValid()) return fail("Profile face is invalid");
-    *face = builtFace;
+    std::vector<std::pair<sketch::GeometryId, TopoDS_Edge>> authored;
+    authored.reserve(pending.size());
+    for (const auto& edge : pending)
+      authored.emplace_back(edge.geometryId, edge.edge);
+    SketchProfileFaceBuild built;
+    built.face = std::make_shared<TopoDS_Face>(builtFace);
+    if (requireEdgeMapping &&
+        !reconcileFaceEdges(builtFace, authored, &built.edges, error))
+      return false;
+    *result = std::move(built);
     return true;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();
@@ -219,6 +318,25 @@ bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
   } catch (...) {
     return fail("Unexpected profile geometry error");
   }
+}
+
+bool buildPlanarFaceFromSketchWithEdges(const DocumentSketch& profile,
+                                        SketchProfileFaceBuild* result,
+                                        std::string* error) {
+  return buildPlanarFaceFromSketchImpl(profile, true, result, error);
+}
+
+bool buildPlanarFaceFromSketch(const DocumentSketch& profile,
+                               TopoDS_Face* face, std::string* error) {
+  if (!face) {
+    if (error) *error = "Profile output face is missing";
+    return false;
+  }
+  SketchProfileFaceBuild build;
+  if (!buildPlanarFaceFromSketchImpl(profile, false, &build, error))
+    return false;
+  *face = *build.face;
+  return true;
 }
 
 bool buildExtrusionPrismFromSketch(const DocumentSketch& profile,
