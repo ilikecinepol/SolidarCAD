@@ -4,11 +4,14 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Vec.hxx>
 
 #include <algorithm>
 #include <array>
@@ -18,10 +21,13 @@
 #include <utility>
 #include <variant>
 
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/FaceExtrudeBuilder.h"
 #include "model/OcctBooleanTopologyHistoryCapture.h"
+#include "model/OcctFacePrismTopologyHistoryCapture.h"
 #include "model/SketchExtrudeBuilder.h"
 #include "model/TopologyLineage.h"
+#include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
 namespace {
@@ -305,6 +311,204 @@ bool buildStrictSketchBooleanExtrusion(
                                        error);
 }
 
+bool normalizeStrictFaceExtrusion(StrictBooleanExtrusion* result,
+                                  std::string* error) {
+  if (!result || !result->shape || result->shape->IsNull() ||
+      !result->lineage ||
+      result->lineage->coverage() !=
+          TopologyLineageCoverage::CompleteFaces) {
+    if (error) *error = "Extrude face result snapshot is incomplete";
+    return false;
+  }
+
+  TopExp_Explorer solids(*result->shape, TopAbs_SOLID);
+  if (!solids.More()) {
+    if (error) *error = "Extrude face result does not contain a solid";
+    return false;
+  }
+  const TopoDS_Shape singleSolid = solids.Current();
+  solids.Next();
+  if (solids.More()) {
+    if (error) *error = "Extrude face result contains multiple solids";
+    return false;
+  }
+  if (!BRepCheck_Analyzer(singleSolid).IsValid()) {
+    if (error) *error = "Extrude face result is invalid";
+    return false;
+  }
+  if (std::any_of(result->lineage->bindings().begin(),
+                  result->lineage->bindings().end(),
+                  [&](const auto& binding) {
+                    return !binding.subshape || binding.subshape->IsNull() ||
+                           !containsFace(singleSolid, *binding.subshape);
+                  })) {
+    if (error) *error = "Extrude face result changed captured faces";
+    return false;
+  }
+  result->shape = std::make_shared<TopoDS_Shape>(singleSolid);
+  return true;
+}
+
+bool buildStrictFaceBooleanExtrusion(
+    const RebuildContext& context, const ShapeFeature& current,
+    const FaceReference& selectedFace, double lengthMm, bool reversed,
+    ExtrudeOperation operation, StrictBooleanExtrusion* result,
+    std::string* error) {
+  if (!result || !selectedFace.isV2()) {
+    if (error) *error = "Extrude face reference is not v2";
+    return false;
+  }
+  if (operation != ExtrudeOperation::Join &&
+      operation != ExtrudeOperation::Cut) {
+    if (error) *error = "Extrude face operation is invalid";
+    return false;
+  }
+  if (!validateImmediatePredecessor(context, current, error)) return false;
+
+  const ShapeFeature& baseFeature = *context.previousFeature;
+  const auto baseLineage = baseFeature.topologyLineage();
+  if (!baseLineage ||
+      baseLineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (error) *error = "Extrude base face lineage is incomplete";
+    return false;
+  }
+  if (selectedFace.bodyId() != context.body->id()) {
+    if (error) *error = "Extrude face belongs to a different Body";
+    return false;
+  }
+  if (selectedFace.featureId() != baseFeature.id()) {
+    if (error)
+      *error = "Extrude face must belong to the immediate source Feature";
+    return false;
+  }
+
+  const TopologySourceSnapshot baseSnapshot{
+      baseFeature.id(), baseFeature.shape(), baseLineage};
+  FaceBoundaryEdgeProvenanceFailure boundaryFailure;
+  auto boundary = captureUniqueManifoldFaceBoundary(
+      baseSnapshot, selectedFace, &boundaryFailure);
+  if (!boundary) {
+    if (error)
+      *error = boundaryFailure.detail.empty()
+                   ? "Extrude face boundary provenance capture failed"
+                   : std::move(boundaryFailure.detail);
+    return false;
+  }
+
+  std::string topologyError;
+  const auto topology = TopologyIndex::build(
+      boundary->augmentedSource.shape, kInvalidShapeRevision,
+      boundary->augmentedSource.lineage, &topologyError);
+  if (!topology) {
+    if (error)
+      *error = topologyError.empty()
+                   ? "Extrude topology could not be indexed"
+                   : "Extrude topology could not be indexed: " + topologyError;
+    return false;
+  }
+  const auto resolved = topology->resolveFace(selectedFace);
+  if (!resolved) {
+    if (error)
+      *error = "Extrude face could not be resolved: " + resolved.error;
+    return false;
+  }
+
+  gp_Pln plane;
+  gp_Dir normal;
+  if (!resolveFacePlaneAndNormal(*resolved.subshape, &plane, &normal, error))
+    return false;
+  const gp_Vec offset =
+      gp_Vec(normal) * (reversed ? -lengthMm : lengthMm);
+  BRepPrimAPI_MakePrism prism(*resolved.subshape, offset, false);
+  prism.Build();
+  if (!prism.IsDone() || prism.Shape().IsNull()) {
+    if (error) *error = "Extrude face could not build a solid prism";
+    return false;
+  }
+
+  FacePrismTopologyHistoryFailure prismFailure;
+  auto prismBuilder = captureFacePrismTopologyHistory(
+      prism, current.id(), selectedFace, *boundary, &prismFailure);
+  if (!prismBuilder) {
+    if (error)
+      *error = prismFailure.detail.empty()
+                   ? "Extrude face prism history capture failed"
+                   : std::move(prismFailure.detail);
+    return false;
+  }
+  std::string lineageError;
+  auto prismLineage = prismBuilder->build(&lineageError);
+  const auto prismShape = prismBuilder->artifact().outputShape;
+  if (!prismShape || prismShape->IsNull() || !prismLineage ||
+      prismLineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (error)
+      *error = lineageError.empty()
+                   ? "Extrude face prism lineage is incomplete"
+                   : std::move(lineageError);
+    return false;
+  }
+
+  const std::array<BooleanTopologySource, 2> sources{{
+      {BooleanOperandRole::Object, boundary->augmentedSource},
+      {BooleanOperandRole::Tool, {current.id(), prismShape, prismLineage}},
+  }};
+  BooleanTopologyCaptureOptions options;
+  options.simplifyResult = operation == ExtrudeOperation::Join;
+  BooleanTopologyCaptureFailure booleanFailure;
+  std::optional<BooleanTopologyCaptureResult> captured;
+  if (operation == ExtrudeOperation::Join) {
+    BRepAlgoAPI_Fuse fuse(*context.previousShape, *prismShape);
+    fuse.Build();
+    if (!fuse.IsDone() || fuse.Shape().IsNull()) {
+      if (error) *error = "Extrude Join boolean fuse failed";
+      return false;
+    }
+    if (!validateRawBooleanResult(*context.previousShape, fuse.Shape(),
+                                  operation, error))
+      return false;
+    captured = captureBooleanFaceHistory(
+        fuse, current.id(), std::span<const BooleanTopologySource>(sources),
+        {}, options, &booleanFailure);
+  } else {
+    BRepAlgoAPI_Cut cut(*context.previousShape, *prismShape);
+    cut.Build();
+    if (!cut.IsDone() || cut.Shape().IsNull()) {
+      if (error) *error = "Extrude Cut boolean cut failed";
+      return false;
+    }
+    if (!validateRawBooleanResult(*context.previousShape, cut.Shape(),
+                                  operation, error))
+      return false;
+    captured = captureBooleanFaceHistory(
+        cut, current.id(), std::span<const BooleanTopologySource>(sources),
+        {}, options, &booleanFailure);
+  }
+  if (!captured) {
+    if (error)
+      *error = booleanFailure.detail.empty()
+                   ? "Extrude face history capture failed"
+                   : std::move(booleanFailure.detail);
+    return false;
+  }
+  if (!captured->outputShape || captured->outputShape->IsNull() ||
+      !validateFinalBooleanResult(*context.previousShape,
+                                  *captured->outputShape, operation, error))
+    return false;
+
+  auto finalLineage = captured->builder.build(&lineageError);
+  if (!finalLineage) {
+    if (error)
+      *error = lineageError.empty() ? "Extrude face lineage build failed"
+                                    : std::move(lineageError);
+    return false;
+  }
+  if (!validateCapturedSnapshot(*captured, *finalLineage, error)) return false;
+
+  result->shape = std::move(captured->outputShape);
+  result->lineage = std::move(finalLineage);
+  return normalizeStrictFaceExtrusion(result, error);
+}
+
 template <typename Primitive, typename Equal, typename SameIdentity,
           typename IdAt>
 bool matchPrimitiveIds(const std::vector<Primitive>& source,
@@ -491,6 +695,21 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
   }
   try {
     std::string faceError;
+    if (source.face.isV2()) {
+      StrictBooleanExtrusion built;
+      if (!buildStrictFaceBooleanExtrusion(
+              context, *this, source.face, lengthMm_, reversed_, operation_,
+              &built, &faceError)) {
+        markError(faceError.empty() ? "Extrude face lineage rebuild failed"
+                                    : std::move(faceError));
+        return false;
+      }
+      setShapeAndTopologyLineage(std::move(built.shape),
+                                 std::move(built.lineage));
+      markValid();
+      return true;
+    }
+
     const auto topology = context.previousFeature->topologyIndex(&faceError);
     if (!topology) {
       markError("Extrude topology could not be indexed: " + faceError);
