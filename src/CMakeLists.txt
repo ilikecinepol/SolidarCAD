@@ -37,6 +37,8 @@ add_library(solidar_model
   model/ExtrudeOperationDetector.h
   model/FaceExtrudeBuilder.cpp
   model/FaceExtrudeBuilder.h
+  model/FaceBoundaryEdgeProvenance.cpp
+  model/FaceBoundaryEdgeProvenance.h
   model/FilletFeature.cpp
   model/FilletFeature.h
   model/FilletBuilder.cpp

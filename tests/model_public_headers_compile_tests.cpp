@@ -15,6 +15,7 @@
 #include "model/ExtrudeSource.h"
 #include "model/ExtrudeToolSession.h"
 #include "model/FaceExtrudeBuilder.h"
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/Feature.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
