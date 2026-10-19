@@ -2,6 +2,7 @@
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepGProp.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
 #include <GProp_GProps.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -21,6 +22,7 @@
 
 #include "model/Document.h"
 #include "model/ExtrudeFeature.h"
+#include "model/ImportedShapeFeature.h"
 #include "model/TopologyLineageBuilder.h"
 #include "model/TopologyReferenceResolver.h"
 
@@ -154,6 +156,158 @@ void checkLegacyV1(const solidar::ExtrudeFeature& feature,
   CHECK(exact.method == solidar::TopologyMatchMethod::None);
   CHECK(exact.failure == solidar::TopologyResolutionFailure::Missing);
 }
+
+std::vector<solidar::FaceReference> checkStrictBooleanLineage(
+    const solidar::ExtrudeFeature& feature, solidar::BodyId bodyId,
+    solidar::FeatureId baseFeatureId, std::size_t expectedFaceCount) {
+  const auto lineage = feature.topologyLineage();
+  CHECK(lineage);
+  CHECK(lineage->coverage() ==
+        solidar::TopologyLineageCoverage::CompleteFaces);
+  CHECK(lineage->bindings().size() == expectedFaceCount);
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  CHECK(index->faceCount() == expectedFaceCount);
+  CHECK(index->rawFaceCount() == expectedFaceCount);
+  const solidar::TopologyReference legacy{
+      bodyId, feature.id(), solidar::TopologyKind::Face, 0};
+  const auto legacyResolved = solidar::resolveFaceReference(*index, legacy);
+  CHECK(legacyResolved);
+  CHECK(legacyResolved.method == solidar::TopologyMatchMethod::LegacyIndex);
+
+  bool foundBaseOrigin = false;
+  bool foundToolOrigin = false;
+  for (const auto& binding : lineage->bindings()) {
+    CHECK(binding.provenance.featureId == feature.id());
+    CHECK(!binding.provenance.origins.empty());
+    for (const auto& origin : binding.provenance.origins) {
+      foundBaseOrigin = foundBaseOrigin || origin.featureId == baseFeatureId;
+      foundToolOrigin = foundToolOrigin || origin.featureId == feature.id();
+    }
+  }
+  CHECK(foundBaseOrigin);
+  CHECK(foundToolOrigin);
+
+  std::vector<solidar::FaceReference> references;
+  references.reserve(index->rawFaceCount());
+  for (std::size_t raw = 0; raw < index->rawFaceCount(); ++raw) {
+    auto created = feature.createFaceReferenceV2(bodyId, raw);
+    CHECK(created);
+    CHECK(created.status ==
+          solidar::FaceReferenceV2CreationStatus::Created);
+    CHECK(created.reference.v2());
+    const auto resolved = index->resolveFace(created.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    references.push_back(std::move(created.reference));
+  }
+  return references;
+}
+
+std::size_t countProvenanceOperation(
+    const solidar::ShapeFeature& feature,
+    solidar::TopologyProvenanceOperation operation) {
+  const auto lineage = feature.topologyLineage();
+  CHECK(lineage);
+  return static_cast<std::size_t>(std::count_if(
+      lineage->bindings().begin(), lineage->bindings().end(),
+      [&](const auto& binding) {
+        return binding.provenance.operation == operation;
+      }));
+}
+
+void checkReferencesResolve(
+    const solidar::ExtrudeFeature& feature,
+    std::span<const solidar::FaceReference> references) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  for (const auto& reference : references) {
+    const auto resolved = index->resolveFace(reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+  }
+}
+
+void checkSingleOriginDistribution(const solidar::ShapeFeature& feature,
+                                   solidar::FeatureId objectFeatureId,
+                                   std::size_t expectedObjectOrigins,
+                                   std::size_t expectedToolOrigins) {
+  const auto lineage = feature.topologyLineage();
+  CHECK(lineage);
+  std::size_t objectOrigins = 0;
+  std::size_t toolOrigins = 0;
+  for (const auto& binding : lineage->bindings()) {
+    CHECK(binding.provenance.featureId == feature.id());
+    CHECK(binding.provenance.origins.size() == 1);
+    const auto source = binding.provenance.origins.front().featureId;
+    CHECK(source == objectFeatureId || source == feature.id());
+    objectOrigins += source == objectFeatureId ? 1 : 0;
+    toolOrigins += source == feature.id() ? 1 : 0;
+  }
+  CHECK(objectOrigins == expectedObjectOrigins);
+  CHECK(toolOrigins == expectedToolOrigins);
+}
+
+solidar::FaceReference referenceForOrigin(
+    const solidar::ShapeFeature& feature, solidar::BodyId bodyId,
+    const solidar::TopologyProvenanceOrigin& expectedOrigin) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::optional<solidar::FaceReference> found;
+  for (std::size_t raw = 0; raw < index->rawFaceCount(); ++raw) {
+    const auto created = feature.createFaceReferenceV2(bodyId, raw);
+    CHECK(created);
+    const auto* v2 = created.reference.v2();
+    CHECK(v2);
+    if (v2->provenance.origins.size() != 1 ||
+        v2->provenance.origins.front() != expectedOrigin)
+      continue;
+    CHECK(!found);
+    found = created.reference;
+  }
+  CHECK(found);
+  return *found;
+}
+
+class PartialLineageBoxFeature final : public solidar::ShapeFeature {
+ public:
+  PartialLineageBoxFeature() : ShapeFeature("Partial lineage box") {}
+
+  [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
+    return std::make_unique<PartialLineageBoxFeature>(*this);
+  }
+
+ protected:
+  bool rebuildImpl(const solidar::RebuildContext&) override {
+    clearShape();
+    auto shape = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(20.0, 20.0, 10.0).Shape());
+    TopExp_Explorer faces(*shape, TopAbs_FACE);
+    if (!faces.More()) {
+      markError("Partial lineage fixture has no face");
+      return false;
+    }
+    solidar::TopologyProvenanceKey key{
+        id(), solidar::TopologyKind::Face,
+        solidar::TopologyProvenanceOperation::Seed,
+        solidar::TopologySemanticRole::Custom, "partial-face"};
+    std::string error;
+    auto lineage = solidar::TopologyLineage::create(
+        {{std::move(key),
+          std::make_shared<TopoDS_Shape>(faces.Current())}},
+        solidar::TopologyLineageCoverage::PartialFaces, &error);
+    if (!lineage) {
+      markError(error.empty() ? "Partial lineage fixture is invalid"
+                              : std::move(error));
+      return false;
+    }
+    setShapeAndTopologyLineage(std::move(shape), std::move(lineage));
+    markValid();
+    return true;
+  }
+};
 
 }  // namespace
 
@@ -385,7 +539,9 @@ int main() {
     CHECK(near(faceArea(*bezierSide.subshape), 57.5250020184, 1e-4));
   }
 
-  // Out-of-scope valid modes remain legacy and retain working v1 references.
+  // Out-of-scope valid profiles remain legacy and retain working v1
+  // references. Simple Join/Cut profiles over a CompleteFaces base take the
+  // strict boolean history path.
   {
     Document multiDocument;
     auto& multi = multiDocument.addSketch("Multi");
@@ -429,16 +585,36 @@ int main() {
     auto& base = joinDocument.addSketch("Base");
     base.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
     auto& joinBody = joinDocument.addBody();
-    joinBody.addFeature(std::make_unique<ExtrudeFeature>(base.id, 5.0));
+    auto baseExtrude = std::make_unique<ExtrudeFeature>(base.id, 5.0);
+    auto* baseFeature = baseExtrude.get();
+    joinBody.addFeature(std::move(baseExtrude));
     auto& join = joinDocument.addSketch("Join");
     join.geometry.addRectangle({5.0, 0.0}, {15.0, 10.0});
+    const auto joinSketchId = join.id;
+    const std::array joinGeometryIds{
+        join.geometry.lineId(0), join.geometry.lineId(1),
+        join.geometry.lineId(2), join.geometry.lineId(3)};
     auto joinExtrude = std::make_unique<ExtrudeFeature>(
-        join.id, 5.0, "Join", ExtrudeOperation::Join);
+        joinSketchId, 5.0, "Join", ExtrudeOperation::Join);
     auto* joinFeature = joinExtrude.get();
     joinBody.addFeature(std::move(joinExtrude));
     CHECK(joinDocument.rebuild());
     CHECK(near(volumeOf(*joinFeature->shape()), 750.0, 1e-4));
-    checkLegacyV1(*joinFeature, joinBody.id());
+    const auto joinReferences = checkStrictBooleanLineage(
+        *joinFeature, joinBody.id(), baseFeature->id(), 6);
+    CHECK(countProvenanceOperation(*joinFeature,
+                                   TopologyProvenanceOperation::Retained) ==
+          2);
+    CHECK(countProvenanceOperation(*joinFeature,
+                                   TopologyProvenanceOperation::Merge) == 4);
+    CHECK(std::all_of(
+        joinFeature->topologyLineage()->bindings().begin(),
+        joinFeature->topologyLineage()->bindings().end(),
+        [](const auto& binding) {
+          return binding.provenance.operation !=
+                     TopologyProvenanceOperation::Merge ||
+                 binding.provenance.origins.size() == 2;
+        }));
 
     auto& cut = joinDocument.addSketch("Cut");
     cut.geometry.addRectangle({1.0, 1.0}, {3.0, 3.0});
@@ -448,7 +624,375 @@ int main() {
     joinBody.addFeature(std::move(cutExtrude));
     CHECK(joinDocument.rebuild());
     CHECK(near(volumeOf(*cutFeature->shape()), 730.0, 1e-4));
-    checkLegacyV1(*cutFeature, joinBody.id());
+    checkStrictBooleanLineage(*cutFeature, joinBody.id(), joinFeature->id(),
+                              10);
+
+    // Saved v2 Join references survive changes to the source extrusion and
+    // the authored profile while their semantic faces remain present.
+    baseFeature->setLengthMm(8.0);
+    joinFeature->setLengthMm(8.0);
+    CHECK(joinDocument.rebuild());
+    checkReferencesResolve(*joinFeature, joinReferences);
+
+    sketch::Sketch widerJoin;
+    widerJoin.addRectangle({4.0, 0.0}, {16.0, 10.0});
+    CHECK(widerJoin.restoreGeometryIds(
+        {joinGeometryIds[0], joinGeometryIds[1], joinGeometryIds[2],
+         joinGeometryIds[3]},
+        {}, {}, {}));
+    CHECK(joinDocument.replaceSketchGeometry(joinSketchId,
+                                              std::move(widerJoin)));
+    CHECK(joinDocument.rebuild());
+    checkReferencesResolve(*joinFeature, joinReferences);
+  }
+
+  // Circle Join/Cut publish every actual output face, retain both object and
+  // tool origins, and expose an exact factory-created v2 reference per face.
+  {
+    Document joinDocument;
+    auto& base = joinDocument.addSketch("Circle Join base");
+    base.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    auto& body = joinDocument.addBody();
+    auto baseExtrude = std::make_unique<ExtrudeFeature>(base.id, 10.0);
+    auto* baseFeature = baseExtrude.get();
+    body.addFeature(std::move(baseExtrude));
+    auto& circle = joinDocument.addSketch("Circle Join");
+    circle.placement.origin.z = 10.0;
+    circle.geometry.addCircle({10.0, 10.0}, 5.0);
+    auto join = std::make_unique<ExtrudeFeature>(
+        circle.id, 5.0, "Circle Join", ExtrudeOperation::Join);
+    auto* joinFeature = join.get();
+    body.addFeature(std::move(join));
+    CHECK(joinDocument.rebuild());
+    CHECK(near(volumeOf(*joinFeature->shape()),
+               4000.0 + std::numbers::pi * 125.0, 1e-3));
+    checkStrictBooleanLineage(*joinFeature, body.id(), baseFeature->id(), 8);
+    CHECK(countProvenanceOperation(*joinFeature,
+                                   TopologyProvenanceOperation::Retained) ==
+          7);
+    CHECK(countProvenanceOperation(*joinFeature,
+                                   TopologyProvenanceOperation::Modified) ==
+          1);
+    CHECK(countProvenanceOperation(*joinFeature,
+                                   TopologyProvenanceOperation::Merge) == 0);
+    checkSingleOriginDistribution(*joinFeature, baseFeature->id(), 6, 2);
+
+    Document cutDocument;
+    auto& cutBase = cutDocument.addSketch("Circle Cut base");
+    cutBase.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    auto& cutBody = cutDocument.addBody();
+    auto cutBaseExtrude =
+        std::make_unique<ExtrudeFeature>(cutBase.id, 10.0);
+    auto* cutBaseFeature = cutBaseExtrude.get();
+    cutBody.addFeature(std::move(cutBaseExtrude));
+    auto& circleCut = cutDocument.addSketch("Circle Cut");
+    circleCut.placement.origin.z = 10.0;
+    circleCut.geometry.addCircle({10.0, 10.0}, 3.0);
+    const auto circleId = circleCut.geometry.circleId(0);
+    auto cut = std::make_unique<ExtrudeFeature>(
+        circleCut.id, 5.0, "Circle Cut", ExtrudeOperation::Cut, true);
+    auto* cutFeature = cut.get();
+    cutBody.addFeature(std::move(cut));
+    CHECK(cutDocument.rebuild());
+    CHECK(near(volumeOf(*cutFeature->shape()),
+               4000.0 - std::numbers::pi * 45.0, 1e-3));
+    const auto cutReferences = checkStrictBooleanLineage(
+        *cutFeature, cutBody.id(), cutBaseFeature->id(), 8);
+    CHECK(countProvenanceOperation(*cutFeature,
+                                   TopologyProvenanceOperation::Retained) ==
+          7);
+    CHECK(countProvenanceOperation(*cutFeature,
+                                   TopologyProvenanceOperation::Modified) ==
+          1);
+    CHECK(countProvenanceOperation(*cutFeature,
+                                   TopologyProvenanceOperation::Merge) == 0);
+    checkSingleOriginDistribution(*cutFeature, cutBaseFeature->id(), 6, 2);
+
+    const auto floorOrigin =
+        authoredKey(AuthoredTopologySourceKind::ProfileEndCap, circleCut.id,
+                    sketch::kInvalidGeometryId, cutFeature->id())
+            .immediateOrigin();
+    const auto floorReference = referenceForOrigin(
+        *cutFeature, cutBody.id(), floorOrigin);
+    cutFeature->setLengthMm(10.0);
+    CHECK(cutDocument.rebuild());
+    const auto throughResolution =
+        cutFeature->topologyIndex()->resolveFace(floorReference);
+    CHECK(!throughResolution);
+    CHECK(throughResolution.failure == TopologyResolutionFailure::Missing);
+    cutFeature->setLengthMm(5.0);
+    CHECK(cutDocument.rebuild());
+    const auto recoveredFloor =
+        cutFeature->topologyIndex()->resolveFace(floorReference);
+    CHECK(recoveredFloor);
+    CHECK(recoveredFloor.method ==
+          TopologyMatchMethod::OperationProvenance);
+    checkReferencesResolve(*cutFeature, cutReferences);
+
+    sketch::Sketch resized;
+    resized.addCircle({10.0, 10.0}, 4.0);
+    CHECK(resized.restoreGeometryIds({}, {circleId}, {}, {}));
+    CHECK(cutDocument.replaceSketchGeometry(circleCut.id,
+                                             std::move(resized)));
+    cutFeature->setLengthMm(6.0);
+    cutBaseFeature->setLengthMm(12.0);
+    circleCut.placement.origin.z = 12.0;
+    CHECK(cutDocument.rebuild());
+    checkReferencesResolve(*cutFeature, cutReferences);
+
+    const auto lastShape = cutFeature->shape();
+    const auto lastLineage = cutFeature->topologyLineage();
+    const auto lastRevision = cutFeature->shapeRevision();
+    const auto lastIndex = cutFeature->topologyIndex();
+    CHECK(lastIndex);
+    sketch::Sketch consuming;
+    consuming.addCircle({10.0, 10.0}, 40.0);
+    CHECK(consuming.restoreGeometryIds({}, {circleId}, {}, {}));
+    CHECK(cutDocument.replaceSketchGeometry(circleCut.id,
+                                             std::move(consuming)));
+    cutFeature->setLengthMm(12.0);
+    CHECK(!cutDocument.rebuild());
+    CHECK(!cutFeature->shape());
+    CHECK(!cutFeature->topologyLineage());
+    CHECK(cutFeature->lastValidShape() == lastShape);
+    CHECK(cutFeature->lastValidTopologyLineage() == lastLineage);
+    CHECK(cutFeature->shapeRevision() == lastRevision);
+    CHECK(cutFeature->lastValidTopologyIndex() == lastIndex);
+    CHECK(lastIndex->resolveFace(floorReference));
+
+    sketch::Sketch recovered;
+    recovered.addCircle({10.0, 10.0}, 4.0);
+    CHECK(recovered.restoreGeometryIds({}, {circleId}, {}, {}));
+    CHECK(cutDocument.replaceSketchGeometry(circleCut.id,
+                                             std::move(recovered)));
+    cutFeature->setLengthMm(6.0);
+    CHECK(cutDocument.rebuild());
+    checkReferencesResolve(*cutFeature, cutReferences);
+  }
+
+  // A strict Cut that splits the current solid fails atomically and recovers
+  // with the same authored GeometryIds after the profile is narrowed.
+  {
+    Document document;
+    auto& base = document.addSketch("Split base");
+    base.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    auto& body = document.addBody();
+    body.addFeature(std::make_unique<ExtrudeFeature>(base.id, 10.0));
+    auto& cutSketch = document.addSketch("Split cut");
+    cutSketch.geometry.addRectangle({0.0, 0.0}, {5.0, 5.0});
+    const std::array ids{cutSketch.geometry.lineId(0),
+                         cutSketch.geometry.lineId(1),
+                         cutSketch.geometry.lineId(2),
+                         cutSketch.geometry.lineId(3)};
+    auto cut = std::make_unique<ExtrudeFeature>(
+        cutSketch.id, 10.0, "Split Cut", ExtrudeOperation::Cut);
+    auto* cutFeature = cut.get();
+    body.addFeature(std::move(cut));
+    CHECK(document.rebuild());
+    const auto lastShape = cutFeature->shape();
+    const auto lastLineage = cutFeature->topologyLineage();
+    const auto lastRevision = cutFeature->shapeRevision();
+    const auto lastIndex = cutFeature->topologyIndex();
+    CHECK(lastIndex);
+
+    sketch::Sketch splitting;
+    splitting.addRectangle({9.0, 0.0}, {11.0, 20.0});
+    CHECK(splitting.restoreGeometryIds(
+        {ids[0], ids[1], ids[2], ids[3]}, {}, {}, {}));
+    CHECK(document.replaceSketchGeometry(cutSketch.id,
+                                         std::move(splitting)));
+    CHECK(!document.rebuild());
+    CHECK(!cutFeature->shape());
+    CHECK(!cutFeature->topologyLineage());
+    CHECK(cutFeature->error() == "Extrude Cut would split the body");
+    CHECK(cutFeature->lastValidShape() == lastShape);
+    CHECK(cutFeature->lastValidTopologyLineage() == lastLineage);
+    CHECK(cutFeature->shapeRevision() == lastRevision);
+    CHECK(cutFeature->lastValidTopologyIndex() == lastIndex);
+
+    sketch::Sketch notch;
+    notch.addRectangle({0.0, 0.0}, {5.0, 5.0});
+    CHECK(notch.restoreGeometryIds({ids[0], ids[1], ids[2], ids[3]}, {}, {},
+                                   {}));
+    CHECK(document.replaceSketchGeometry(cutSketch.id, std::move(notch)));
+    CHECK(document.rebuild());
+    CHECK(cutFeature->topologyLineage());
+  }
+
+  // Missing lineage intentionally stays on the exact legacy builder, while
+  // an advertised but incomplete base lineage fails closed.
+  {
+    Document importedDocument;
+    auto& importedBody = importedDocument.addBody();
+    importedBody.addFeature(std::make_unique<ImportedShapeFeature>(
+        std::make_shared<TopoDS_Shape>(
+            BRepPrimAPI_MakeBox(20.0, 20.0, 10.0).Shape())));
+    auto& joinSketch = importedDocument.addSketch("Legacy Join");
+    joinSketch.geometry.addRectangle({15.0, 0.0}, {25.0, 20.0});
+    auto legacyJoin = std::make_unique<ExtrudeFeature>(
+        joinSketch.id, 10.0, "Legacy Join", ExtrudeOperation::Join);
+    auto* legacyJoinFeature = legacyJoin.get();
+    importedBody.addFeature(std::move(legacyJoin));
+    CHECK(importedDocument.rebuild());
+    checkLegacyV1(*legacyJoinFeature, importedBody.id());
+
+    Document partialDocument;
+    auto& partialBody = partialDocument.addBody();
+    partialBody.addFeature(std::make_unique<PartialLineageBoxFeature>());
+    auto& partialSketch = partialDocument.addSketch("Partial Join");
+    partialSketch.geometry.addRectangle({15.0, 0.0}, {25.0, 20.0});
+    auto partialJoin = std::make_unique<ExtrudeFeature>(
+        partialSketch.id, 10.0, "Partial Join", ExtrudeOperation::Join);
+    auto* partialJoinFeature = partialJoin.get();
+    partialBody.addFeature(std::move(partialJoin));
+    CHECK(!partialDocument.rebuild());
+    CHECK(partialJoinFeature->error() ==
+          "Extrude base face lineage is incomplete");
+    CHECK(!partialJoinFeature->shape());
+    CHECK(!partialJoinFeature->topologyLineage());
+  }
+
+  // Strict eligibility is only a selector. Unsupported/malformed profiles
+  // retain the exact legacy diagnostics, independent of whether the base
+  // advertises CompleteFaces lineage.
+  {
+    Document strictDocument;
+    auto& strictBase = strictDocument.addSketch("Strict diagnostic base");
+    strictBase.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    auto& strictBody = strictDocument.addBody();
+    strictBody.addFeature(
+        std::make_unique<ExtrudeFeature>(strictBase.id, 10.0));
+    auto& strictOpen = strictDocument.addSketch("Strict open profile");
+    strictOpen.geometry.addLine({2.0, 2.0}, {8.0, 2.0});
+    auto strictJoin = std::make_unique<ExtrudeFeature>(
+        strictOpen.id, 5.0, "Strict malformed", ExtrudeOperation::Join);
+    auto* strictJoinFeature = strictJoin.get();
+    strictBody.addFeature(std::move(strictJoin));
+    CHECK(!strictDocument.rebuild());
+    const auto strictError = strictJoinFeature->error();
+    CHECK(!strictError.empty());
+
+    Document legacyDocument;
+    auto& legacyBody = legacyDocument.addBody();
+    legacyBody.addFeature(std::make_unique<ImportedShapeFeature>(
+        std::make_shared<TopoDS_Shape>(
+            BRepPrimAPI_MakeBox(20.0, 20.0, 10.0).Shape())));
+    auto& legacyOpen = legacyDocument.addSketch("Legacy open profile");
+    legacyOpen.geometry.addLine({2.0, 2.0}, {8.0, 2.0});
+    auto legacyJoin = std::make_unique<ExtrudeFeature>(
+        legacyOpen.id, 5.0, "Legacy malformed", ExtrudeOperation::Join);
+    auto* legacyJoinFeature = legacyJoin.get();
+    legacyBody.addFeature(std::move(legacyJoin));
+    CHECK(!legacyDocument.rebuild());
+    CHECK(legacyJoinFeature->error() == strictError);
+
+    Document overrideDocument;
+    auto& overrideBase = overrideDocument.addSketch("Override base");
+    overrideBase.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    auto& overrideBody = overrideDocument.addBody();
+    overrideBody.addFeature(
+        std::make_unique<ExtrudeFeature>(overrideBase.id, 10.0));
+    auto& overrideSketch = overrideDocument.addSketch("Override Join");
+    overrideSketch.geometry.addRectangle({15.0, 0.0}, {25.0, 20.0});
+    auto overrideJoin = std::make_unique<ExtrudeFeature>(
+        overrideSketch.id, 10.0, "Override Join", ExtrudeOperation::Join);
+    overrideJoin->setProfileOverride(overrideSketch.geometry);
+    auto* overrideJoinFeature = overrideJoin.get();
+    overrideBody.addFeature(std::move(overrideJoin));
+    CHECK(overrideDocument.rebuild());
+    checkLegacyV1(*overrideJoinFeature, overrideBody.id());
+  }
+
+  // Forged rebuild contexts must not let a strict Extrude consume any
+  // CompleteFaces snapshot except its exact current same-Body predecessor.
+  {
+    Document document;
+    auto& baseSketch = document.addSketch("Context base");
+    baseSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    const auto baseSketchId = baseSketch.id;
+    auto& firstJoinSketch = document.addSketch("Context first Join");
+    firstJoinSketch.geometry.addRectangle({5.0, 0.0}, {15.0, 10.0});
+    const auto firstJoinSketchId = firstJoinSketch.id;
+    auto& targetSketch = document.addSketch("Context target Join");
+    targetSketch.geometry.addRectangle({10.0, 0.0}, {20.0, 10.0});
+    const auto targetSketchId = targetSketch.id;
+    auto& foreignSketch = document.addSketch("Context foreign base");
+    foreignSketch.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    const auto foreignSketchId = foreignSketch.id;
+
+    auto& targetBodyRef = document.addBody("Context target body");
+    const auto targetBodyId = targetBodyRef.id();
+    auto base = std::make_unique<ExtrudeFeature>(baseSketchId, 5.0);
+    auto* baseFeature = base.get();
+    targetBodyRef.addFeature(std::move(base));
+    auto firstJoin = std::make_unique<ExtrudeFeature>(
+        firstJoinSketchId, 5.0, "First Join", ExtrudeOperation::Join);
+    auto* firstJoinFeature = firstJoin.get();
+    targetBodyRef.addFeature(std::move(firstJoin));
+    auto target = std::make_unique<ExtrudeFeature>(
+        targetSketchId, 5.0, "Target Join", ExtrudeOperation::Join);
+    auto* targetFeature = target.get();
+    targetBodyRef.addFeature(std::move(target));
+
+    auto& foreignBodyRef = document.addBody("Context foreign body");
+    const auto foreignBodyId = foreignBodyRef.id();
+    auto foreign =
+        std::make_unique<ExtrudeFeature>(foreignSketchId, 5.0);
+    auto* foreignFeature = foreign.get();
+    foreignBodyRef.addFeature(std::move(foreign));
+    CHECK(document.rebuild());
+
+    const auto* targetBody = document.findBody(targetBodyId);
+    const auto* foreignBody = document.findBody(foreignBodyId);
+    CHECK(targetBody);
+    CHECK(foreignBody);
+    CHECK(document.findFeature(targetBodyId, baseFeature->id()) ==
+          baseFeature);
+    CHECK(document.findFeature(targetBodyId, firstJoinFeature->id()) ==
+          firstJoinFeature);
+    CHECK(document.findFeature(foreignBodyId, foreignFeature->id()) ==
+          foreignFeature);
+
+    const auto checkRollback = [&] {
+      CHECK(!targetFeature->shape());
+      CHECK(!targetFeature->topologyLineage());
+      CHECK(targetFeature->error() ==
+            "Extrude base Feature is not the immediate predecessor");
+    };
+
+    auto validShape = targetFeature->shape();
+    auto validLineage = targetFeature->topologyLineage();
+    auto validIndex = targetFeature->topologyIndex();
+    auto validRevision = targetFeature->shapeRevision();
+    targetFeature->setDirty();
+    const RebuildContext foreignContext{
+        document, targetBody, foreignFeature->shape().get(), foreignFeature};
+    CHECK(!targetFeature->rebuild(foreignContext));
+    checkRollback();
+    CHECK(targetFeature->lastValidShape() == validShape);
+    CHECK(targetFeature->lastValidTopologyLineage() == validLineage);
+    CHECK(targetFeature->lastValidTopologyIndex() == validIndex);
+    CHECK(targetFeature->shapeRevision() == validRevision);
+
+    targetFeature->setDirty();
+    const RebuildContext validContext{
+        document, targetBody, firstJoinFeature->shape().get(),
+        firstJoinFeature};
+    CHECK(targetFeature->rebuild(validContext));
+    validShape = targetFeature->shape();
+    validLineage = targetFeature->topologyLineage();
+    validIndex = targetFeature->topologyIndex();
+    validRevision = targetFeature->shapeRevision();
+
+    targetFeature->setDirty();
+    const RebuildContext earlierContext{
+        document, targetBody, baseFeature->shape().get(), baseFeature};
+    CHECK(!targetFeature->rebuild(earlierContext));
+    checkRollback();
+    CHECK(targetFeature->lastValidShape() == validShape);
+    CHECK(targetFeature->lastValidTopologyLineage() == validLineage);
+    CHECK(targetFeature->lastValidTopologyIndex() == validIndex);
+    CHECK(targetFeature->shapeRevision() == validRevision);
   }
 
   // A malformed single contour is not an "unsupported but valid" legacy

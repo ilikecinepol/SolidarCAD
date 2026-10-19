@@ -1,16 +1,27 @@
 #include "model/ExtrudeFeature.h"
 
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
+#include <span>
 #include <utility>
 #include <variant>
 
 #include "model/FaceExtrudeBuilder.h"
+#include "model/OcctBooleanTopologyHistoryCapture.h"
 #include "model/SketchExtrudeBuilder.h"
+#include "model/TopologyLineage.h"
 
 namespace solidar {
 namespace {
@@ -69,6 +80,229 @@ bool sameBezier(const sketch::Bezier& first,
   for (std::size_t index = 0; index < first.points.size(); ++index)
     if (!samePoint(first.points[index], second.points[index])) return false;
   return true;
+}
+
+std::size_t solidCount(const TopoDS_Shape& shape) {
+  std::size_t count = 0;
+  for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next())
+    ++count;
+  return count;
+}
+
+bool containsFace(const TopoDS_Shape& shape, const TopoDS_Shape& face) {
+  for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next())
+    if (faces.Current().IsSame(face)) return true;
+  return false;
+}
+
+bool validateRawBooleanResult(const TopoDS_Shape& baseShape,
+                              const TopoDS_Shape& result,
+                              ExtrudeOperation operation,
+                              std::string* error) {
+  const std::size_t beforeSolidCount = solidCount(baseShape);
+  const std::size_t resultSolidCount = solidCount(result);
+  if (resultSolidCount == 0) {
+    if (error) *error = "Extrude result does not contain a solid";
+    return false;
+  }
+  if (operation == ExtrudeOperation::Join &&
+      resultSolidCount > beforeSolidCount) {
+    if (error) *error = "Extrude Join does not intersect the body";
+    return false;
+  }
+  if (operation == ExtrudeOperation::Cut &&
+      resultSolidCount > beforeSolidCount) {
+    if (error) *error = "Extrude Cut would split the body";
+    return false;
+  }
+
+  GProp_GProps beforeProperties;
+  GProp_GProps afterProperties;
+  BRepGProp::VolumeProperties(baseShape, beforeProperties);
+  BRepGProp::VolumeProperties(result, afterProperties);
+  const double before = beforeProperties.Mass();
+  const double after = afterProperties.Mass();
+  const double tolerance = std::max(1e-7, std::abs(before) * 1e-10);
+  if (operation == ExtrudeOperation::Join && after <= before + tolerance) {
+    if (error) *error = "Extrude Join does not intersect the body";
+    return false;
+  }
+  if (operation == ExtrudeOperation::Cut && after >= before - tolerance) {
+    if (error) *error = "Extrude Cut does not intersect the body";
+    return false;
+  }
+  return true;
+}
+
+bool validateFinalBooleanResult(const TopoDS_Shape& baseShape,
+                                const TopoDS_Shape& result,
+                                ExtrudeOperation operation,
+                                std::string* error) {
+  if (!validateRawBooleanResult(baseShape, result, operation, error))
+    return false;
+  if (!BRepCheck_Analyzer(result).IsValid()) {
+    if (error) *error = "Extrude result is invalid";
+    return false;
+  }
+  return true;
+}
+
+bool validateImmediatePredecessor(const RebuildContext& context,
+                                  const ShapeFeature& current,
+                                  std::string* error) {
+  const auto fail = [&] {
+    if (error)
+      *error = "Extrude base Feature is not the immediate predecessor";
+    return false;
+  };
+  if (!context.body || !context.previousFeature || !context.previousShape ||
+      context.previousFeature == &current)
+    return fail();
+  if (context.document.findBody(context.body->id()) != context.body)
+    return fail();
+  const auto currentIndex = context.body->featureIndex(current.id());
+  if (!currentIndex || *currentIndex == 0 ||
+      context.body->features()[*currentIndex].get() != &current)
+    return fail();
+  const auto* expected = context.body->features()[*currentIndex - 1].get();
+  if (expected != context.previousFeature ||
+      context.document.findFeature(context.body->id(), expected->id()) !=
+          expected ||
+      context.document.findBodyForFeature(expected->id()) != context.body)
+    return fail();
+  const auto& currentShape = expected->shape();
+  if (!currentShape || currentShape.get() != context.previousShape ||
+      !currentShape->IsSame(*context.previousShape))
+    return fail();
+  return true;
+}
+
+bool validateCapturedSnapshot(const BooleanTopologyCaptureResult& captured,
+                              const TopologyLineage& lineage,
+                              std::string* error) {
+  if (!captured.outputShape || captured.outputShape->IsNull()) {
+    if (error) *error = "Extrude face history output shape is invalid";
+    return false;
+  }
+  if (lineage.coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (error) *error = "Extrude face lineage is incomplete";
+    return false;
+  }
+  for (const auto& binding : lineage.bindings()) {
+    if (!binding.subshape || binding.subshape->IsNull() ||
+        !containsFace(*captured.outputShape, *binding.subshape)) {
+      if (error) *error = "Extrude captured face is outside the output shape";
+      return false;
+    }
+  }
+  return true;
+}
+
+struct StrictBooleanExtrusion {
+  ShapeFeature::ShapePtr shape;
+  std::shared_ptr<const TopologyLineage> lineage;
+};
+
+template <typename Maker>
+bool captureStrictBooleanExtrusion(
+    Maker& maker, const ShapeFeature& baseFeature,
+    const SketchExtrusionWithLineage& tool, FeatureId producerFeatureId,
+    ExtrudeOperation operation, StrictBooleanExtrusion* result,
+    std::string* error) {
+  // Preserve the historical pre-unify solid/volume acceptance contract. In
+  // particular, do not reject a raw Join B-Rep that OCCT's capture-time
+  // SimplifyResult is expected to heal. B-Rep validity belongs to the final
+  // captured/simplified snapshot below.
+  if (!validateRawBooleanResult(*baseFeature.shape(), maker.Shape(), operation,
+                                error))
+    return false;
+  const std::array<BooleanTopologySource, 2> sources{{
+      {BooleanOperandRole::Object,
+       {baseFeature.id(), baseFeature.shape(), baseFeature.topologyLineage()}},
+      {BooleanOperandRole::Tool,
+       {producerFeatureId, tool.shape, tool.lineage}},
+  }};
+  BooleanTopologyCaptureOptions options;
+  options.simplifyResult = operation == ExtrudeOperation::Join;
+  BooleanTopologyCaptureFailure failure;
+  auto captured = captureBooleanFaceHistory(
+      maker, producerFeatureId,
+      std::span<const BooleanTopologySource>(sources), {}, options, &failure);
+  if (!captured) {
+    if (error)
+      *error = failure.detail.empty()
+                   ? "Extrude face history capture failed"
+                   : std::move(failure.detail);
+    return false;
+  }
+  if (!captured->outputShape || captured->outputShape->IsNull()) {
+    if (error) *error = "Extrude face history output shape is invalid";
+    return false;
+  }
+  if (!validateFinalBooleanResult(*baseFeature.shape(),
+                                  *captured->outputShape, operation, error))
+    return false;
+
+  std::string lineageError;
+  auto lineage = captured->builder.build(&lineageError);
+  if (!lineage) {
+    if (error)
+      *error = lineageError.empty() ? "Extrude face lineage build failed"
+                                    : std::move(lineageError);
+    return false;
+  }
+  if (!validateCapturedSnapshot(*captured, *lineage, error)) return false;
+
+  result->shape = std::move(captured->outputShape);
+  result->lineage = std::move(lineage);
+  return true;
+}
+
+bool buildStrictSketchBooleanExtrusion(
+    const DocumentSketch& profile, const ShapeFeature& baseFeature,
+    const TopoDS_Shape& baseShape, FeatureId producerFeatureId,
+    double lengthMm, bool reversed, ExtrudeOperation operation,
+    StrictBooleanExtrusion* result, std::string* error) {
+  if (!result || !baseFeature.shape() ||
+      !baseFeature.shape()->IsSame(baseShape)) {
+    if (error) *error = "Extrude base snapshot is incoherent";
+    return false;
+  }
+
+  SketchExtrusionWithLineage tool;
+  std::string toolError;
+  if (!buildSimpleNewBodyExtrusionWithLineage(
+          profile, producerFeatureId, lengthMm, reversed, &tool,
+          &toolError) ||
+      !tool.shape || !tool.lineage ||
+      tool.lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (error)
+      *error = toolError.empty() ? "Extrude tool face lineage is incomplete"
+                                 : "Extrude " + toolError;
+    return false;
+  }
+
+  if (operation == ExtrudeOperation::Join) {
+    BRepAlgoAPI_Fuse fuse(baseShape, *tool.shape);
+    fuse.Build();
+    if (!fuse.IsDone() || fuse.Shape().IsNull()) {
+      if (error) *error = "Extrude Join boolean fuse failed";
+      return false;
+    }
+    return captureStrictBooleanExtrusion(fuse, baseFeature, tool,
+                                         producerFeatureId, operation, result,
+                                         error);
+  }
+
+  BRepAlgoAPI_Cut cut(baseShape, *tool.shape);
+  cut.Build();
+  if (!cut.IsDone() || cut.Shape().IsNull()) {
+    if (error) *error = "Extrude Cut boolean cut failed";
+    return false;
+  }
+  return captureStrictBooleanExtrusion(cut, baseFeature, tool,
+                                       producerFeatureId, operation, result,
+                                       error);
 }
 
 template <typename Primitive, typename Equal, typename SameIdentity,
@@ -211,6 +445,16 @@ FeatureDependencies ExtrudeFeature::dependencies() const {
 }
 
 bool ExtrudeFeature::rebuildImpl(const RebuildContext& context) {
+  if (!isFaceSource() &&
+      (operation_ == ExtrudeOperation::Join ||
+       operation_ == ExtrudeOperation::Cut) &&
+      (context.previousFeature || context.previousShape)) {
+    std::string contextError;
+    if (!validateImmediatePredecessor(context, *this, &contextError)) {
+      markError(std::move(contextError));
+      return false;
+    }
+  }
   clearShape();
   if (!std::isfinite(lengthMm_) || lengthMm_ <= 0.0) {
     markError("Extrude length must be a finite positive value");
@@ -335,6 +579,41 @@ bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
                   (legacyEligibilityError.empty() ? eligibilityError
                                                   : legacyEligibilityError));
         return false;
+      }
+    }
+
+    if (operation_ == ExtrudeOperation::Join ||
+        operation_ == ExtrudeOperation::Cut) {
+      const ShapeFeature* baseFeature = context.previousFeature;
+      const auto baseLineage =
+          baseFeature ? baseFeature->topologyLineage()
+                      : std::shared_ptr<const TopologyLineage>{};
+      if (baseLineage && baseLineage->coverage() !=
+                             TopologyLineageCoverage::CompleteFaces) {
+        markError("Extrude base face lineage is incomplete");
+        return false;
+      }
+
+      const bool useStrictLineage =
+          baseLineage && !profileOverride_ &&
+          isSupportedSingleSketchProfile(selectedProfile);
+      if (useStrictLineage) {
+        StrictBooleanExtrusion built;
+        if (!context.previousShape || context.previousShape->IsNull() ||
+            !buildStrictSketchBooleanExtrusion(
+                selectedProfile, *baseFeature, *context.previousShape, id(),
+                lengthMm_, reversed_, operation_, &built, &profileError)) {
+          markError(profileError.empty()
+                        ? (operation_ == ExtrudeOperation::Join
+                               ? "Extrude Join base shape is missing"
+                               : "Extrude Cut base shape is missing")
+                        : std::move(profileError));
+          return false;
+        }
+        setShapeAndTopologyLineage(std::move(built.shape),
+                                   std::move(built.lineage));
+        markValid();
+        return true;
       }
     }
 
