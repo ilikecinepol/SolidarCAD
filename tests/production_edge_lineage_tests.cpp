@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "TestGeometryUtils.h"
 #include "model/ChamferBuilder.h"
 #include "model/ChamferFeature.h"
 #include "model/CircularPatternFeature.h"
@@ -124,6 +125,88 @@ struct CircularPatternedBox {
   solidar::CircularPatternFeature* pattern{};
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
+
+struct BooleanExtrudedBox {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::SketchId baseSketchId{solidar::kInvalidSketchId};
+  solidar::SketchId toolSketchId{solidar::kInvalidSketchId};
+  solidar::ExtrudeFeature* base{};
+  solidar::ExtrudeFeature* result{};
+  std::array<solidar::sketch::GeometryId, 4> toolGeometryIds{};
+};
+
+BooleanExtrudedBox makeSketchBooleanExtrudedBox(
+    solidar::ExtrudeOperation operation) {
+  BooleanExtrudedBox model;
+  auto& base = model.document.addSketch("Production edge boolean base");
+  model.baseSketchId = base.id;
+  const double baseSize = operation == solidar::ExtrudeOperation::Join
+                              ? 10.0
+                              : 20.0;
+  const double length = operation == solidar::ExtrudeOperation::Join ? 5.0
+                                                                      : 10.0;
+  base.geometry.addRectangle({0.0, 0.0}, {baseSize, baseSize});
+  auto& body = model.document.addBody();
+  auto baseFeature =
+      std::make_unique<solidar::ExtrudeFeature>(base.id, length);
+  model.base = baseFeature.get();
+  body.addFeature(std::move(baseFeature));
+
+  auto& tool = model.document.addSketch("Production edge boolean tool");
+  model.toolSketchId = tool.id;
+  if (operation == solidar::ExtrudeOperation::Join)
+    tool.geometry.addRectangle({5.0, 0.0}, {15.0, 10.0});
+  else
+    tool.geometry.addRectangle({5.0, 5.0}, {15.0, 15.0});
+  model.toolGeometryIds = {
+      tool.geometry.lineId(0), tool.geometry.lineId(1),
+      tool.geometry.lineId(2), tool.geometry.lineId(3)};
+  auto result = std::make_unique<solidar::ExtrudeFeature>(
+      tool.id, length, "Production edge boolean result", operation);
+  model.result = result.get();
+  body.addFeature(std::move(result));
+  model.body = &body;
+  CHECK(model.document.rebuild());
+  return model;
+}
+
+struct FaceBooleanExtrudedBox {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::ExtrudeFeature* base{};
+  solidar::MoveFeature* move{};
+  solidar::ExtrudeFeature* result{};
+};
+
+FaceBooleanExtrudedBox makeFaceBooleanExtrudedBox(
+    solidar::ExtrudeOperation operation) {
+  FaceBooleanExtrudedBox model;
+  auto& sketch = model.document.addSketch("Production edge face base");
+  sketch.geometry.addRectangle({0.0, 0.0}, {20.0, 15.0});
+  auto& body = model.document.addBody();
+  auto base = std::make_unique<solidar::ExtrudeFeature>(sketch.id, 10.0);
+  model.base = base.get();
+  body.addFeature(std::move(base));
+  auto move = std::make_unique<solidar::MoveFeature>(
+      model.base->id(), solidar::Vector3d{3.0, -2.0, 4.0});
+  model.move = move.get();
+  body.addFeature(std::move(move));
+  model.body = &body;
+  CHECK(model.document.recompute());
+  const auto top = solidar::test::topPlanarFace(*model.move->shape(), 14.0);
+  CHECK(top);
+  const auto selected = model.document.createFaceReferenceV2(
+      body.id(), model.move->id(), *top);
+  CHECK(selected);
+  auto result = std::make_unique<solidar::ExtrudeFeature>(
+      selected.reference, 3.0, "Production edge face boolean", operation,
+      operation == solidar::ExtrudeOperation::Cut);
+  model.result = result.get();
+  body.addFeature(std::move(result));
+  CHECK(model.document.recompute());
+  return model;
+}
 
 CircularPatternedBox makeCircularPatternedBox(
     solidar::PatternOperation operation = solidar::PatternOperation::Join) {
@@ -757,6 +840,100 @@ void checkAllCanonicalEdgesCreated(const solidar::ShapeFeature& feature,
   }
   CHECK(seen.size() == expectedCount);
   CHECK(edgeBindingCount(feature) == expectedCount);
+}
+
+void auditBooleanExtrudeEdges(const solidar::ExtrudeFeature& feature,
+                              solidar::BodyId bodyId,
+                              std::size_t expectedCreated,
+                              std::size_t expectedMissing = 0) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  std::size_t createdCount = 0;
+  std::size_t missingCount = 0;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, feature.id(), raw);
+    CHECK(legacy);
+    const auto rawEdge = index->resolveEdge(legacy.reference);
+    CHECK(rawEdge);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*rawEdge.subshape);
+        }))
+      continue;
+    seen.push_back(*rawEdge.subshape);
+
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    if (!exact) {
+      CHECK(exact.status ==
+            solidar::EdgeReferenceV2CreationStatus::Missing);
+      ++missingCount;
+      continue;
+    }
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(exact.reference.v2());
+    const auto& key = exact.reference.v2()->provenance;
+    CHECK(key.featureId == feature.id());
+    CHECK(key.kind == solidar::TopologyKind::Edge);
+    CHECK(key.operation ==
+          solidar::TopologyProvenanceOperation::Generated);
+    CHECK(key.role == solidar::TopologySemanticRole::Custom);
+    CHECK(!key.occurrence);
+    CHECK(key.localName.starts_with("face-boundary-edge:v1;"));
+    CHECK(key.origins.size() == 2);
+    CHECK(key.origins == adjacentFaceOrigins(feature, *rawEdge.subshape));
+    const auto resolved = index->resolveEdge(exact.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*rawEdge.subshape));
+    ++createdCount;
+  }
+  CHECK(seen.size() == expectedCreated + expectedMissing);
+  CHECK(createdCount == expectedCreated);
+  CHECK(missingCount == expectedMissing);
+  CHECK(edgeBindingCount(feature) == expectedCreated);
+}
+
+void checkMissingBooleanEdgesAreSingleFaceSeams(
+    const solidar::ExtrudeFeature& feature, solidar::BodyId bodyId,
+    std::size_t expectedMissing) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  std::size_t missingCount = 0;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, feature.id(), raw);
+    CHECK(legacy);
+    const auto rawEdge = index->resolveEdge(legacy.reference);
+    CHECK(rawEdge);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*rawEdge.subshape);
+        }))
+      continue;
+    seen.push_back(*rawEdge.subshape);
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    if (exact) continue;
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Missing);
+
+    std::size_t containingFaces = 0;
+    std::size_t totalOccurrences = 0;
+    for (const auto& binding : feature.topologyLineage()->bindings()) {
+      if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
+      std::size_t faceOccurrences = 0;
+      for (TopExp_Explorer explorer(*binding.subshape, TopAbs_EDGE);
+           explorer.More(); explorer.Next())
+        if (explorer.Current().IsSame(*rawEdge.subshape)) ++faceOccurrences;
+      if (faceOccurrences == 0) continue;
+      ++containingFaces;
+      totalOccurrences += faceOccurrences;
+    }
+    CHECK(containingFaces == 1);
+    CHECK(totalOccurrences == 2);
+    ++missingCount;
+  }
+  CHECK(missingCount == expectedMissing);
 }
 
 void auditJoinedBoxEdges(const solidar::ShapeFeature& join,
@@ -3418,6 +3595,213 @@ int main() {
     const auto exact = patternFeature->createEdgeReferenceV2(body.id(), 0);
     CHECK(!exact);
     CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
+  }
+
+  // Strict sketch Boolean Extrude publishes exact edges from the final
+  // normalized boolean result. The saved carrier survives authored edits,
+  // remains available from last-valid state on failure, and feeds Fillet.
+  {
+    auto model = makeSketchBooleanExtrudedBox(ExtrudeOperation::Join);
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    const auto sourceKeys = edgeKeys(*model.base->topologyLineage());
+    const auto resultKeys = edgeKeys(*model.result->topologyLineage());
+    CHECK(sourceKeys.size() == 12);
+    CHECK(resultKeys.size() == 12);
+    for (const auto& key : resultKeys) {
+      CHECK(key.featureId == model.result->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+    const auto outer = edgeForExactEndpoints(
+        *model.result, model.body->id(), gp_Pnt(0.0, 0.0, 0.0),
+        gp_Pnt(0.0, 0.0, 5.0));
+    const auto initial = model.result->topologyIndex()->resolveEdge(outer);
+    CHECK(initial);
+    const auto origins =
+        adjacentFaceOrigins(*model.result, *initial.subshape);
+
+    model.base->setLengthMm(8.0);
+    model.result->setLengthMm(8.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(*model.result, outer, origins,
+                      {GeomAbs_Line, 8.0, gp_Pnt(0.0, 0.0, 0.0),
+                       gp_Pnt(0.0, 0.0, 8.0)});
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+
+    const auto validShape = model.result->shape();
+    const auto validLineage = model.result->topologyLineage();
+    const auto validIndex = model.result->topologyIndex();
+    const auto validRevision = model.result->shapeRevision();
+    const auto validOuter = validIndex->resolveEdge(outer);
+    CHECK(validOuter);
+    sketch::Sketch disjoint;
+    disjoint.addRectangle({30.0, 0.0}, {40.0, 10.0});
+    CHECK(disjoint.restoreGeometryIds(
+        {model.toolGeometryIds[0], model.toolGeometryIds[1],
+         model.toolGeometryIds[2], model.toolGeometryIds[3]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.toolSketchId,
+                                               std::move(disjoint)));
+    CHECK(!model.document.recompute());
+    CHECK(!model.result->shape());
+    CHECK(!model.result->topologyLineage());
+    CHECK(model.result->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.body->topologySnapshot(model.result->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.result->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.result->lastValidShape() == validShape);
+    CHECK(model.result->lastValidTopologyLineage() == validLineage);
+    error.clear();
+    CHECK(model.result->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBack = validIndex->resolveEdge(outer);
+    CHECK(rolledBack);
+    CHECK(rolledBack.subshape->IsSame(*validOuter.subshape));
+
+    sketch::Sketch restored;
+    restored.addRectangle({5.0, 0.0}, {15.0, 10.0});
+    CHECK(restored.restoreGeometryIds(
+        {model.toolGeometryIds[0], model.toolGeometryIds[1],
+         model.toolGeometryIds[2], model.toolGeometryIds[3]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.toolSketchId,
+                                               std::move(restored)));
+    CHECK(model.document.recompute());
+    checkExactCarrier(*model.result, outer, origins,
+                      {GeomAbs_Line, 8.0, gp_Pnt(0.0, 0.0, 0.0),
+                       gp_Pnt(0.0, 0.0, 8.0)});
+
+    auto fillet = std::make_unique<FilletFeature>(outer, 0.5);
+    auto* filletFeature = fillet.get();
+    model.body->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.result->shape()) - 1e-5);
+  }
+
+  // A rectangular through Cut has exact outer and inner edge identity.
+  {
+    auto model = makeSketchBooleanExtrudedBox(ExtrudeOperation::Cut);
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 24);
+    const auto outer = edgeForExactEndpoints(
+        *model.result, model.body->id(), gp_Pnt(0.0, 0.0, 0.0),
+        gp_Pnt(0.0, 0.0, 10.0));
+    const auto inner = edgeForExactEndpoints(
+        *model.result, model.body->id(), gp_Pnt(5.0, 5.0, 0.0),
+        gp_Pnt(5.0, 5.0, 10.0));
+    const auto outerResolved = model.result->topologyIndex()->resolveEdge(outer);
+    const auto innerResolved = model.result->topologyIndex()->resolveEdge(inner);
+    CHECK(outerResolved);
+    CHECK(innerResolved);
+    const auto outerOrigins =
+        adjacentFaceOrigins(*model.result, *outerResolved.subshape);
+    const auto innerOrigins =
+        adjacentFaceOrigins(*model.result, *innerResolved.subshape);
+    sketch::Sketch resized;
+    resized.addRectangle({6.0, 6.0}, {14.0, 14.0});
+    CHECK(resized.restoreGeometryIds(
+        {model.toolGeometryIds[0], model.toolGeometryIds[1],
+         model.toolGeometryIds[2], model.toolGeometryIds[3]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.toolSketchId,
+                                               std::move(resized)));
+    CHECK(model.document.recompute());
+    checkExactCarrier(*model.result, outer, outerOrigins,
+                      {GeomAbs_Line, 10.0, gp_Pnt(0.0, 0.0, 0.0),
+                       gp_Pnt(0.0, 0.0, 10.0)});
+    checkExactCarrier(*model.result, inner, innerOrigins,
+                      {GeomAbs_Line, 10.0, gp_Pnt(6.0, 6.0, 0.0),
+                       gp_Pnt(6.0, 6.0, 10.0)});
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 24);
+  }
+
+  // Face-source Join/Cut augment only the final normalized single solid.
+  for (const auto operation : {ExtrudeOperation::Join,
+                               ExtrudeOperation::Cut}) {
+    auto model = makeFaceBooleanExtrudedBox(operation);
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    const double top = operation == ExtrudeOperation::Join ? 17.0 : 11.0;
+    const auto vertical = edgeForExactEndpoints(
+        *model.result, model.body->id(), gp_Pnt(3.0, -2.0, 4.0),
+        gp_Pnt(3.0, -2.0, top));
+    const auto initial = model.result->topologyIndex()->resolveEdge(vertical);
+    CHECK(initial);
+    const auto origins =
+        adjacentFaceOrigins(*model.result, *initial.subshape);
+    model.result->setLengthMm(4.0);
+    CHECK(model.document.recompute());
+    const double editedTop =
+        operation == ExtrudeOperation::Join ? 18.0 : 10.0;
+    checkExactCarrier(*model.result, vertical, origins,
+                      {GeomAbs_Line, editedTop - 4.0,
+                       gp_Pnt(3.0, -2.0, 4.0),
+                       gp_Pnt(3.0, -2.0, editedTop)});
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+
+    model.move->setOffsetMm({5.0, -1.0, 6.0});
+    CHECK(model.document.recompute());
+    const double movedTop =
+        operation == ExtrudeOperation::Join ? 20.0 : 12.0;
+    checkExactCarrier(*model.result, vertical, origins,
+                      {GeomAbs_Line, movedTop - 6.0,
+                       gp_Pnt(5.0, -1.0, 6.0),
+                       gp_Pnt(5.0, -1.0, movedTop)});
+    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+  }
+
+  // A circular blind Cut publishes both rims but deliberately omits the
+  // cylindrical seam. Removing the floor makes its exact rim Missing, and
+  // restoring the blind depth recovers the same carrier.
+  {
+    Document document;
+    auto& base = document.addSketch("Production edge circular cut base");
+    base.geometry.addRectangle({0.0, 0.0}, {20.0, 20.0});
+    auto& body = document.addBody();
+    auto baseExtrude = std::make_unique<ExtrudeFeature>(base.id, 10.0);
+    body.addFeature(std::move(baseExtrude));
+    auto& circle = document.addSketch("Production edge circular cut");
+    circle.placement.origin.z = 10.0;
+    circle.geometry.addCircle({10.0, 10.0}, 3.0);
+    auto cut = std::make_unique<ExtrudeFeature>(
+        circle.id, 5.0, "Production edge circular cut",
+        ExtrudeOperation::Cut, true);
+    auto* cutFeature = cut.get();
+    body.addFeature(std::move(cut));
+    CHECK(document.recompute());
+    auditBooleanExtrudeEdges(*cutFeature, body.id(), 14, 1);
+    checkMissingBooleanEdgesAreSingleFaceSeams(*cutFeature, body.id(), 1);
+    const auto topRim = edgeForCircle(
+        *cutFeature, body.id(), gp_Pnt(10.0, 10.0, 10.0), 3.0);
+    const auto floorRim = edgeForCircle(
+        *cutFeature, body.id(), gp_Pnt(10.0, 10.0, 5.0), 3.0);
+    CHECK(topRim.v2());
+    CHECK(floorRim.v2());
+    const auto initialTop = cutFeature->topologyIndex()->resolveEdge(topRim);
+    const auto initialFloor =
+        cutFeature->topologyIndex()->resolveEdge(floorRim);
+    CHECK(initialTop);
+    CHECK(initialFloor);
+    const auto topOrigins =
+        adjacentFaceOrigins(*cutFeature, *initialTop.subshape);
+    const auto floorOrigins =
+        adjacentFaceOrigins(*cutFeature, *initialFloor.subshape);
+    checkCircleCarrier(*cutFeature, topRim, topOrigins,
+                       gp_Pnt(10.0, 10.0, 10.0), 3.0);
+    checkCircleCarrier(*cutFeature, floorRim, floorOrigins,
+                       gp_Pnt(10.0, 10.0, 5.0), 3.0);
+    cutFeature->setLengthMm(10.0);
+    CHECK(document.recompute());
+    checkEdgeMissing(*cutFeature, floorRim);
+    cutFeature->setLengthMm(5.0);
+    CHECK(document.recompute());
+    checkCircleCarrier(*cutFeature, floorRim, floorOrigins,
+                       gp_Pnt(10.0, 10.0, 5.0), 3.0);
+    auditBooleanExtrudeEdges(*cutFeature, body.id(), 14, 1);
+    checkMissingBooleanEdgesAreSingleFaceSeams(*cutFeature, body.id(), 1);
   }
 
   return EXIT_SUCCESS;

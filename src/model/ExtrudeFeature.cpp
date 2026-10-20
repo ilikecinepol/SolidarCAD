@@ -209,6 +209,28 @@ struct StrictBooleanExtrusion {
   std::shared_ptr<const TopologyLineage> lineage;
 };
 
+bool augmentStrictBooleanExtrusionEdges(FeatureId producerFeatureId,
+                                        StrictBooleanExtrusion* result,
+                                        std::string* error) {
+  if (!result || !result->shape || !result->lineage) {
+    if (error) *error = "Extrude edge lineage source is incomplete";
+    return false;
+  }
+  FaceBoundaryEdgeProvenanceFailure failure;
+  auto augmented = augmentCompleteFaceLineageWithUniqueManifoldEdges(
+      {producerFeatureId, result->shape, result->lineage}, &failure);
+  if (!augmented) {
+    if (error)
+      *error = failure.detail.empty()
+                   ? "Extrude edge lineage augmentation failed"
+                   : "Extrude edge lineage augmentation failed: " +
+                         failure.detail;
+    return false;
+  }
+  result->lineage = std::move(augmented->augmentedSource.lineage);
+  return true;
+}
+
 template <typename Maker>
 bool captureStrictBooleanExtrusion(
     Maker& maker, const ShapeFeature& baseFeature,
@@ -704,6 +726,10 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
                                     : std::move(faceError));
         return false;
       }
+      if (!augmentStrictBooleanExtrusionEdges(id(), &built, &faceError)) {
+        markError(std::move(faceError));
+        return false;
+      }
       setShapeAndTopologyLineage(std::move(built.shape),
                                  std::move(built.lineage));
       markValid();
@@ -839,6 +865,11 @@ bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
                                ? "Extrude Join base shape is missing"
                                : "Extrude Cut base shape is missing")
                         : std::move(profileError));
+          return false;
+        }
+        if (!augmentStrictBooleanExtrusionEdges(id(), &built,
+                                                &profileError)) {
+          markError(std::move(profileError));
           return false;
         }
         setShapeAndTopologyLineage(std::move(built.shape),

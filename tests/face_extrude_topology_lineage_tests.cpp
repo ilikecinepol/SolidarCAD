@@ -44,7 +44,8 @@ std::size_t operationCount(const TopologyLineage& lineage,
   return static_cast<std::size_t>(std::count_if(
       lineage.bindings().begin(), lineage.bindings().end(),
       [&](const auto& binding) {
-        return binding.provenance.operation == operation;
+        return binding.provenance.kind == TopologyKind::Face &&
+               binding.provenance.operation == operation;
       }));
 }
 
@@ -333,7 +334,10 @@ void checkStrictResult(const StrictFixture& fixture,
   const auto lineage = fixture.faceExtrude->topologyLineage();
   CHECK(lineage);
   CHECK(lineage->coverage() == TopologyLineageCoverage::CompleteFaces);
-  CHECK(lineage->bindings().size() == 6);
+  CHECK(std::count_if(lineage->bindings().begin(), lineage->bindings().end(),
+                      [](const auto& binding) {
+                        return binding.provenance.kind == TopologyKind::Face;
+                      }) == 6);
   CHECK(operationCount(*lineage, TopologyProvenanceOperation::Retained) == 2);
   CHECK(operationCount(
             *lineage, operation == ExtrudeOperation::Join
@@ -345,6 +349,7 @@ void checkStrictResult(const StrictFixture& fixture,
   std::size_t objectOriginCount = 0;
   std::size_t toolOriginCount = 0;
   for (const auto& binding : lineage->bindings()) {
+    if (binding.provenance.kind != TopologyKind::Face) continue;
     CHECK(binding.provenance.featureId == fixture.faceExtrude->id());
     CHECK(binding.provenance.kind == TopologyKind::Face);
     CHECK(binding.provenance.role == TopologySemanticRole::BooleanResult);

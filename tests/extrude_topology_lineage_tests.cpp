@@ -168,7 +168,11 @@ std::vector<solidar::FaceReference> checkStrictBooleanLineage(
   CHECK(lineage);
   CHECK(lineage->coverage() ==
         solidar::TopologyLineageCoverage::CompleteFaces);
-  CHECK(lineage->bindings().size() == expectedFaceCount);
+  CHECK(std::count_if(lineage->bindings().begin(), lineage->bindings().end(),
+                      [](const auto& binding) {
+                        return binding.provenance.kind ==
+                               solidar::TopologyKind::Face;
+                      }) == expectedFaceCount);
   const auto index = feature.topologyIndex();
   CHECK(index);
   CHECK(index->faceCount() == expectedFaceCount);
@@ -182,6 +186,7 @@ std::vector<solidar::FaceReference> checkStrictBooleanLineage(
   bool foundBaseOrigin = false;
   bool foundToolOrigin = false;
   for (const auto& binding : lineage->bindings()) {
+    if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
     CHECK(binding.provenance.featureId == feature.id());
     CHECK(!binding.provenance.origins.empty());
     for (const auto& origin : binding.provenance.origins) {
@@ -217,7 +222,8 @@ std::size_t countProvenanceOperation(
   return static_cast<std::size_t>(std::count_if(
       lineage->bindings().begin(), lineage->bindings().end(),
       [&](const auto& binding) {
-        return binding.provenance.operation == operation;
+        return binding.provenance.kind == solidar::TopologyKind::Face &&
+               binding.provenance.operation == operation;
       }));
 }
 
@@ -243,6 +249,7 @@ void checkSingleOriginDistribution(const solidar::ShapeFeature& feature,
   std::size_t objectOrigins = 0;
   std::size_t toolOrigins = 0;
   for (const auto& binding : lineage->bindings()) {
+    if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
     CHECK(binding.provenance.featureId == feature.id());
     CHECK(binding.provenance.origins.size() == 1);
     const auto source = binding.provenance.origins.front().featureId;
