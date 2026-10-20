@@ -314,6 +314,15 @@ Origins не рекурсивны: origin с полем `origins` всегда `
 | Известный `kind`, не совпадающий с ожидаемым kind embedding site | `Invalid` |
 | Exact V2 key отсутствует или неоднозначен после recompute | Документ структурно загружен, ссылка имеет runtime-состояние `Missing`/`Ambiguous`; V1 fallback отсутствует |
 
+Для известного `referenceVersion` (`V1` или `V2`) structural defect имеет
+приоритет над неизвестным внутренним строковым token: лишнее поле, неверный
+тип, диапазон или превышение budget дают `Invalid`, даже если `kind`,
+`operation` или `role` одновременно неизвестен. Если иных дефектов нет,
+неизвестный внутренний token даёт `Unsupported`. Корректная непустая bounded
+строка неизвестного `referenceVersion` считается opaque future variant и даёт
+`Unsupported` без применения к её остальным полям схемы V1/V2; отсутствующий,
+нестроковый, пустой или oversized discriminator остаётся `Invalid`.
+
 `Unsupported` и `Invalid` не публикуют частичный `Document`, не меняют уже
 открытый документ и не разрешают Save поверх входного файла.
 

@@ -151,6 +151,8 @@ solidar_warnings(solidar_model)
 add_library(solidar_project
   project/ProjectFile.cpp
   project/ProjectFile.h
+  project/ProjectFormatV4ReferenceDecoder.cpp
+  project/ProjectFormatV4ReferenceDecoder.h
   io/DocumentExportShapes.cpp
   io/DocumentExportShapes.h
   io/StlExporter.cpp
