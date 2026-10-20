@@ -30,9 +30,13 @@ int main(int argc, char** argv) {
   const auto moveId = move->id(); body.addFeature(std::move(move));
   auto mirror = std::make_unique<solidar::MirrorFeature>(moveId, solidar::MirrorPlane::YZ);
   const auto mirrorId = mirror->id(); body.addFeature(std::move(mirror));
-  auto linear = std::make_unique<solidar::LinearPatternFeature>(mirrorId, solidar::PrincipalAxis::Y, 3, 40.0);
+  // This is a persistence contract, not a pattern-scaling benchmark. Keep
+  // every nested pattern at the minimum supported multi-occurrence count so
+  // the Debug verifier does not multiply exact topology work across the
+  // Move -> Mirror -> Linear -> Circular -> NewBody chain.
+  auto linear = std::make_unique<solidar::LinearPatternFeature>(mirrorId, solidar::PrincipalAxis::Y, 2, 40.0);
   const auto linearId = linear->id(); body.addFeature(std::move(linear));
-  auto circular = std::make_unique<solidar::CircularPatternFeature>(linearId, solidar::PrincipalAxis::Z, 4, 360.0);
+  auto circular = std::make_unique<solidar::CircularPatternFeature>(linearId, solidar::PrincipalAxis::Z, 2, 360.0);
   const auto circularId = circular->id(); body.addFeature(std::move(circular));
   const auto sourceBodyId = body.id();
   auto& copies = document.addBody("Separate pattern");
@@ -58,6 +62,22 @@ int main(int argc, char** argv) {
   CHECK(solidar::test::near(loadedMove->offsetMm().y, -6.0));
   CHECK(solidar::test::near(loadedMove->offsetMm().z, 7.0));
   CHECK(loaded->features()[2]->id() == mirrorId && loaded->features()[3]->id() == linearId && loaded->features()[4]->id() == circularId);
+  const auto* loadedLinear =
+      dynamic_cast<const solidar::LinearPatternFeature*>(
+          loaded->features()[3].get());
+  CHECK(loadedLinear);
+  CHECK(loadedLinear->direction() == solidar::PrincipalAxis::Y);
+  CHECK(loadedLinear->count() == 2);
+  CHECK(solidar::test::near(loadedLinear->spacingMm(), 40.0));
+  CHECK(loadedLinear->operation() == solidar::PatternOperation::Join);
+  const auto* loadedCircular =
+      dynamic_cast<const solidar::CircularPatternFeature*>(
+          loaded->features()[4].get());
+  CHECK(loadedCircular);
+  CHECK(loadedCircular->axis() == solidar::PrincipalAxis::Z);
+  CHECK(loadedCircular->count() == 2);
+  CHECK(solidar::test::near(loadedCircular->angleDeg(), 360.0));
+  CHECK(loadedCircular->operation() == solidar::PatternOperation::Join);
   CHECK(loaded->features()[4]->isValid() && loaded->resultShape());
   const auto* loadedCopies = restored.activeBody();
   CHECK(loadedCopies && loadedCopies->features().size() == 1);
@@ -66,6 +86,9 @@ int main(int argc, char** argv) {
   CHECK(loadedPattern);
   CHECK(loadedPattern->operation() == solidar::PatternOperation::NewBody);
   CHECK(loadedPattern->sourceBodyId() == sourceBodyId);
+  CHECK(loadedPattern->direction() == solidar::PrincipalAxis::X);
+  CHECK(loadedPattern->count() == 2);
+  CHECK(solidar::test::near(loadedPattern->spacingMm(), 100.0));
   CHECK(solidar::test::solidCount(*loadedCopies->resultShape()) ==
         solidar::test::solidCount(*loaded->resultShape()));
 

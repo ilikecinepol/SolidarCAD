@@ -29,6 +29,7 @@
 
 #include "model/ChamferBuilder.h"
 #include "model/ChamferFeature.h"
+#include "model/CircularPatternFeature.h"
 #include "model/Document.h"
 #include "model/DraftBuilder.h"
 #include "model/DraftFeature.h"
@@ -113,6 +114,57 @@ struct LinearPatternedBox {
   solidar::LinearPatternFeature* pattern{};
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
+
+struct CircularPatternedBox {
+  solidar::Document document;
+  solidar::Body* sourceBody{};
+  solidar::Body* patternBody{};
+  solidar::SketchId sketchId{solidar::kInvalidSketchId};
+  solidar::ExtrudeFeature* extrusion{};
+  solidar::CircularPatternFeature* pattern{};
+  std::array<solidar::sketch::GeometryId, 4> geometryIds{};
+};
+
+CircularPatternedBox makeCircularPatternedBox(
+    solidar::PatternOperation operation = solidar::PatternOperation::Join) {
+  CircularPatternedBox result;
+  auto& sketch =
+      result.document.addSketch("Production edge circular pattern source");
+  sketch.geometry.addRectangle({10.0, 2.0}, {14.0, 5.0});
+  result.sketchId = sketch.id;
+  result.geometryIds = {
+      sketch.geometry.lineId(0), sketch.geometry.lineId(1),
+      sketch.geometry.lineId(2), sketch.geometry.lineId(3)};
+  auto& sourceBody = result.document.addBody("Circular pattern source");
+  const auto sourceBodyId = sourceBody.id();
+  auto extrusion =
+      std::make_unique<solidar::ExtrudeFeature>(sketch.id, 4.0);
+  result.extrusion = extrusion.get();
+  const auto extrusionId = extrusion->id();
+  sourceBody.addFeature(std::move(extrusion));
+
+  auto patternBodyId = sourceBodyId;
+  if (operation == solidar::PatternOperation::Join) {
+    auto pattern = std::make_unique<solidar::CircularPatternFeature>(
+        extrusionId, solidar::PrincipalAxis::Z, 5, 240.0);
+    result.pattern = pattern.get();
+    sourceBody.addFeature(std::move(pattern));
+  } else {
+    auto& copiesBody = result.document.addBody("Circular pattern copies");
+    patternBodyId = copiesBody.id();
+    auto pattern = std::make_unique<solidar::CircularPatternFeature>(
+        sourceBodyId, extrusionId, solidar::PrincipalAxis::Z, 5, 240.0,
+        solidar::PatternOperation::NewBody);
+    result.pattern = pattern.get();
+    copiesBody.addFeature(std::move(pattern));
+  }
+  result.sourceBody = result.document.findBody(sourceBodyId);
+  result.patternBody = result.document.findBody(patternBodyId);
+  CHECK(result.sourceBody);
+  CHECK(result.patternBody);
+  CHECK(result.document.rebuild());
+  return result;
+}
 
 LinearPatternedBox makeLinearPatternedBox(
     solidar::PatternOperation operation = solidar::PatternOperation::Join) {
@@ -804,7 +856,7 @@ void auditMirroredBoxEdges(const solidar::ShapeFeature& mirror,
   CHECK(slotCounts[1] == 12);
 }
 
-void auditLinearPatternEdges(
+void auditOccurrencePatternEdges(
     const solidar::ShapeFeature& pattern, solidar::BodyId bodyId,
     const std::vector<std::uint64_t>& expectedSlots) {
   const auto index = pattern.topologyIndex();
@@ -930,6 +982,27 @@ void auditBlindPocketEdges(const solidar::ShapeFeature& feature,
 gp_Pnt revolvedPoint(double x, double radius, double angleDeg) {
   const double radians = angleDeg * std::numbers::pi / 180.0;
   return {x, radius * std::cos(radians), radius * std::sin(radians)};
+}
+
+double circularSlotAngle(double angleDeg, int count, std::uint64_t slot) {
+  const bool full = std::abs(angleDeg - 360.0) < 1e-9;
+  return angleDeg / static_cast<double>(full ? count : count - 1) *
+         static_cast<double>(slot);
+}
+
+gp_Pnt rotatedPoint(const gp_Pnt& point, solidar::PrincipalAxis axis,
+                    double angleDeg) {
+  const double radians = angleDeg * std::numbers::pi / 180.0;
+  const double cosine = std::cos(radians);
+  const double sine = std::sin(radians);
+  if (axis == solidar::PrincipalAxis::X)
+    return {point.X(), point.Y() * cosine - point.Z() * sine,
+            point.Y() * sine + point.Z() * cosine};
+  if (axis == solidar::PrincipalAxis::Y)
+    return {point.X() * cosine + point.Z() * sine, point.Y(),
+            -point.X() * sine + point.Z() * cosine};
+  return {point.X() * cosine - point.Y() * sine,
+          point.X() * sine + point.Y() * cosine, point.Z()};
 }
 
 void checkCarrier(
@@ -2708,7 +2781,7 @@ int main() {
     };
 
     checkBothSavedSlots();
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2, 3, 4});
     const auto sourceKeys = edgeKeys(*model.extrusion->topologyLineage());
     const auto patternKeys = edgeKeys(*model.pattern->topologyLineage());
@@ -2737,7 +2810,7 @@ int main() {
     model.pattern->setSpacingMm(spacing);
     CHECK(model.document.recompute());
     checkBothSavedSlots();
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2, 3, 4});
 
     model.pattern->setCount(3);
@@ -2750,20 +2823,20 @@ int main() {
     CHECK(missingSlot4.failure == TopologyResolutionFailure::Missing);
     CHECK(missingSlot4.method == TopologyMatchMethod::None);
     CHECK(!missingSlot4.subshape);
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2});
 
     model.pattern->setCount(5);
     CHECK(model.document.recompute());
     checkBothSavedSlots();
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2, 3, 4});
 
     length = 8.0;
     model.extrusion->setLengthMm(length);
     CHECK(model.document.recompute());
     checkBothSavedSlots();
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2, 3, 4});
 
     sourceX0 = 2.0;
@@ -2783,7 +2856,7 @@ int main() {
                                                std::move(reordered)));
     CHECK(model.document.recompute());
     checkBothSavedSlots();
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2, 3, 4});
 
     const auto validShape = model.pattern->shape();
@@ -2821,7 +2894,7 @@ int main() {
     CHECK(model.document.recompute());
     CHECK(model.pattern->shapeRevision() > validRevision);
     checkBothSavedSlots();
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {0, 1, 2, 3, 4});
   }
 
@@ -2895,7 +2968,7 @@ int main() {
         *model.pattern, slot4, {slot4Left, slot4Front},
         {GeomAbs_Line, 5.0, gp_Pnt(48.0, 0.0, 0.0),
          gp_Pnt(48.0, 0.0, 5.0)});
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {1, 2, 3, 4});
     CHECK(solidCount(*model.pattern->shape()) == 4);
 
@@ -2906,7 +2979,8 @@ int main() {
         {GeomAbs_Line, 5.0, gp_Pnt(12.0, 0.0, 0.0),
          gp_Pnt(12.0, 0.0, 5.0)});
     checkEdgeMissing(*model.pattern, slot4);
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(), {1, 2});
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {1, 2});
     CHECK(solidCount(*model.pattern->shape()) == 2);
 
     model.pattern->setCount(5);
@@ -2917,7 +2991,7 @@ int main() {
         *model.pattern, slot4, {slot4Left, slot4Front},
         {GeomAbs_Line, 5.0, gp_Pnt(48.0, 0.0, 0.0),
          gp_Pnt(48.0, 0.0, 5.0)});
-    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
                             {1, 2, 3, 4});
     CHECK(solidCount(*model.pattern->shape()) == 4);
   }
@@ -2936,6 +3010,401 @@ int main() {
     body.addFeature(std::move(extrusion));
     auto pattern = std::make_unique<LinearPatternFeature>(
         extrusionId, PrincipalAxis::X, 3, 40.0);
+    auto* patternFeature = pattern.get();
+    body.addFeature(std::move(pattern));
+    CHECK(document.recompute());
+    CHECK(extrusionFeature->shape());
+    CHECK(!extrusionFeature->topologyLineage());
+    CHECK(patternFeature->shape());
+    CHECK(!patternFeature->topologyLineage());
+    const auto index = patternFeature->topologyIndex();
+    CHECK(index);
+    CHECK(index->rawEdgeCount() > 0);
+    const auto exact = patternFeature->createEdgeReferenceV2(body.id(), 0);
+    CHECK(!exact);
+    CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
+  }
+
+  // Join Circular Pattern publishes one exact edge set per authored
+  // occurrence. Saved slot-1/slot-4 carriers follow the full/partial angle
+  // formulas, count disappearance, axis changes, and source edits.
+  {
+    auto model = makeCircularPatternedBox();
+    double sourceX0 = 10.0;
+    double sourceY0 = 2.0;
+    double sourceX1 = 14.0;
+    double sourceY1 = 5.0;
+    double length = 4.0;
+    double angle = 240.0;
+    int count = 5;
+    PrincipalAxis axis = PrincipalAxis::Z;
+
+    const auto sourceVertical = edgeForExactEndpoints(
+        *model.extrusion, model.sourceBody->id(),
+        gp_Pnt(sourceX0, sourceY0, 0.0),
+        gp_Pnt(sourceX0, sourceY0, length));
+    const auto slot0 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(),
+        gp_Pnt(sourceX0, sourceY0, 0.0),
+        gp_Pnt(sourceX0, sourceY0, length));
+    const auto slot1First = rotatedPoint(
+        gp_Pnt(sourceX0, sourceY0, 0.0), axis,
+        circularSlotAngle(angle, count, 1));
+    const auto slot1Last = rotatedPoint(
+        gp_Pnt(sourceX0, sourceY0, length), axis,
+        circularSlotAngle(angle, count, 1));
+    const auto slot4First = rotatedPoint(
+        gp_Pnt(sourceX0, sourceY0, 0.0), axis,
+        circularSlotAngle(angle, count, 4));
+    const auto slot4Last = rotatedPoint(
+        gp_Pnt(sourceX0, sourceY0, length), axis,
+        circularSlotAngle(angle, count, 4));
+    const auto slot1 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), slot1First, slot1Last);
+    const auto slot4 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), slot4First, slot4Last);
+    CHECK(sourceVertical.v2());
+    CHECK(slot0.v2());
+    CHECK(slot1.v2());
+    CHECK(slot4.v2());
+    const auto slot1Key = slot1.v2()->provenance;
+    const auto slot4Key = slot4.v2()->provenance;
+    const auto initialSlot1 =
+        model.pattern->topologyIndex()->resolveEdge(slot1);
+    const auto initialSlot4 =
+        model.pattern->topologyIndex()->resolveEdge(slot4);
+    CHECK(initialSlot1);
+    CHECK(initialSlot4);
+    const auto slot1Origins =
+        adjacentFaceOrigins(*model.pattern, *initialSlot1.subshape);
+    const auto slot4Origins =
+        adjacentFaceOrigins(*model.pattern, *initialSlot4.subshape);
+
+    const auto checkOccurrence = [&](const TopologyProvenanceKey& key,
+                                     std::uint64_t expectedSlot) {
+      CHECK(key.featureId == model.pattern->id());
+      CHECK(key.kind == TopologyKind::Edge);
+      CHECK(key.operation == TopologyProvenanceOperation::Generated);
+      CHECK(!key.occurrence);
+      CHECK(key.origins.size() == 2);
+      for (const auto& origin : key.origins) {
+        CHECK(origin.featureId == model.pattern->id());
+        CHECK(origin.kind == TopologyKind::Face);
+        CHECK(origin.occurrence);
+        CHECK(origin.occurrence->featureId == model.pattern->id());
+        CHECK(origin.occurrence->slot == expectedSlot);
+      }
+    };
+    checkOccurrence(slot1Key, 1);
+    checkOccurrence(slot4Key, 4);
+
+    const auto checkSlot = [&](const EdgeReference& carrier,
+                               const TopologyProvenanceKey& savedKey,
+                               std::uint64_t slot,
+                               const std::vector<TopologyProvenanceOrigin>&
+                                   expectedOrigins) {
+      const double slotAngle = circularSlotAngle(angle, count, slot);
+      const gp_Pnt first = rotatedPoint(
+          gp_Pnt(sourceX0, sourceY0, 0.0), axis, slotAngle);
+      const gp_Pnt last = rotatedPoint(
+          gp_Pnt(sourceX0, sourceY0, length), axis, slotAngle);
+      checkExactCarrier(*model.pattern, carrier, expectedOrigins,
+                        {GeomAbs_Line, length, first, last});
+      const auto rediscovered = edgeForExactEndpoints(
+          *model.pattern, model.patternBody->id(), first, last);
+      CHECK(rediscovered.v2());
+      CHECK(rediscovered.v2()->provenance == savedKey);
+    };
+    const auto checkBothSlots = [&] {
+      checkSlot(slot1, slot1Key, 1, slot1Origins);
+      checkSlot(slot4, slot4Key, 4, slot4Origins);
+    };
+
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+    const auto sourceKeys = edgeKeys(*model.extrusion->topologyLineage());
+    const auto patternKeys = edgeKeys(*model.pattern->topologyLineage());
+    CHECK(sourceKeys.size() == 12);
+    CHECK(patternKeys.size() == 60);
+    for (const auto& key : patternKeys) {
+      CHECK(key.featureId == model.pattern->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+    const auto sourceResolved =
+        model.extrusion->topologyIndex()->resolveEdge(sourceVertical);
+    const auto slot0Resolved = model.pattern->topologyIndex()->resolveEdge(slot0);
+    const auto slot1Resolved = model.pattern->topologyIndex()->resolveEdge(slot1);
+    const auto slot4Resolved = model.pattern->topologyIndex()->resolveEdge(slot4);
+    CHECK(sourceResolved);
+    CHECK(slot0Resolved);
+    CHECK(slot1Resolved);
+    CHECK(slot4Resolved);
+    CHECK(slot0Resolved.subshape->IsSame(*sourceResolved.subshape));
+    CHECK(!slot1Resolved.subshape->IsSame(*sourceResolved.subshape));
+    CHECK(!slot4Resolved.subshape->IsSame(*sourceResolved.subshape));
+    CHECK(!slot1Resolved.subshape->IsSame(*slot4Resolved.subshape));
+
+    angle = 360.0;
+    model.pattern->setAngleDeg(angle);
+    CHECK(model.document.recompute());
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+
+    angle = 180.0;
+    model.pattern->setAngleDeg(angle);
+    CHECK(model.document.recompute());
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+
+    count = 3;
+    model.pattern->setCount(count);
+    CHECK(model.document.recompute());
+    checkSlot(slot1, slot1Key, 1, slot1Origins);
+    const auto missingSlot4 =
+        model.pattern->topologyIndex()->resolveEdge(slot4);
+    CHECK(!missingSlot4);
+    CHECK(missingSlot4.failure == TopologyResolutionFailure::Missing);
+    CHECK(missingSlot4.method == TopologyMatchMethod::None);
+    CHECK(!missingSlot4.subshape);
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2});
+
+    count = 5;
+    angle = 300.0;
+    model.pattern->setCount(count);
+    model.pattern->setAngleDeg(angle);
+    CHECK(model.document.recompute());
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+
+    axis = PrincipalAxis::Y;
+    model.pattern->setAxis(axis);
+    CHECK(model.document.recompute());
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+
+    length = 7.0;
+    model.extrusion->setLengthMm(length);
+    CHECK(model.document.recompute());
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+
+    sourceX0 = 12.0;
+    sourceY0 = 3.0;
+    sourceX1 = 17.0;
+    sourceY1 = 7.0;
+    sketch::Sketch reordered;
+    reordered.addLine({sourceX0, sourceY1}, {sourceX1, sourceY1});
+    reordered.addLine({sourceX1, sourceY0}, {sourceX0, sourceY0});
+    reordered.addLine({sourceX0, sourceY0}, {sourceX0, sourceY1});
+    reordered.addLine({sourceX1, sourceY1}, {sourceX1, sourceY0});
+    CHECK(reordered.restoreGeometryIds(
+        {model.geometryIds[2], model.geometryIds[0], model.geometryIds[3],
+         model.geometryIds[1]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.sketchId,
+                                               std::move(reordered)));
+    CHECK(model.document.recompute());
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+
+    const auto validShape = model.pattern->shape();
+    const auto validLineage = model.pattern->topologyLineage();
+    const auto validIndex = model.pattern->topologyIndex();
+    const auto validRevision = model.pattern->shapeRevision();
+    const auto validSlot1 = validIndex->resolveEdge(slot1);
+    const auto validSlot4 = validIndex->resolveEdge(slot4);
+    CHECK(validSlot1);
+    CHECK(validSlot4);
+    model.pattern->setAngleDeg(0.0);
+    CHECK(!model.document.recompute());
+    CHECK(!model.pattern->shape());
+    CHECK(!model.pattern->topologyLineage());
+    CHECK(model.pattern->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.patternBody->topologySnapshot(model.pattern->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.pattern->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.pattern->lastValidShape() == validShape);
+    CHECK(model.pattern->lastValidTopologyLineage() == validLineage);
+    CHECK(model.pattern->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBackSlot1 = validIndex->resolveEdge(slot1);
+    const auto rolledBackSlot4 = validIndex->resolveEdge(slot4);
+    CHECK(rolledBackSlot1);
+    CHECK(rolledBackSlot4);
+    CHECK(rolledBackSlot1.subshape->IsSame(*validSlot1.subshape));
+    CHECK(rolledBackSlot4.subshape->IsSame(*validSlot4.subshape));
+
+    model.pattern->setAngleDeg(angle);
+    CHECK(model.document.recompute());
+    CHECK(model.pattern->shapeRevision() > validRevision);
+    checkBothSlots();
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {0, 1, 2, 3, 4});
+  }
+
+  // A fixed surviving slot-1 Circular Pattern edge feeds Fillet without
+  // probing and preserves strict material removal across all parameter axes.
+  {
+    auto model = makeCircularPatternedBox();
+    double angle = 240.0;
+    int count = 5;
+    double length = 4.0;
+    PrincipalAxis axis = PrincipalAxis::Z;
+    const auto first = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), axis,
+        circularSlotAngle(angle, count, 1));
+    const auto last = rotatedPoint(
+        gp_Pnt(10.0, 2.0, length), axis,
+        circularSlotAngle(angle, count, 1));
+    const auto slot1 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), first, last);
+    const auto initial = model.pattern->topologyIndex()->resolveEdge(slot1);
+    CHECK(initial);
+    const auto origins = adjacentFaceOrigins(*model.pattern, *initial.subshape);
+    checkExactCarrier(*model.pattern, slot1, origins,
+                      {GeomAbs_Line, length, first, last});
+    auto fillet = std::make_unique<FilletFeature>(slot1, 0.5);
+    auto* filletFeature = fillet.get();
+    model.patternBody->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pattern->shape()) - 1e-5);
+
+    angle = 300.0;
+    count = 3;
+    model.pattern->setAngleDeg(angle);
+    model.pattern->setCount(count);
+    CHECK(model.document.recompute());
+    auto editedFirst = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), axis,
+        circularSlotAngle(angle, count, 1));
+    auto editedLast = rotatedPoint(
+        gp_Pnt(10.0, 2.0, length), axis,
+        circularSlotAngle(angle, count, 1));
+    checkExactCarrier(*model.pattern, slot1, origins,
+                      {GeomAbs_Line, length, editedFirst, editedLast});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pattern->shape()) - 1e-5);
+
+    axis = PrincipalAxis::Y;
+    length = 6.0;
+    model.pattern->setAxis(axis);
+    model.extrusion->setLengthMm(length);
+    CHECK(model.document.recompute());
+    editedFirst = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), axis,
+        circularSlotAngle(angle, count, 1));
+    editedLast = rotatedPoint(
+        gp_Pnt(10.0, 2.0, length), axis,
+        circularSlotAngle(angle, count, 1));
+    checkExactCarrier(*model.pattern, slot1, origins,
+                      {GeomAbs_Line, length, editedFirst, editedLast});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pattern->shape()) - 1e-5);
+  }
+
+  // NewBody Circular Pattern contains only generated slots 1..count-1.
+  {
+    auto model = makeCircularPatternedBox(PatternOperation::NewBody);
+    double angle = 240.0;
+    int count = 5;
+    const auto slot1First = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 1));
+    const auto slot1Last = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 4.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 1));
+    const auto slot4First = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 4));
+    const auto slot4Last = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 4.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 4));
+    const auto slot1 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), slot1First, slot1Last);
+    const auto slot4 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), slot4First, slot4Last);
+    const auto initialSlot1 =
+        model.pattern->topologyIndex()->resolveEdge(slot1);
+    const auto initialSlot4 =
+        model.pattern->topologyIndex()->resolveEdge(slot4);
+    CHECK(initialSlot1);
+    CHECK(initialSlot4);
+    const auto slot1Origins =
+        adjacentFaceOrigins(*model.pattern, *initialSlot1.subshape);
+    const auto slot4Origins =
+        adjacentFaceOrigins(*model.pattern, *initialSlot4.subshape);
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {1, 2, 3, 4});
+    CHECK(solidCount(*model.pattern->shape()) == 4);
+
+    angle = 180.0;
+    count = 3;
+    model.pattern->setAngleDeg(angle);
+    model.pattern->setCount(count);
+    CHECK(model.document.recompute());
+    const auto editedSlot1First = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 1));
+    const auto editedSlot1Last = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 4.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 1));
+    checkExactCarrier(
+        *model.pattern, slot1, slot1Origins,
+        {GeomAbs_Line, 4.0, editedSlot1First, editedSlot1Last});
+    checkEdgeMissing(*model.pattern, slot4);
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {1, 2});
+    CHECK(solidCount(*model.pattern->shape()) == 2);
+
+    angle = 300.0;
+    count = 5;
+    model.pattern->setAngleDeg(angle);
+    model.pattern->setCount(count);
+    CHECK(model.document.recompute());
+    const auto recoveredSlot4First = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 0.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 4));
+    const auto recoveredSlot4Last = rotatedPoint(
+        gp_Pnt(10.0, 2.0, 4.0), PrincipalAxis::Z,
+        circularSlotAngle(angle, count, 4));
+    checkExactCarrier(
+        *model.pattern, slot4, slot4Origins,
+        {GeomAbs_Line, 4.0, recoveredSlot4First, recoveredSlot4Last});
+    auditOccurrencePatternEdges(*model.pattern, model.patternBody->id(),
+                                {1, 2, 3, 4});
+    CHECK(solidCount(*model.pattern->shape()) == 4);
+  }
+
+  // Legacy multi-region Circular Pattern remains shape-only and cannot
+  // author a V2 edge.
+  {
+    Document document;
+    auto& profile = document.addSketch("Legacy multi-region circular pattern");
+    profile.geometry.addRectangle({10.0, 2.0}, {14.0, 5.0});
+    profile.geometry.addRectangle({20.0, 2.0}, {24.0, 5.0});
+    auto& body = document.addBody();
+    auto extrusion = std::make_unique<ExtrudeFeature>(profile.id, 4.0);
+    auto* extrusionFeature = extrusion.get();
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    auto pattern = std::make_unique<CircularPatternFeature>(
+        extrusionId, PrincipalAxis::Z, 3, 180.0);
     auto* patternFeature = pattern.get();
     body.addFeature(std::move(pattern));
     CHECK(document.recompute());

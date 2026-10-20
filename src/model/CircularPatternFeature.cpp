@@ -13,6 +13,7 @@
 #include <vector>
 #include "model/Body.h"
 #include "model/Document.h"
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/GeometryOperation.h"
 #include "model/TransformFeatureHistoryBuilder.h"
 
@@ -227,8 +228,19 @@ bool CircularPatternFeature::rebuildImpl(const RebuildContext& context) {
       markError(error);
       return false;
     }
-    setShapeAndTopologyLineage(std::move(built.shape),
-                               std::move(built.lineage));
+    FaceBoundaryEdgeProvenanceFailure edgeFailure;
+    auto augmented = augmentCompleteFaceLineageWithUniqueManifoldEdges(
+        {id(), built.shape, built.lineage}, &edgeFailure);
+    if (!augmented) {
+      markError(edgeFailure.detail.empty()
+                    ? "Circular Pattern edge lineage augmentation failed"
+                    : "Circular Pattern edge lineage augmentation failed: " +
+                          edgeFailure.detail);
+      return false;
+    }
+    setShapeAndTopologyLineage(
+        std::move(built.shape),
+        std::move(augmented->augmentedSource.lineage));
     markValid();
     return true;
   }
