@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/OcctBooleanTopologyHistoryCapture.h"
 #include "model/OcctRevolveTopologyHistoryCapture.h"
 #include "model/SketchExtrudeBuilder.h"
@@ -498,7 +499,20 @@ bool RevolveFeature::rebuildImpl(const RebuildContext& context) {
         markError("Revolve topology lineage is incomplete");
         return false;
       }
-      setShapeAndTopologyLineage(artifact.outputShape, std::move(lineage));
+      FaceBoundaryEdgeProvenanceFailure edgeFailure;
+      const auto augmented =
+          augmentCompleteFaceLineageWithUniqueManifoldEdges(
+              TopologySourceSnapshot{id(), artifact.outputShape, lineage},
+              &edgeFailure);
+      if (!augmented) {
+        markError("Revolve " +
+                  (edgeFailure.detail.empty()
+                       ? std::string("edge lineage is invalid")
+                       : std::move(edgeFailure.detail)));
+        return false;
+      }
+      setShapeAndTopologyLineage(
+          artifact.outputShape, augmented->augmentedSource.lineage);
       markValid();
       return true;
     }

@@ -57,10 +57,11 @@ struct FaceBoundaryEdgeProvenanceResult {
   std::vector<FaceBoundaryEdgeSeed> boundarySeeds;
 };
 
-// Publication-side augmentation used only by ExtrudeFeature's simple NewBody
-// sketch path. Given a coherent CompleteFaces result, every uniquely
-// identified closed two-face manifold edge receives the same
-// face-boundary-edge:v1 identity used by the selected-face capture above.
+// Publication-side augmentation used only by the strict simple NewBody
+// sketch paths in ExtrudeFeature and RevolveFeature. Given a coherent
+// CompleteFaces result, every uniquely identified closed two-face manifold
+// edge receives the same face-boundary-edge:v1 identity used by the
+// selected-face capture above.
 // Unsupported edges (open, seam, non-manifold, degenerate, or sharing a face
 // pair) are deliberately omitted. Invalid source evidence and conflicts with
 // existing edge evidence fail atomically.

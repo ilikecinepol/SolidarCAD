@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -34,6 +35,7 @@
 #include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
+#include "model/RevolveFeature.h"
 #include "model/TopologyReferenceResolver.h"
 
 namespace {
@@ -45,6 +47,39 @@ struct ExtrudedBox {
   solidar::ExtrudeFeature* feature{};
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
+
+struct RevolvedRectangle {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::DocumentSketch* sketch{};
+  solidar::RevolveFeature* feature{};
+  std::array<solidar::sketch::GeometryId, 4> geometryIds{};
+};
+
+RevolvedRectangle makeRevolvedRectangle(double minimumRadius,
+                                        double angleDeg) {
+  RevolvedRectangle result;
+  auto& sketch = result.document.addSketch("Production edge revolve");
+  sketch.geometry.addRectangle({10.0, minimumRadius}, {30.0, 15.0});
+  result.geometryIds = {sketch.geometry.lineId(0),
+                        sketch.geometry.lineId(1),
+                        sketch.geometry.lineId(2),
+                        sketch.geometry.lineId(3)};
+  auto& body = result.document.addBody();
+  auto revolve = std::make_unique<solidar::RevolveFeature>(
+      sketch.id,
+      solidar::AxisReference{
+          solidar::AxisReferenceType::SketchHorizontalAxis, sketch.id,
+          solidar::sketch::kInvalidGeometryId},
+      angleDeg, "Production edge Revolve",
+      solidar::ExtrudeOperation::NewBody, false);
+  result.feature = revolve.get();
+  body.addFeature(std::move(revolve));
+  result.body = &body;
+  result.sketch = &sketch;
+  CHECK(result.document.rebuild());
+  return result;
+}
 
 ExtrudedBox makeBox(double length = 15.0) {
   ExtrudedBox result;
@@ -214,7 +249,7 @@ bool originLess(const solidar::TopologyProvenanceOrigin& left,
 }
 
 std::vector<solidar::TopologyProvenanceOrigin> adjacentFaceOrigins(
-    const solidar::ExtrudeFeature& feature, const TopoDS_Edge& edge) {
+    const solidar::ShapeFeature& feature, const TopoDS_Edge& edge) {
   std::vector<solidar::TopologyProvenanceOrigin> result;
   for (const auto& binding : feature.topologyLineage()->bindings()) {
     if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
@@ -229,6 +264,113 @@ std::vector<solidar::TopologyProvenanceOrigin> adjacentFaceOrigins(
   }
   std::sort(result.begin(), result.end(), originLess);
   return result;
+}
+
+solidar::EdgeReference edgeForOrigins(
+    const solidar::ShapeFeature& feature, solidar::BodyId bodyId,
+    std::vector<solidar::TopologyProvenanceOrigin> expectedOrigins) {
+  std::sort(expectedOrigins.begin(), expectedOrigins.end(), originLess);
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::optional<solidar::EdgeReference> found;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    if (!exact || exact.reference.v2()->provenance.origins != expectedOrigins)
+      continue;
+    if (found) {
+      const auto first = index->resolveEdge(*found);
+      const auto next = index->resolveEdge(exact.reference);
+      CHECK(first);
+      CHECK(next);
+      CHECK(first.subshape->IsSame(*next.subshape));
+      continue;
+    }
+    found = exact.reference;
+  }
+  CHECK(found);
+  return *found;
+}
+
+double edgeLength(const TopoDS_Edge& edge) {
+  GProp_GProps properties;
+  BRepGProp::LinearProperties(edge, properties);
+  return properties.Mass();
+}
+
+struct CurveExpectation {
+  GeomAbs_CurveType type{GeomAbs_OtherCurve};
+  double length{};
+  std::optional<gp_Pnt> first;
+  std::optional<gp_Pnt> last;
+};
+
+void checkRevolveCarrier(
+    const solidar::RevolveFeature& feature, const solidar::EdgeReference& carrier,
+    std::vector<solidar::TopologyProvenanceOrigin> expectedOrigins,
+    const CurveExpectation& expected) {
+  std::sort(expectedOrigins.begin(), expectedOrigins.end(), originLess);
+  CHECK(carrier.v2());
+  CHECK(carrier.v2()->provenance.origins == expectedOrigins);
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  const auto resolved = index->resolveEdge(carrier);
+  CHECK(resolved);
+  CHECK(resolved.method == solidar::TopologyMatchMethod::OperationProvenance);
+  CHECK(adjacentFaceOrigins(feature, *resolved.subshape) == expectedOrigins);
+  CHECK(BRepAdaptor_Curve(*resolved.subshape).GetType() == expected.type);
+  CHECK(near(edgeLength(*resolved.subshape), expected.length, 1e-4));
+  if (expected.first && expected.last)
+    CHECK(hasEndpoints(*resolved.subshape, *expected.first, *expected.last));
+}
+
+void checkEdgeMissing(const solidar::ShapeFeature& feature,
+                      const solidar::EdgeReference& carrier) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  const auto resolved = index->resolveEdge(carrier);
+  CHECK(!resolved);
+  CHECK(resolved.failure == solidar::TopologyResolutionFailure::Missing);
+  CHECK(!resolved.subshape);
+}
+
+std::size_t edgeBindingCount(const solidar::ShapeFeature& feature) {
+  const auto lineage = feature.topologyLineage();
+  CHECK(lineage);
+  return static_cast<std::size_t>(std::count_if(
+      lineage->bindings().begin(), lineage->bindings().end(),
+      [](const auto& binding) {
+        return binding.provenance.kind == solidar::TopologyKind::Edge;
+      }));
+}
+
+void checkAllCanonicalEdgesCreated(const solidar::ShapeFeature& feature,
+                                   solidar::BodyId bodyId,
+                                   std::size_t expectedCount) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, feature.id(), raw);
+    CHECK(legacy);
+    const auto resolved = index->resolveEdge(legacy.reference);
+    CHECK(resolved);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*resolved.subshape);
+        }))
+      continue;
+    seen.push_back(*resolved.subshape);
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    CHECK(exact);
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Created);
+  }
+  CHECK(seen.size() == expectedCount);
+  CHECK(edgeBindingCount(feature) == expectedCount);
+}
+
+gp_Pnt revolvedPoint(double x, double radius, double angleDeg) {
+  const double radians = angleDeg * std::numbers::pi / 180.0;
+  return {x, radius * std::cos(radians), radius * std::sin(radians)};
 }
 
 void checkCarrier(
@@ -726,6 +868,297 @@ int main() {
     CHECK(recovered);
     CHECK(hasEndpoints(*recovered.subshape, gp_Pnt(0.0, 0.0, 0.0),
                        gp_Pnt(0.0, 0.0, 22.0)));
+  }
+
+  // A partial annular-sector revolve publishes eight cap/side lines and four
+  // side/side arcs. The carriers are selected by their authored face origins,
+  // then retained while angle, direction, storage order, and dimensions
+  // change.
+  {
+    auto model = makeRevolvedRectangle(5.0, 120.0);
+    const auto start =
+        authoredKey(AuthoredTopologySourceKind::ProfileStartCap,
+                    model.sketch->id, sketch::kInvalidGeometryId,
+                    model.feature->id())
+            .immediateOrigin();
+    const auto end =
+        authoredKey(AuthoredTopologySourceKind::ProfileEndCap,
+                    model.sketch->id, sketch::kInvalidGeometryId,
+                    model.feature->id())
+            .immediateOrigin();
+    std::array<TopologyProvenanceOrigin, 4> sides;
+    for (std::size_t index = 0; index < sides.size(); ++index)
+      sides[index] =
+          authoredKey(AuthoredTopologySourceKind::GeometrySide,
+                      model.sketch->id, model.geometryIds[index],
+                      model.feature->id())
+              .immediateOrigin();
+
+    std::array<EdgeReference, 4> startLines;
+    std::array<EdgeReference, 4> endLines;
+    for (std::size_t index = 0; index < sides.size(); ++index) {
+      startLines[index] =
+          edgeForOrigins(*model.feature, model.body->id(), {start, sides[index]});
+      endLines[index] =
+          edgeForOrigins(*model.feature, model.body->id(), {end, sides[index]});
+    }
+    constexpr std::array<std::array<std::size_t, 2>, 4> adjacentSides{{
+        {{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 0}}}};
+    std::array<EdgeReference, 4> sideArcs;
+    for (std::size_t index = 0; index < sideArcs.size(); ++index)
+      sideArcs[index] = edgeForOrigins(
+          *model.feature, model.body->id(),
+          {sides[adjacentSides[index][0]], sides[adjacentSides[index][1]]});
+
+    const auto checkPartial = [&](double minimumX, double maximumX,
+                                  double minimumRadius, double maximumRadius,
+                                  double signedAngle) {
+      const std::array<std::array<std::pair<double, double>, 2>, 4>
+          sideEndpoints{{
+              {{{minimumX, minimumRadius}, {maximumX, minimumRadius}}},
+              {{{maximumX, minimumRadius}, {maximumX, maximumRadius}}},
+              {{{maximumX, maximumRadius}, {minimumX, maximumRadius}}},
+              {{{minimumX, maximumRadius}, {minimumX, minimumRadius}}},
+          }};
+      for (std::size_t index = 0; index < sides.size(); ++index) {
+        const auto& endpoints = sideEndpoints[index];
+        checkRevolveCarrier(
+            *model.feature, startLines[index], {start, sides[index]},
+            {GeomAbs_Line,
+             std::hypot(endpoints[1].first - endpoints[0].first,
+                        endpoints[1].second - endpoints[0].second),
+             revolvedPoint(endpoints[0].first, endpoints[0].second, 0.0),
+             revolvedPoint(endpoints[1].first, endpoints[1].second, 0.0)});
+        checkRevolveCarrier(
+            *model.feature, endLines[index], {end, sides[index]},
+            {GeomAbs_Line,
+             std::hypot(endpoints[1].first - endpoints[0].first,
+                        endpoints[1].second - endpoints[0].second),
+             revolvedPoint(endpoints[0].first, endpoints[0].second,
+                           signedAngle),
+             revolvedPoint(endpoints[1].first, endpoints[1].second,
+                           signedAngle)});
+      }
+
+      const std::array<std::pair<double, double>, 4> arcVertices{{
+          {maximumX, minimumRadius}, {maximumX, maximumRadius},
+          {minimumX, maximumRadius}, {minimumX, minimumRadius}}};
+      for (std::size_t index = 0; index < sideArcs.size(); ++index) {
+        const auto [x, radius] = arcVertices[index];
+        checkRevolveCarrier(
+            *model.feature, sideArcs[index],
+            {sides[adjacentSides[index][0]], sides[adjacentSides[index][1]]},
+            {GeomAbs_Circle,
+             radius * std::abs(signedAngle) * std::numbers::pi / 180.0,
+             revolvedPoint(x, radius, 0.0),
+             revolvedPoint(x, radius, signedAngle)});
+      }
+    };
+
+    checkPartial(10.0, 30.0, 5.0, 15.0, 120.0);
+    checkAllCanonicalEdgesCreated(*model.feature, model.body->id(), 12);
+    model.feature->setAngleDeg(210.0);
+    CHECK(model.document.recompute());
+    checkPartial(10.0, 30.0, 5.0, 15.0, 210.0);
+    model.feature->setReversed(true);
+    CHECK(model.document.recompute());
+    checkPartial(10.0, 30.0, 5.0, 15.0, -210.0);
+
+    sketch::Sketch reordered;
+    reordered.addLine({12.0, 17.0}, {34.0, 17.0});
+    reordered.addLine({34.0, 6.0}, {12.0, 6.0});
+    reordered.addLine({12.0, 6.0}, {12.0, 17.0});
+    reordered.addLine({34.0, 17.0}, {34.0, 6.0});
+    CHECK(reordered.restoreGeometryIds(
+        {model.geometryIds[2], model.geometryIds[0], model.geometryIds[3],
+         model.geometryIds[1]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.sketch->id,
+                                               std::move(reordered)));
+    CHECK(model.document.recompute());
+    checkPartial(12.0, 34.0, 6.0, 17.0, -210.0);
+    checkAllCanonicalEdgesCreated(*model.feature, model.body->id(), 12);
+
+    // A closed sweep has no cap identities. The four side/side carriers become
+    // full circles, while all cap/side carriers disappear. The only line
+    // topology left is the two unsupported cylindrical seam edges.
+    model.feature->setReversed(false);
+    model.feature->setAngleDeg(360.0);
+    CHECK(model.document.recompute());
+    for (const auto& carrier : startLines) checkEdgeMissing(*model.feature, carrier);
+    for (const auto& carrier : endLines) checkEdgeMissing(*model.feature, carrier);
+    const std::array<double, 4> fullRadii{6.0, 17.0, 17.0, 6.0};
+    for (std::size_t index = 0; index < sideArcs.size(); ++index)
+      checkRevolveCarrier(
+          *model.feature, sideArcs[index],
+          {sides[adjacentSides[index][0]], sides[adjacentSides[index][1]]},
+          {GeomAbs_Circle, 2.0 * std::numbers::pi * fullRadii[index],
+           std::nullopt, std::nullopt});
+
+    const auto fullIndex = model.feature->topologyIndex();
+    CHECK(fullIndex);
+    std::vector<TopoDS_Edge> seenFullEdges;
+    std::size_t missingSeamLines = 0;
+    std::size_t createdFullCircles = 0;
+    for (std::size_t raw = 0; raw < fullIndex->rawEdgeCount(); ++raw) {
+      const auto legacy = fullIndex->createEdgeReference(
+          model.body->id(), model.feature->id(), raw);
+      CHECK(legacy);
+      const auto resolved = fullIndex->resolveEdge(legacy.reference);
+      CHECK(resolved);
+      if (std::any_of(seenFullEdges.begin(), seenFullEdges.end(),
+                      [&](const auto& edge) {
+                        return edge.IsSame(*resolved.subshape);
+                      }))
+        continue;
+      seenFullEdges.push_back(*resolved.subshape);
+      const auto exact =
+          model.feature->createEdgeReferenceV2(model.body->id(), raw);
+      const auto curveType = BRepAdaptor_Curve(*resolved.subshape).GetType();
+      CHECK(curveType == GeomAbs_Line || curveType == GeomAbs_Circle);
+      if (curveType == GeomAbs_Line) {
+        CHECK(!exact);
+        CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
+        ++missingSeamLines;
+      } else if (curveType == GeomAbs_Circle) {
+        CHECK(exact);
+        CHECK(exact.status == EdgeReferenceV2CreationStatus::Created);
+        ++createdFullCircles;
+      }
+    }
+    CHECK(seenFullEdges.size() == 6);
+    CHECK(missingSeamLines == 2);
+    CHECK(createdFullCircles == 4);
+    CHECK(edgeBindingCount(*model.feature) == 4);
+
+    model.feature->setAngleDeg(150.0);
+    CHECK(model.document.recompute());
+    checkPartial(12.0, 34.0, 6.0, 17.0, 150.0);
+    const auto validShape = model.feature->shape();
+    const auto validLineage = model.feature->topologyLineage();
+    const auto validIndex = model.feature->topologyIndex();
+    const auto validRevision = model.feature->shapeRevision();
+    model.feature->setAngleDeg(0.0);
+    CHECK(!model.document.recompute());
+    CHECK(!model.feature->shape());
+    CHECK(!model.feature->topologyLineage());
+    CHECK(model.feature->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.feature->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.feature->lastValidShape() == validShape);
+    CHECK(model.feature->lastValidTopologyLineage() == validLineage);
+    CHECK(model.feature->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    for (const auto& carrier : startLines) CHECK(validIndex->resolveEdge(carrier));
+    for (const auto& carrier : endLines) CHECK(validIndex->resolveEdge(carrier));
+    for (const auto& carrier : sideArcs) CHECK(validIndex->resolveEdge(carrier));
+    model.feature->setAngleDeg(120.0);
+    CHECK(model.document.recompute());
+    checkPartial(12.0, 34.0, 6.0, 17.0, 120.0);
+  }
+
+  // A profile touching the axis has one cap/cap edge during a partial sweep.
+  // Closing the sweep removes it and leaves two named circular rims plus one
+  // unsupported cylindrical seam; reopening recovers the saved carrier.
+  {
+    auto model = makeRevolvedRectangle(0.0, 120.0);
+    const auto start =
+        authoredKey(AuthoredTopologySourceKind::ProfileStartCap,
+                    model.sketch->id, sketch::kInvalidGeometryId,
+                    model.feature->id())
+            .immediateOrigin();
+    const auto end =
+        authoredKey(AuthoredTopologySourceKind::ProfileEndCap,
+                    model.sketch->id, sketch::kInvalidGeometryId,
+                    model.feature->id())
+            .immediateOrigin();
+    const auto axisCarrier =
+        edgeForOrigins(*model.feature, model.body->id(), {start, end});
+    checkRevolveCarrier(*model.feature, axisCarrier, {start, end},
+                        {GeomAbs_Line, 20.0, gp_Pnt(10.0, 0.0, 0.0),
+                         gp_Pnt(30.0, 0.0, 0.0)});
+    checkAllCanonicalEdgesCreated(*model.feature, model.body->id(), 9);
+
+    model.feature->setAngleDeg(360.0);
+    CHECK(model.document.recompute());
+    checkEdgeMissing(*model.feature, axisCarrier);
+    const auto fullIndex = model.feature->topologyIndex();
+    CHECK(fullIndex);
+    std::vector<TopoDS_Edge> seen;
+    std::size_t createdRims = 0;
+    std::size_t missingSeams = 0;
+    for (std::size_t raw = 0; raw < fullIndex->rawEdgeCount(); ++raw) {
+      const auto legacy = fullIndex->createEdgeReference(
+          model.body->id(), model.feature->id(), raw);
+      CHECK(legacy);
+      const auto resolved = fullIndex->resolveEdge(legacy.reference);
+      CHECK(resolved);
+      if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+            return edge.IsSame(*resolved.subshape);
+          }))
+        continue;
+      seen.push_back(*resolved.subshape);
+      const auto exact =
+          model.feature->createEdgeReferenceV2(model.body->id(), raw);
+      if (BRepAdaptor_Curve(*resolved.subshape).GetType() == GeomAbs_Circle) {
+        CHECK(exact);
+        ++createdRims;
+      } else {
+        CHECK(BRepAdaptor_Curve(*resolved.subshape).GetType() == GeomAbs_Line);
+        CHECK(!exact);
+        CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
+        ++missingSeams;
+      }
+    }
+    CHECK(createdRims == 2);
+    CHECK(missingSeams == 1);
+
+    model.feature->setAngleDeg(210.0);
+    CHECK(model.document.recompute());
+    checkRevolveCarrier(*model.feature, axisCarrier, {start, end},
+                        {GeomAbs_Line, 20.0, gp_Pnt(10.0, 0.0, 0.0),
+                         gp_Pnt(30.0, 0.0, 0.0)});
+  }
+
+  // A predefined outer rim feeds a downstream Fillet. Its exact carrier and
+  // measurable material effect survive changing the upstream sweep angle.
+  {
+    auto model = makeRevolvedRectangle(0.0, 360.0);
+    const auto outerEnd =
+        authoredKey(AuthoredTopologySourceKind::GeometrySide,
+                    model.sketch->id, model.geometryIds[1],
+                    model.feature->id())
+            .immediateOrigin();
+    const auto outerCylinder =
+        authoredKey(AuthoredTopologySourceKind::GeometrySide,
+                    model.sketch->id, model.geometryIds[2],
+                    model.feature->id())
+            .immediateOrigin();
+    const auto rim = edgeForOrigins(*model.feature, model.body->id(),
+                                    {outerEnd, outerCylinder});
+    checkRevolveCarrier(
+        *model.feature, rim, {outerEnd, outerCylinder},
+        {GeomAbs_Circle, 2.0 * std::numbers::pi * 15.0, std::nullopt,
+         std::nullopt});
+    auto fillet = std::make_unique<FilletFeature>(rim, 1.0);
+    auto* filletFeature = fillet.get();
+    model.body->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.feature->shape()) - 1e-5);
+
+    model.feature->setAngleDeg(210.0);
+    CHECK(model.document.recompute());
+    checkRevolveCarrier(
+        *model.feature, rim, {outerEnd, outerCylinder},
+        {GeomAbs_Circle, 15.0 * 210.0 * std::numbers::pi / 180.0,
+         revolvedPoint(30.0, 15.0, 0.0),
+         revolvedPoint(30.0, 15.0, 210.0)});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.feature->shape()) - 1e-5);
   }
 
   return EXIT_SUCCESS;

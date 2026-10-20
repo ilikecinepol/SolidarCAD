@@ -122,8 +122,13 @@ void checkExactLineage(
         geometryId, feature.id()));
   }
 
-  CHECK(lineage->bindings().size() == expected.size());
+  CHECK(static_cast<std::size_t>(std::count_if(
+            lineage->bindings().begin(), lineage->bindings().end(),
+            [](const auto& binding) {
+              return binding.provenance.kind == solidar::TopologyKind::Face;
+            })) == expected.size());
   for (const auto& binding : lineage->bindings()) {
+    if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
     CHECK(binding.provenance.operation ==
           solidar::TopologyProvenanceOperation::Seed);
     CHECK(binding.provenance.origins.empty());
@@ -643,6 +648,12 @@ int main() {
   CHECK(!unavailable);
   CHECK(unavailable.status == FaceReferenceV2CreationStatus::Missing);
   CHECK(!unavailable.reference.v2());
+  CHECK(overrideIndex->rawEdgeCount() > 0);
+  const auto unavailableEdge =
+      overrideFeature->createEdgeReferenceV2(overrideBody.id(), 0);
+  CHECK(!unavailableEdge);
+  CHECK(unavailableEdge.status == EdgeReferenceV2CreationStatus::Missing);
+  CHECK(!unavailableEdge.reference.v2());
 
   // Full coaxial Join removes the shared cylindrical interface and publishes
   // exactly the two retained cylinders plus the two merged end planes.
