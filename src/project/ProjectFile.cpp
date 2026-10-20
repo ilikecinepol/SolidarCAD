@@ -257,13 +257,17 @@ QJsonObject savedFaceReference(const FaceReference& face) {
   return result;
 }
 
-QJsonObject savedEdgeReference(const EdgeReference& edge) {
-  QJsonObject result{{"bodyId", static_cast<qint64>(edge.bodyId)},
-                     {"featureId", static_cast<qint64>(edge.featureId)},
-                     {"edgeIndex", static_cast<qint64>(edge.edgeIndex)}};
-  if (!edge.persistentTag.empty())
-    result["persistentTag"] = QString::fromStdString(edge.persistentTag);
-  if (edge.signature) result["signature"] = edgeSignature(*edge.signature);
+std::optional<QJsonObject> savedEdgeReference(const EdgeReference& edge) {
+  const auto* legacy = edge.v1();
+  if (!legacy) return std::nullopt;
+  QJsonObject result{{"bodyId", static_cast<qint64>(legacy->bodyId)},
+                     {"featureId", static_cast<qint64>(legacy->featureId)},
+                     {"edgeIndex", static_cast<qint64>(legacy->legacyIndex)}};
+  if (!legacy->persistentTag.empty())
+    result["persistentTag"] =
+        QString::fromStdString(legacy->persistentTag);
+  if (legacy->edgeSignature)
+    result["signature"] = edgeSignature(*legacy->edgeSignature);
   return result;
 }
 
@@ -360,13 +364,12 @@ FaceReference loadedFaceReference(const QJsonValue& value) {
 
 EdgeReference loadedEdgeReference(const QJsonValue& value) {
   const auto saved = value.toObject();
-  EdgeReference result{
+  return EdgeReference{
       static_cast<BodyId>(saved.value("bodyId").toInteger()),
       static_cast<FeatureId>(saved.value("featureId").toInteger()),
-      static_cast<std::size_t>(saved.value("edgeIndex").toInteger())};
-  result.persistentTag = saved.value("persistentTag").toString().toStdString();
-  result.signature = readEdgeSignature(saved.value("signature"));
-  return result;
+      static_cast<std::size_t>(saved.value("edgeIndex").toInteger()),
+      saved.value("persistentTag").toString().toStdString(),
+      readEdgeSignature(saved.value("signature"))};
 }
 
 constexpr double kMaximumModelLengthMm = 100000.0;
@@ -2065,8 +2068,16 @@ bool encodeEdgeTreatment(const Feature& feature, QJsonObject& saved,
   if (!treatment) return false;
   saved[QLatin1String(parameterKey)] = parameterValue;
   QJsonArray edges;
-  for (const auto& edge : treatment->edges())
-    edges.append(savedEdgeReference(edge));
+  for (const auto& edge : treatment->edges()) {
+    const auto encoded = savedEdgeReference(edge);
+    if (!encoded) {
+      setError(context.error,
+               QString::fromUtf8(
+                   "Сохранение ссылок v2 на ребра пока не поддерживается."));
+      return false;
+    }
+    edges.append(*encoded);
+  }
   saved["edges"] = edges;
   return true;
 }
@@ -2193,8 +2204,16 @@ bool encodeDraft(const Feature& feature, QJsonObject& saved,
     saved["pullDirectionLineIndex"] = static_cast<qint64>(*lineIndex);
     saved["pullDirectionLineId"] = static_cast<qint64>(*lineIndex + 1);
   }
-  if (draft->rotationEdge())
-    saved["rotationEdge"] = savedEdgeReference(*draft->rotationEdge());
+  if (draft->rotationEdge()) {
+    const auto encoded = savedEdgeReference(*draft->rotationEdge());
+    if (!encoded) {
+      setError(context.error,
+               QString::fromUtf8(
+                   "Сохранение ссылок v2 на ребра пока не поддерживается."));
+      return false;
+    }
+    saved["rotationEdge"] = *encoded;
+  }
   QJsonArray faces;
   for (const auto& face : draft->draftedFaces())
     faces.append(savedFaceReference(face));
@@ -3384,7 +3403,7 @@ static bool encodeCurrentPartV3Root(const QString& path,
   return true;
 }
 
-static bool containsV2FaceReference(const Document& document) {
+static bool containsUnsupportedV2TopologyReference(const Document& document) {
   for (const auto& sketch : document.sketches())
     if (sketch.support.type == SketchSupportType::Face &&
         sketch.support.face.isV2())
@@ -3396,6 +3415,16 @@ static bool containsV2FaceReference(const Document& document) {
               dynamic_cast<const ExtrudeFeature*>(feature.get())) {
         if (const auto reference = extrude->faceReference();
             reference && reference->isV2())
+          return true;
+      } else if (const auto* fillet =
+                     dynamic_cast<const FilletFeature*>(feature.get())) {
+        if (std::any_of(fillet->edges().begin(), fillet->edges().end(),
+                        [](const EdgeReference& edge) { return edge.isV2(); }))
+          return true;
+      } else if (const auto* chamfer =
+                     dynamic_cast<const ChamferFeature*>(feature.get())) {
+        if (std::any_of(chamfer->edges().begin(), chamfer->edges().end(),
+                        [](const EdgeReference& edge) { return edge.isV2(); }))
           return true;
       } else if (const auto* mirror =
                      dynamic_cast<const MirrorFeature*>(feature.get())) {
@@ -3412,7 +3441,8 @@ static bool containsV2FaceReference(const Document& document) {
                         draft->draftedFaces().end(),
                         [](const FaceReference& face) { return face.isV2(); }) ||
             (draft->neutralPlane().face &&
-             draft->neutralPlane().face->isV2()))
+             draft->neutralPlane().face->isV2()) ||
+            (draft->rotationEdge() && draft->rotationEdge()->isV2()))
           return true;
       }
     }
@@ -3422,10 +3452,10 @@ static bool containsV2FaceReference(const Document& document) {
 bool ProjectFile::saveDocument(const QString& path, const Document& document,
                                QString* error) {
   const auto saveOperation = [&]() -> bool {
-    // v3 has only the legacy geometric face-reference schema. Reject the
+    // v3 has only the legacy geometric topology-reference schema. Reject the
     // whole document before constructing QSaveFile so an existing target is
     // left byte-for-byte untouched instead of silently downgrading v2.
-    if (containsV2FaceReference(document)) {
+    if (containsUnsupportedV2TopologyReference(document)) {
       setError(error, QString::fromUtf8(
                           "Формат проекта v3 не поддерживает устойчивые ссылки на грани v2."));
       return false;

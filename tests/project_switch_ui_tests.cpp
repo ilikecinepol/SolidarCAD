@@ -309,7 +309,7 @@ class MainWindowUndoTestAccess {
       });
       window.createPocket();
     } else if (const auto* value = dynamic_cast<const FilletFeature*>(target)) {
-      const auto [body, sourceFeature] = source(value->edge().featureId);
+      const auto [body, sourceFeature] = source(value->edge().featureId());
       if (!body || !sourceFeature) return false;
       window.partDesignCoordinator_.beginFillet(body->id(), sourceFeature->id(),
           sourceFeature->shape(), value->edges(), value->radiusMm(),
@@ -322,7 +322,7 @@ class MainWindowUndoTestAccess {
         return false;
       window.acceptFilletTool();
     } else if (const auto* value = dynamic_cast<const ChamferFeature*>(target)) {
-      const auto [body, sourceFeature] = source(value->edge().featureId);
+      const auto [body, sourceFeature] = source(value->edge().featureId());
       if (!body || !sourceFeature) return false;
       window.partDesignCoordinator_.beginChamfer(body->id(), sourceFeature->id(),
           sourceFeature->shape(), value->edges(), value->distanceMm(),
@@ -1843,10 +1843,10 @@ void appendTopologyReference(std::ostringstream& out,
       out << "none";
     }
   } else {
-    out << reference.bodyId << ',' << reference.featureId << ',';
-    out << reference.edgeIndex << ',' << reference.persistentTag << ',';
-    if (reference.signature) {
-      const auto& signature = *reference.signature;
+    out << reference.bodyId() << ',' << reference.featureId() << ',';
+    out << reference.edgeIndex() << ',' << reference.persistentTag() << ',';
+    if (reference.signature()) {
+      const auto& signature = *reference.signature();
       out << static_cast<int>(signature.curve) << ',' << signature.length << ','
           << signature.midpoint.x << ',' << signature.midpoint.y << ','
           << signature.midpoint.z << ',' << signature.tangent.x << ','
@@ -2001,13 +2001,13 @@ bool faceReferenceResolves(const solidar::Document& document,
 
 bool edgeReferenceResolves(const solidar::Document& document,
                            const solidar::EdgeReference& reference) {
-  if (!featureBelongsToBody(document, reference.bodyId,
-                            reference.featureId))
+  if (!featureBelongsToBody(document, reference.bodyId(),
+                            reference.featureId()))
     return false;
   const auto* feature = dynamic_cast<const solidar::ShapeFeature*>(
-      document.findFeature(reference.featureId));
+      document.findFeature(reference.featureId()));
   const auto topology = feature ? feature->lastValidTopologyIndex() : nullptr;
-  return topology && topology->resolveEdge(reference.topology());
+  return topology && topology->resolveEdge(reference);
 }
 
 bool axisReferenceResolves(const solidar::Document& document,

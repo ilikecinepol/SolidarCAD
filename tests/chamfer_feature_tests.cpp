@@ -81,7 +81,7 @@ int main(int argc, char* argv[]) {
     CHECK(firstIndex);
     const auto firstReference = solidar::makeEdgeReference(
         *sourceShape, box.bodyId, box.extrudeId, *firstIndex);
-    CHECK(firstReference.signature);
+    CHECK(firstReference.signature());
 
     // Single-edge feature, real B-Rep change, and parameter editing.
     const double baseVolume = volumeOf(*sourceShape);
@@ -93,6 +93,17 @@ int main(int argc, char* argv[]) {
     CHECK(document.recompute());
     CHECK(chamfer->isValid() && chamfer->hasShape());
     CHECK(std::abs(volumeOf(*chamfer->shape()) - baseVolume) > 1e-5);
+    chamfer->setEdges({solidar::EdgeReference::fromV2(
+        {box.bodyId,
+         solidar::TopologyProvenanceKey{
+             box.extrudeId, solidar::TopologyKind::Edge,
+             solidar::TopologyProvenanceOperation::Seed,
+             solidar::TopologySemanticRole::Custom, "chamfer:v2-edge"}})});
+    CHECK(!document.recompute());
+    CHECK(chamfer->error() ==
+          "Chamfer does not support topology v2 edge references yet");
+    chamfer->setEdges({firstReference});
+    CHECK(document.recompute());
     const double volumeAtTwo = volumeOf(*chamfer->shape());
     chamfer->setDistanceMm(1.0);
     CHECK(chamfer->isDirty());
@@ -311,7 +322,7 @@ int main(int argc, char* argv[]) {
     CHECK(restoredChamfer);
     CHECK(restoredChamfer->id() == chamferId);
     CHECK(restoredChamfer->distanceMm() == 1.5);
-    CHECK(restoredChamfer->edge().signature);
+    CHECK(restoredChamfer->edge().signature());
 
     // An intentionally corrupted persistent reference preserves resolver detail.
     solidar::Document broken;
@@ -323,9 +334,9 @@ int main(int argc, char* argv[]) {
     auto badReference = solidar::makeEdgeReference(
         *brokenBody->resultShape(), brokenBox.bodyId, brokenBox.extrudeId,
         *brokenIndex);
-    badReference.persistentTag = "edge:missing";
-    badReference.edgeIndex = 999999;
-    badReference.signature->midpoint.x += 100000.0;
+    badReference.persistentTag() = "edge:missing";
+    badReference.edgeIndex() = 999999;
+    badReference.signature()->midpoint.x += 100000.0;
     auto& bad = brokenBody->addFeature(
         std::make_unique<solidar::ChamferFeature>(badReference, 1.0));
     CHECK(!broken.recompute());

@@ -122,6 +122,13 @@ bool FilletToolSession::updatePreview() {
     lifecycle_ = ToolLifecycle::SelectingInput;
     return false;
   }
+  if (std::any_of(edges_.begin(), edges_.end(),
+                  [](const EdgeReference& edge) { return edge.isV2(); })) {
+    errorCode_ = OperationFailureCode::TopologyReferenceInvalid;
+    error_ = "Fillet does not support topology v2 edge references yet";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
   if (!topologyIndex_) {
     errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
     error_ = "Fillet topology could not be indexed";
@@ -134,13 +141,13 @@ bool FilletToolSession::updatePreview() {
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());
   for (const auto& edge : edges_) {
-    if (edge.bodyId != bodyId_ || edge.featureId != sourceFeatureId_) {
+    if (edge.bodyId() != bodyId_ || edge.featureId() != sourceFeatureId_) {
       errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
       error_ = "Fillet edges no longer match the active Body";
       lifecycle_ = ToolLifecycle::PreviewInvalid;
       return false;
     }
-    references.push_back(edge.topology());
+    references.push_back(*edge.v1());
   }
   const auto resolutions = topologyIndex_->resolveEdges(references);
   for (const auto& resolved : resolutions) {
@@ -168,7 +175,8 @@ bool FilletToolSession::updatePreview() {
 std::optional<LinearToolManipulator> FilletToolSession::manipulator() const {
   if (!baseShape_ || edges_.empty() || !topologyIndex_) return std::nullopt;
   try {
-    const auto edge = topologyIndex_->resolveEdge(edges_.front().topology());
+    if (edges_.front().isV2()) return std::nullopt;
+    const auto edge = topologyIndex_->resolveEdge(*edges_.front().v1());
     if (!edge) return std::nullopt;
     const auto geometry = localEdgeManipulatorGeometry(*baseShape_, *edge.subshape);
     if (!geometry) return std::nullopt;
@@ -211,7 +219,10 @@ bool FilletToolSession::trySetRadius(double radiusMm, bool clampToBoundary) {
       topologyIndex_) {
     std::vector<TopologyReference> references;
     references.reserve(edges_.size());
-    for (const auto& edge : edges_) references.push_back(edge.topology());
+    for (const auto& edge : edges_) {
+      if (edge.isV2()) return false;
+      references.push_back(*edge.v1());
+    }
     std::vector<std::size_t> indices;
     indices.reserve(edges_.size());
     for (const auto& resolved : topologyIndex_->resolveEdges(references)) {

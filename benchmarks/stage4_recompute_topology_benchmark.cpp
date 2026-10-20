@@ -145,7 +145,7 @@ void benchmarkTopology(std::size_t referenceCount) {
     throw std::runtime_error("topology benchmark fixture is invalid");
 
   const auto faceReference = *face.reference.v1();
-  const auto edgeReference = edge.reference.topology();
+  const auto edgeReference = *edge.reference.v1();
   auto beforeBuilds = solidar::TopologyIndex::buildAttemptCount();
   const auto faces = sampleTimings([&] {
     for (std::size_t sample = 0; sample < referenceCount; ++sample)

@@ -7,3 +7,9 @@ using ShapeFeatureV2FactoryResult = decltype(
         solidar::BodyId{}, 0));
 
 static_assert(sizeof(ShapeFeatureV2FactoryResult) > 0);
+
+using ShapeFeatureEdgeV2FactoryResult = decltype(
+    std::declval<solidar::ShapeFeature&>().createEdgeReferenceV2(
+        solidar::BodyId{}, 0));
+
+static_assert(sizeof(ShapeFeatureEdgeV2FactoryResult) > 0);

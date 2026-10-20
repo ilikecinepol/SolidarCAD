@@ -9,6 +9,7 @@
 #include <TopoDS_Shape.hxx>
 #include <gp_Pnt.hxx>
 
+#include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -158,6 +159,46 @@ class SyntheticLineageFeature final : public solidar::ShapeFeature {
 
  private:
   solidar::BodyId bodyId_;
+};
+
+class SyntheticEdgeLineageFeature final : public solidar::ShapeFeature {
+ public:
+  explicit SyntheticEdgeLineageFeature(bool publishLineage = true)
+      : ShapeFeature("Synthetic edge lineage"),
+        publishLineage_(publishLineage) {}
+
+  [[nodiscard]] std::unique_ptr<solidar::Feature> clone() const override {
+    return std::make_unique<SyntheticEdgeLineageFeature>(*this);
+  }
+
+ protected:
+  bool rebuildImpl(const solidar::RebuildContext&) override {
+    auto shape = std::make_shared<TopoDS_Shape>(
+        BRepPrimAPI_MakeBox(8.0, 6.0, 4.0).Shape());
+    if (!publishLineage_) {
+      setShape(std::move(shape));
+      markValid();
+      return true;
+    }
+    const auto faces = subshapes(*shape, TopAbs_FACE, 1);
+    const auto edges = subshapes(*shape, TopAbs_EDGE, 1);
+    if (faces.empty() || edges.empty()) {
+      markError("synthetic shape lacks topology");
+      return false;
+    }
+    auto lineage = solidar::TopologyLineage::create(
+        {{makeKey(id(), solidar::TopologyKind::Face, "edge-owner:face"),
+          faces.front()},
+         {makeKey(id(), solidar::TopologyKind::Edge, "edge-owner:edge"),
+          edges.front()}},
+        kPartialFaceCoverage);
+    setShapeAndTopologyLineage(std::move(shape), std::move(lineage));
+    markValid();
+    return true;
+  }
+
+ private:
+  bool publishLineage_{};
 };
 
 }  // namespace
@@ -965,37 +1006,90 @@ int main() {
     const auto capturedEdge =
         baselineIndex->createEdgeReference(bodyId, featureId, 0);
     CHECK(capturedEdge);
-    auto signatureEdge = capturedEdge.reference.topology();
+    CHECK(capturedEdge.reference.v1());
+    auto signatureEdge = *capturedEdge.reference.v1();
     signatureEdge.persistentTag.clear();
     const auto compareEdgeV1 = [&](const solidar::TopologyReference& reference,
-                                   solidar::TopologyMatchMethod method) {
+                                   solidar::TopologyMatchMethod method,
+                                   solidar::TopologyResolutionFailure failure) {
       const auto baseline = baselineIndex->resolveEdge(reference);
-      const auto carrier = index->resolveEdge(reference);
+      const auto carrier = index->resolveEdge(
+          solidar::EdgeReference::fromV1(reference));
       CHECK(bool(baseline) == bool(carrier));
       CHECK(baseline.failure == carrier.failure);
       CHECK(baseline.method == carrier.method);
+      CHECK(baseline.index == carrier.index);
+      CHECK(baseline.error == carrier.error);
       CHECK(baseline.method == method);
-      CHECK(baseline.subshape);
-      CHECK(carrier.subshape);
-      CHECK(baseline.subshape->IsSame(*carrier.subshape));
+      CHECK(baseline.failure == failure);
+      CHECK(baseline.subshape.has_value() == carrier.subshape.has_value());
+      if (baseline.subshape)
+        CHECK(baseline.subshape->IsSame(*carrier.subshape));
     };
-    compareEdgeV1(legacyEdge, solidar::TopologyMatchMethod::LegacyIndex);
+    compareEdgeV1(legacyEdge, solidar::TopologyMatchMethod::LegacyIndex,
+                  solidar::TopologyResolutionFailure::None);
     compareEdgeV1(signatureEdge,
-                  solidar::TopologyMatchMethod::GeometricSignature);
+                  solidar::TopologyMatchMethod::GeometricSignature,
+                  solidar::TopologyResolutionFailure::None);
     auto tagOnlyEdge = legacyEdge;
     tagOnlyEdge.persistentTag = "edge:missing-tag";
     tagOnlyEdge.edgeSignature.reset();
-    const auto baselineTagOnly = baselineIndex->resolveEdge(tagOnlyEdge);
-    const auto carrierTagOnly = index->resolveEdge(tagOnlyEdge);
-    CHECK(!baselineTagOnly);
-    CHECK(!carrierTagOnly);
-    CHECK(!baselineTagOnly.subshape);
-    CHECK(!carrierTagOnly.subshape);
-    CHECK(baselineTagOnly.method == solidar::TopologyMatchMethod::None);
-    CHECK(carrierTagOnly.method == solidar::TopologyMatchMethod::None);
-    CHECK(baselineTagOnly.failure ==
-          solidar::TopologyResolutionFailure::Missing);
-    CHECK(carrierTagOnly.failure == baselineTagOnly.failure);
+    compareEdgeV1(tagOnlyEdge, solidar::TopologyMatchMethod::None,
+                  solidar::TopologyResolutionFailure::Missing);
+
+    auto missingEdge = signatureEdge;
+    missingEdge.edgeSignature->midpoint = {10000.0, 10000.0, 10000.0};
+    compareEdgeV1(missingEdge, solidar::TopologyMatchMethod::None,
+                  solidar::TopologyResolutionFailure::Missing);
+
+    std::vector<solidar::TopologyReference> capturedEdges;
+    for (std::size_t raw = 0; raw < baselineIndex->rawEdgeCount(); ++raw) {
+      const auto captured =
+          baselineIndex->createEdgeReference(bodyId, featureId, raw);
+      CHECK(captured);
+      CHECK(captured.reference.v1());
+      capturedEdges.push_back(*captured.reference.v1());
+      capturedEdges.back().persistentTag.clear();
+    }
+    std::optional<std::pair<std::size_t, std::size_t>> equivalent;
+    for (std::size_t first = 0;
+         first < capturedEdges.size() && !equivalent; ++first)
+      for (std::size_t second = first + 1; second < capturedEdges.size();
+           ++second) {
+        const auto& a = *capturedEdges[first].edgeSignature;
+        const auto& b = *capturedEdges[second].edgeSignature;
+        const double tangentDot = a.tangent.x * b.tangent.x +
+                                  a.tangent.y * b.tangent.y +
+                                  a.tangent.z * b.tangent.z;
+        if (a.curve == b.curve && std::abs(a.length - b.length) < 1e-7 &&
+            std::abs(tangentDot) > 0.999) {
+          equivalent = {{first, second}};
+          break;
+        }
+      }
+    CHECK(equivalent);
+    auto ambiguousEdge = capturedEdges[equivalent->first];
+    const auto& other = *capturedEdges[equivalent->second].edgeSignature;
+    ambiguousEdge.edgeSignature->midpoint = {
+        (ambiguousEdge.edgeSignature->midpoint.x + other.midpoint.x) * 0.5,
+        (ambiguousEdge.edgeSignature->midpoint.y + other.midpoint.y) * 0.5,
+        (ambiguousEdge.edgeSignature->midpoint.z + other.midpoint.z) * 0.5};
+    ambiguousEdge.edgeSignature->bounds.minimum = {
+        (ambiguousEdge.edgeSignature->bounds.minimum.x +
+         other.bounds.minimum.x) * 0.5,
+        (ambiguousEdge.edgeSignature->bounds.minimum.y +
+         other.bounds.minimum.y) * 0.5,
+        (ambiguousEdge.edgeSignature->bounds.minimum.z +
+         other.bounds.minimum.z) * 0.5};
+    ambiguousEdge.edgeSignature->bounds.maximum = {
+        (ambiguousEdge.edgeSignature->bounds.maximum.x +
+         other.bounds.maximum.x) * 0.5,
+        (ambiguousEdge.edgeSignature->bounds.maximum.y +
+         other.bounds.maximum.y) * 0.5,
+        (ambiguousEdge.edgeSignature->bounds.maximum.z +
+         other.bounds.maximum.z) * 0.5};
+    compareEdgeV1(ambiguousEdge, solidar::TopologyMatchMethod::None,
+                  solidar::TopologyResolutionFailure::Ambiguous);
   }
 
   // IsSame aliases are idempotent. Distinct keys may name the same canonical
@@ -1217,6 +1311,228 @@ int main() {
     CHECK(firstAlias.reference == secondAlias.reference);
   }
 
+  // EdgeReference is the same closed v1|v2 carrier contract as
+  // FaceReference. fromV1 normalizes the kind and removes face-only evidence;
+  // fromV2 preserves the exact operation-provenance value.
+  {
+    solidar::EdgeReference invalid;
+    CHECK(invalid.version() == solidar::EdgeReferenceVersion::V1);
+    CHECK(invalid.isV1());
+    CHECK(!invalid.isV2());
+    CHECK(invalid.bodyId() == solidar::kInvalidBodyId);
+    CHECK(invalid.featureId() == solidar::kInvalidFeatureId);
+    CHECK(invalid.v1());
+    CHECK(!invalid.v2());
+    CHECK(invalid.v1()->kind == solidar::TopologyKind::Edge);
+    CHECK(std::holds_alternative<solidar::TopologyReference>(
+        invalid.storage()));
+
+    solidar::TopologyReference rawV1;
+    rawV1.bodyId = bodyId;
+    rawV1.featureId = featureId;
+    rawV1.kind = solidar::TopologyKind::Face;
+    rawV1.legacyIndex = 7;
+    rawV1.persistentTag = "legacy:edge";
+    rawV1.faceSignature = solidar::FaceSignature{};
+    solidar::EdgeSignature exactSignature;
+    exactSignature.curve = solidar::CurveKind::Circle;
+    exactSignature.length = 12.5;
+    exactSignature.midpoint = {1.0, 2.0, 3.0};
+    exactSignature.radius = 2.5;
+    exactSignature.center = {4.0, 5.0, 6.0};
+    rawV1.edgeSignature = exactSignature;
+    auto v1 = solidar::EdgeReference::fromV1(rawV1);
+    CHECK(v1.isV1());
+    CHECK(!v1.isV2());
+    CHECK(v1.bodyId() == bodyId);
+    CHECK(v1.featureId() == featureId);
+    CHECK(v1.v1());
+    CHECK(!v1.v2());
+    CHECK(std::holds_alternative<solidar::TopologyReference>(v1.storage()));
+    CHECK(v1.v1()->kind == solidar::TopologyKind::Edge);
+    CHECK(!v1.v1()->faceSignature);
+    CHECK(v1.edgeIndex() == 7);
+    CHECK(v1.persistentTag() == "legacy:edge");
+    CHECK(v1.signature() == exactSignature);
+    v1.edgeIndex() = 9;
+    v1.persistentTag() = "legacy:edge:mutated";
+    v1.signature()->length = 15.0;
+    CHECK(v1.v1()->legacyIndex == 9);
+    CHECK(v1.v1()->persistentTag == "legacy:edge:mutated");
+    CHECK(v1.v1()->edgeSignature->length == 15.0);
+    const auto v1Copy = v1;
+    CHECK(v1Copy == v1);
+    auto v1Moved = v1Copy;
+    const auto v1Expected = v1Moved;
+    auto movedCarrier = std::move(v1Moved);
+    CHECK(movedCarrier == v1Expected);
+
+    auto exactV2 = solidar::TopologyReferenceV2{
+        bodyId,
+        makeKey(featureId, solidar::TopologyKind::Edge, "carrier:edge")};
+    const auto v2 = solidar::EdgeReference::fromV2(exactV2);
+    CHECK(v2.version() == solidar::EdgeReferenceVersion::V2);
+    CHECK(v2.isV2());
+    CHECK(!v2.isV1());
+    CHECK(v2.bodyId() == bodyId);
+    CHECK(v2.featureId() == featureId);
+    CHECK(!v2.v1());
+    CHECK(v2.v2());
+    CHECK(std::holds_alternative<solidar::TopologyReferenceV2>(v2.storage()));
+    CHECK(*v2.v2() == exactV2);
+    CHECK(v1 != v2);
+    const auto v2Copy = v2;
+    CHECK(v2Copy == v2);
+    auto v2Moved = v2Copy;
+    const auto v2Expected = v2Moved;
+    auto movedV2 = std::move(v2Moved);
+    CHECK(movedV2 == v2Expected);
+    CHECK(solidar::EdgeReference::fromV2(*v2.v2()) == v2);
+
+    exactV2.provenance.kind = solidar::TopologyKind::Face;
+    const auto unnormalizedV2 =
+        solidar::EdgeReference::fromV2(exactV2);
+    CHECK(unnormalizedV2.v2());
+    CHECK(*unnormalizedV2.v2() == exactV2);
+  }
+
+  // Exact edge-reference creation uses one Edge key on the selected canonical
+  // edge, owned by the expected producer, then verifies global exact
+  // resolution. It never falls back to v1 geometric evidence.
+  {
+    const TopoDS_Shape box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape();
+    const auto boxFaces = subshapes(box, TopAbs_FACE, 1);
+    const auto boxEdges = subshapes(box, TopAbs_EDGE, 2);
+    CHECK(boxFaces.size() == 1);
+    CHECK(boxEdges.size() == 2);
+    const auto faceKey =
+        makeKey(featureId, solidar::TopologyKind::Face, "factory:face");
+    const auto uniqueKey =
+        makeKey(featureId, solidar::TopologyKind::Edge, "factory:edge");
+    const auto lineage = solidar::TopologyLineage::create(
+        {{faceKey, boxFaces[0]}, {uniqueKey, boxEdges[0]}},
+        kPartialFaceCoverage);
+    CHECK(lineage);
+    const auto index = solidar::TopologyIndex::build(
+        std::make_shared<TopoDS_Shape>(box), 901, lineage);
+    CHECK(index);
+
+    const auto created =
+        index->createEdgeReferenceV2(bodyId, featureId, 0);
+    CHECK(created);
+    CHECK(created.status == solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(created.reference.isV2());
+    CHECK(created.reference.v2()->provenance == uniqueKey);
+    const auto resolved = index->resolveEdge(created.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*boxEdges[0]));
+
+    const auto absent =
+        index->createEdgeReferenceV2(bodyId, featureId, 1);
+    CHECK(!absent);
+    CHECK(absent.status == solidar::EdgeReferenceV2CreationStatus::Missing);
+    const auto outOfRange =
+        index->createEdgeReferenceV2(bodyId, featureId, 9999);
+    CHECK(!outOfRange);
+    CHECK(outOfRange.status ==
+          solidar::EdgeReferenceV2CreationStatus::Missing);
+    const auto invalidOwner = index->createEdgeReferenceV2(
+        solidar::kInvalidBodyId, featureId, 0);
+    CHECK(!invalidOwner);
+    CHECK(invalidOwner.status ==
+          solidar::EdgeReferenceV2CreationStatus::InvalidReference);
+    const auto wrongProducer =
+        index->createEdgeReferenceV2(bodyId, featureId + 1, 0);
+    CHECK(!wrongProducer);
+    CHECK(wrongProducer.status ==
+          solidar::EdgeReferenceV2CreationStatus::InvalidReference);
+
+    auto wrongKindReference = *created.reference.v2();
+    wrongKindReference.provenance.kind = solidar::TopologyKind::Face;
+    const auto wrongKind = index->resolveEdge(
+        solidar::EdgeReference::fromV2(wrongKindReference));
+    CHECK(!wrongKind);
+    CHECK(wrongKind.failure ==
+          solidar::TopologyResolutionFailure::InvalidReference);
+
+    auto missingKey = uniqueKey;
+    missingKey.localName = "factory:edge-missing";
+    const auto missingCarrier =
+        solidar::EdgeReference::fromV2({bodyId, missingKey});
+    const auto missing = index->resolveEdge(missingCarrier);
+    CHECK(!missing);
+    CHECK(missing.failure == solidar::TopologyResolutionFailure::Missing);
+    const auto legacy = index->createEdgeReference(bodyId, featureId, 0);
+    CHECK(legacy);
+    CHECK(legacy.reference.isV1());
+    CHECK(index->resolveEdge(legacy.reference));
+
+    auto secondKey = uniqueKey;
+    secondKey.localName = "factory:edge-second";
+    const auto multipleLineage = solidar::TopologyLineage::create(
+        {{faceKey, boxFaces[0]},
+         {uniqueKey, boxEdges[0]},
+         {secondKey, boxEdges[0]}},
+        kPartialFaceCoverage);
+    CHECK(multipleLineage);
+    const auto multipleIndex = solidar::TopologyIndex::build(
+        std::make_shared<TopoDS_Shape>(box), 902, multipleLineage);
+    CHECK(multipleIndex);
+    const auto multiple =
+        multipleIndex->createEdgeReferenceV2(bodyId, featureId, 0);
+    CHECK(!multiple);
+    CHECK(multiple.status ==
+          solidar::EdgeReferenceV2CreationStatus::Ambiguous);
+
+    const auto duplicateLineage = solidar::TopologyLineage::create(
+        {{faceKey, boxFaces[0]},
+         {uniqueKey, boxEdges[0]},
+         {uniqueKey, boxEdges[1]}},
+        kPartialFaceCoverage);
+    CHECK(duplicateLineage);
+    const auto duplicateIndex = solidar::TopologyIndex::build(
+        std::make_shared<TopoDS_Shape>(box), 903, duplicateLineage);
+    CHECK(duplicateIndex);
+    const auto duplicate =
+        duplicateIndex->createEdgeReferenceV2(bodyId, featureId, 0);
+    CHECK(!duplicate);
+    CHECK(duplicate.status ==
+          solidar::EdgeReferenceV2CreationStatus::Ambiguous);
+
+    const auto reversed =
+        std::make_shared<TopoDS_Shape>(boxEdges[0]->Reversed());
+    CHECK(boxEdges[0]->IsSame(*reversed));
+    TopoDS_Compound aliasCompound;
+    BRep_Builder aliasBuilder;
+    aliasBuilder.MakeCompound(aliasCompound);
+    aliasBuilder.Add(aliasCompound, *boxFaces[0]);
+    aliasBuilder.Add(aliasCompound, *boxEdges[0]);
+    aliasBuilder.Add(aliasCompound, *reversed);
+    const auto aliasShape = std::make_shared<TopoDS_Shape>(aliasCompound);
+    const auto aliasLineage = solidar::TopologyLineage::create(
+        {{faceKey, boxFaces[0]}, {uniqueKey, boxEdges[0]}},
+        kPartialFaceCoverage);
+    CHECK(aliasLineage);
+    const auto aliasIndex =
+        solidar::TopologyIndex::build(aliasShape, 904, aliasLineage);
+    CHECK(aliasIndex);
+    std::vector<solidar::EdgeReference> aliases;
+    for (std::size_t raw = 0; raw < aliasIndex->rawEdgeCount(); ++raw) {
+      const auto candidate =
+          aliasIndex->createEdgeReferenceV2(bodyId, featureId, raw);
+      if (candidate) aliases.push_back(candidate.reference);
+    }
+    CHECK(aliases.size() >= 2);
+    for (const auto& alias : aliases) CHECK(alias == aliases.front());
+
+    const solidar::EdgeReferenceV2Creation sentinel;
+    CHECK(!sentinel);
+    CHECK(sentinel.status ==
+          solidar::EdgeReferenceV2CreationStatus::Unexpected);
+  }
+
   // Candidate traversal and binding insertion order do not change exact
   // Resolved/Missing/Ambiguous outcomes.
   {
@@ -1435,6 +1751,53 @@ int main() {
     CHECK(legacyFeature.shape());
     CHECK(!legacyFeature.topologyLineage());
     CHECK(legacyFeature.topologyIndex());
+  }
+
+  // The ShapeFeature facade preserves exact edge-factory status and resolves
+  // the created operation-provenance carrier back to the selected edge.
+  {
+    solidar::Document document;
+    solidar::RebuildContext context{document, nullptr, nullptr, nullptr};
+    SyntheticEdgeLineageFeature feature;
+    const auto unavailable = feature.createEdgeReferenceV2(bodyId, 0);
+    CHECK(!unavailable);
+    CHECK(unavailable.status ==
+          solidar::EdgeReferenceV2CreationStatus::Missing);
+    CHECK(!unavailable.error.empty());
+
+    CHECK(feature.rebuild(context));
+    const auto selected = subshapes(*feature.shape(), TopAbs_EDGE, 1);
+    CHECK(selected.size() == 1);
+    const auto created = feature.createEdgeReferenceV2(bodyId, 0);
+    CHECK(created);
+    CHECK(created.status ==
+          solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(created.reference.isV2());
+    CHECK(created.reference.bodyId() == bodyId);
+    CHECK(created.reference.featureId() == feature.id());
+    const auto resolved = feature.topologyIndex()->resolveEdge(
+        created.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*selected.front()));
+
+    const auto invalidOwner = feature.createEdgeReferenceV2(
+        solidar::kInvalidBodyId, 0);
+    CHECK(!invalidOwner);
+    CHECK(invalidOwner.status ==
+          solidar::EdgeReferenceV2CreationStatus::InvalidReference);
+    const auto absent = feature.createEdgeReferenceV2(bodyId, 9999);
+    CHECK(!absent);
+    CHECK(absent.status ==
+          solidar::EdgeReferenceV2CreationStatus::Missing);
+
+    SyntheticEdgeLineageFeature legacyFeature(false);
+    CHECK(legacyFeature.rebuild(context));
+    const auto noLineage = legacyFeature.createEdgeReferenceV2(bodyId, 0);
+    CHECK(!noLineage);
+    CHECK(noLineage.status ==
+          solidar::EdgeReferenceV2CreationStatus::Missing);
   }
 
   // Standard_Failure and unknown-exception rollback remain covered by the

@@ -25,7 +25,16 @@ namespace solidar {
 namespace {
 
 std::size_t topologyReferenceBytes(const EdgeReference& reference) {
-  return reference.persistentTag.capacity();
+  if (const auto* legacy = reference.v1())
+    return legacy->persistentTag.capacity();
+  const auto* persistent = reference.v2();
+  if (!persistent) return 0;
+  std::size_t bytes = persistent->provenance.localName.capacity() +
+                      persistent->provenance.origins.capacity() *
+                          sizeof(TopologyProvenanceOrigin);
+  for (const auto& origin : persistent->provenance.origins)
+    bytes += origin.localName.capacity();
+  return bytes;
 }
 
 std::size_t topologyReferenceBytes(const FaceReference& reference) {

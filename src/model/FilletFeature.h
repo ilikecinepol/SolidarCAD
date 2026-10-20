@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/ShapeFeature.h"
+#include "model/EdgeReference.h"
 #include "model/SketchPlacement.h"
 
 #include <vector>

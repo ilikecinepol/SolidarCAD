@@ -185,10 +185,16 @@ DraftReferenceResolution resolveDraftEdgeAxisIndexed(
                           "Draft face could not be resolved: " + face.error};
           return false;
         }
+        if (rotationEdge.isV2()) {
+          typedFailure = {
+              OperationFailureCode::TopologyReferenceInvalid,
+              "Draft does not support topology v2 edge references yet"};
+          return false;
+        }
         const auto edge = topology
-                              ? topology->resolveEdge(rotationEdge.topology())
+                              ? topology->resolveEdge(*rotationEdge.v1())
                               : resolveEdgeReference(baseShape,
-                                                     rotationEdge.topology());
+                                                     *rotationEdge.v1());
         if (!edge) {
           typedFailure = {
               operationFailureCode(edge.failure),
@@ -376,8 +382,12 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
       markError("Draft rotation edge requires exactly one selected face");
       return false;
     }
-    if (rotationEdge_->bodyId != context.body->id() ||
-        rotationEdge_->featureId != sourceFeatureId_) {
+    if (rotationEdge_->isV2()) {
+      markError("Draft does not support topology v2 edge references yet");
+      return false;
+    }
+    if (rotationEdge_->bodyId() != context.body->id() ||
+        rotationEdge_->featureId() != sourceFeatureId_) {
       markError("Draft rotation edge belongs to a different Body");
       return false;
     }

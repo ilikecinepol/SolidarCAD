@@ -91,12 +91,13 @@ int main() {
   const std::size_t baseFaces = countFaces(*document.findBody(box.bodyId)->resultShape());
   auto* fillet = addFillet(document, box, 5.0);
   CHECK(fillet);
-  CHECK(fillet->edge().bodyId == box.bodyId);
-  CHECK(fillet->edge().featureId == box.extrudeId);
-  const auto topologyReference = fillet->edge().topology();
+  CHECK(fillet->edge().bodyId() == box.bodyId);
+  CHECK(fillet->edge().featureId() == box.extrudeId);
+  CHECK(fillet->edge().v1());
+  const auto topologyReference = *fillet->edge().v1();
   CHECK(topologyReference.kind == solidar::TopologyKind::Edge);
   CHECK(topologyReference.hasValidOwner());
-  CHECK(topologyReference.legacyIndex == fillet->edge().edgeIndex);
+  CHECK(topologyReference.legacyIndex == fillet->edge().edgeIndex());
   const auto sourceShape =
       document.findBody(box.bodyId)->features().front()->shape();
   CHECK(sourceShape);
@@ -108,8 +109,9 @@ int main() {
        explorer.Next(), ++rawEdgeIndex) {
     const auto picked = solidar::makeEdgeReference(
         *sourceShape, box.bodyId, box.extrudeId, rawEdgeIndex);
-    CHECK(picked.signature);
-    CHECK(solidar::resolveEdgeReference(*sourceShape, picked.topology()));
+    CHECK(picked.signature());
+    CHECK(picked.v1());
+    CHECK(solidar::resolveEdgeReference(*sourceShape, *picked.v1()));
   }
   CHECK(rawEdgeIndex > 0);
   const auto builderIndexBuilds =
@@ -126,6 +128,18 @@ int main() {
       *sourceShape, wrongKind));
   CHECK(document.rebuild());
   CHECK(fillet->isValid());
+  const auto legacyFilletEdge = fillet->edge();
+  fillet->setEdge(solidar::EdgeReference::fromV2(
+      {box.bodyId,
+       solidar::TopologyProvenanceKey{
+           box.extrudeId, solidar::TopologyKind::Edge,
+           solidar::TopologyProvenanceOperation::Seed,
+           solidar::TopologySemanticRole::Custom, "fillet:v2-edge"}}));
+  CHECK(!document.recompute());
+  CHECK(fillet->error() ==
+        "Fillet does not support topology v2 edge references yet");
+  fillet->setEdge(legacyFilletEdge);
+  CHECK(document.recompute());
   CHECK(fillet->hasShape());
   CHECK(fillet->shape()->ShapeType() == TopAbs_SOLID);
   CHECK(volumeOf(*fillet->shape()) < baseVolume - 1e-7);
@@ -265,7 +279,7 @@ int main() {
           index));
   }
   CHECK(verticalEdges.size() == 2);
-  CHECK(verticalEdges[0].signature && verticalEdges[1].signature);
+  CHECK(verticalEdges[0].signature() && verticalEdges[1].signature());
 
   solidar::FilletToolSession multiEdgeSession;
   multiEdgeSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,

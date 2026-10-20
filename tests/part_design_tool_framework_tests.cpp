@@ -430,7 +430,7 @@ int main() {
     const auto box = std::make_shared<TopoDS_Shape>(
         BRepPrimAPI_MakeBox(30.0, 20.0, 10.0).Shape());
     const auto edge = solidar::makeEdgeReference(*box, bodyId, featureId, 0);
-    CHECK(edge.signature);
+    CHECK(edge.signature());
 
     const auto unitLength = [](solidar::Vector3d v) {
       return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -460,13 +460,33 @@ int main() {
     // Owner mismatch is a typed topology failure for every edge/face tool;
     // diagnostic wording is not part of the contract.
     auto foreignEdge = edge;
-    foreignEdge.bodyId = bodyId + 1;
+    CHECK(foreignEdge.v1());
+    auto foreignEdgeV1 = *foreignEdge.v1();
+    foreignEdgeV1.bodyId = bodyId + 1;
+    foreignEdge = solidar::EdgeReference::fromV1(std::move(foreignEdgeV1));
     fillet.setEdges({foreignEdge});
     CHECK(fillet.errorCode() ==
           solidar::OperationFailureCode::TopologyReferenceMismatch);
     chamfer.setEdges({foreignEdge});
     CHECK(chamfer.errorCode() ==
           solidar::OperationFailureCode::TopologyReferenceMismatch);
+
+    const auto v2Edge = solidar::EdgeReference::fromV2(
+        {bodyId,
+         solidar::TopologyProvenanceKey{
+             featureId, solidar::TopologyKind::Edge,
+             solidar::TopologyProvenanceOperation::Seed,
+             solidar::TopologySemanticRole::Custom, "session:v2-edge"}});
+    fillet.setEdges({v2Edge});
+    CHECK(fillet.errorCode() ==
+          solidar::OperationFailureCode::TopologyReferenceInvalid);
+    CHECK(fillet.error() ==
+          "Fillet does not support topology v2 edge references yet");
+    chamfer.setEdges({v2Edge});
+    CHECK(chamfer.errorCode() ==
+          solidar::OperationFailureCode::TopologyReferenceInvalid);
+    CHECK(chamfer.error() ==
+          "Chamfer does not support topology v2 edge references yet");
 
     auto face = solidar::makeFaceReference(*box, bodyId, featureId, 0);
     CHECK(face.signature());
@@ -529,7 +549,11 @@ int main() {
           solidar::OperationFailureCode::TopologyIndexUnavailable);
 
     auto foreignRotationEdge = edge;
-    foreignRotationEdge.bodyId = bodyId + 1;
+    CHECK(foreignRotationEdge.v1());
+    auto foreignRotationEdgeV1 = *foreignRotationEdge.v1();
+    foreignRotationEdgeV1.bodyId = bodyId + 1;
+    foreignRotationEdge =
+        solidar::EdgeReference::fromV1(std::move(foreignRotationEdgeV1));
     solidar::DraftToolSession rotationOwnerDraft;
     rotationOwnerDraft.begin(draftDocument, bodyId, featureId, box, {face},
                              plane, direction);
@@ -553,7 +577,7 @@ int main() {
         BRepBuilderAPI_Transform(*box, translation).Shape());
     const auto movedEdge =
         solidar::makeEdgeReference(*movedBox, bodyId, featureId, 0);
-    CHECK(movedEdge.signature);
+    CHECK(movedEdge.signature());
     solidar::FilletToolSession movedFillet;
     movedFillet.begin(bodyId, featureId, movedBox, {movedEdge}, 3.0);
     const auto movedManip = movedFillet.manipulator();

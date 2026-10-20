@@ -95,6 +95,21 @@ solidar::FaceReference historyV2Face(std::string localName,
                                  std::move(localName), std::move(origins)}});
 }
 
+solidar::EdgeReference historyV2Edge(std::string localName,
+                                     std::string originName) {
+  using namespace solidar;
+  std::vector<TopologyProvenanceOrigin> origins;
+  origins.emplace_back(40, TopologyKind::Edge,
+                       TopologyProvenanceOperation::Seed,
+                       TopologySemanticRole::Custom,
+                       std::move(originName));
+  return EdgeReference::fromV2(
+      {30, TopologyProvenanceKey{50, TopologyKind::Edge,
+                                 TopologyProvenanceOperation::Generated,
+                                 TopologySemanticRole::Custom,
+                                 std::move(localName), std::move(origins)}});
+}
+
 }  // namespace
 
 int main() {
@@ -390,6 +405,60 @@ int main() {
                                         shortAfter)
               .status == HistoryCommitStatus::Accepted);
     CHECK(retainedLong > shortHistory.retainedBytes() + 3000);
+  }
+
+  // Editor edge selection state uses the same exact v2 accounting contract.
+  {
+    const auto longReference =
+        historyV2Edge(std::string(2048, 'e'), std::string(1536, 'a'));
+    const auto shortReference = historyV2Edge("e", "a");
+    EditorCommittedState before;
+    EditorCommittedState longAfter;
+    longAfter.presentation.originVisible = false;
+    longAfter.edges = {longReference};
+    Document longDocument;
+    ModelCommandHistory longHistory;
+    CHECK(longHistory.recordTransition(longDocument, Document(longDocument),
+                                       before, longAfter)
+              .status == HistoryCommitStatus::Accepted);
+    const auto retainedLong = longHistory.retainedBytes();
+    const auto undone = longHistory.undo(longDocument, longAfter);
+    CHECK(undone.changed);
+    CHECK(undone.state.edges.empty());
+    const auto redone = longHistory.redo(longDocument, before);
+    CHECK(redone.changed);
+    CHECK(redone.state.edges ==
+          std::vector<EdgeReference>{longReference});
+
+    EditorCommittedState shortAfter;
+    shortAfter.presentation.originVisible = false;
+    shortAfter.edges = {shortReference};
+    Document shortDocument;
+    ModelCommandHistory shortHistory;
+    CHECK(shortHistory.recordTransition(shortDocument,
+                                        Document(shortDocument), before,
+                                        shortAfter)
+              .status == HistoryCommitStatus::Accepted);
+    CHECK(retainedLong > shortHistory.retainedBytes() + 3000);
+  }
+
+  // A v2 edge embedded in a Document feature contributes its complete
+  // provenance payload to the cold delta's bounded retained-byte estimate.
+  {
+    const auto featureDeltaBytes = [](const EdgeReference& reference) {
+      Document before;
+      Document current = before;
+      current.addBody(901, "edge history body")
+          .addFeature(std::make_unique<FilletFeature>(
+              902, reference, 1.0, "edge history fillet"));
+      return ModelCommandHistory::inspectDelta(before, current);
+    };
+    const auto longMetrics = featureDeltaBytes(
+        historyV2Edge(std::string(2048, 'f'), std::string(1536, 'o')));
+    const auto shortMetrics = featureDeltaBytes(historyV2Edge("f", "o"));
+    CHECK(longMetrics.sliceCount == 1);
+    CHECK(shortMetrics.sliceCount == 1);
+    CHECK(longMetrics.retainedBytes > shortMetrics.retainedBytes + 3000);
   }
 
   // A v2 reference embedded in Document state also survives the cold delta

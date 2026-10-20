@@ -66,11 +66,16 @@ bool ChamferFeature::rebuildImpl(const RebuildContext& context) {
     markError("Chamfer edge belongs to a different Body");
     return false;
   }
-  const BodyId sourceBody = edges_.front().bodyId;
-  const FeatureId sourceFeature = edges_.front().featureId;
+  if (std::any_of(edges_.begin(), edges_.end(),
+                  [](const EdgeReference& edge) { return edge.isV2(); })) {
+    markError("Chamfer does not support topology v2 edge references yet");
+    return false;
+  }
+  const BodyId sourceBody = edges_.front().bodyId();
+  const FeatureId sourceFeature = edges_.front().featureId();
   for (const auto& edge : edges_)
-    if (edge.bodyId != sourceBody || edge.featureId != sourceFeature ||
-        edge.bodyId != context.body->id()) {
+    if (edge.bodyId() != sourceBody || edge.featureId() != sourceFeature ||
+        edge.bodyId() != context.body->id()) {
       markError("Chamfer edges must belong to one Body and source Feature");
       return false;
     }
@@ -100,7 +105,7 @@ bool ChamferFeature::rebuildImpl(const RebuildContext& context) {
   }
   std::vector<TopologyReference> references;
   references.reserve(edges_.size());
-  for (const auto& edge : edges_) references.push_back(edge.topology());
+  for (const auto& edge : edges_) references.push_back(*edge.v1());
   const auto resolutions = topology->resolveEdges(references);
   std::vector<std::size_t> indices;
   indices.reserve(edges_.size());

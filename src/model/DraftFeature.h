@@ -7,6 +7,7 @@
 #include <gp_Pln.hxx>
 
 #include "model/RevolveFeature.h"
+#include "model/EdgeReference.h"
 #include "model/OperationFailure.h"
 #include "model/ShapeFeature.h"
 #include "model/SketchPlacement.h"

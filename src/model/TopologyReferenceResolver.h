@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "model/FaceReference.h"
-#include "model/SketchPlacement.h"
+#include "model/EdgeReference.h"
 #include "model/OperationFailure.h"
 #include "model/TopologyLineage.h"
 
@@ -88,9 +88,8 @@ struct EdgeReferenceCreation {
   EdgeReference reference;
   std::string error;
   [[nodiscard]] explicit operator bool() const noexcept {
-    return reference.bodyId != kInvalidBodyId &&
-           reference.featureId != kInvalidFeatureId &&
-           reference.signature.has_value();
+    const auto* v1 = reference.v1();
+    return v1 && v1->hasValidOwner() && v1->edgeSignature.has_value();
   }
 };
 
@@ -136,6 +135,8 @@ class TopologyIndex final {
       const TopologyReference& reference) const;
   [[nodiscard]] EdgeResolution resolveEdge(
       const TopologyReferenceV2& reference) const;
+  [[nodiscard]] EdgeResolution resolveEdge(
+      const EdgeReference& reference) const;
   [[nodiscard]] std::vector<FaceResolution> resolveFaces(
       std::span<const TopologyReference> references) const;
   [[nodiscard]] std::vector<EdgeResolution> resolveEdges(
@@ -149,6 +150,9 @@ class TopologyIndex final {
   [[nodiscard]] EdgeReferenceCreation createEdgeReference(
       BodyId bodyId, FeatureId featureId, std::size_t rawEdgeIndex,
       std::string semanticTag = {}) const;
+  [[nodiscard]] EdgeReferenceV2Creation createEdgeReferenceV2(
+      BodyId bodyId, FeatureId expectedFeatureId,
+      std::size_t rawEdgeIndex) const;
 
  private:
   explicit TopologyIndex(std::shared_ptr<const Data> data) noexcept;

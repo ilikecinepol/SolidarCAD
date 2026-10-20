@@ -84,6 +84,19 @@ FaceReferenceV2Creation ShapeFeature::createFaceReferenceV2(
   return index->createFaceReferenceV2(bodyId, id(), rawFaceIndex);
 }
 
+EdgeReferenceV2Creation ShapeFeature::createEdgeReferenceV2(
+    BodyId bodyId, std::size_t rawEdgeIndex) const {
+  std::string error;
+  const auto index = topologyIndex(&error);
+  if (!index) {
+    EdgeReferenceV2Creation result;
+    result.status = EdgeReferenceV2CreationStatus::Missing;
+    result.error = std::move(error);
+    return result;
+  }
+  return index->createEdgeReferenceV2(bodyId, id(), rawEdgeIndex);
+}
+
 std::shared_ptr<const TopologyIndex> ShapeFeature::ensureTopologyIndex(
     std::string* error) const {
   if (!shape_ || shape_->IsNull() ||

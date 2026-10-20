@@ -10,6 +10,7 @@
 #include "model/DraftToolSession.h"
 #include "model/EdgeFeatureLimits.h"
 #include "model/EdgeManipulatorGeometry.h"
+#include "model/EdgeReference.h"
 #include "model/ExtrudeFeature.h"
 #include "model/ExtrudeOperationDetector.h"
 #include "model/ExtrudeSource.h"
@@ -69,8 +70,23 @@
 #include "sketch/EquationDiagnostics.h"
 
 #include <cstdlib>
+#include <type_traits>
+#include <variant>
 
 static_assert(static_cast<unsigned>(solidar::FeatureKind::ImportedShape) == 1);
 static_assert(solidar::kPersistedFeatureKindCount == 13);
+static_assert(std::is_same_v<solidar::EdgeReference::Storage,
+                             std::variant<solidar::TopologyReference,
+                                          solidar::TopologyReferenceV2>>);
+static_assert(std::is_same_v<decltype(
+                                 std::declval<const solidar::EdgeReference&>()
+                                     .storage()),
+                             const solidar::EdgeReference::Storage&>);
+static_assert(std::is_same_v<decltype(
+                                 std::declval<const solidar::EdgeReference&>()
+                                     .edgeIndex()),
+                             const std::size_t&>);
+static_assert(!std::is_convertible_v<solidar::EdgeReference,
+                                     solidar::TopologyReference>);
 
 int main() { return EXIT_SUCCESS; }

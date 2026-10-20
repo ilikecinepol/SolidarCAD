@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/EdgeReference.h"
+
 #include <QPoint>
 #include <QPainterPath>
 #include <QPolygonF>

@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "model/ShapeFeature.h"
+#include "model/EdgeReference.h"
 #include "model/SketchPlacement.h"
 
 namespace solidar {

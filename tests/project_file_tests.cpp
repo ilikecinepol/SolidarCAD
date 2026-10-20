@@ -4583,6 +4583,72 @@ int main(int argc, char* argv[]) {
     CHECK(conflictLoaded.sketches()[0].geometry.constraints().size() == 2);
   }
 
+  // Project v3 persists only legacy edge references. A v2 edge in any
+  // persisted edge consumer must fail closed at the writer boundary, without
+  // throwing bad_variant_access or emitting a partial file.
+  {
+    const auto v2Edge = [](solidar::BodyId bodyId,
+                           solidar::FeatureId producer) {
+      return solidar::EdgeReference::fromV2(
+          {bodyId,
+           solidar::TopologyProvenanceKey{
+               producer, solidar::TopologyKind::Edge,
+               solidar::TopologyProvenanceOperation::Seed,
+               solidar::TopologySemanticRole::Custom, "project:v2-edge"}});
+    };
+    const auto rejected = [&](const QString& name,
+                              std::unique_ptr<solidar::ShapeFeature> feature) {
+      solidar::Document document;
+      document.addBody("V2 edge writer rejection")
+          .addFeature(std::move(feature));
+      const QByteArray sentinel("existing destination sentinel\0bytes", 35);
+      const QString existingPath = directory.filePath("existing-" + name);
+      QFile existing(existingPath);
+      CHECK(existing.open(QIODevice::WriteOnly));
+      CHECK(existing.write(sentinel) == sentinel.size());
+      existing.close();
+
+      QString diagnostic;
+      CHECK(!solidar::project::ProjectFile::saveDocument(
+          existingPath, document, &diagnostic));
+      CHECK(diagnostic.contains(QStringLiteral("v2")));
+      CHECK(existing.open(QIODevice::ReadOnly));
+      CHECK(existing.readAll() == sentinel);
+      existing.close();
+
+      diagnostic.clear();
+      const QString missingPath = directory.filePath("missing-" + name);
+      CHECK(!QFile::exists(missingPath));
+      CHECK(!solidar::project::ProjectFile::saveDocument(
+          missingPath, document, &diagnostic));
+      CHECK(diagnostic.contains(QStringLiteral("v2")));
+      CHECK(!QFile::exists(missingPath));
+      return true;
+    };
+
+    constexpr solidar::BodyId encodedBody = 1;
+    constexpr solidar::FeatureId producer = 710;
+    const auto edge = v2Edge(encodedBody, producer);
+    CHECK(rejected(
+        "reject-v2-fillet-edge.solidar",
+        std::make_unique<solidar::FilletFeature>(
+            711, edge, 1.0, "V2 Fillet")));
+    CHECK(rejected(
+        "reject-v2-chamfer-edge.solidar",
+        std::make_unique<solidar::ChamferFeature>(
+            712, std::vector<solidar::EdgeReference>{edge}, 1.0,
+            "V2 Chamfer")));
+    CHECK(rejected(
+        "reject-v2-draft-edge.solidar",
+        std::make_unique<solidar::DraftFeature>(
+            713, producer, std::vector<solidar::FaceReference>{{}},
+            solidar::PlaneReference{solidar::NeutralPlaneType::GlobalXY},
+            solidar::AxisReference{solidar::AxisReferenceType::GlobalZ,
+                                   solidar::kInvalidSketchId,
+                                   solidar::sketch::kInvalidGeometryId},
+            5.0, false, "V2 Draft", edge)));
+  }
+
   QFile broken(directory.filePath("broken.solidar"));
   CHECK(broken.open(QIODevice::WriteOnly));
   broken.write("not json");

@@ -41,26 +41,6 @@ struct SketchPlacement {
   [[nodiscard]] Vector3d normal() const noexcept;
 };
 
-struct EdgeReference {
-  BodyId bodyId{kInvalidBodyId};
-  FeatureId featureId{kInvalidFeatureId};
-  // Legacy traversal index retained for loading v2 project files.
-  std::size_t edgeIndex{};
-  std::string persistentTag;
-  std::optional<EdgeSignature> signature;
-  [[nodiscard]] TopologyReference topology() const {
-    TopologyReference result;
-    result.bodyId = bodyId;
-    result.featureId = featureId;
-    result.kind = TopologyKind::Edge;
-    result.legacyIndex = edgeIndex;
-    result.persistentTag = persistentTag;
-    result.edgeSignature = signature;
-    return result;
-  }
-  friend bool operator==(const EdgeReference&, const EdgeReference&) = default;
-};
-
 enum class SketchSupportType { BasePlane, Face };
 
 struct SketchSupport {

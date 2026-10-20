@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/EdgeReference.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>

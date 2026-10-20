@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "model/FaceReference.h"
+#include "model/EdgeReference.h"
 #include "model/Feature.h"
 
 class TopoDS_Shape;
@@ -40,6 +41,8 @@ public:
   lastValidTopologyLineage() const noexcept;
   [[nodiscard]] FaceReferenceV2Creation createFaceReferenceV2(
       BodyId bodyId, std::size_t rawFaceIndex) const;
+  [[nodiscard]] EdgeReferenceV2Creation createEdgeReferenceV2(
+      BodyId bodyId, std::size_t rawEdgeIndex) const;
   void discardResult() noexcept;
   // Converts a retained history definition to a cold, recomputable payload.
   // The base implementation drops all runtime B-Rep/topology caches.

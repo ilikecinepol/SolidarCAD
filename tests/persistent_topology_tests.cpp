@@ -98,10 +98,10 @@ int main() {
 
       const auto duplicateOrdinal = solidar::makeEdgeReference(
           duplicateCompound, bodyId, featureId, 1);
-      CHECK(duplicateOrdinal.signature);
-      CHECK(duplicateOrdinal.edgeIndex == 0);
+      CHECK(duplicateOrdinal.signature());
+      CHECK(duplicateOrdinal.edgeIndex() == 0);
       const auto duplicateResolution = solidar::resolveEdgeReference(
-          duplicateCompound, duplicateOrdinal.topology());
+          duplicateCompound, *duplicateOrdinal.v1());
       CHECK(duplicateResolution);
       CHECK(duplicateResolution.index == 0);
       CHECK(duplicateResolution.subshape &&
@@ -173,17 +173,17 @@ int main() {
     for (std::size_t index = 0; index < 32; ++index) {
       auto reference = solidar::makeEdgeReference(
           original, bodyId, featureId, index);
-      if (!reference.signature) break;
-      const auto& signature = *reference.signature;
+      if (!reference.signature()) break;
+      const auto& signature = *reference.signature();
       if (std::abs(signature.tangent.z) > 0.99 &&
           signature.midpoint.x < 1e-6 && signature.midpoint.y < 1e-6) {
         vertical = std::move(reference);
         break;
       }
     }
-    CHECK(vertical && vertical->signature);
+    CHECK(vertical && vertical->signature());
     const auto resolvedVertical =
-        solidar::resolveEdgeReference(resized, vertical->topology());
+        solidar::resolveEdgeReference(resized, *vertical->v1());
     CHECK(resolvedVertical);
     CHECK(resolvedVertical.method ==
           solidar::TopologyMatchMethod::GeometricSignature);
@@ -191,7 +191,7 @@ int main() {
     // Old v2 references contain only an index and must retain their fallback.
     solidar::EdgeReference legacy{bodyId, featureId, 0};
     const auto resolvedLegacy =
-        solidar::resolveEdgeReference(original, legacy.topology());
+        solidar::resolveEdgeReference(original, *legacy.v1());
     CHECK(resolvedLegacy);
     CHECK(resolvedLegacy.method == solidar::TopologyMatchMethod::LegacyIndex);
 
@@ -214,7 +214,7 @@ int main() {
       }
 
       const std::vector<solidar::TopologyReference> edgeReferences{
-          vertical->topology(), legacy.topology()};
+          *vertical->v1(), *legacy.v1()};
       const auto batchEdges = originalIndex->resolveEdges(edgeReferences);
       CHECK(batchEdges.size() == edgeReferences.size());
       for (std::size_t index = 0; index < edgeReferences.size(); ++index) {
@@ -280,18 +280,18 @@ int main() {
       const double shapeDiagonal =
           std::hypot(std::hypot(80.0, 35.0), 50.0);
 
-      auto measureBoundary = vertical->topology();
+      auto measureBoundary = *vertical->v1();
       measureBoundary.edgeSignature->length *=
           1.0 - solidar::kTopologyMeasureRelativeTolerance;
       CHECK(originalIndex->resolveEdge(measureBoundary));
       measureBoundary.edgeSignature->length =
-          vertical->signature->length *
+          vertical->signature()->length *
           (1.0 - solidar::kTopologyMeasureRelativeTolerance - 1e-6);
       CHECK(!originalIndex->resolveEdge(measureBoundary));
 
-      auto directionBoundary = vertical->topology();
+      auto directionBoundary = *vertical->v1();
       const double directionSign =
-          std::copysign(1.0, vertical->signature->tangent.z);
+          std::copysign(1.0, vertical->signature()->tangent.z);
       const double acceptedCosine =
           solidar::kTopologyDirectionCosineTolerance;
       directionBoundary.edgeSignature->tangent = {
@@ -304,12 +304,12 @@ int main() {
           directionSign * rejectedCosine};
       CHECK(!originalIndex->resolveEdge(directionBoundary));
 
-      auto positionBoundary = vertical->topology();
+      auto positionBoundary = *vertical->v1();
       positionBoundary.edgeSignature->midpoint.x +=
           shapeDiagonal * solidar::kTopologyPositionRelativeTolerance;
       CHECK(originalIndex->resolveEdge(positionBoundary));
       positionBoundary.edgeSignature->midpoint =
-          vertical->signature->midpoint;
+          vertical->signature()->midpoint;
       positionBoundary.edgeSignature->midpoint.x +=
           shapeDiagonal *
           (solidar::kTopologyPositionRelativeTolerance + 1e-6);
@@ -328,7 +328,7 @@ int main() {
             solidar::TopologyResolutionFailure::InvalidReference);
       CHECK(faceFailure.error.find("non-finite") != std::string::npos);
 
-      auto nonFiniteEdge = vertical->topology();
+      auto nonFiniteEdge = *vertical->v1();
       nonFiniteEdge.edgeSignature->length =
           std::numeric_limits<double>::infinity();
       const auto edgeFailure = originalIndex->resolveEdge(nonFiniteEdge);
@@ -345,14 +345,14 @@ int main() {
     for (std::size_t index = 0; index < 32; ++index) {
       auto reference = solidar::makeEdgeReference(
           original, bodyId, featureId, index);
-      if (!reference.signature) break;
+      if (!reference.signature()) break;
       edges.push_back(std::move(reference));
     }
     std::optional<std::pair<std::size_t, std::size_t>> equivalent;
     for (std::size_t first = 0; first < edges.size() && !equivalent; ++first)
       for (std::size_t second = first + 1; second < edges.size(); ++second) {
-        const auto& a = *edges[first].signature;
-        const auto& b = *edges[second].signature;
+        const auto& a = *edges[first].signature();
+        const auto& b = *edges[second].signature();
         if (a.curve == b.curve &&
             std::abs(a.length - b.length) < 1e-7 &&
             std::abs(dot(a.tangent, b.tangent)) > 0.999) {
@@ -362,27 +362,27 @@ int main() {
       }
     CHECK(equivalent);
     auto ambiguous = edges[equivalent->first];
-    const auto& other = *edges[equivalent->second].signature;
-    ambiguous.signature->midpoint = {
-        (ambiguous.signature->midpoint.x + other.midpoint.x) * 0.5,
-        (ambiguous.signature->midpoint.y + other.midpoint.y) * 0.5,
-        (ambiguous.signature->midpoint.z + other.midpoint.z) * 0.5};
-    ambiguous.signature->bounds.minimum = {
-        (ambiguous.signature->bounds.minimum.x + other.bounds.minimum.x) * 0.5,
-        (ambiguous.signature->bounds.minimum.y + other.bounds.minimum.y) * 0.5,
-        (ambiguous.signature->bounds.minimum.z + other.bounds.minimum.z) * 0.5};
-    ambiguous.signature->bounds.maximum = {
-        (ambiguous.signature->bounds.maximum.x + other.bounds.maximum.x) * 0.5,
-        (ambiguous.signature->bounds.maximum.y + other.bounds.maximum.y) * 0.5,
-        (ambiguous.signature->bounds.maximum.z + other.bounds.maximum.z) * 0.5};
+    const auto& other = *edges[equivalent->second].signature();
+    ambiguous.signature()->midpoint = {
+        (ambiguous.signature()->midpoint.x + other.midpoint.x) * 0.5,
+        (ambiguous.signature()->midpoint.y + other.midpoint.y) * 0.5,
+        (ambiguous.signature()->midpoint.z + other.midpoint.z) * 0.5};
+    ambiguous.signature()->bounds.minimum = {
+        (ambiguous.signature()->bounds.minimum.x + other.bounds.minimum.x) * 0.5,
+        (ambiguous.signature()->bounds.minimum.y + other.bounds.minimum.y) * 0.5,
+        (ambiguous.signature()->bounds.minimum.z + other.bounds.minimum.z) * 0.5};
+    ambiguous.signature()->bounds.maximum = {
+        (ambiguous.signature()->bounds.maximum.x + other.bounds.maximum.x) * 0.5,
+        (ambiguous.signature()->bounds.maximum.y + other.bounds.maximum.y) * 0.5,
+        (ambiguous.signature()->bounds.maximum.z + other.bounds.maximum.z) * 0.5};
     const auto ambiguity =
-        solidar::resolveEdgeReference(original, ambiguous.topology());
+        solidar::resolveEdgeReference(original, *ambiguous.v1());
     CHECK(!ambiguity);
     CHECK(ambiguity.failure ==
           solidar::TopologyResolutionFailure::Ambiguous);
     CHECK(ambiguity.error.find("ambiguous") != std::string::npos);
 
-    auto impossible = vertical->topology();
+    auto impossible = *vertical->v1();
     impossible.edgeSignature->midpoint = {10000.0, 10000.0, 10000.0};
     const auto missing = solidar::resolveEdgeReference(original, impossible);
     CHECK(!missing);

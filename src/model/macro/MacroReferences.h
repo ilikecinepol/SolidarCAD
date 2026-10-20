@@ -4,6 +4,7 @@
 #include <variant>
 
 #include "model/Document.h"
+#include "model/EdgeReference.h"
 
 namespace solidar::macro {
 

@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
       *source, bodyId, sourceFeatureId, 1);
   const auto edgeC = solidar::makeEdgeReference(
       *source, bodyId, sourceFeatureId, 2);
-  CHECK(edgeA.signature && edgeB.signature && edgeC.signature);
+  CHECK(edgeA.signature() && edgeB.signature() && edgeC.signature());
 
   solidar::Viewport viewport;
   viewport.resize(800, 600);
@@ -535,9 +535,9 @@ int main(int argc, char** argv) {
     mouse(draftView, QEvent::MouseButtonPress, adjacentTopEdge,
           Qt::LeftButton, Qt::LeftButton);
     CHECK(edgeAxisPicks == 1);
-    CHECK(pickedEdgeAxis && pickedEdgeAxis->signature);
-    CHECK(pickedEdgeAxis->bodyId == bodyId);
-    CHECK(pickedEdgeAxis->featureId == sourceFeatureId);
+    CHECK(pickedEdgeAxis && pickedEdgeAxis->signature());
+    CHECK(pickedEdgeAxis->bodyId() == bodyId);
+    CHECK(pickedEdgeAxis->featureId() == sourceFeatureId);
   }
 
   // Circular Pattern shares the same whole-Body and principal-axis picking
@@ -602,8 +602,8 @@ int main(int argc, char** argv) {
   viewport.setToolPreviewShape(bodyId, previewFeatureId, previewB);
   const auto selected = viewport.selectedBodyEdges();
   CHECK(selected == std::vector<solidar::EdgeReference>({edgeA, edgeB}));
-  CHECK(selected[0].featureId == sourceFeatureId);
-  CHECK(selected[1].featureId == sourceFeatureId);
+  CHECK(selected[0].featureId() == sourceFeatureId);
+  CHECK(selected[1].featureId() == sourceFeatureId);
 
   viewport.setSelectedBodyEdges({edgeA, edgeB, edgeC});
   viewport.setToolPreviewShape(bodyId, previewFeatureId, previewA);
@@ -619,10 +619,11 @@ int main(int argc, char** argv) {
   CHECK(afterDeselect ==
         std::vector<solidar::EdgeReference>({edgeA, edgeC}));
   for (const auto& edge : afterDeselect) {
-    CHECK(edge.bodyId == bodyId);
-    CHECK(edge.featureId == sourceFeatureId);
-    CHECK(edge.topology().kind == solidar::TopologyKind::Edge);
-    CHECK(edge.signature);
+    CHECK(edge.bodyId() == bodyId);
+    CHECK(edge.featureId() == sourceFeatureId);
+    CHECK(edge.v1());
+    CHECK(edge.v1()->kind == solidar::TopologyKind::Edge);
+    CHECK(edge.signature());
   }
 
   viewport.clearToolPreviewShape();
@@ -744,9 +745,9 @@ int main(int argc, char** argv) {
     // zero-measure silhouette endpoints whose visibility is backend-dependent.
     CHECK(!edges.empty());
     for (const auto& edge : edges) {
-      CHECK(edge.bodyId == bodyId);
-      CHECK(edge.featureId == sourceFeatureId);
-      CHECK(edge.signature.has_value());
+      CHECK(edge.bodyId() == bodyId);
+      CHECK(edge.featureId() == sourceFeatureId);
+      CHECK(edge.signature().has_value());
     }
   }
   {
@@ -837,9 +838,9 @@ int main(int argc, char** argv) {
     // Body (model-level) selection is only produced in true normal mode.
     CHECK(view.selectedBodies().empty());
     for (const auto& edge : edges) {
-      CHECK(edge.bodyId == bodyId);
-      CHECK(edge.featureId == sourceFeatureId);
-      CHECK(edge.signature.has_value());
+      CHECK(edge.bodyId() == bodyId);
+      CHECK(edge.featureId() == sourceFeatureId);
+      CHECK(edge.signature().has_value());
     }
   }
 

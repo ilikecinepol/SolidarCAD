@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "model/EdgeReference.h"
 #include "model/TopologyReference.h"
 
 namespace solidar {

@@ -2502,9 +2502,10 @@ void Viewport::setSelectedBodyEdges(const std::vector<EdgeReference>& edges) {
   selectedBodyEdgeReferences_.clear();
   for (const auto& edge : edges)
     for (const auto& range : bodyTopologyRanges_)
-      if (range.bodyId == edge.bodyId && range.featureId == edge.featureId &&
+      if (range.bodyId == edge.bodyId() &&
+          range.featureId == edge.featureId() &&
           range.topologyIndex) {
-        const auto resolved = range.topologyIndex->resolveEdge(edge.topology());
+        const auto resolved = range.topologyIndex->resolveEdge(edge);
         if (resolved) {
           selectedBodyEdgeIndices_.push_back(range.firstEdge + resolved.index);
           selectedBodyEdgeReferences_.push_back(edge);
@@ -2631,8 +2632,8 @@ void Viewport::commitEdgeSelection(std::size_t globalIndex, bool toggle) {
     const auto first =
         edgeReferenceForGlobalIndex(selectedBodyEdgeIndices_.front());
     if (first && clicked &&
-        (first->bodyId != clicked->bodyId ||
-         first->featureId != clicked->featureId))
+        (first->bodyId() != clicked->bodyId() ||
+         first->featureId() != clicked->featureId()))
       selectedBodyEdgeIndices_.clear();
   }
   updateEdgeSelection(selectedBodyEdgeIndices_, globalIndex, toggle);
@@ -4080,8 +4081,9 @@ void Viewport::paintGL() {
       }
     }
     if (pickMode_ == PickMode::DraftPreview && selectedDraftAxisEdge_ &&
-        selectedDraftAxisEdge_->signature) {
-      const auto& signature = *selectedDraftAxisEdge_->signature;
+        selectedDraftAxisEdge_->isV1() &&
+        selectedDraftAxisEdge_->signature()) {
+      const auto& signature = *selectedDraftAxisEdge_->signature();
       const double tangentLength = std::sqrt(
           signature.tangent.x * signature.tangent.x +
           signature.tangent.y * signature.tangent.y +
@@ -5401,8 +5403,8 @@ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) 
     std::optional<FeatureId> feature;
     if (edge) {
       if (const auto ref = edgeReferenceForGlobalIndex(ordinals.front())) {
-        body = ref->bodyId;
-        feature = ref->featureId;
+        body = ref->bodyId();
+        feature = ref->featureId();
       }
     } else if (const auto ref = faceReferenceForGlobalIndex(ordinals.front())) {
       body = ref->bodyId();
@@ -5413,7 +5415,7 @@ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) 
     for (const auto index : ordinals) {
       if (edge) {
         const auto ref = edgeReferenceForGlobalIndex(index);
-        if (ref && ref->bodyId == *body && ref->featureId == *feature)
+        if (ref && ref->bodyId() == *body && ref->featureId() == *feature)
           result.push_back(index);
       } else {
         const auto ref = faceReferenceForGlobalIndex(index);
@@ -5489,8 +5491,8 @@ void Viewport::selectInRect(const QRectF& rect, bool additive, bool singleOnly) 
         const auto marqueeFirst =
             edgeReferenceForGlobalIndex(eligible.front());
         if (first && marqueeFirst &&
-            (first->bodyId != marqueeFirst->bodyId ||
-             first->featureId != marqueeFirst->featureId))
+            (first->bodyId() != marqueeFirst->bodyId() ||
+             first->featureId() != marqueeFirst->featureId()))
           selectedBodyEdgeIndices_.clear();
       }
       for (const auto index : eligible)

@@ -85,9 +85,14 @@ bool DraftToolSession::setRotationEdge(const Document& document, EdgeReference v
     error_ = "Draft rotation edge requires exactly one selected face";
     return false;
   }
+  if (value.isV2()) {
+    errorCode_ = OperationFailureCode::TopologyReferenceInvalid;
+    error_ = "Draft does not support topology v2 edge references yet";
+    return false;
+  }
   if (faces_.front().bodyId() != bodyId_ ||
       faces_.front().featureId() != sourceFeatureId_ ||
-      value.bodyId != bodyId_ || value.featureId != sourceFeatureId_) {
+      value.bodyId() != bodyId_ || value.featureId() != sourceFeatureId_) {
     errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
     error_ = "Draft rotation edge no longer matches the selected surface";
     return false;
@@ -217,9 +222,16 @@ bool DraftToolSession::updatePreview(const Document& document) {
   for (const auto& face : faces_) {
     if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
   }
+  if (rotationEdge_ && rotationEdge_->isV2()) {
+    previewShape_.reset();
+    errorCode_ = OperationFailureCode::TopologyReferenceInvalid;
+    error_ = "Draft does not support topology v2 edge references yet";
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
   if (rotationEdge_ &&
-      (rotationEdge_->bodyId != bodyId_ ||
-       rotationEdge_->featureId != sourceFeatureId_)) {
+      (rotationEdge_->bodyId() != bodyId_ ||
+       rotationEdge_->featureId() != sourceFeatureId_)) {
     previewShape_.reset();
     errorCode_ = OperationFailureCode::TopologyReferenceMismatch;
     error_ = "Draft rotation edge no longer matches the selected surface";

@@ -315,16 +315,34 @@ int main(int argc, char** argv) {
       break;
     }
   }
-  CHECK(adjacentEdge && adjacentEdge->signature);
+  CHECK(adjacentEdge && adjacentEdge->signature());
   CHECK(session.setRotationEdge(document, *adjacentEdge));
   CHECK(session.rotationEdge() == adjacentEdge);
   CHECK(!session.principalAxisIndex());
   CHECK(session.previewShape() && session.manipulator(document));
+  const auto v2RotationEdge = solidar::EdgeReference::fromV2(
+      {bodyId,
+       solidar::TopologyProvenanceKey{
+           sourceId, solidar::TopologyKind::Edge,
+           solidar::TopologyProvenanceOperation::Seed,
+           solidar::TopologySemanticRole::Custom, "draft:v2-edge"}});
+  CHECK(!session.setRotationEdge(document, v2RotationEdge));
+  CHECK(session.errorCode() ==
+        solidar::OperationFailureCode::TopologyReferenceInvalid);
+  CHECK(session.error() ==
+        "Draft does not support topology v2 edge references yet");
+  CHECK(session.setRotationEdge(document, *adjacentEdge));
 
   draftPtr->setReversed(false);
   draftPtr->setRotationEdge(adjacentEdge);
   CHECK(document.recompute());
   CHECK(draftPtr->shape() && !draftPtr->shape()->IsNull());
+  draftPtr->setRotationEdge(v2RotationEdge);
+  CHECK(!document.recompute());
+  CHECK(draftPtr->error() ==
+        "Draft does not support topology v2 edge references yet");
+  draftPtr->setRotationEdge(adjacentEdge);
+  CHECK(document.recompute());
   auto* sourceExtrude = dynamic_cast<solidar::ExtrudeFeature*>(retainedSource);
   CHECK(sourceExtrude);
   sourceExtrude->setLengthMm(22.0);
@@ -344,9 +362,9 @@ int main(int argc, char** argv) {
   CHECK(loadedDraft && loadedDraft->id() == draftId);
     CHECK(loadedDraft->draftedFaces().front().signature());
   CHECK(loadedDraft->rotationEdge());
-  CHECK(loadedDraft->rotationEdge()->signature);
-  CHECK(loadedDraft->rotationEdge()->bodyId == bodyId);
-  CHECK(loadedDraft->rotationEdge()->featureId == sourceId);
+  CHECK(loadedDraft->rotationEdge()->signature());
+  CHECK(loadedDraft->rotationEdge()->bodyId() == bodyId);
+  CHECK(loadedDraft->rotationEdge()->featureId() == sourceId);
   CHECK(loadedDraft->pullDirection().type == solidar::AxisReferenceType::GlobalZ);
 
   draftPtr->setRotationEdge(std::nullopt);

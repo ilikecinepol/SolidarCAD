@@ -325,7 +325,7 @@ int main(int argc, char* argv[]) {
     CHECK(edgeIndex);
     const auto filletEdge = solidar::makeEdgeReference(
         *partBody.resultShape(), partBodyId, pocketId, *edgeIndex);
-    CHECK(filletEdge.signature);
+    CHECK(filletEdge.signature());
     auto fillet = std::make_unique<solidar::FilletFeature>(filletEdge, 2.0,
                                                           "Fillet");
     auto* filletPtr = fillet.get();
@@ -358,7 +358,7 @@ int main(int argc, char* argv[]) {
     CHECK(chamferEdgeIndex);
     const auto chamferEdge = solidar::makeEdgeReference(
         *chamferBody->resultShape(), partBodyId, filletId, *chamferEdgeIndex);
-    CHECK(chamferEdge.signature);
+    CHECK(chamferEdge.signature());
     auto chamfer = std::make_unique<solidar::ChamferFeature>(
         chamferEdge, 1.0, "Chamfer");
     auto* chamferPtr = chamfer.get();
@@ -559,8 +559,8 @@ int main(int argc, char* argv[]) {
           restoredRevolve);
     CHECK(restoredRevolve->profileOverride().has_value());
     CHECK(restoredRevolve->profileOverride()->lines().size() == 4);
-    CHECK(restoredFillet->edge().signature);
-    CHECK(restoredChamfer->edge().signature);
+    CHECK(restoredFillet->edge().signature());
+    CHECK(restoredChamfer->edge().signature());
     CHECK(restoredExtrude->id() == extrudeId);
     CHECK(restoredPocket->id() == pocketId);
     CHECK(restoredFillet->id() == filletId);

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "model/ShapeFeature.h"
+#include "model/EdgeReference.h"
 #include "model/NumericParameterState.h"
 #include "model/ToolSession.h"
 

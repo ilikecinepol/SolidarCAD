@@ -622,8 +622,8 @@ void MainWindow::restoreHistorySelection(const HistorySelectionState& state) {
   } else if (!state.edges.empty()) {
     std::vector<EdgeReference> valid;
     for (const auto& edge : state.edges)
-      if (document_.findBody(edge.bodyId) &&
-          document_.findFeature(edge.featureId)) valid.push_back(edge);
+      if (document_.findBody(edge.bodyId()) &&
+          document_.findFeature(edge.featureId())) valid.push_back(edge);
     viewport_->setSelectedBodyEdges(valid);
   }
   else if (!state.bodies.empty()) {
@@ -4668,18 +4668,19 @@ void MainWindow::createFillet() {
   resetTransientModelingUi();
   auto edges = viewport_->selectedBodyEdges();
   Body* body = edges.empty() ? document_.activeBody()
-                             : document_.findBody(edges.front().bodyId);
+                             : document_.findBody(edges.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) {
     QMessageBox::information(this, QString::fromUtf8("Скругление"),
                              QString::fromUtf8("Сначала создайте тело."));
     return;
   }
-  if (!edges.empty() && body->activeFeature()->id() != edges.front().featureId)
+  if (!edges.empty() &&
+      body->activeFeature()->id() != edges.front().featureId())
     edges.clear();
 
   for (const auto& edge : edges)
-    if (edge.bodyId != body->id() ||
-        edge.featureId != body->activeFeature()->id()) {
+    if (edge.bodyId() != body->id() ||
+        edge.featureId() != body->activeFeature()->id()) {
       QMessageBox::warning(this, QString::fromUtf8("Скругление"),
                            QString::fromUtf8("Рёбра должны принадлежать одному телу"));
       return;
@@ -5610,17 +5611,18 @@ void MainWindow::createChamfer() {
   resetTransientModelingUi();
   auto edges = viewport_->selectedBodyEdges();
   Body* body = edges.empty() ? document_.activeBody()
-                             : document_.findBody(edges.front().bodyId);
+                             : document_.findBody(edges.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) {
     QMessageBox::information(this, QString::fromUtf8("Фаска"),
                              QString::fromUtf8("Сначала создайте тело."));
     return;
   }
-  if (!edges.empty() && body->activeFeature()->id() != edges.front().featureId)
+  if (!edges.empty() &&
+      body->activeFeature()->id() != edges.front().featureId())
     edges.clear();
   for (const auto& edge : edges)
-    if (edge.bodyId != body->id() ||
-        edge.featureId != body->activeFeature()->id()) {
+    if (edge.bodyId() != body->id() ||
+        edge.featureId() != body->activeFeature()->id()) {
       QMessageBox::warning(this, QString::fromUtf8("Фаска"),
                            QString::fromUtf8("Рёбра должны принадлежать одному телу"));
       return;
@@ -7253,7 +7255,7 @@ void MainWindow::editFilletStep(BodyId bodyId, FeatureId featureId) {
   if (!upstream || !upstreamFeature) return;
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginFillet(
-              body->id(), fillet->edge().featureId, upstream, fillet->edges(),
+              body->id(), fillet->edge().featureId(), upstream, fillet->edges(),
               fillet->radiusMm(), fillet->id(),
               upstreamFeature->topologyIndex()),
           PartDesignToolKind::Fillet))
@@ -7293,7 +7295,7 @@ void MainWindow::editChamferStep(BodyId bodyId, FeatureId featureId) {
   if (!upstream || !upstreamFeature) return;
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginChamfer(
-              body->id(), chamfer->edge().featureId, upstream,
+              body->id(), chamfer->edge().featureId(), upstream,
               chamfer->edges(), chamfer->distanceMm(), chamfer->id(),
               upstreamFeature->topologyIndex()),
           PartDesignToolKind::Chamfer))
