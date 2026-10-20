@@ -64,6 +64,17 @@ struct RevolvedRectangle {
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
 
+struct BooleanRevolvedRing {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::RevolveFeature* base{};
+  solidar::RevolveFeature* result{};
+  solidar::SketchId baseSketchId{solidar::kInvalidSketchId};
+  solidar::SketchId toolSketchId{solidar::kInvalidSketchId};
+  std::array<solidar::sketch::GeometryId, 4> baseGeometryIds{};
+  std::array<solidar::sketch::GeometryId, 4> toolGeometryIds{};
+};
+
 struct PocketedBox {
   solidar::Document document;
   solidar::Body* body{};
@@ -441,6 +452,80 @@ RevolvedRectangle makeRevolvedRectangle(double minimumRadius,
   return result;
 }
 
+BooleanRevolvedRing makeBooleanRevolvedRing(
+    solidar::ExtrudeOperation operation, double angleDeg = 360.0) {
+  BooleanRevolvedRing result;
+  auto& base = result.document.addSketch("Production edge boolean revolve base");
+  const double baseMaximumRadius =
+      operation == solidar::ExtrudeOperation::Join ? 10.0 : 15.0;
+  base.geometry.addRectangle({10.0, 5.0},
+                             {30.0, baseMaximumRadius});
+  result.baseSketchId = base.id;
+  result.baseGeometryIds = {
+      base.geometry.lineId(0), base.geometry.lineId(1),
+      base.geometry.lineId(2), base.geometry.lineId(3)};
+  auto& body = result.document.addBody("Production edge boolean revolve");
+  auto baseFeature = std::make_unique<solidar::RevolveFeature>(
+      base.id,
+      solidar::AxisReference{
+          solidar::AxisReferenceType::SketchHorizontalAxis, base.id,
+          solidar::sketch::kInvalidGeometryId},
+      angleDeg, "Production edge boolean revolve base",
+      solidar::ExtrudeOperation::NewBody, false);
+  result.base = baseFeature.get();
+  body.addFeature(std::move(baseFeature));
+
+  auto& tool = result.document.addSketch("Production edge boolean revolve tool");
+  tool.geometry.addRectangle({10.0, 10.0}, {30.0, 15.0});
+  result.toolSketchId = tool.id;
+  result.toolGeometryIds = {
+      tool.geometry.lineId(0), tool.geometry.lineId(1),
+      tool.geometry.lineId(2), tool.geometry.lineId(3)};
+  auto resultFeature = std::make_unique<solidar::RevolveFeature>(
+      tool.id,
+      solidar::AxisReference{
+          solidar::AxisReferenceType::SketchHorizontalAxis, tool.id,
+          solidar::sketch::kInvalidGeometryId},
+      angleDeg, "Production edge boolean revolve result", operation, false);
+  result.result = resultFeature.get();
+  body.addFeature(std::move(resultFeature));
+  result.body = &body;
+  CHECK(result.document.rebuild());
+  return result;
+}
+
+void replaceBooleanRevolveTool(BooleanRevolvedRing& model,
+                               double minimumRadius,
+                               double maximumRadius) {
+  solidar::sketch::Sketch replacement;
+  replacement.addLine({10.0, maximumRadius}, {30.0, maximumRadius});
+  replacement.addLine({30.0, minimumRadius}, {10.0, minimumRadius});
+  replacement.addLine({10.0, minimumRadius}, {10.0, maximumRadius});
+  replacement.addLine({30.0, maximumRadius}, {30.0, minimumRadius});
+  CHECK(replacement.restoreGeometryIds(
+      {model.toolGeometryIds[2], model.toolGeometryIds[0],
+       model.toolGeometryIds[3], model.toolGeometryIds[1]},
+      {}, {}, {}));
+  CHECK(model.document.replaceSketchGeometry(model.toolSketchId,
+                                              std::move(replacement)));
+}
+
+void replaceBooleanRevolveBase(BooleanRevolvedRing& model,
+                               double minimumRadius,
+                               double maximumRadius) {
+  solidar::sketch::Sketch replacement;
+  replacement.addLine({10.0, maximumRadius}, {30.0, maximumRadius});
+  replacement.addLine({30.0, minimumRadius}, {10.0, minimumRadius});
+  replacement.addLine({10.0, minimumRadius}, {10.0, maximumRadius});
+  replacement.addLine({30.0, maximumRadius}, {30.0, minimumRadius});
+  CHECK(replacement.restoreGeometryIds(
+      {model.baseGeometryIds[2], model.baseGeometryIds[0],
+       model.baseGeometryIds[3], model.baseGeometryIds[1]},
+      {}, {}, {}));
+  CHECK(model.document.replaceSketchGeometry(model.baseSketchId,
+                                              std::move(replacement)));
+}
+
 ExtrudedBox makeBox(double length = 15.0) {
   ExtrudedBox result;
   auto& sketch = result.document.addSketch("Production edge rectangle");
@@ -664,6 +749,8 @@ struct CurveExpectation {
   std::optional<gp_Pnt> last;
 };
 
+gp_Pnt revolvedPoint(double x, double radius, double angleDeg);
+
 void checkExactCarrier(
     const solidar::ShapeFeature& feature, const solidar::EdgeReference& carrier,
     std::vector<solidar::TopologyProvenanceOrigin> expectedOrigins,
@@ -797,6 +884,24 @@ void checkCircleCarrier(
   CHECK(near(curve.Circle().Radius(), expectedRadius));
 }
 
+void checkRevolvedArcCarrier(
+    const solidar::ShapeFeature& feature, const solidar::EdgeReference& carrier,
+    std::vector<solidar::TopologyProvenanceOrigin> expectedOrigins,
+    double expectedX, double expectedRadius, double signedAngleDeg) {
+  checkExactCarrier(
+      feature, carrier, std::move(expectedOrigins),
+      {GeomAbs_Circle,
+       expectedRadius * std::abs(signedAngleDeg) * std::numbers::pi / 180.0,
+       revolvedPoint(expectedX, expectedRadius, 0.0),
+       revolvedPoint(expectedX, expectedRadius, signedAngleDeg)});
+  const auto resolved = feature.topologyIndex()->resolveEdge(carrier);
+  CHECK(resolved);
+  const BRepAdaptor_Curve curve(*resolved.subshape);
+  CHECK(curve.GetType() == GeomAbs_Circle);
+  CHECK(samePoint(curve.Circle().Location(), gp_Pnt(expectedX, 0.0, 0.0)));
+  CHECK(near(curve.Circle().Radius(), expectedRadius));
+}
+
 void checkEdgeMissing(const solidar::ShapeFeature& feature,
                       const solidar::EdgeReference& carrier) {
   const auto index = feature.topologyIndex();
@@ -804,6 +909,7 @@ void checkEdgeMissing(const solidar::ShapeFeature& feature,
   const auto resolved = index->resolveEdge(carrier);
   CHECK(!resolved);
   CHECK(resolved.failure == solidar::TopologyResolutionFailure::Missing);
+  CHECK(resolved.method == solidar::TopologyMatchMethod::None);
   CHECK(!resolved.subshape);
 }
 
@@ -842,10 +948,10 @@ void checkAllCanonicalEdgesCreated(const solidar::ShapeFeature& feature,
   CHECK(edgeBindingCount(feature) == expectedCount);
 }
 
-void auditBooleanExtrudeEdges(const solidar::ExtrudeFeature& feature,
-                              solidar::BodyId bodyId,
-                              std::size_t expectedCreated,
-                              std::size_t expectedMissing = 0) {
+void auditBooleanResultEdges(const solidar::ShapeFeature& feature,
+                             solidar::BodyId bodyId,
+                             std::size_t expectedCreated,
+                             std::size_t expectedMissing = 0) {
   const auto index = feature.topologyIndex();
   CHECK(index);
   std::vector<TopoDS_Edge> seen;
@@ -896,7 +1002,7 @@ void auditBooleanExtrudeEdges(const solidar::ExtrudeFeature& feature,
 }
 
 void checkMissingBooleanEdgesAreSingleFaceSeams(
-    const solidar::ExtrudeFeature& feature, solidar::BodyId bodyId,
+    const solidar::ShapeFeature& feature, solidar::BodyId bodyId,
     std::size_t expectedMissing) {
   const auto index = feature.topologyIndex();
   CHECK(index);
@@ -3602,7 +3708,7 @@ int main() {
   // remains available from last-valid state on failure, and feeds Fillet.
   {
     auto model = makeSketchBooleanExtrudedBox(ExtrudeOperation::Join);
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
     const auto sourceKeys = edgeKeys(*model.base->topologyLineage());
     const auto resultKeys = edgeKeys(*model.result->topologyLineage());
     CHECK(sourceKeys.size() == 12);
@@ -3626,7 +3732,7 @@ int main() {
     checkExactCarrier(*model.result, outer, origins,
                       {GeomAbs_Line, 8.0, gp_Pnt(0.0, 0.0, 0.0),
                        gp_Pnt(0.0, 0.0, 8.0)});
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
 
     const auto validShape = model.result->shape();
     const auto validLineage = model.result->topologyLineage();
@@ -3686,7 +3792,7 @@ int main() {
   // A rectangular through Cut has exact outer and inner edge identity.
   {
     auto model = makeSketchBooleanExtrudedBox(ExtrudeOperation::Cut);
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 24);
+    auditBooleanResultEdges(*model.result, model.body->id(), 24);
     const auto outer = edgeForExactEndpoints(
         *model.result, model.body->id(), gp_Pnt(0.0, 0.0, 0.0),
         gp_Pnt(0.0, 0.0, 10.0));
@@ -3716,14 +3822,14 @@ int main() {
     checkExactCarrier(*model.result, inner, innerOrigins,
                       {GeomAbs_Line, 10.0, gp_Pnt(6.0, 6.0, 0.0),
                        gp_Pnt(6.0, 6.0, 10.0)});
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 24);
+    auditBooleanResultEdges(*model.result, model.body->id(), 24);
   }
 
   // Face-source Join/Cut augment only the final normalized single solid.
   for (const auto operation : {ExtrudeOperation::Join,
                                ExtrudeOperation::Cut}) {
     auto model = makeFaceBooleanExtrudedBox(operation);
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
     const double top = operation == ExtrudeOperation::Join ? 17.0 : 11.0;
     const auto vertical = edgeForExactEndpoints(
         *model.result, model.body->id(), gp_Pnt(3.0, -2.0, 4.0),
@@ -3740,7 +3846,7 @@ int main() {
                       {GeomAbs_Line, editedTop - 4.0,
                        gp_Pnt(3.0, -2.0, 4.0),
                        gp_Pnt(3.0, -2.0, editedTop)});
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
 
     model.move->setOffsetMm({5.0, -1.0, 6.0});
     CHECK(model.document.recompute());
@@ -3750,7 +3856,7 @@ int main() {
                       {GeomAbs_Line, movedTop - 6.0,
                        gp_Pnt(5.0, -1.0, 6.0),
                        gp_Pnt(5.0, -1.0, movedTop)});
-    auditBooleanExtrudeEdges(*model.result, model.body->id(), 12);
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
   }
 
   // A circular blind Cut publishes both rims but deliberately omits the
@@ -3772,7 +3878,7 @@ int main() {
     auto* cutFeature = cut.get();
     body.addFeature(std::move(cut));
     CHECK(document.recompute());
-    auditBooleanExtrudeEdges(*cutFeature, body.id(), 14, 1);
+    auditBooleanResultEdges(*cutFeature, body.id(), 14, 1);
     checkMissingBooleanEdgesAreSingleFaceSeams(*cutFeature, body.id(), 1);
     const auto topRim = edgeForCircle(
         *cutFeature, body.id(), gp_Pnt(10.0, 10.0, 10.0), 3.0);
@@ -3800,8 +3906,309 @@ int main() {
     CHECK(document.recompute());
     checkCircleCarrier(*cutFeature, floorRim, floorOrigins,
                        gp_Pnt(10.0, 10.0, 5.0), 3.0);
-    auditBooleanExtrudeEdges(*cutFeature, body.id(), 14, 1);
+    auditBooleanResultEdges(*cutFeature, body.id(), 14, 1);
     checkMissingBooleanEdgesAreSingleFaceSeams(*cutFeature, body.id(), 1);
+  }
+
+  // Strict Boolean Revolve Join publishes the four full-sweep rims and omits
+  // only the two cylindrical seams. The same public carriers follow partial
+  // and reversed sweeps, authored profile edits, failure rollback and
+  // recovery without relying on OCCT enumeration order.
+  {
+    auto model = makeBooleanRevolvedRing(ExtrudeOperation::Join);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+    checkMissingBooleanEdgesAreSingleFaceSeams(*model.result,
+                                                model.body->id(), 2);
+    const auto sourceKeys = edgeKeys(*model.base->topologyLineage());
+    const auto resultKeys = edgeKeys(*model.result->topologyLineage());
+    CHECK(sourceKeys.size() == 4);
+    CHECK(resultKeys.size() == 4);
+    for (const auto& key : resultKeys) {
+      CHECK(key.featureId == model.result->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+
+    double outerRadius = 15.0;
+    const auto outerRim = edgeForCircle(
+        *model.result, model.body->id(), gp_Pnt(30.0, 0.0, 0.0), outerRadius);
+    const auto initialOuter = model.result->topologyIndex()->resolveEdge(outerRim);
+    CHECK(initialOuter);
+    const auto outerOrigins =
+        adjacentFaceOrigins(*model.result, *initialOuter.subshape);
+    checkCircleCarrier(*model.result, outerRim, outerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), outerRadius);
+    double innerRadius = 5.0;
+    const auto innerRim = edgeForCircle(
+        *model.result, model.body->id(), gp_Pnt(30.0, 0.0, 0.0), innerRadius);
+    const auto initialInner = model.result->topologyIndex()->resolveEdge(innerRim);
+    CHECK(initialInner);
+    const auto innerOrigins =
+        adjacentFaceOrigins(*model.result, *initialInner.subshape);
+    checkCircleCarrier(*model.result, innerRim, innerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), innerRadius);
+
+    model.base->setAngleDeg(120.0);
+    model.result->setAngleDeg(120.0);
+    CHECK(model.document.recompute());
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
+    checkRevolvedArcCarrier(*model.result, outerRim, outerOrigins, 30.0,
+                            outerRadius, 120.0);
+    const auto partialOnly = edgeForExactEndpoints(
+        *model.result, model.body->id(), gp_Pnt(10.0, outerRadius, 0.0),
+        gp_Pnt(30.0, outerRadius, 0.0));
+    const auto initialPartial =
+        model.result->topologyIndex()->resolveEdge(partialOnly);
+    CHECK(initialPartial);
+    const auto partialOrigins =
+        adjacentFaceOrigins(*model.result, *initialPartial.subshape);
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, outerRadius, 0.0),
+                       gp_Pnt(30.0, outerRadius, 0.0)});
+
+    model.base->setReversed(true);
+    model.result->setReversed(true);
+    CHECK(model.document.recompute());
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
+    checkRevolvedArcCarrier(*model.result, outerRim, outerOrigins, 30.0,
+                            outerRadius, -120.0);
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, outerRadius, 0.0),
+                       gp_Pnt(30.0, outerRadius, 0.0)});
+
+    model.base->setReversed(false);
+    model.result->setReversed(false);
+    model.base->setAngleDeg(360.0);
+    model.result->setAngleDeg(360.0);
+    CHECK(model.document.recompute());
+    checkCircleCarrier(*model.result, outerRim, outerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), outerRadius);
+    checkEdgeMissing(*model.result, partialOnly);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+    checkMissingBooleanEdgesAreSingleFaceSeams(*model.result,
+                                                model.body->id(), 2);
+
+    model.base->setAngleDeg(120.0);
+    model.result->setAngleDeg(120.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, outerRadius, 0.0),
+                       gp_Pnt(30.0, outerRadius, 0.0)});
+
+    outerRadius = 17.0;
+    model.base->setAngleDeg(360.0);
+    model.result->setAngleDeg(360.0);
+    replaceBooleanRevolveTool(model, 10.0, outerRadius);
+    CHECK(model.document.recompute());
+    checkCircleCarrier(*model.result, outerRim, outerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), outerRadius);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+
+    innerRadius = 4.0;
+    replaceBooleanRevolveBase(model, innerRadius, 10.0);
+    CHECK(model.document.recompute());
+    checkCircleCarrier(*model.result, innerRim, innerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), innerRadius);
+    checkCircleCarrier(*model.result, outerRim, outerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), outerRadius);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+
+    const auto validShape = model.result->shape();
+    const auto validLineage = model.result->topologyLineage();
+    const auto validIndex = model.result->topologyIndex();
+    const auto validRevision = model.result->shapeRevision();
+    const auto validOuter = validIndex->resolveEdge(outerRim);
+    CHECK(validOuter);
+    replaceBooleanRevolveTool(model, 6.0, 9.0);
+    CHECK(!model.document.recompute());
+    CHECK(!model.result->shape());
+    CHECK(!model.result->topologyLineage());
+    CHECK(model.result->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.body->topologySnapshot(model.result->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.result->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.result->lastValidShape() == validShape);
+    CHECK(model.result->lastValidTopologyLineage() == validLineage);
+    error.clear();
+    CHECK(model.result->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBack = validIndex->resolveEdge(outerRim);
+    CHECK(rolledBack);
+    CHECK(rolledBack.subshape->IsSame(*validOuter.subshape));
+
+    replaceBooleanRevolveTool(model, 10.0, outerRadius);
+    CHECK(model.document.recompute());
+    CHECK(model.result->shapeRevision() > validRevision);
+    checkCircleCarrier(*model.result, outerRim, outerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), outerRadius);
+    checkCircleCarrier(*model.result, innerRim, innerOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), innerRadius);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+  }
+
+  // Strict Boolean Revolve Cut has the same closed/partial edge contract. A
+  // GeometryId-preserving tool edit moves the saved inner result cylinder
+  // without changing its exact edge identity.
+  {
+    auto model = makeBooleanRevolvedRing(ExtrudeOperation::Cut);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+    checkMissingBooleanEdgesAreSingleFaceSeams(*model.result,
+                                                model.body->id(), 2);
+    const auto sourceKeys = edgeKeys(*model.base->topologyLineage());
+    const auto resultKeys = edgeKeys(*model.result->topologyLineage());
+    CHECK(sourceKeys.size() == 4);
+    CHECK(resultKeys.size() == 4);
+    for (const auto& key : resultKeys) {
+      CHECK(key.featureId == model.result->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+
+    double cutRadius = 10.0;
+    const auto cutRim = edgeForCircle(
+        *model.result, model.body->id(), gp_Pnt(30.0, 0.0, 0.0), cutRadius);
+    const auto initialCut = model.result->topologyIndex()->resolveEdge(cutRim);
+    CHECK(initialCut);
+    const auto cutOrigins =
+        adjacentFaceOrigins(*model.result, *initialCut.subshape);
+    checkCircleCarrier(*model.result, cutRim, cutOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), cutRadius);
+
+    model.base->setAngleDeg(120.0);
+    model.result->setAngleDeg(120.0);
+    CHECK(model.document.recompute());
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
+    checkRevolvedArcCarrier(*model.result, cutRim, cutOrigins, 30.0,
+                            cutRadius, 120.0);
+    const auto partialOnly = edgeForExactEndpoints(
+        *model.result, model.body->id(), gp_Pnt(10.0, cutRadius, 0.0),
+        gp_Pnt(30.0, cutRadius, 0.0));
+    const auto initialPartial =
+        model.result->topologyIndex()->resolveEdge(partialOnly);
+    CHECK(initialPartial);
+    const auto partialOrigins =
+        adjacentFaceOrigins(*model.result, *initialPartial.subshape);
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, cutRadius, 0.0),
+                       gp_Pnt(30.0, cutRadius, 0.0)});
+    model.base->setReversed(true);
+    model.result->setReversed(true);
+    CHECK(model.document.recompute());
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
+    checkRevolvedArcCarrier(*model.result, cutRim, cutOrigins, 30.0,
+                            cutRadius, -120.0);
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, cutRadius, 0.0),
+                       gp_Pnt(30.0, cutRadius, 0.0)});
+
+    model.base->setReversed(false);
+    model.result->setReversed(false);
+    model.base->setAngleDeg(360.0);
+    model.result->setAngleDeg(360.0);
+    CHECK(model.document.recompute());
+    checkEdgeMissing(*model.result, partialOnly);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+
+    model.base->setAngleDeg(120.0);
+    model.result->setAngleDeg(120.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, cutRadius, 0.0),
+                       gp_Pnt(30.0, cutRadius, 0.0)});
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
+
+    cutRadius = 11.0;
+    model.base->setAngleDeg(360.0);
+    model.result->setAngleDeg(360.0);
+    replaceBooleanRevolveTool(model, cutRadius, 15.0);
+    CHECK(model.document.recompute());
+    checkCircleCarrier(*model.result, cutRim, cutOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), cutRadius);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+    checkMissingBooleanEdgesAreSingleFaceSeams(*model.result,
+                                                model.body->id(), 2);
+    checkEdgeMissing(*model.result, partialOnly);
+
+    model.base->setAngleDeg(120.0);
+    model.result->setAngleDeg(120.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(*model.result, partialOnly, partialOrigins,
+                      {GeomAbs_Line, 20.0,
+                       gp_Pnt(10.0, cutRadius, 0.0),
+                       gp_Pnt(30.0, cutRadius, 0.0)});
+    auditBooleanResultEdges(*model.result, model.body->id(), 12);
+
+    model.base->setAngleDeg(360.0);
+    model.result->setAngleDeg(360.0);
+    CHECK(model.document.recompute());
+    const auto validShape = model.result->shape();
+    const auto validLineage = model.result->topologyLineage();
+    const auto validIndex = model.result->topologyIndex();
+    const auto validRevision = model.result->shapeRevision();
+    const auto validCut = validIndex->resolveEdge(cutRim);
+    CHECK(validCut);
+
+    replaceBooleanRevolveTool(model, 20.0, 25.0);
+    CHECK(!model.document.recompute());
+    CHECK(!model.result->shape());
+    CHECK(!model.result->topologyLineage());
+    CHECK(model.result->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.body->topologySnapshot(model.result->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.result->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.result->lastValidShape() == validShape);
+    CHECK(model.result->lastValidTopologyLineage() == validLineage);
+    error.clear();
+    CHECK(model.result->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBack = validIndex->resolveEdge(cutRim);
+    CHECK(rolledBack);
+    CHECK(rolledBack.subshape->IsSame(*validCut.subshape));
+
+    replaceBooleanRevolveTool(model, cutRadius, 15.0);
+    CHECK(model.document.recompute());
+    CHECK(model.result->shapeRevision() > validRevision);
+    checkCircleCarrier(*model.result, cutRim, cutOrigins,
+                       gp_Pnt(30.0, 0.0, 0.0), cutRadius);
+    auditBooleanResultEdges(*model.result, model.body->id(), 4, 2);
+  }
+
+  // A fixed Boolean Revolve Join rim feeds Fillet without probing alternative
+  // edges and remains the exact carrier after opening the sweep.
+  {
+    auto model = makeBooleanRevolvedRing(ExtrudeOperation::Join);
+    const auto rim = edgeForCircle(
+        *model.result, model.body->id(), gp_Pnt(30.0, 0.0, 0.0), 15.0);
+    const auto initial = model.result->topologyIndex()->resolveEdge(rim);
+    CHECK(initial);
+    const auto origins = adjacentFaceOrigins(*model.result, *initial.subshape);
+    auto fillet = std::make_unique<FilletFeature>(rim, 0.5);
+    auto* filletFeature = fillet.get();
+    model.body->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.result->shape()) - 1e-5);
+
+    model.base->setAngleDeg(210.0);
+    model.result->setAngleDeg(210.0);
+    CHECK(model.document.recompute());
+    checkRevolvedArcCarrier(*model.result, rim, origins, 30.0, 15.0, 210.0);
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.result->shape()) - 1e-5);
   }
 
   return EXIT_SUCCESS;

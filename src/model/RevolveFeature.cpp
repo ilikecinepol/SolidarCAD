@@ -432,8 +432,21 @@ bool RevolveFeature::rebuildImpl(const RebuildContext& context) {
             markError(error);
             return false;
           }
-          setShapeAndTopologyLineage(std::move(built.shape),
-                                     std::move(built.lineage));
+          FaceBoundaryEdgeProvenanceFailure edgeFailure;
+          const auto augmented =
+              augmentCompleteFaceLineageWithUniqueManifoldEdges(
+                  {id(), built.shape, built.lineage}, &edgeFailure);
+          if (!augmented) {
+            markError(
+                edgeFailure.detail.empty()
+                    ? "Revolve edge lineage augmentation failed"
+                    : "Revolve edge lineage augmentation failed: " +
+                          edgeFailure.detail);
+            return false;
+          }
+          setShapeAndTopologyLineage(
+              std::move(built.shape),
+              std::move(augmented->augmentedSource.lineage));
           markValid();
           return true;
         }

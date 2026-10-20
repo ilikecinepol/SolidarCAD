@@ -363,7 +363,11 @@ std::vector<solidar::FaceReference> checkExactBooleanLineage(
   CHECK(lineage);
   CHECK(lineage->coverage() ==
         solidar::TopologyLineageCoverage::CompleteFaces);
-  CHECK(lineage->bindings().size() == expected.size());
+  CHECK(std::count_if(lineage->bindings().begin(), lineage->bindings().end(),
+                      [](const auto& binding) {
+                        return binding.provenance.kind ==
+                               solidar::TopologyKind::Face;
+                      }) == expected.size());
   const auto index = feature.topologyIndex();
   CHECK(index);
   CHECK(index->faceCount() == expected.size());
@@ -375,6 +379,7 @@ std::vector<solidar::FaceReference> checkExactBooleanLineage(
 
   std::vector<bool> consumedBindings(expected.size(), false);
   for (const auto& binding : lineage->bindings()) {
+    if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
     const auto match = std::find(expectedKeys.begin(), expectedKeys.end(),
                                  binding.provenance);
     CHECK(match != expectedKeys.end());
@@ -463,6 +468,11 @@ void checkLegacyLineageUnavailable(const solidar::RevolveFeature& feature,
   const auto created = feature.createFaceReferenceV2(bodyId, 0);
   CHECK(!created);
   CHECK(created.status == solidar::FaceReferenceV2CreationStatus::Missing);
+  CHECK(index->rawEdgeCount() > 0);
+  const auto edge = feature.createEdgeReferenceV2(bodyId, 0);
+  CHECK(!edge);
+  CHECK(edge.status == solidar::EdgeReferenceV2CreationStatus::Missing);
+  CHECK(!edge.reference.v2());
 }
 
 class PartialLineageBoxFeature final : public solidar::ShapeFeature {

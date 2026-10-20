@@ -58,11 +58,11 @@ struct FaceBoundaryEdgeProvenanceResult {
 };
 
 // Publication-side augmentation used only by the simple NewBody and strict
-// sketch/face boolean paths in ExtrudeFeature, the NewBody path in
-// RevolveFeature, PocketFeature, the both-lineaged JoinBodiesFeature path, and
-// the strict source-lineaged MoveFeature, MirrorFeature, LinearPatternFeature,
-// and CircularPatternFeature paths. Given a coherent CompleteFaces result,
-// every
+// sketch/face boolean paths in ExtrudeFeature, the NewBody and strict boolean
+// paths in RevolveFeature, PocketFeature, the both-lineaged
+// JoinBodiesFeature path, and the strict source-lineaged MoveFeature,
+// MirrorFeature, LinearPatternFeature, and CircularPatternFeature paths. Given
+// a coherent CompleteFaces result, every
 // uniquely identified closed two-face manifold edge receives the same
 // face-boundary-edge:v1 identity used by the selected-face capture above.
 // Unsupported edges (open, seam, non-manifold, degenerate, or sharing a face
