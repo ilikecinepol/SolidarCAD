@@ -10,6 +10,7 @@
 #include <span>
 
 #include "model/Document.h"
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/GeometryOperation.h"
 #include "model/OcctBooleanTopologyHistoryCapture.h"
 #include "model/TopologyLineage.h"
@@ -240,8 +241,22 @@ bool JoinBodiesFeature::rebuildImpl(const RebuildContext& context) {
                             : std::move(error));
     return false;
   }
-  setShapeAndTopologyLineage(std::move(captured->outputShape),
-                             std::move(lineage));
+  if (lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    markError("Join Bodies face lineage is incomplete");
+    return false;
+  }
+  FaceBoundaryEdgeProvenanceFailure edgeFailure;
+  const auto augmented = augmentCompleteFaceLineageWithUniqueManifoldEdges(
+      {id(), captured->outputShape, lineage}, &edgeFailure);
+  if (!augmented) {
+    markError("Join Bodies " +
+              (edgeFailure.detail.empty()
+                   ? std::string("edge lineage is invalid")
+                   : std::move(edgeFailure.detail)));
+    return false;
+  }
+  setShapeAndTopologyLineage(captured->outputShape,
+                             augmented->augmentedSource.lineage);
   markValid();
   return true;
 }

@@ -122,7 +122,8 @@ const solidar::TopologyLineageBinding* bindingWithOperation(
   const auto found = std::find_if(
       lineage.bindings().begin(), lineage.bindings().end(),
       [operation](const auto& binding) {
-        return binding.provenance.operation == operation;
+        return binding.provenance.kind == solidar::TopologyKind::Face &&
+               binding.provenance.operation == operation;
       });
   return found == lineage.bindings().end() ? nullptr : &*found;
 }
@@ -133,7 +134,8 @@ std::size_t bindingCountWithOperation(
   return static_cast<std::size_t>(std::count_if(
       lineage.bindings().begin(), lineage.bindings().end(),
       [operation](const auto& binding) {
-        return binding.provenance.operation == operation;
+        return binding.provenance.kind == solidar::TopologyKind::Face &&
+               binding.provenance.operation == operation;
       }));
 }
 
@@ -252,7 +254,12 @@ int main(int argc, char** argv) {
     CHECK(lineage);
     CHECK(lineage->coverage() ==
           solidar::TopologyLineageCoverage::CompleteFaces);
-    CHECK(lineage->bindings().size() == 6);
+    CHECK(static_cast<std::size_t>(std::count_if(
+              lineage->bindings().begin(), lineage->bindings().end(),
+              [](const auto& binding) {
+                return binding.provenance.kind ==
+                       solidar::TopologyKind::Face;
+              })) == 6);
     CHECK(bindingCountWithOperation(
               *lineage, solidar::TopologyProvenanceOperation::Retained) == 2);
     CHECK(bindingCountWithOperation(
@@ -276,6 +283,7 @@ int main(int argc, char** argv) {
     std::vector<solidar::FaceReference> savedReferences;
     savedReferences.reserve(lineage->bindings().size());
     for (const auto& binding : lineage->bindings()) {
+      if (binding.provenance.kind != solidar::TopologyKind::Face) continue;
       const auto exact = solidar::FaceReference::fromV2(
           {resultBodyId, binding.provenance});
       const auto resolved = index->resolveFace(exact);
@@ -389,6 +397,15 @@ int main(int argc, char** argv) {
     CHECK(mixed.isValid());
     CHECK(mixed.hasShape());
     CHECK(!mixed.topologyLineage());
+    const auto mixedIndex = mixed.topologyIndex();
+    CHECK(mixedIndex);
+    CHECK(mixedIndex->rawEdgeCount() > 0);
+    const auto unavailable =
+        mixed.createEdgeReferenceV2(result.id(), 0);
+    CHECK(!unavailable);
+    CHECK(unavailable.status ==
+          solidar::EdgeReferenceV2CreationStatus::Missing);
+    CHECK(!unavailable.reference.v2());
   }
 
   // Self-joining one Body is invalid even if two Feature ids are supplied.

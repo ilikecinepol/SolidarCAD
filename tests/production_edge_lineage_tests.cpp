@@ -35,6 +35,7 @@
 #include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
+#include "model/JoinBodiesFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/TopologyReferenceResolver.h"
@@ -66,6 +67,74 @@ struct PocketedBox {
   solidar::sketch::GeometryId circleId{
       solidar::sketch::kInvalidGeometryId};
 };
+
+struct JoinedBoxes {
+  solidar::Document document;
+  solidar::Body* resultBody{};
+  solidar::ExtrudeFeature* first{};
+  solidar::ExtrudeFeature* second{};
+  solidar::JoinBodiesFeature* join{};
+  solidar::BodyId firstBodyId{solidar::kInvalidBodyId};
+  solidar::BodyId secondBodyId{solidar::kInvalidBodyId};
+  solidar::SketchId firstSketchId{solidar::kInvalidSketchId};
+  solidar::SketchId secondSketchId{solidar::kInvalidSketchId};
+  std::array<solidar::sketch::GeometryId, 4> firstGeometryIds{};
+  std::array<solidar::sketch::GeometryId, 4> secondGeometryIds{};
+};
+
+JoinedBoxes makeJoinedBoxes() {
+  JoinedBoxes result;
+  auto& firstSketch =
+      result.document.addSketch("Production edge join source A");
+  firstSketch.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+  result.firstSketchId = firstSketch.id;
+  result.firstGeometryIds = {
+      firstSketch.geometry.lineId(0), firstSketch.geometry.lineId(1),
+      firstSketch.geometry.lineId(2), firstSketch.geometry.lineId(3)};
+  auto& firstBody = result.document.addBody("Join source A");
+  result.firstBodyId = firstBody.id();
+  auto first =
+      std::make_unique<solidar::ExtrudeFeature>(firstSketch.id, 10.0);
+  result.first = first.get();
+  firstBody.addFeature(std::move(first));
+
+  auto& secondSketch =
+      result.document.addSketch("Production edge join source B");
+  secondSketch.geometry.addRectangle({10.0, 0.0}, {30.0, 10.0});
+  result.secondSketchId = secondSketch.id;
+  result.secondGeometryIds = {
+      secondSketch.geometry.lineId(0), secondSketch.geometry.lineId(1),
+      secondSketch.geometry.lineId(2), secondSketch.geometry.lineId(3)};
+  auto& secondBody = result.document.addBody("Join source B");
+  result.secondBodyId = secondBody.id();
+  auto second =
+      std::make_unique<solidar::ExtrudeFeature>(secondSketch.id, 10.0);
+  result.second = second.get();
+  secondBody.addFeature(std::move(second));
+
+  auto& resultBody = result.document.addBody("Join result");
+  auto join = std::make_unique<solidar::JoinBodiesFeature>(
+      result.firstBodyId, result.first->id(), result.secondBodyId,
+      result.second->id());
+  result.join = join.get();
+  resultBody.addFeature(std::move(join));
+  result.resultBody = &resultBody;
+  CHECK(result.document.rebuild());
+  return result;
+}
+
+void replaceJoinedRectangle(
+    JoinedBoxes& model, bool second, double minimumX, double maximumX) {
+  solidar::sketch::Sketch replacement;
+  replacement.addRectangle({minimumX, 0.0}, {maximumX, 10.0});
+  const auto& ids =
+      second ? model.secondGeometryIds : model.firstGeometryIds;
+  CHECK(replacement.restoreGeometryIds({ids[0], ids[1], ids[2], ids[3]},
+                                       {}, {}, {}));
+  CHECK(model.document.replaceSketchGeometry(
+      second ? model.secondSketchId : model.firstSketchId,
+      std::move(replacement)));
+}
 
 PocketedBox makePocketedBox(double depthMm = 6.0,
                             solidar::sketch::Point center = {15.0, 14.0},
@@ -517,6 +586,47 @@ void checkAllCanonicalEdgesCreated(const solidar::ShapeFeature& feature,
   }
   CHECK(seen.size() == expectedCount);
   CHECK(edgeBindingCount(feature) == expectedCount);
+}
+
+void auditJoinedBoxEdges(const solidar::ShapeFeature& join,
+                         solidar::BodyId bodyId) {
+  const auto index = join.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy = index->createEdgeReference(bodyId, join.id(), raw);
+    CHECK(legacy);
+    const auto rawEdge = index->resolveEdge(legacy.reference);
+    CHECK(rawEdge);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*rawEdge.subshape);
+        }))
+      continue;
+    seen.push_back(*rawEdge.subshape);
+
+    const auto exact = join.createEdgeReferenceV2(bodyId, raw);
+    CHECK(exact);
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(exact.reference.v2());
+    const auto& key = exact.reference.v2()->provenance;
+    CHECK(key.featureId == join.id());
+    CHECK(key.kind == solidar::TopologyKind::Edge);
+    CHECK(key.operation == solidar::TopologyProvenanceOperation::Generated);
+    CHECK(key.localName.starts_with("face-boundary-edge:v1;"));
+    CHECK(key.origins.size() == 2);
+    for (const auto& origin : key.origins) {
+      CHECK(origin.featureId == join.id());
+      CHECK(origin.kind == solidar::TopologyKind::Face);
+    }
+    CHECK(key.origins == adjacentFaceOrigins(join, *rawEdge.subshape));
+    const auto resolved = index->resolveEdge(exact.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*rawEdge.subshape));
+  }
+  CHECK(seen.size() == 12);
+  CHECK(edgeBindingCount(join) == 12);
 }
 
 void auditBlindPocketEdges(const solidar::ShapeFeature& feature,
@@ -1547,6 +1657,217 @@ int main() {
     CHECK(filletFeature->shape());
     CHECK(volumeOf(*filletFeature->shape()) <
           volumeOf(*model.pocket->shape()) - 1e-5);
+  }
+
+  // A strict both-lineaged Join reduces two overlapping rectangle extrusions
+  // to one rectangular prism. Saved carriers are selected geometrically from
+  // the Join result and retain Join-owned adjacency identity across source
+  // edits and operand order.
+  {
+    auto model = makeJoinedBoxes();
+    double minimumX = 0.0;
+    double maximumX = 30.0;
+    double height = 10.0;
+    const auto mergedBottomFront = edgeForExactEndpoints(
+        *model.join, model.resultBody->id(), gp_Pnt(minimumX, 0.0, 0.0),
+        gp_Pnt(maximumX, 0.0, 0.0));
+    const auto firstLeft = edgeForExactEndpoints(
+        *model.join, model.resultBody->id(), gp_Pnt(minimumX, 0.0, 0.0),
+        gp_Pnt(minimumX, 0.0, height));
+    const auto secondRight = edgeForExactEndpoints(
+        *model.join, model.resultBody->id(), gp_Pnt(maximumX, 0.0, 0.0),
+        gp_Pnt(maximumX, 0.0, height));
+
+    const auto bottomOrigin = faceOriginForBounds(
+        *model.join, {minimumX, 0.0, 0.0, maximumX, 10.0, 0.0});
+    const auto frontOrigin = faceOriginForBounds(
+        *model.join, {minimumX, 0.0, 0.0, maximumX, 0.0, height});
+    const auto firstLeftOrigin = faceOriginForBounds(
+        *model.join, {minimumX, 0.0, 0.0, minimumX, 10.0, height});
+    const auto secondRightOrigin = faceOriginForBounds(
+        *model.join, {maximumX, 0.0, 0.0, maximumX, 10.0, height});
+
+    const auto checkJoined = [&] {
+      CHECK(faceOriginForBounds(
+                *model.join,
+                {minimumX, 0.0, 0.0, maximumX, 10.0, 0.0}) ==
+            bottomOrigin);
+      CHECK(faceOriginForBounds(
+                *model.join,
+                {minimumX, 0.0, 0.0, maximumX, 0.0, height}) ==
+            frontOrigin);
+      CHECK(faceOriginForBounds(
+                *model.join,
+                {minimumX, 0.0, 0.0, minimumX, 10.0, height}) ==
+            firstLeftOrigin);
+      CHECK(faceOriginForBounds(
+                *model.join,
+                {maximumX, 0.0, 0.0, maximumX, 10.0, height}) ==
+            secondRightOrigin);
+      checkExactCarrier(
+          *model.join, mergedBottomFront, {bottomOrigin, frontOrigin},
+          {GeomAbs_Line, maximumX - minimumX,
+           gp_Pnt(minimumX, 0.0, 0.0), gp_Pnt(maximumX, 0.0, 0.0)});
+      checkExactCarrier(
+          *model.join, firstLeft, {firstLeftOrigin, frontOrigin},
+          {GeomAbs_Line, height, gp_Pnt(minimumX, 0.0, 0.0),
+           gp_Pnt(minimumX, 0.0, height)});
+      checkExactCarrier(
+          *model.join, secondRight, {secondRightOrigin, frontOrigin},
+          {GeomAbs_Line, height, gp_Pnt(maximumX, 0.0, 0.0),
+           gp_Pnt(maximumX, 0.0, height)});
+      CHECK(near(volumeOf(*model.join->shape()),
+                 (maximumX - minimumX) * 10.0 * height, 1e-3));
+    };
+
+    checkJoined();
+    checkAllCanonicalEdgesCreated(*model.join, model.resultBody->id(), 12);
+    auditJoinedBoxEdges(*model.join, model.resultBody->id());
+    const auto outputEdgeKeys = edgeKeys(*model.join->topologyLineage());
+    const auto firstSourceEdgeKeys = edgeKeys(*model.first->topologyLineage());
+    const auto secondSourceEdgeKeys =
+        edgeKeys(*model.second->topologyLineage());
+    CHECK(outputEdgeKeys.size() == 12);
+    CHECK(!firstSourceEdgeKeys.empty());
+    CHECK(!secondSourceEdgeKeys.empty());
+    CHECK(firstSourceEdgeKeys.size() == 12);
+    CHECK(secondSourceEdgeKeys.size() == 12);
+    for (const auto& key : outputEdgeKeys) {
+      CHECK(key.featureId == model.join->id());
+      CHECK(std::find(firstSourceEdgeKeys.begin(), firstSourceEdgeKeys.end(),
+                      key) == firstSourceEdgeKeys.end());
+      CHECK(std::find(secondSourceEdgeKeys.begin(), secondSourceEdgeKeys.end(),
+                      key) == secondSourceEdgeKeys.end());
+    }
+
+    model.first->setLengthMm(14.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.join, mergedBottomFront, {bottomOrigin, frontOrigin},
+        {GeomAbs_Line, 30.0, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(30.0, 0.0, 0.0)});
+    checkExactCarrier(
+        *model.join, firstLeft, {firstLeftOrigin, frontOrigin},
+        {GeomAbs_Line, 14.0, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(0.0, 0.0, 14.0)});
+    checkExactCarrier(
+        *model.join, secondRight, {secondRightOrigin, frontOrigin},
+        {GeomAbs_Line, 10.0, gp_Pnt(30.0, 0.0, 0.0),
+         gp_Pnt(30.0, 0.0, 10.0)});
+
+    height = 14.0;
+    model.second->setLengthMm(height);
+    CHECK(model.document.recompute());
+    checkJoined();
+
+    maximumX = 32.0;
+    replaceJoinedRectangle(model, true, 12.0, maximumX);
+    CHECK(model.document.recompute());
+    checkJoined();
+    checkAllCanonicalEdgesCreated(*model.join, model.resultBody->id(), 12);
+
+    model.join->setInputs(model.secondBodyId, model.second->id(),
+                          model.firstBodyId, model.first->id());
+    CHECK(model.document.recompute());
+    checkJoined();
+
+    // Moving B to the other side makes the saved A-left and B-right roles
+    // internal. The merged edge keeps its face-pair identity while the new
+    // exterior side edges are V2-authorable by their geometry.
+    minimumX = -12.0;
+    maximumX = 20.0;
+    replaceJoinedRectangle(model, true, minimumX, 8.0);
+    CHECK(model.document.recompute());
+    checkEdgeMissing(*model.join, firstLeft);
+    checkEdgeMissing(*model.join, secondRight);
+    checkExactCarrier(
+        *model.join, mergedBottomFront, {bottomOrigin, frontOrigin},
+        {GeomAbs_Line, maximumX - minimumX,
+         gp_Pnt(minimumX, 0.0, 0.0), gp_Pnt(maximumX, 0.0, 0.0)});
+    const auto newLeftOrigin = faceOriginForBounds(
+        *model.join, {minimumX, 0.0, 0.0, minimumX, 10.0, height});
+    const auto newRightOrigin = faceOriginForBounds(
+        *model.join, {maximumX, 0.0, 0.0, maximumX, 10.0, height});
+    const auto newLeft = edgeForExactEndpoints(
+        *model.join, model.resultBody->id(), gp_Pnt(minimumX, 0.0, 0.0),
+        gp_Pnt(minimumX, 0.0, height));
+    const auto newRight = edgeForExactEndpoints(
+        *model.join, model.resultBody->id(), gp_Pnt(maximumX, 0.0, 0.0),
+        gp_Pnt(maximumX, 0.0, height));
+    checkExactCarrier(
+        *model.join, newLeft, {newLeftOrigin, frontOrigin},
+        {GeomAbs_Line, height, gp_Pnt(minimumX, 0.0, 0.0),
+         gp_Pnt(minimumX, 0.0, height)});
+    checkExactCarrier(
+        *model.join, newRight, {newRightOrigin, frontOrigin},
+        {GeomAbs_Line, height, gp_Pnt(maximumX, 0.0, 0.0),
+         gp_Pnt(maximumX, 0.0, height)});
+
+    minimumX = 0.0;
+    maximumX = 32.0;
+    replaceJoinedRectangle(model, true, 12.0, maximumX);
+    CHECK(model.document.recompute());
+    checkJoined();
+
+    const auto validShape = model.join->shape();
+    const auto validLineage = model.join->topologyLineage();
+    const auto validIndex = model.join->topologyIndex();
+    const auto validRevision = model.join->shapeRevision();
+    replaceJoinedRectangle(model, true, 40.0, 60.0);
+    CHECK(!model.document.recompute());
+    CHECK(!model.join->shape());
+    CHECK(!model.join->topologyLineage());
+    CHECK(model.join->shapeRevision() == validRevision);
+    CHECK(model.join->lastValidShape() == validShape);
+    CHECK(model.join->lastValidTopologyLineage() == validLineage);
+    std::string error;
+    CHECK(!model.join->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.join->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    CHECK(validIndex->resolveEdge(mergedBottomFront));
+    CHECK(validIndex->resolveEdge(firstLeft));
+    CHECK(validIndex->resolveEdge(secondRight));
+
+    replaceJoinedRectangle(model, true, 12.0, maximumX);
+    CHECK(model.document.recompute());
+    CHECK(model.join->shapeRevision() > validRevision);
+    checkJoined();
+  }
+
+  // A fixed merged convex edge feeds Fillet without probing alternatives.
+  // Both its exact Join identity and strict volume decrease survive a source
+  // profile shift.
+  {
+    auto model = makeJoinedBoxes();
+    const auto merged = edgeForExactEndpoints(
+        *model.join, model.resultBody->id(), gp_Pnt(0.0, 0.0, 0.0),
+        gp_Pnt(30.0, 0.0, 0.0));
+    const auto bottom = faceOriginForBounds(
+        *model.join, {0.0, 0.0, 0.0, 30.0, 10.0, 0.0});
+    const auto front = faceOriginForBounds(
+        *model.join, {0.0, 0.0, 0.0, 30.0, 0.0, 10.0});
+    checkExactCarrier(
+        *model.join, merged, {bottom, front},
+        {GeomAbs_Line, 30.0, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(30.0, 0.0, 0.0)});
+    auto fillet = std::make_unique<FilletFeature>(merged, 1.0);
+    auto* filletFeature = fillet.get();
+    model.resultBody->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.join->shape()) - 1e-5);
+
+    replaceJoinedRectangle(model, true, 12.0, 32.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.join, merged, {bottom, front},
+        {GeomAbs_Line, 32.0, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(32.0, 0.0, 0.0)});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.join->shape()) - 1e-5);
   }
 
   return EXIT_SUCCESS;
