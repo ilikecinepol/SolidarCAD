@@ -1471,6 +1471,7 @@ int main() {
     CHECK(document.recompute());
     CHECK(finalPattern->topologyLineage());
     for (const auto& binding : finalPattern->topologyLineage()->bindings()) {
+      if (binding.provenance.kind != TopologyKind::Face) continue;
       CHECK(binding.provenance.origins.size() == 1);
       CHECK(binding.provenance.origins.front().featureId == mirrorId);
       CHECK(binding.provenance.localName.find("name-length=") !=

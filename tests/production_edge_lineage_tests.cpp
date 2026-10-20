@@ -37,6 +37,7 @@
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/JoinBodiesFeature.h"
+#include "model/LinearPatternFeature.h"
 #include "model/MirrorFeature.h"
 #include "model/MoveFeature.h"
 #include "model/PocketFeature.h"
@@ -102,6 +103,57 @@ struct MirroredBox {
   solidar::MirrorFeature* mirror{};
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
+
+struct LinearPatternedBox {
+  solidar::Document document;
+  solidar::Body* sourceBody{};
+  solidar::Body* patternBody{};
+  solidar::SketchId sketchId{solidar::kInvalidSketchId};
+  solidar::ExtrudeFeature* extrusion{};
+  solidar::LinearPatternFeature* pattern{};
+  std::array<solidar::sketch::GeometryId, 4> geometryIds{};
+};
+
+LinearPatternedBox makeLinearPatternedBox(
+    solidar::PatternOperation operation = solidar::PatternOperation::Join) {
+  LinearPatternedBox result;
+  auto& sketch =
+      result.document.addSketch("Production edge linear pattern source");
+  sketch.geometry.addRectangle({0.0, 0.0}, {8.0, 6.0});
+  result.sketchId = sketch.id;
+  result.geometryIds = {
+      sketch.geometry.lineId(0), sketch.geometry.lineId(1),
+      sketch.geometry.lineId(2), sketch.geometry.lineId(3)};
+  auto& sourceBody = result.document.addBody("Linear pattern source");
+  const auto sourceBodyId = sourceBody.id();
+  auto extrusion =
+      std::make_unique<solidar::ExtrudeFeature>(sketch.id, 5.0);
+  result.extrusion = extrusion.get();
+  const auto extrusionId = extrusion->id();
+  sourceBody.addFeature(std::move(extrusion));
+
+  auto patternBodyId = sourceBodyId;
+  if (operation == solidar::PatternOperation::Join) {
+    auto pattern = std::make_unique<solidar::LinearPatternFeature>(
+        extrusionId, solidar::PrincipalAxis::X, 5, 12.0);
+    result.pattern = pattern.get();
+    sourceBody.addFeature(std::move(pattern));
+  } else {
+    auto& copiesBody = result.document.addBody("Linear pattern copies");
+    patternBodyId = copiesBody.id();
+    auto pattern = std::make_unique<solidar::LinearPatternFeature>(
+        sourceBodyId, extrusionId, solidar::PrincipalAxis::X, 5, 12.0,
+        solidar::PatternOperation::NewBody);
+    result.pattern = pattern.get();
+    copiesBody.addFeature(std::move(pattern));
+  }
+  result.sourceBody = result.document.findBody(sourceBodyId);
+  result.patternBody = result.document.findBody(patternBodyId);
+  CHECK(result.sourceBody);
+  CHECK(result.patternBody);
+  CHECK(result.document.rebuild());
+  return result;
+}
 
 MirroredBox makeMirroredBox(
     solidar::MirrorPlane plane = solidar::MirrorPlane::YZ) {
@@ -750,6 +802,73 @@ void auditMirroredBoxEdges(const solidar::ShapeFeature& mirror,
   CHECK(edgeBindingCount(mirror) == 24);
   CHECK(slotCounts[0] == 12);
   CHECK(slotCounts[1] == 12);
+}
+
+void auditLinearPatternEdges(
+    const solidar::ShapeFeature& pattern, solidar::BodyId bodyId,
+    const std::vector<std::uint64_t>& expectedSlots) {
+  const auto index = pattern.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  std::vector<std::size_t> slotCounts(expectedSlots.size(), 0);
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, pattern.id(), raw);
+    CHECK(legacy);
+    const auto rawEdge = index->resolveEdge(legacy.reference);
+    CHECK(rawEdge);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*rawEdge.subshape);
+        }))
+      continue;
+    seen.push_back(*rawEdge.subshape);
+
+    const auto exact = pattern.createEdgeReferenceV2(bodyId, raw);
+    CHECK(exact);
+    CHECK(exact.status ==
+          solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(exact.reference.v2());
+    const auto& key = exact.reference.v2()->provenance;
+    CHECK(key.featureId == pattern.id());
+    CHECK(key.kind == solidar::TopologyKind::Edge);
+    CHECK(key.operation ==
+          solidar::TopologyProvenanceOperation::Generated);
+    CHECK(!key.occurrence);
+    CHECK(key.localName.starts_with("face-boundary-edge:v1;"));
+    CHECK(key.origins.size() == 2);
+    CHECK(key.origins == adjacentFaceOrigins(pattern, *rawEdge.subshape));
+    CHECK(key.origins.front().occurrence);
+    const auto slot = key.origins.front().occurrence->slot;
+    const auto slotPosition =
+        std::find(expectedSlots.begin(), expectedSlots.end(), slot);
+    CHECK(slotPosition != expectedSlots.end());
+    for (const auto& origin : key.origins) {
+      CHECK(origin.featureId == pattern.id());
+      CHECK(origin.kind == solidar::TopologyKind::Face);
+      CHECK(origin.occurrence);
+      CHECK(origin.occurrence->featureId == pattern.id());
+      CHECK(origin.occurrence->slot == slot);
+    }
+    ++slotCounts[static_cast<std::size_t>(
+        std::distance(expectedSlots.begin(), slotPosition))];
+
+    const auto resolved = index->resolveEdge(exact.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*rawEdge.subshape));
+  }
+  CHECK(seen.size() == expectedSlots.size() * 12);
+  CHECK(edgeBindingCount(pattern) == expectedSlots.size() * 12);
+  for (const auto count : slotCounts) CHECK(count == 12);
+}
+
+std::size_t solidCount(const TopoDS_Shape& shape) {
+  std::size_t result = 0;
+  for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More();
+       explorer.Next())
+    ++result;
+  return result;
 }
 
 void auditBlindPocketEdges(const solidar::ShapeFeature& feature,
@@ -2474,6 +2593,360 @@ int main() {
     CHECK(index);
     CHECK(index->rawEdgeCount() > 0);
     const auto exact = mirrorFeature->createEdgeReferenceV2(body.id(), 0);
+    CHECK(!exact);
+    CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
+  }
+
+  // Join Linear Pattern publishes one exact edge set per authored occurrence.
+  // Saved slot-1 and slot-4 carriers are selected only by geometry and retain
+  // their keys through spacing/count/source edits and slot disappearance.
+  {
+    auto model = makeLinearPatternedBox();
+    double sourceX0 = 0.0;
+    double sourceY0 = 0.0;
+    double sourceX1 = 8.0;
+    double sourceY1 = 6.0;
+    double length = 5.0;
+    double spacing = 12.0;
+
+    const auto sourceVertical = edgeForExactEndpoints(
+        *model.extrusion, model.sourceBody->id(),
+        gp_Pnt(sourceX0, sourceY0, 0.0),
+        gp_Pnt(sourceX0, sourceY0, length));
+    const auto slot0 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(),
+        gp_Pnt(sourceX0, sourceY0, 0.0),
+        gp_Pnt(sourceX0, sourceY0, length));
+    const auto slot1 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(),
+        gp_Pnt(sourceX0 + spacing, sourceY0, 0.0),
+        gp_Pnt(sourceX0 + spacing, sourceY0, length));
+    const auto slot4 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(),
+        gp_Pnt(sourceX0 + 4.0 * spacing, sourceY0, 0.0),
+        gp_Pnt(sourceX0 + 4.0 * spacing, sourceY0, length));
+    CHECK(sourceVertical.v2());
+    CHECK(slot0.v2());
+    CHECK(slot1.v2());
+    CHECK(slot4.v2());
+    const auto slot1Key = slot1.v2()->provenance;
+    const auto slot4Key = slot4.v2()->provenance;
+    const auto slot1LeftOrigin = faceOriginForBounds(
+        *model.pattern,
+        {sourceX0 + spacing, sourceY0, 0.0, sourceX0 + spacing,
+         sourceY1, length});
+    const auto slot1FrontOrigin = faceOriginForBounds(
+        *model.pattern,
+        {sourceX0 + spacing, sourceY0, 0.0, sourceX1 + spacing,
+         sourceY0, length});
+    const auto slot4LeftOrigin = faceOriginForBounds(
+        *model.pattern,
+        {sourceX0 + 4.0 * spacing, sourceY0, 0.0,
+         sourceX0 + 4.0 * spacing, sourceY1, length});
+    const auto slot4FrontOrigin = faceOriginForBounds(
+        *model.pattern,
+        {sourceX0 + 4.0 * spacing, sourceY0, 0.0,
+         sourceX1 + 4.0 * spacing, sourceY0, length});
+
+    const auto checkOccurrence = [&](const TopologyProvenanceKey& key,
+                                     std::uint64_t expectedSlot) {
+      CHECK(key.featureId == model.pattern->id());
+      CHECK(key.kind == TopologyKind::Edge);
+      CHECK(key.operation == TopologyProvenanceOperation::Generated);
+      CHECK(!key.occurrence);
+      CHECK(key.origins.size() == 2);
+      for (const auto& origin : key.origins) {
+        CHECK(origin.featureId == model.pattern->id());
+        CHECK(origin.kind == TopologyKind::Face);
+        CHECK(origin.occurrence);
+        CHECK(origin.occurrence->featureId == model.pattern->id());
+        CHECK(origin.occurrence->slot == expectedSlot);
+      }
+    };
+    checkOccurrence(slot1Key, 1);
+    checkOccurrence(slot4Key, 4);
+
+    const auto checkSlot = [&](const EdgeReference& carrier,
+                               const TopologyProvenanceKey& savedKey,
+                               std::uint64_t slot,
+                               const std::vector<TopologyProvenanceOrigin>&
+                                   expectedOrigins) {
+      const double translatedX =
+          sourceX0 + spacing * static_cast<double>(slot);
+      const gp_Pnt first(translatedX, sourceY0, 0.0);
+      const gp_Pnt last(translatedX, sourceY0, length);
+      checkExactCarrier(*model.pattern, carrier, expectedOrigins,
+                        {GeomAbs_Line, length, first, last});
+      const auto rediscovered = edgeForExactEndpoints(
+          *model.pattern, model.patternBody->id(), first, last);
+      CHECK(rediscovered.v2());
+      CHECK(rediscovered.v2()->provenance == savedKey);
+    };
+    const auto checkBothSavedSlots = [&] {
+      CHECK(faceOriginForBounds(
+                *model.pattern,
+                {sourceX0 + spacing, sourceY0, 0.0, sourceX0 + spacing,
+                 sourceY1, length}) == slot1LeftOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pattern,
+                {sourceX0 + spacing, sourceY0, 0.0, sourceX1 + spacing,
+                 sourceY0, length}) == slot1FrontOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pattern,
+                {sourceX0 + 4.0 * spacing, sourceY0, 0.0,
+                 sourceX0 + 4.0 * spacing, sourceY1, length}) ==
+            slot4LeftOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pattern,
+                {sourceX0 + 4.0 * spacing, sourceY0, 0.0,
+                 sourceX1 + 4.0 * spacing, sourceY0, length}) ==
+            slot4FrontOrigin);
+      checkSlot(slot1, slot1Key, 1,
+                {slot1LeftOrigin, slot1FrontOrigin});
+      checkSlot(slot4, slot4Key, 4,
+                {slot4LeftOrigin, slot4FrontOrigin});
+    };
+
+    checkBothSavedSlots();
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2, 3, 4});
+    const auto sourceKeys = edgeKeys(*model.extrusion->topologyLineage());
+    const auto patternKeys = edgeKeys(*model.pattern->topologyLineage());
+    CHECK(sourceKeys.size() == 12);
+    CHECK(patternKeys.size() == 60);
+    for (const auto& key : patternKeys) {
+      CHECK(key.featureId == model.pattern->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+    const auto sourceResolved =
+        model.extrusion->topologyIndex()->resolveEdge(sourceVertical);
+    const auto slot0Resolved = model.pattern->topologyIndex()->resolveEdge(slot0);
+    const auto slot1Resolved = model.pattern->topologyIndex()->resolveEdge(slot1);
+    const auto slot4Resolved = model.pattern->topologyIndex()->resolveEdge(slot4);
+    CHECK(sourceResolved);
+    CHECK(slot0Resolved);
+    CHECK(slot1Resolved);
+    CHECK(slot4Resolved);
+    CHECK(slot0Resolved.subshape->IsSame(*sourceResolved.subshape));
+    CHECK(!slot1Resolved.subshape->IsSame(*sourceResolved.subshape));
+    CHECK(!slot4Resolved.subshape->IsSame(*sourceResolved.subshape));
+    CHECK(!slot1Resolved.subshape->IsSame(*slot4Resolved.subshape));
+
+    spacing = 15.0;
+    model.pattern->setSpacingMm(spacing);
+    CHECK(model.document.recompute());
+    checkBothSavedSlots();
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2, 3, 4});
+
+    model.pattern->setCount(3);
+    CHECK(model.document.recompute());
+    checkSlot(slot1, slot1Key, 1,
+              {slot1LeftOrigin, slot1FrontOrigin});
+    const auto missingSlot4 =
+        model.pattern->topologyIndex()->resolveEdge(slot4);
+    CHECK(!missingSlot4);
+    CHECK(missingSlot4.failure == TopologyResolutionFailure::Missing);
+    CHECK(missingSlot4.method == TopologyMatchMethod::None);
+    CHECK(!missingSlot4.subshape);
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2});
+
+    model.pattern->setCount(5);
+    CHECK(model.document.recompute());
+    checkBothSavedSlots();
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2, 3, 4});
+
+    length = 8.0;
+    model.extrusion->setLengthMm(length);
+    CHECK(model.document.recompute());
+    checkBothSavedSlots();
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2, 3, 4});
+
+    sourceX0 = 2.0;
+    sourceY0 = 3.0;
+    sourceX1 = 11.0;
+    sourceY1 = 10.0;
+    sketch::Sketch reordered;
+    reordered.addLine({sourceX0, sourceY1}, {sourceX1, sourceY1});
+    reordered.addLine({sourceX1, sourceY0}, {sourceX0, sourceY0});
+    reordered.addLine({sourceX0, sourceY0}, {sourceX0, sourceY1});
+    reordered.addLine({sourceX1, sourceY1}, {sourceX1, sourceY0});
+    CHECK(reordered.restoreGeometryIds(
+        {model.geometryIds[2], model.geometryIds[0], model.geometryIds[3],
+         model.geometryIds[1]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.sketchId,
+                                               std::move(reordered)));
+    CHECK(model.document.recompute());
+    checkBothSavedSlots();
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2, 3, 4});
+
+    const auto validShape = model.pattern->shape();
+    const auto validLineage = model.pattern->topologyLineage();
+    const auto validIndex = model.pattern->topologyIndex();
+    const auto validRevision = model.pattern->shapeRevision();
+    const auto validSlot1 = validIndex->resolveEdge(slot1);
+    const auto validSlot4 = validIndex->resolveEdge(slot4);
+    CHECK(validSlot1);
+    CHECK(validSlot4);
+    model.pattern->setSpacingMm(
+        std::numeric_limits<double>::quiet_NaN());
+    CHECK(!model.document.recompute());
+    CHECK(!model.pattern->shape());
+    CHECK(!model.pattern->topologyLineage());
+    CHECK(model.pattern->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.patternBody->topologySnapshot(model.pattern->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.pattern->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.pattern->lastValidShape() == validShape);
+    CHECK(model.pattern->lastValidTopologyLineage() == validLineage);
+    CHECK(model.pattern->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBackSlot1 = validIndex->resolveEdge(slot1);
+    const auto rolledBackSlot4 = validIndex->resolveEdge(slot4);
+    CHECK(rolledBackSlot1);
+    CHECK(rolledBackSlot4);
+    CHECK(rolledBackSlot1.subshape->IsSame(*validSlot1.subshape));
+    CHECK(rolledBackSlot4.subshape->IsSame(*validSlot4.subshape));
+
+    model.pattern->setSpacingMm(spacing);
+    CHECK(model.document.recompute());
+    CHECK(model.pattern->shapeRevision() > validRevision);
+    checkBothSavedSlots();
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {0, 1, 2, 3, 4});
+  }
+
+  // A fixed slot-1 edge feeds Fillet without probing. Count, spacing and
+  // upstream length edits preserve the exact carrier and material removal.
+  {
+    auto model = makeLinearPatternedBox();
+    double spacing = 12.0;
+    double length = 5.0;
+    const auto slot1 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(),
+        gp_Pnt(spacing, 0.0, 0.0), gp_Pnt(spacing, 0.0, length));
+    const auto left = faceOriginForBounds(
+        *model.pattern, {spacing, 0.0, 0.0, spacing, 6.0, length});
+    const auto front = faceOriginForBounds(
+        *model.pattern, {spacing, 0.0, 0.0, spacing + 8.0, 0.0, length});
+    checkExactCarrier(
+        *model.pattern, slot1, {left, front},
+        {GeomAbs_Line, length, gp_Pnt(spacing, 0.0, 0.0),
+         gp_Pnt(spacing, 0.0, length)});
+    auto fillet = std::make_unique<FilletFeature>(slot1, 0.75);
+    auto* filletFeature = fillet.get();
+    model.patternBody->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pattern->shape()) - 1e-5);
+
+    spacing = 15.0;
+    length = 8.0;
+    model.pattern->setCount(3);
+    model.pattern->setSpacingMm(spacing);
+    model.extrusion->setLengthMm(length);
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.pattern, slot1, {left, front},
+        {GeomAbs_Line, length, gp_Pnt(spacing, 0.0, 0.0),
+         gp_Pnt(spacing, 0.0, length)});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pattern->shape()) - 1e-5);
+  }
+
+  // NewBody Linear Pattern publishes only generated slots 1..count-1. Slot 4
+  // disappears at count 3 and recovers with the same exact public carrier.
+  {
+    auto model = makeLinearPatternedBox(PatternOperation::NewBody);
+    const auto slot1 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), gp_Pnt(12.0, 0.0, 0.0),
+        gp_Pnt(12.0, 0.0, 5.0));
+    const auto slot4 = edgeForExactEndpoints(
+        *model.pattern, model.patternBody->id(), gp_Pnt(48.0, 0.0, 0.0),
+        gp_Pnt(48.0, 0.0, 5.0));
+    CHECK(slot1.v2());
+    CHECK(slot4.v2());
+    const auto slot1Key = slot1.v2()->provenance;
+    const auto slot4Key = slot4.v2()->provenance;
+    const auto slot1Left = faceOriginForBounds(
+        *model.pattern, {12.0, 0.0, 0.0, 12.0, 6.0, 5.0});
+    const auto slot1Front = faceOriginForBounds(
+        *model.pattern, {12.0, 0.0, 0.0, 20.0, 0.0, 5.0});
+    const auto slot4Left = faceOriginForBounds(
+        *model.pattern, {48.0, 0.0, 0.0, 48.0, 6.0, 5.0});
+    const auto slot4Front = faceOriginForBounds(
+        *model.pattern, {48.0, 0.0, 0.0, 56.0, 0.0, 5.0});
+    checkExactCarrier(
+        *model.pattern, slot1, {slot1Left, slot1Front},
+        {GeomAbs_Line, 5.0, gp_Pnt(12.0, 0.0, 0.0),
+         gp_Pnt(12.0, 0.0, 5.0)});
+    checkExactCarrier(
+        *model.pattern, slot4, {slot4Left, slot4Front},
+        {GeomAbs_Line, 5.0, gp_Pnt(48.0, 0.0, 0.0),
+         gp_Pnt(48.0, 0.0, 5.0)});
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {1, 2, 3, 4});
+    CHECK(solidCount(*model.pattern->shape()) == 4);
+
+    model.pattern->setCount(3);
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.pattern, slot1, {slot1Left, slot1Front},
+        {GeomAbs_Line, 5.0, gp_Pnt(12.0, 0.0, 0.0),
+         gp_Pnt(12.0, 0.0, 5.0)});
+    checkEdgeMissing(*model.pattern, slot4);
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(), {1, 2});
+    CHECK(solidCount(*model.pattern->shape()) == 2);
+
+    model.pattern->setCount(5);
+    CHECK(model.document.recompute());
+    CHECK(slot1.v2()->provenance == slot1Key);
+    CHECK(slot4.v2()->provenance == slot4Key);
+    checkExactCarrier(
+        *model.pattern, slot4, {slot4Left, slot4Front},
+        {GeomAbs_Line, 5.0, gp_Pnt(48.0, 0.0, 0.0),
+         gp_Pnt(48.0, 0.0, 5.0)});
+    auditLinearPatternEdges(*model.pattern, model.patternBody->id(),
+                            {1, 2, 3, 4});
+    CHECK(solidCount(*model.pattern->shape()) == 4);
+  }
+
+  // Legacy multi-region Linear Pattern remains shape-only and cannot author
+  // an exact edge reference.
+  {
+    Document document;
+    auto& profile = document.addSketch("Legacy multi-region linear pattern");
+    profile.geometry.addRectangle({0.0, 0.0}, {8.0, 6.0});
+    profile.geometry.addRectangle({20.0, 0.0}, {28.0, 6.0});
+    auto& body = document.addBody();
+    auto extrusion = std::make_unique<ExtrudeFeature>(profile.id, 5.0);
+    auto* extrusionFeature = extrusion.get();
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    auto pattern = std::make_unique<LinearPatternFeature>(
+        extrusionId, PrincipalAxis::X, 3, 40.0);
+    auto* patternFeature = pattern.get();
+    body.addFeature(std::move(pattern));
+    CHECK(document.recompute());
+    CHECK(extrusionFeature->shape());
+    CHECK(!extrusionFeature->topologyLineage());
+    CHECK(patternFeature->shape());
+    CHECK(!patternFeature->topologyLineage());
+    const auto index = patternFeature->topologyIndex();
+    CHECK(index);
+    CHECK(index->rawEdgeCount() > 0);
+    const auto exact = patternFeature->createEdgeReferenceV2(body.id(), 0);
     CHECK(!exact);
     CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
   }
