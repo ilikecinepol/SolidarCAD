@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -36,6 +37,7 @@
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/JoinBodiesFeature.h"
+#include "model/MoveFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/TopologyReferenceResolver.h"
@@ -81,6 +83,37 @@ struct JoinedBoxes {
   std::array<solidar::sketch::GeometryId, 4> firstGeometryIds{};
   std::array<solidar::sketch::GeometryId, 4> secondGeometryIds{};
 };
+
+struct MovedBox {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::SketchId sketchId{solidar::kInvalidSketchId};
+  solidar::ExtrudeFeature* extrusion{};
+  solidar::MoveFeature* move{};
+  std::array<solidar::sketch::GeometryId, 4> geometryIds{};
+};
+
+MovedBox makeMovedBox(solidar::Vector3d offset = {5.0, 7.0, 3.0}) {
+  MovedBox result;
+  auto& sketch = result.document.addSketch("Production edge move source");
+  sketch.geometry.addRectangle({0.0, 0.0}, {30.0, 20.0});
+  result.sketchId = sketch.id;
+  result.geometryIds = {
+      sketch.geometry.lineId(0), sketch.geometry.lineId(1),
+      sketch.geometry.lineId(2), sketch.geometry.lineId(3)};
+  auto& body = result.document.addBody();
+  auto extrusion =
+      std::make_unique<solidar::ExtrudeFeature>(sketch.id, 15.0);
+  result.extrusion = extrusion.get();
+  const auto extrusionId = extrusion->id();
+  body.addFeature(std::move(extrusion));
+  auto move = std::make_unique<solidar::MoveFeature>(extrusionId, offset);
+  result.move = move.get();
+  body.addFeature(std::move(move));
+  result.body = &body;
+  CHECK(result.document.rebuild());
+  return result;
+}
 
 JoinedBoxes makeJoinedBoxes() {
   JoinedBoxes result;
@@ -1868,6 +1901,215 @@ int main() {
     CHECK(filletFeature->shape());
     CHECK(volumeOf(*filletFeature->shape()) <
           volumeOf(*model.join->shape()) - 1e-5);
+  }
+
+  // A strict source-lineaged Move owns a complete edge namespace derived
+  // from its own exact face adjacency. The saved vertical carrier is selected
+  // only by endpoints and survives both transform and source-profile edits.
+  {
+    auto model = makeMovedBox();
+    double sourceX0 = 0.0;
+    double sourceY0 = 0.0;
+    double sourceX1 = 30.0;
+    double sourceY1 = 20.0;
+    double length = 15.0;
+    solidar::Vector3d offset{5.0, 7.0, 3.0};
+
+    const auto vertical = edgeForExactEndpoints(
+        *model.move, model.body->id(),
+        gp_Pnt(sourceX0 + offset.x, sourceY0 + offset.y, offset.z),
+        gp_Pnt(sourceX0 + offset.x, sourceY0 + offset.y,
+               offset.z + length));
+    CHECK(vertical.v2());
+    const auto verticalKey = vertical.v2()->provenance;
+    const auto leftOrigin = faceOriginForBounds(
+        *model.move,
+        {sourceX0 + offset.x, sourceY0 + offset.y, offset.z,
+         sourceX0 + offset.x, sourceY1 + offset.y, offset.z + length});
+    const auto frontOrigin = faceOriginForBounds(
+        *model.move,
+        {sourceX0 + offset.x, sourceY0 + offset.y, offset.z,
+         sourceX1 + offset.x, sourceY0 + offset.y, offset.z + length});
+    CHECK(verticalKey.featureId == model.move->id());
+    CHECK(verticalKey.kind == TopologyKind::Edge);
+    CHECK(verticalKey.operation == TopologyProvenanceOperation::Generated);
+    CHECK(verticalKey.origins.size() == 2);
+    for (const auto& origin : verticalKey.origins) {
+      CHECK(origin.featureId == model.move->id());
+      CHECK(origin.kind == TopologyKind::Face);
+      CHECK(!origin.occurrence);
+    }
+
+    const auto checkMoved = [&] {
+      CHECK(faceOriginForBounds(
+                *model.move,
+                {sourceX0 + offset.x, sourceY0 + offset.y, offset.z,
+                 sourceX0 + offset.x, sourceY1 + offset.y,
+                 offset.z + length}) == leftOrigin);
+      CHECK(faceOriginForBounds(
+                *model.move,
+                {sourceX0 + offset.x, sourceY0 + offset.y, offset.z,
+                 sourceX1 + offset.x, sourceY0 + offset.y,
+                 offset.z + length}) == frontOrigin);
+      const gp_Pnt first(sourceX0 + offset.x, sourceY0 + offset.y,
+                         offset.z);
+      const gp_Pnt last(sourceX0 + offset.x, sourceY0 + offset.y,
+                        offset.z + length);
+      checkExactCarrier(*model.move, vertical, {leftOrigin, frontOrigin},
+                        {GeomAbs_Line, length, first, last});
+      const auto rediscovered = edgeForExactEndpoints(
+          *model.move, model.body->id(), first, last);
+      CHECK(rediscovered.v2());
+      CHECK(rediscovered.v2()->provenance == verticalKey);
+      const auto savedResolved = model.move->topologyIndex()->resolveEdge(
+          vertical);
+      const auto rediscoveredResolved =
+          model.move->topologyIndex()->resolveEdge(rediscovered);
+      CHECK(savedResolved);
+      CHECK(rediscoveredResolved);
+      CHECK(savedResolved.subshape->IsSame(*rediscoveredResolved.subshape));
+    };
+
+    checkMoved();
+    checkAllCanonicalEdgesCreated(*model.move, model.body->id(), 12);
+    const auto moveSnapshot =
+        model.body->topologySnapshot(model.move->id());
+    CHECK(moveSnapshot);
+    CHECK(moveSnapshot->v2Authoritative());
+    const auto sourceKeys = edgeKeys(*model.extrusion->topologyLineage());
+    const auto movedKeys = edgeKeys(*model.move->topologyLineage());
+    CHECK(sourceKeys.size() == 12);
+    CHECK(movedKeys.size() == 12);
+    for (const auto& key : movedKeys) {
+      CHECK(key.featureId == model.move->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+
+    offset = {8.0, -2.0, 4.0};
+    model.move->setOffsetMm(offset);
+    CHECK(model.document.recompute());
+    checkMoved();
+
+    length = 19.0;
+    model.extrusion->setLengthMm(length);
+    CHECK(model.document.recompute());
+    checkMoved();
+
+    sourceX0 = 2.0;
+    sourceY0 = 3.0;
+    sourceX1 = 36.0;
+    sourceY1 = 25.0;
+    sketch::Sketch reordered;
+    reordered.addLine({sourceX0, sourceY1}, {sourceX1, sourceY1});
+    reordered.addLine({sourceX1, sourceY0}, {sourceX0, sourceY0});
+    reordered.addLine({sourceX0, sourceY0}, {sourceX0, sourceY1});
+    reordered.addLine({sourceX1, sourceY1}, {sourceX1, sourceY0});
+    CHECK(reordered.restoreGeometryIds(
+        {model.geometryIds[2], model.geometryIds[0], model.geometryIds[3],
+         model.geometryIds[1]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.sketchId,
+                                               std::move(reordered)));
+    CHECK(model.document.recompute());
+    checkMoved();
+    checkAllCanonicalEdgesCreated(*model.move, model.body->id(), 12);
+
+    const auto validShape = model.move->shape();
+    const auto validLineage = model.move->topologyLineage();
+    const auto validIndex = model.move->topologyIndex();
+    const auto validRevision = model.move->shapeRevision();
+    const auto validResolved = validIndex->resolveEdge(vertical);
+    CHECK(validResolved);
+    model.move->setOffsetMm(
+        {std::numeric_limits<double>::quiet_NaN(), offset.y, offset.z});
+    CHECK(!model.document.recompute());
+    CHECK(!model.move->shape());
+    CHECK(!model.move->topologyLineage());
+    CHECK(model.move->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.body->topologySnapshot(model.move->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.move->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.move->lastValidShape() == validShape);
+    CHECK(model.move->lastValidTopologyLineage() == validLineage);
+    CHECK(model.move->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBack = validIndex->resolveEdge(vertical);
+    CHECK(rolledBack);
+    CHECK(rolledBack.subshape->IsSame(*validResolved.subshape));
+
+    model.move->setOffsetMm(offset);
+    CHECK(model.document.recompute());
+    CHECK(model.move->shapeRevision() > validRevision);
+    CHECK(model.body->topologySnapshot(model.move->id()));
+    checkMoved();
+  }
+
+  // A fixed convex Move edge is a strict V2 Fillet input. Translation and an
+  // upstream length edit preserve its exact identity and the material effect.
+  {
+    auto model = makeMovedBox();
+    const auto vertical = edgeForExactEndpoints(
+        *model.move, model.body->id(), gp_Pnt(5.0, 7.0, 3.0),
+        gp_Pnt(5.0, 7.0, 18.0));
+    const auto left = faceOriginForBounds(
+        *model.move, {5.0, 7.0, 3.0, 5.0, 27.0, 18.0});
+    const auto front = faceOriginForBounds(
+        *model.move, {5.0, 7.0, 3.0, 35.0, 7.0, 18.0});
+    checkExactCarrier(
+        *model.move, vertical, {left, front},
+        {GeomAbs_Line, 15.0, gp_Pnt(5.0, 7.0, 3.0),
+         gp_Pnt(5.0, 7.0, 18.0)});
+    auto fillet = std::make_unique<FilletFeature>(vertical, 1.0);
+    auto* filletFeature = fillet.get();
+    model.body->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.move->shape()) - 1e-5);
+
+    model.move->setOffsetMm({-4.0, 6.0, 2.0});
+    model.extrusion->setLengthMm(18.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.move, vertical, {left, front},
+        {GeomAbs_Line, 18.0, gp_Pnt(-4.0, 6.0, 2.0),
+         gp_Pnt(-4.0, 6.0, 20.0)});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.move->shape()) - 1e-5);
+  }
+
+  // The legacy no-lineage transform path remains shape-only. A disjoint
+  // multi-region Extrude can be moved, but cannot author a V2 edge.
+  {
+    Document document;
+    auto& profile = document.addSketch("Legacy multi-region move");
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 10.0});
+    profile.geometry.addRectangle({20.0, 0.0}, {30.0, 10.0});
+    auto& body = document.addBody();
+    auto extrusion = std::make_unique<ExtrudeFeature>(profile.id, 8.0);
+    auto* extrusionFeature = extrusion.get();
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    auto move =
+        std::make_unique<MoveFeature>(extrusionId, Vector3d{3.0, 4.0, 5.0});
+    auto* moveFeature = move.get();
+    body.addFeature(std::move(move));
+    CHECK(document.recompute());
+    CHECK(extrusionFeature->shape());
+    CHECK(!extrusionFeature->topologyLineage());
+    CHECK(moveFeature->shape());
+    CHECK(!moveFeature->topologyLineage());
+    const auto index = moveFeature->topologyIndex();
+    CHECK(index);
+    CHECK(index->rawEdgeCount() > 0);
+    const auto exact = moveFeature->createEdgeReferenceV2(body.id(), 0);
+    CHECK(!exact);
+    CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
   }
 
   return EXIT_SUCCESS;

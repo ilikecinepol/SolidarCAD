@@ -144,7 +144,12 @@ void checkAllFaceBranches(
             [](const auto& binding) {
               return binding.provenance.kind == solidar::TopologyKind::Face;
             })) == 6);
-  CHECK(output.topologyLineage()->bindings().size() == 6 * branches.size());
+  CHECK(static_cast<std::size_t>(std::count_if(
+            output.topologyLineage()->bindings().begin(),
+            output.topologyLineage()->bindings().end(),
+            [](const auto& binding) {
+              return binding.provenance.kind == solidar::TopologyKind::Face;
+            })) == 6 * branches.size());
 
   std::vector<solidar::TopologyProvenanceKey> expectedKeys;
   std::vector<TopoDS_Face> resolvedFaces;
@@ -188,6 +193,7 @@ void checkAllFaceBranches(
       CHECK(!resolvedFaces[first].IsSame(resolvedFaces[second]));
 
   for (const auto& actual : output.topologyLineage()->bindings()) {
+    if (actual.provenance.kind != solidar::TopologyKind::Face) continue;
     CHECK(std::count(expectedKeys.begin(), expectedKeys.end(),
                      actual.provenance) == 1);
   }
