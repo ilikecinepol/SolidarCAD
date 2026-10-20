@@ -34,6 +34,8 @@
 #include "model/FilletFeature.h"
 #include "model/FilletToolSession.h"
 #include "model/ImportedShapeFeature.h"
+#include "model/ShellBuilder.h"
+#include "model/ShellFeature.h"
 #include "model/TopologyLineage.h"
 #include "model/TopologyReferenceResolver.h"
 #include "ui/application/PartDesignCoordinator.h"
@@ -189,6 +191,47 @@ EdgePair usableEdge(const SourceModel& model) {
   }
   CHECK(false);
   return {};
+}
+
+solidar::FaceReference usableShellFace(const SourceModel& model) {
+  for (std::size_t raw = 0; raw < model.topology->rawFaceCount(); ++raw) {
+    const auto face = model.topology->createFaceReferenceV2(
+        model.body->id(), model.source->id(), raw);
+    if (!face) continue;
+    const auto resolved = model.topology->resolveFace(face.reference);
+    if (!resolved) continue;
+    if (solidar::buildShellShape(*model.source->shape(), {resolved.index}, 2.0,
+                                 false))
+      return face.reference;
+  }
+  CHECK(false);
+  return {};
+}
+
+void checkConsumerOnlyTerminalOutput(const solidar::ShapeFeature& feature,
+                                     solidar::BodyId bodyId) {
+  CHECK(feature.isValid());
+  CHECK(feature.shape());
+  CHECK(!feature.topologyLineage());
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  CHECK(index->rawFaceCount() > 0);
+  CHECK(index->rawEdgeCount() > 0);
+
+  for (std::size_t raw = 0; raw < index->rawFaceCount(); ++raw) {
+    CHECK(index->createFaceReference(bodyId, feature.id(), raw));
+    const auto exact = feature.createFaceReferenceV2(bodyId, raw);
+    CHECK(!exact);
+    CHECK(exact.status == solidar::FaceReferenceV2CreationStatus::Missing);
+    CHECK(!exact.reference.v2());
+  }
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    CHECK(index->createEdgeReference(bodyId, feature.id(), raw));
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    CHECK(!exact);
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Missing);
+    CHECK(!exact.reference.v2());
+  }
 }
 
 solidar::EdgeReference missingReference(const solidar::EdgeReference& value) {
@@ -391,6 +434,7 @@ int main() {
     featurePtr->setEdges({edge.v2});
     CHECK(document.recompute());
     CHECK(featurePtr->isValid());
+    checkConsumerOnlyTerminalOutput(*featurePtr, model.body->id());
   }
 
   // Chamfer has the same mixed-order contract and recovers after an exact
@@ -415,6 +459,22 @@ int main() {
     CHECK(featurePtr->lastValidShape() == lastValid);
     featurePtr->setEdges({edge.v2});
     CHECK(document.recompute());
+    checkConsumerOnlyTerminalOutput(*featurePtr, model.body->id());
+  }
+
+  // Shell consumes an exact face but remains a terminal output in the P1
+  // publication allowlist, just like Fillet, Chamfer and Draft.
+  {
+    solidar::Document document;
+    const auto model = addSource(document);
+    const auto opening = usableShellFace(model);
+    auto feature = std::make_unique<solidar::ShellFeature>(
+        model.source->id(), std::vector{opening}, 2.0, false,
+        "V2 terminal shell");
+    auto* featurePtr = feature.get();
+    model.body->addFeature(std::move(feature));
+    CHECK(document.recompute());
+    checkConsumerOnlyTerminalOutput(*featurePtr, model.body->id());
   }
 
   // A model feature may consume only the exact immediate predecessor's
@@ -901,6 +961,7 @@ int main() {
               "Draft rotation edge could not be resolved: ") == 0);
     featurePtr->setRotationEdge(references.edge);
     CHECK(document.recompute());
+    checkConsumerOnlyTerminalOutput(*featurePtr, model.body->id());
   }
 
   // Sessions retain the source-owned capability while active and release all

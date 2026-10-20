@@ -1,6 +1,6 @@
 # Дорожная карта SolidarCAD
 
-Актуальность: 19 октября 2026 года.
+Актуальность: 21 октября 2026 года.
 
 Этот документ — основной источник статуса этапов. `README.md` содержит краткое
 резюме, `docs/release-checklist.md` — обязательный gate конкретного релизного
@@ -116,8 +116,9 @@ single-part topology-capable schema с обязательной отсортир
 меняются, mixed V1/V2 references разрешены, а V2 никогда не использует V1
 fallback. Production writer остаётся v3 до завершения последовательности:
 
-1. **P1 — carrier и consumers:** завершить разрешённые in-memory producers и
-   consumers, atomic rollback и regressions provenance/coverage;
+1. **P1 — carrier и consumers (завершён 21 октября 2026):** разрешённые
+   in-memory producers и consumers, atomic rollback, boolean provenance,
+   symmetry/pattern occurrence и terminal-output regressions закрыты;
 2. **P2 — codec/staging:** добавить строгий low-level decoder v4 и staged
    validation tests без encoder/writer, не регистрируя v4 в
    `ProjectApplicationService`, UI open, autosave или recovery и не публикуя
@@ -128,9 +129,11 @@ fallback. Production writer остаётся v3 до завершения пос
    Save и Save As сохраняют state; authoring V2 в v3 запрещён до отдельной
    явной команды upgrade; удаление V2 не понижает формат.
 
-До выпуска P3 должен быть заморожен и покрыт тестами boolean provenance algebra:
-правила Generated/Modified/Retained/Merge, split/merge, canonical origins и
-coverage. Частичный carrier или reader не разрешает writer v4.
+В P1 уже заморожена и покрыта тестами boolean provenance algebra: правила
+Generated/Modified/Retained/Merge, split/merge, canonical origins,
+partial/complete coverage и collision policy. P3 обязан сохранить эту алгебру
+без переосмысления и подтвердить её save/load regressions. Завершённый freeze,
+частичный carrier или reader не разрешают writer v4 до выполнения P2 и P3.
 Ошибка Save не меняет destination или format state.
 
 Критерий выхода: сложная однодетальная модель выдерживает изменение размеров,
@@ -158,10 +161,11 @@ coverage. Частичный carrier или reader не разрешает write
 18 октября 2026 года для D1 принята ветвь B: единый identity-bearing
 product/component envelope. Решение и границы миграции зафиксированы в
 [`docs/decisions/2026-10-18-product-document-envelope.md`](decisions/2026-10-18-product-document-envelope.md).
-A1 остаётся заблокированным: G0 графа зависимостей закрыт, но persistent topology
-v2 persistence и regressions для split/merge, symmetry и pattern provenance не
-завершены, отсутствует итоговое зелёное evidence на точном HEAD и отдельная
-пользовательская авторизация. Standalone v4 не является product envelope.
+A1 остаётся заблокированным: G0 графа зависимостей и in-memory P1 закрыты, но
+low-level decoder/staging P2 и writer/application gate P3 ещё не реализованы.
+До снятия блокера также нужно итоговое persistence evidence на точном HEAD.
+Выбор ветви B и пользовательская авторизация продолжения всех этапов уже
+получены. Standalone v4 не является product envelope.
 Первая envelope schema получит отдельный номер выше 4 и явную атомарную
 conversion из v1-v4 с сохранением stable IDs и V2 provenance; mates остаются
 запрещены до прохождения topology v2 gate.

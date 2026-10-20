@@ -1,6 +1,7 @@
 # Формат проекта `.solidar` v4
 
-Статус: контракт persistence gate P0; reader и writer v4 ещё не реализованы.
+Статус: контракты P0 и in-memory runtime scope P1 завершены; low-level decoder
+P2 и writer/application gate P3 ещё не реализованы.
 
 Версия 4 — самостоятельная схема однодетального параметрического документа с
 поддержкой persistent topology v2. Она не является product/component envelope,
@@ -9,8 +10,31 @@ identity-bearing envelope получает отдельную версию сх�
 Как и v1-v3, v4 не сериализует derived B-Rep или runtime lineage index: они
 детерминированно перестраиваются из feature parameters и history provenance.
 
-До завершения этапов P1, P2 и P3 production writer продолжает записывать v3.
+До завершения этапов P2 и P3 production writer продолжает записывать v3.
 Наличие in-memory lineage не разрешает преждевременно выдавать файл за v4.
+
+## P1 runtime authoring scope
+
+На P1 exact lineage публикуют только строгие production-пути:
+
+- single-profile Extrude NewBody, strict sketch/face Join и Cut;
+- single-profile Revolve NewBody и strict Join/Cut;
+- strict Pocket;
+- JoinBodies при `CompleteFaces` у обоих inputs;
+- Move, Mirror, LinearPattern и CircularPattern от `CompleteFaces` source.
+
+Edge key существует только для уникальной замкнутой двухгранной manifold
+границы. Seam, open, non-manifold, degenerate и повторяющиеся face-pair edges
+дают runtime `Missing`. Sketch support, face Extrude, face-plane Mirror, Shell,
+Draft, Fillet и Chamfer потребляют exact V2. Fillet, Chamfer, Shell и Draft в
+P1 остаются consumer-only terminal outputs и не публикуют lineage результата.
+
+Этот runtime producer allowlist не является structural allowlist decoder-а.
+Структурно валидная V2 reference может указывать на существующий
+Fillet/Chamfer/Shell/Draft feature и должна декодироваться P2 как обычный V2
+carrier. После recompute отсутствие соответствующего exact key даёт runtime
+`Missing`, а не structural `Invalid`. Decoder не выводит поддержку authoring из
+типа owning feature и не понижает такой carrier до V1.
 
 ## Корень и capability
 
@@ -298,9 +322,10 @@ Origins не рекурсивны: origin с полем `origins` всегда `
 - Reader v4 обязан продолжать читать v1, v2 и v3 прежними путями, без
   обязательной миграции и без изменения их байтов на обычном open.
 - Reader v1-v3 не обязан читать v4 и должен отклонить неизвестную версию.
-- Production writer остаётся v3 до одновременного выполнения P1, P2 и P3.
-- P1 завершает in-memory carrier и всех разрешённых consumers/producers, включая
-  fail-closed lifecycle regressions.
+- Production writer остаётся v3 до выполнения P2 и P3; завершённый P1 сам по
+  себе не разрешает запись v4.
+- P1 завершил in-memory carrier и всех разрешённых consumers/producers, включая
+  fail-closed lifecycle regressions и terminal-output negative matrix.
 - P2 добавляет только low-level decoder/structural codec staging и его тесты.
   Encoder/writer v4 на P2 отсутствует. V4 decoder не
   регистрируется в `ProjectApplicationService`, UI open, recent/recovery или
@@ -309,18 +334,18 @@ Origins не рекурсивны: origin с полем `origins` всегда `
   autosave, recovery и любые обходные low-level entry points; v4 физически не
   может попасть в v3 writer.
 - P3 после готовности writer атомарно включает v4 codec в application open и
-  добавляет deterministic save/load matrix. Writer включается только после
-  отдельного freeze boolean provenance algebra: `Generated`, `Modified`,
-  `Retained` и `Merge` получают неизменяемые семантические правила; N-to-1
-  origins сортируются и дедуплицируются; 1-to-N split получает уникальные
-  authored local names либо остаётся `Ambiguous`; deleted inputs не создают
-  разрешаемый key; partial/complete coverage и collision policy закрепляются
-  regressions. Изменение этой алгебры после выпуска v4 потребует новой
-  capability/schema, а не тихого переосмысления сохранённых keys.
+  добавляет deterministic save/load matrix. P1 уже заморозил boolean provenance
+  algebra: неизменяемые правила `Generated`, `Modified`, `Retained` и `Merge`,
+  N-to-1 merge, 1-to-N split, canonical sort/dedup origins, уникальные authored
+  local names либо `Ambiguous`, отсутствие разрешаемого key для deleted inputs,
+  а также partial/complete coverage и collision policy. P3 обязан сохранить эту
+  алгебру и подтвердить её save/load regressions без переосмысления. Изменение
+  алгебры после выпуска v4 потребует новой capability/schema, а не тихой смены
+  смысла сохранённых keys.
 
-До этого freeze даже частично работающий reader не разрешает production writer
-v4. Успешный P3 меняет default writer отдельным явно проверенным commit/gate, а
-не автоматически вследствие наличия V2 carrier.
+Завершённый в P1 freeze сам по себе не разрешает production writer v4: writer
+по-прежнему ждёт P2 и P3. Успешный P3 меняет default writer отдельным явно
+проверенным commit/gate, а не автоматически вследствие наличия V2 carrier.
 
 После P3 документ несёт явное persistence format state, независимое от
 текущего содержимого:

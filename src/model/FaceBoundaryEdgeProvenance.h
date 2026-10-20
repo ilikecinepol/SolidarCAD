@@ -68,6 +68,9 @@ struct FaceBoundaryEdgeProvenanceResult {
 // Unsupported edges (open, seam, non-manifold, degenerate, or sharing a face
 // pair) are deliberately omitted. Invalid source evidence and conflicts with
 // existing edge evidence fail atomically.
+// FilletFeature, ChamferFeature, ShellFeature, and DraftFeature consume exact
+// references but are bounded terminal outputs in P1: they do not publish
+// topology lineage for their own result shapes.
 struct CompleteFaceEdgeLineageAugmentationResult {
   TopologySourceSnapshot augmentedSource;
   std::size_t addedBindingCount{};

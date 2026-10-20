@@ -1,66 +1,102 @@
-# Persistent Topological Naming v1
+# Persistent topology v1/v2
 
-## Previous architecture
+SolidarCAD поддерживает два разных контракта топологических ссылок. V1 ищет
+геометрию по семантическим тегам и сигнатурам. V2 использует точный provenance
+ключ, опубликованный поддержанным producer-ом. В одном будущем документе v4
+разрешена смесь обоих вариантов, но каждый вариант всегда разрешается только
+своим resolver path.
 
-`FaceReference` and `EdgeReference` already identified their owning `BodyId`,
-source `FeatureId`, subshape kind and a legacy OCCT enumeration index. The
-common `TopologyReference` also reserved string fields for future persistent
-data, but resolution used only `faceIndex` or `edgeIndex`. Sketch-on-Face and
-Fillet were therefore vulnerable to a reordered OCCT face/edge traversal.
+## V1: геометрическая идентичность
 
-All shape-producing features (Extrude, Pocket, Fillet, Chamfer and Revolve) expose a
-B-Rep through `ShapeFeature`. Sketch-on-Face consumes a face from a source
-feature; Fillet consumes one or more edges from the immediately preceding
-feature. Chamfer follows the same edge-reference contract as Fillet. Project
-format v2 previously stored only owner IDs and legacy index.
+V1-ссылка хранит `BodyId`, `FeatureId`, kind Face/Edge, опциональный
+семантический тег, геометрическую сигнатуру и legacy index. Планарная грань
+может получить тег наподобие `planar:max-z`. Face signature содержит тип
+поверхности, площадь, центр, ориентированную нормаль, bounds и параметры
+цилиндра; Edge signature — тип кривой, длину, midpoint, tangent, bounds и
+параметры окружности.
 
-## Reference structure
+`TopologyReferenceResolver` применяет порядок:
 
-A reference now contains three identity levels:
+1. единственное совпадение семантического тега;
+2. единственное лучшее совпадение геометрической сигнатуры;
+3. legacy index, только если persistent evidence отсутствует;
+4. явный `Missing` или `Ambiguous` diagnostic.
 
-1. owner identity: Body ID, Feature ID and Face/Edge kind;
-2. optional semantic tag and structured geometric signature;
-3. legacy enumeration index for old references only.
+Централизованная tolerance policy допускает 35% диагонали target shape для
+нормализованной позиции, 35% относительного изменения площади, длины или
+радиуса, cosine направления не ниже 0.996 и считает оценки с разницей менее
+0.01 неоднозначными. Resolver выполняет один линейный B-Rep traversal и не
+использует tessellation, pointer identity или whole-shape hash.
 
-Planar faces receive a semantic extremum tag such as `planar:max-z` when it is
-unambiguous. A face signature stores surface type, area, centroid, oriented
-normal, bounding box, and optional cylindrical radius/axis. An edge signature
-stores curve type, length, midpoint, tangent direction, bounding box, and
-optional circle radius/center. References are created with
-`makeFaceReference` and `makeEdgeReference`; selection code no longer creates
-new persistent references directly from an index.
+Если tag/signature присутствует, но безопасного совпадения нет, V1 не
+откатывается к index. Старые файлы без persistent evidence сохраняют прежний
+index fallback. Ограничения V1 остаются прежними: произвольные split/merge,
+сильные topology changes и симметричные геометрически неразличимые кандидаты
+могут завершиться `Missing` или `Ambiguous`.
 
-## Resolution and tolerances
+## V2: точный provenance
 
-Resolution is centralized in `TopologyReferenceResolver` and uses this order:
+`FaceReference` и `EdgeReference` являются discriminated carriers V1/V2.
+`TopologyReferenceV2` хранит owning `BodyId` и полный typed
+`TopologyProvenanceKey`: producer `FeatureId`, kind, operation, semantic role,
+локальное имя, immediate origins и опциональный authored occurrence slot.
+Origins не рекурсивны. Pattern slot принадлежит producer-у и не является
+assembly occurrence identity.
 
-1. unique semantic-tag match;
-2. unique best geometric-signature match;
-3. legacy index only when persistent data is absent;
-4. a specific diagnostic on missing or ambiguous matches.
+V2 resolver выполняет exact lookup полного ключа в `TopologyLineage` owning
+feature. При `Missing`, `Ambiguous`, owner mismatch или отсутствии lineage
+переход к V1 tag/signature/index запрещён. Factory V2 также не выводит identity
+из raw ordinal: она возвращает ссылку только для уже опубликованного exact
+binding.
 
-The v1 centralized tolerance policy permits 35% of the target (current) shape
-diagonal for normalized position, 35% relative change in area/length/radius, a direction
-cosine of at least 0.996, and treats best scores within 0.01 as ambiguous.
-Candidates are collected in one linear B-Rep traversal; no tessellation,
-pointer identity or whole-shape hashing is used.
+### Поддержанные producers P1
 
-If a persistent signature exists but no safe match exists, the resolver does
-not silently fall back to the old index. A failed Fillet or Chamfer becomes Error with the
-resolver diagnostic. An unresolved face support prevents downstream profile
-construction. Old v2 files omit signatures and therefore retain index fallback;
-after a successful runtime resolution, face supports are enriched in memory.
+Lineage публикуется только следующими строгими путями:
 
-Optional signature objects were added to project format v2, so the version was
-not increased. Readers continue to accept v1/v2 files, and missing signature
-fields preserve the previous behavior.
+- single-profile sketch Extrude NewBody;
+- strict sketch Join/Cut и V2 face-source Join/Cut Extrude;
+- single-profile Revolve NewBody и strict Revolve Join/Cut;
+- strict Pocket;
+- JoinBodies, когда оба inputs имеют `CompleteFaces`;
+- Move, Mirror, LinearPattern и CircularPattern от source с `CompleteFaces`.
 
-## Known limitations
+Imported, profile-override и partial-lineage пути, а также неподдержанные
+multi-region/annular sketch-profile пути вне перечисленных single-profile
+producers сохраняют V1 behavior и не изобретают V2. Это ограничение не
+относится ко всем annular solids: например, перечисленные выше поддержанные
+пути Revolve публикуют V2. Ошибка capture, collision, неполное evidence или
+неподдержанный split завершается до публикации current shape/lineage/index и
+сохраняет last-valid state.
 
-Version 1 is geometric matching, not OCCT TNaming/OCAF. It does not guarantee
-identity through arbitrary split/merge operations, strong topology changes,
-symmetric indistinguishable candidates, pattern-generated duplicates, or
-complex spline/NURBS evolution. Such cases intentionally produce ambiguity or
-missing-match diagnostics. Semantic tags currently cover only obvious planar
-shape extrema. A later version should add feature-history provenance and richer
-operation-specific semantic naming before considering OCAF integration.
+Для face lineage `CompleteFaces` означает полное покрытие канонических граней,
+а не всех рёбер. Edge V2 публикуется только для уникального замкнутого
+двухгранного manifold edge: пара immediate identities соседних output faces
+должна быть уникальна во всём result. Seam, open, non-manifold, degenerate и
+edges с повторяющейся face pair намеренно отсутствуют и дают `Missing` без V1
+fallback.
+
+### Consumers и terminal outputs
+
+Exact V2 разрешают:
+
+- Sketch support на Face;
+- face-source Extrude;
+- face-plane Mirror;
+- Shell removed faces;
+- Draft drafted faces, body-face neutral plane и rotation edge;
+- Fillet и Chamfer edge lists.
+
+Fillet, Chamfer, Shell и Draft в P1 являются consumer-only terminal outputs.
+Они строят валидный B-Rep, но не публикуют lineage собственного результата.
+Их V1 factories продолжают работать, а Face/Edge V2 factories исчерпывающе
+возвращают `Missing`. Это явная capability boundary, а не попытка восстановить
+identity по порядку OCCT subshapes.
+
+## Persistence boundary
+
+Production writer v3 атомарно отвергает любой V2 carrier и не понижает его до
+V1. Контракт standalone v4 описан в `docs/project-format-v4.md`: P1 закрывает
+in-memory carrier, producers, consumers и rollback, но low-level decoder P2 и
+writer/application gate P3 реализуются отдельно. Derived B-Rep и runtime
+lineage никогда не сериализуются; после загрузки они перестраиваются из
+параметров и provenance.
