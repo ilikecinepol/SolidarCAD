@@ -18,7 +18,9 @@
 #include <utility>
 #include <vector>
 
+#include "model/OcctRevolveTopologyHistoryCapture.h"
 #include "model/SketchExtrudeBuilder.h"
+#include "model/SketchProfileBuilder.h"
 
 namespace solidar {
 namespace {
@@ -135,6 +137,71 @@ bool RevolveFeature::rebuildImpl(const RebuildContext& context) {
     DocumentSketch selectedProfile = *profile;
     if (profileOverride_) selectedProfile.geometry = *profileOverride_;
     std::string error;
+
+    if (operation_ == ExtrudeOperation::NewBody && !profileOverride_ &&
+        isSupportedSingleSketchProfile(selectedProfile)) {
+      if (context.previousShape && !context.previousShape->IsNull()) {
+        markError("Revolve New Body must be the first feature of a Body");
+        return false;
+      }
+
+      SketchProfileFaceBuild profileBuild;
+      if (!buildPlanarFaceFromSketchWithEdges(selectedProfile, &profileBuild,
+                                               &error)) {
+        markError("Revolve " + error);
+        return false;
+      }
+      gp_Ax1 axis;
+      if (!resolveAxis(context.document, axis_, &axis, &error)) {
+        markError(error);
+        return false;
+      }
+      const double radians = angleDeg_ * std::numbers::pi / 180.0 *
+                             (reversed_ ? -1.0 : 1.0);
+      std::vector<RevolveProfileEdgeSeed> seeds;
+      seeds.reserve(profileBuild.edges.size());
+      for (const auto& edge : profileBuild.edges)
+        seeds.push_back({edge.geometryId, edge.edge});
+
+      BRepPrimAPI_MakeRevol builder(*profileBuild.face, axis, radians, false);
+      builder.Build();
+      if (!builder.IsDone() || builder.Shape().IsNull() ||
+          solidCount(builder.Shape()) == 0) {
+        markError("Revolve could not build a valid selected region");
+        return false;
+      }
+
+      RevolveTopologyHistoryFailure captureFailure;
+      auto captured = captureRevolveTopologyHistory(
+          builder, id(), selectedProfile.id, profileBuild.face, seeds,
+          &captureFailure);
+      if (!captured) {
+        markError(captureFailure.detail.empty()
+                      ? "Revolve topology capture failed"
+                      : captureFailure.detail);
+        return false;
+      }
+      const auto& artifact = captured->artifact();
+      if (!artifact.outputShape || artifact.outputShape->IsNull() ||
+          !artifact.outputShape->IsSame(builder.Shape())) {
+        markError("Revolve topology capture output does not match the maker");
+        return false;
+      }
+      auto lineage = captured->build(&error);
+      if (!lineage) {
+        markError(error.empty() ? "Revolve topology lineage build failed"
+                                : "Revolve " + error);
+        return false;
+      }
+      if (lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+        markError("Revolve topology lineage is incomplete");
+        return false;
+      }
+      setShapeAndTopologyLineage(artifact.outputShape, std::move(lineage));
+      markValid();
+      return true;
+    }
+
     std::vector<TopoDS_Face> regionFaces;
     if (!buildSketchProfileFaces(selectedProfile, &regionFaces, &error)) {
       markError("Revolve " + error); return false;
