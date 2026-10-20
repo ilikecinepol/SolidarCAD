@@ -3,7 +3,9 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Face.hxx>
@@ -12,12 +14,18 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
+#include <memory>
 #include <numbers>
+#include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
+#include "model/OcctBooleanTopologyHistoryCapture.h"
 #include "model/OcctRevolveTopologyHistoryCapture.h"
 #include "model/SketchExtrudeBuilder.h"
 #include "model/SketchProfileBuilder.h"
@@ -75,6 +83,249 @@ std::size_t solidCount(const TopoDS_Shape& shape) {
   for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next())
     ++count;
   return count;
+}
+
+bool containsFace(const TopoDS_Shape& shape, const TopoDS_Shape& face) {
+  for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next())
+    if (faces.Current().IsSame(face)) return true;
+  return false;
+}
+
+bool validateImmediatePredecessor(const RebuildContext& context,
+                                  const ShapeFeature& current,
+                                  std::string* error) {
+  const auto fail = [&] {
+    if (error)
+      *error = "Revolve base Feature is not the immediate predecessor";
+    return false;
+  };
+  if (!context.body || !context.previousFeature || !context.previousShape ||
+      context.previousFeature == &current)
+    return fail();
+  if (context.document.findBody(context.body->id()) != context.body)
+    return fail();
+  const auto currentIndex = context.body->featureIndex(current.id());
+  if (!currentIndex || *currentIndex == 0 ||
+      context.body->features()[*currentIndex].get() != &current)
+    return fail();
+  const auto* expected = context.body->features()[*currentIndex - 1].get();
+  if (expected != context.previousFeature ||
+      context.document.findFeature(context.body->id(), expected->id()) !=
+          expected ||
+      context.document.findBodyForFeature(expected->id()) != context.body)
+    return fail();
+  const auto& currentShape = expected->shape();
+  if (!currentShape || currentShape.get() != context.previousShape ||
+      !currentShape->IsSame(*context.previousShape))
+    return fail();
+  return true;
+}
+
+bool validateRawBooleanResult(const TopoDS_Shape& baseShape,
+                              const TopoDS_Shape& result,
+                              ExtrudeOperation operation,
+                              std::string* error) {
+  const std::size_t beforeSolidCount = solidCount(baseShape);
+  const std::size_t resultSolidCount = solidCount(result);
+  if (resultSolidCount == 0) {
+    if (error) *error = "Revolve result does not contain a solid";
+    return false;
+  }
+  if (operation == ExtrudeOperation::Join &&
+      resultSolidCount > beforeSolidCount) {
+    if (error) *error = "Revolve Join does not intersect the body";
+    return false;
+  }
+  if (operation == ExtrudeOperation::Cut &&
+      resultSolidCount > beforeSolidCount) {
+    if (error) *error = "Revolve Cut would split the body";
+    return false;
+  }
+
+  GProp_GProps beforeProperties;
+  GProp_GProps afterProperties;
+  BRepGProp::VolumeProperties(baseShape, beforeProperties);
+  BRepGProp::VolumeProperties(result, afterProperties);
+  const double before = beforeProperties.Mass();
+  const double after = afterProperties.Mass();
+  const double tolerance = std::max(1e-7, std::abs(before) * 1e-10);
+  if (operation == ExtrudeOperation::Join && after <= before + tolerance) {
+    if (error) *error = "Revolve Join does not intersect the body";
+    return false;
+  }
+  if (operation == ExtrudeOperation::Cut && after >= before - tolerance) {
+    if (error) *error = "Revolve Cut does not intersect the body";
+    return false;
+  }
+  return true;
+}
+
+bool validateFinalBooleanResult(const TopoDS_Shape& baseShape,
+                                const TopoDS_Shape& result,
+                                ExtrudeOperation operation,
+                                std::string* error) {
+  if (!validateRawBooleanResult(baseShape, result, operation, error))
+    return false;
+  if (!BRepCheck_Analyzer(result).IsValid()) {
+    if (error) *error = "Revolve result is invalid";
+    return false;
+  }
+  return true;
+}
+
+bool validateCapturedSnapshot(const BooleanTopologyCaptureResult& captured,
+                              const TopologyLineage& lineage,
+                              std::string* error) {
+  if (!captured.outputShape || captured.outputShape->IsNull()) {
+    if (error) *error = "Revolve face history output shape is invalid";
+    return false;
+  }
+  if (lineage.coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (error) *error = "Revolve face lineage is incomplete";
+    return false;
+  }
+  for (const auto& binding : lineage.bindings()) {
+    if (!binding.subshape || binding.subshape->IsNull() ||
+        !containsFace(*captured.outputShape, *binding.subshape)) {
+      if (error) *error = "Revolve captured face is outside the output shape";
+      return false;
+    }
+  }
+  return true;
+}
+
+struct StrictRevolveTool {
+  ShapeFeature::ShapePtr shape;
+  std::shared_ptr<const TopologyLineage> lineage;
+};
+
+bool buildStrictRevolveTool(const DocumentSketch& profile,
+                            const gp_Ax1& axis, double radians,
+                            FeatureId producerFeatureId,
+                            StrictRevolveTool* result, std::string* error) {
+  SketchProfileFaceBuild profileBuild;
+  if (!buildPlanarFaceFromSketchWithEdges(profile, &profileBuild, error))
+    return false;
+
+  std::vector<RevolveProfileEdgeSeed> seeds;
+  seeds.reserve(profileBuild.edges.size());
+  for (const auto& edge : profileBuild.edges)
+    seeds.push_back({edge.geometryId, edge.edge});
+
+  BRepPrimAPI_MakeRevol maker(*profileBuild.face, axis, radians, false);
+  maker.Build();
+  if (!maker.IsDone() || maker.Shape().IsNull() ||
+      solidCount(maker.Shape()) == 0) {
+    if (error) *error = "Revolve could not build a valid selected region";
+    return false;
+  }
+
+  RevolveTopologyHistoryFailure failure;
+  auto builder = captureRevolveTopologyHistory(
+      maker, producerFeatureId, profile.id, profileBuild.face, seeds, &failure);
+  if (!builder) {
+    if (error)
+      *error = failure.detail.empty() ? "Revolve topology capture failed"
+                                      : std::move(failure.detail);
+    return false;
+  }
+  const auto outputShape = builder->artifact().outputShape;
+  if (!outputShape || outputShape->IsNull() ||
+      !outputShape->IsSame(maker.Shape())) {
+    if (error)
+      *error = "Revolve topology capture output does not match the maker";
+    return false;
+  }
+  std::string lineageError;
+  auto lineage = builder->build(&lineageError);
+  if (!lineage) {
+    if (error)
+      *error = lineageError.empty() ? "Revolve topology lineage build failed"
+                                    : std::move(lineageError);
+    return false;
+  }
+  if (lineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (error) *error = "Revolve topology lineage is incomplete";
+    return false;
+  }
+  result->shape = outputShape;
+  result->lineage = std::move(lineage);
+  return true;
+}
+
+bool buildStrictBooleanRevolve(const RebuildContext& context,
+                               const ShapeFeature& current,
+                               const DocumentSketch& profile,
+                               const gp_Ax1& axis, double radians,
+                               ExtrudeOperation operation,
+                               StrictRevolveTool* result,
+                               std::string* error) {
+  StrictRevolveTool tool;
+  if (!buildStrictRevolveTool(profile, axis, radians, current.id(), &tool,
+                              error))
+    return false;
+
+  const auto& baseFeature = *context.previousFeature;
+  const std::array<BooleanTopologySource, 2> sources{{
+      {BooleanOperandRole::Object,
+       {baseFeature.id(), baseFeature.shape(), baseFeature.topologyLineage()}},
+      {BooleanOperandRole::Tool,
+       {current.id(), tool.shape, tool.lineage}},
+  }};
+  BooleanTopologyCaptureOptions options;
+  options.simplifyResult = operation == ExtrudeOperation::Join;
+  BooleanTopologyCaptureFailure failure;
+  std::optional<BooleanTopologyCaptureResult> captured;
+  if (operation == ExtrudeOperation::Join) {
+    BRepAlgoAPI_Fuse fuse(*context.previousShape, *tool.shape);
+    fuse.Build();
+    if (!fuse.IsDone() || fuse.Shape().IsNull()) {
+      if (error) *error = "Revolve Join boolean fuse failed";
+      return false;
+    }
+    if (!validateRawBooleanResult(*context.previousShape, fuse.Shape(),
+                                  operation, error))
+      return false;
+    captured = captureBooleanFaceHistory(
+        fuse, current.id(), std::span<const BooleanTopologySource>(sources),
+        {}, options, &failure);
+  } else {
+    BRepAlgoAPI_Cut cut(*context.previousShape, *tool.shape);
+    cut.Build();
+    if (!cut.IsDone() || cut.Shape().IsNull()) {
+      if (error) *error = "Revolve Cut boolean cut failed";
+      return false;
+    }
+    if (!validateRawBooleanResult(*context.previousShape, cut.Shape(),
+                                  operation, error))
+      return false;
+    captured = captureBooleanFaceHistory(
+        cut, current.id(), std::span<const BooleanTopologySource>(sources),
+        {}, options, &failure);
+  }
+  if (!captured) {
+    if (error)
+      *error = failure.detail.empty() ? "Revolve face history capture failed"
+                                      : std::move(failure.detail);
+    return false;
+  }
+  if (!captured->outputShape || captured->outputShape->IsNull() ||
+      !validateFinalBooleanResult(*context.previousShape,
+                                  *captured->outputShape, operation, error))
+    return false;
+
+  std::string lineageError;
+  auto lineage = captured->builder.build(&lineageError);
+  if (!lineage) {
+    if (error)
+      *error = lineageError.empty() ? "Revolve face lineage build failed"
+                                    : std::move(lineageError);
+    return false;
+  }
+  if (!validateCapturedSnapshot(*captured, *lineage, error)) return false;
+  result->shape = std::move(captured->outputShape);
+  result->lineage = std::move(lineage);
+  return true;
 }
 }
 
@@ -137,6 +388,56 @@ bool RevolveFeature::rebuildImpl(const RebuildContext& context) {
     DocumentSketch selectedProfile = *profile;
     if (profileOverride_) selectedProfile.geometry = *profileOverride_;
     std::string error;
+
+    if (operation_ == ExtrudeOperation::Join ||
+        operation_ == ExtrudeOperation::Cut) {
+      const auto* registeredBody =
+          context.document.findBodyForFeature(id());
+      const auto registeredIndex =
+          registeredBody ? registeredBody->featureIndex(id()) : std::nullopt;
+      const bool registered =
+          registeredIndex &&
+          registeredBody->features()[*registeredIndex].get() == this;
+      const bool validatePredecessor =
+          registered &&
+          (*registeredIndex > 0 || context.previousShape ||
+           context.previousFeature);
+      if (validatePredecessor &&
+          !validateImmediatePredecessor(context, *this, &error)) {
+        markError(error);
+        return false;
+      }
+      if (registered && *registeredIndex > 0) {
+        const auto baseLineage = context.previousFeature->topologyLineage();
+        if (baseLineage &&
+            baseLineage->coverage() !=
+                TopologyLineageCoverage::CompleteFaces) {
+          markError("Revolve base face lineage is incomplete");
+          return false;
+        }
+        if (baseLineage && !profileOverride_ &&
+            isSupportedSingleSketchProfile(selectedProfile)) {
+          gp_Ax1 axis;
+          if (!resolveAxis(context.document, axis_, &axis, &error)) {
+            markError(error);
+            return false;
+          }
+          const double radians = angleDeg_ * std::numbers::pi / 180.0 *
+                                 (reversed_ ? -1.0 : 1.0);
+          StrictRevolveTool built;
+          if (!buildStrictBooleanRevolve(context, *this, selectedProfile,
+                                         axis, radians, operation_, &built,
+                                         &error)) {
+            markError(error);
+            return false;
+          }
+          setShapeAndTopologyLineage(std::move(built.shape),
+                                     std::move(built.lineage));
+          markValid();
+          return true;
+        }
+      }
+    }
 
     if (operation_ == ExtrudeOperation::NewBody && !profileOverride_ &&
         isSupportedSingleSketchProfile(selectedProfile)) {
