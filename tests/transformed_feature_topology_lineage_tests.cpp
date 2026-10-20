@@ -138,7 +138,12 @@ void checkAllFaceBranches(
         solidar::TopologyLineageCoverage::CompleteFaces);
   CHECK(output.topologyLineage()->coverage() ==
         solidar::TopologyLineageCoverage::CompleteFaces);
-  CHECK(source.topologyLineage()->bindings().size() == 6);
+  CHECK(static_cast<std::size_t>(std::count_if(
+            source.topologyLineage()->bindings().begin(),
+            source.topologyLineage()->bindings().end(),
+            [](const auto& binding) {
+              return binding.provenance.kind == solidar::TopologyKind::Face;
+            })) == 6);
   CHECK(output.topologyLineage()->bindings().size() == 6 * branches.size());
 
   std::vector<solidar::TopologyProvenanceKey> expectedKeys;
@@ -146,7 +151,7 @@ void checkAllFaceBranches(
   expectedKeys.reserve(6 * branches.size());
   resolvedFaces.reserve(6 * branches.size());
   for (const auto& sourceBinding : source.topologyLineage()->bindings()) {
-    CHECK(sourceBinding.provenance.kind == solidar::TopologyKind::Face);
+    if (sourceBinding.provenance.kind != solidar::TopologyKind::Face) continue;
     const auto sourceCenter = faceCenter(*sourceBinding.subshape);
     const auto sourceArea = faceArea(*sourceBinding.subshape);
     for (const auto& branch : branches) {

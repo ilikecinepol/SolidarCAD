@@ -494,6 +494,33 @@ int main() {
       namedSource(coincidentFaces(2), 4402, {"front", "back"});
   capture(repeatedPairSource, referenceFor(repeatedPairSource, "front"),
           solidar::FaceBoundaryEdgeProvenanceFailureCode::RepeatedFacePair);
+  solidar::FaceBoundaryEdgeProvenanceFailure augmentationFailure;
+  const auto repeatedPairAugmentation =
+      solidar::augmentCompleteFaceLineageWithUniqueManifoldEdges(
+          repeatedPairSource, &augmentationFailure);
+  CHECK(repeatedPairAugmentation);
+  CHECK(augmentationFailure.code ==
+        solidar::FaceBoundaryEdgeProvenanceFailureCode::None);
+  CHECK(repeatedPairAugmentation->addedBindingCount == 0);
+
+  ShapeIndexedMap repeatedEdges;
+  TopExp::MapShapes(*repeatedPairSource.shape, TopAbs_EDGE, repeatedEdges);
+  CHECK(repeatedEdges.Extent() == 4);
+  auto preboundRepeatedPairBindings = repeatedPairSource.lineage->bindings();
+  preboundRepeatedPairBindings.push_back(
+      {expectedEdgeKey(4402, faceKeyFor(repeatedPairSource, "front"),
+                       faceKeyFor(repeatedPairSource, "back")),
+       std::make_shared<TopoDS_Edge>(TopoDS::Edge(repeatedEdges(1)))});
+  const auto preboundRepeatedPairSource = lineageVariant(
+      repeatedPairSource, std::move(preboundRepeatedPairBindings),
+      solidar::TopologyLineageCoverage::CompleteFaces);
+  const auto preboundLineage = preboundRepeatedPairSource.lineage;
+  CHECK(!solidar::augmentCompleteFaceLineageWithUniqueManifoldEdges(
+      preboundRepeatedPairSource, &augmentationFailure));
+  CHECK(augmentationFailure.code ==
+        solidar::FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity);
+  CHECK(preboundRepeatedPairSource.lineage == preboundLineage);
+  CHECK(preboundRepeatedPairSource.lineage->bindings().size() == 3);
   const auto nonManifoldSource = namedSource(
       coincidentFaces(3), 4403, {"first", "second", "third"});
   capture(nonManifoldSource, referenceFor(nonManifoldSource, "first"),

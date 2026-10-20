@@ -3,6 +3,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <TopoDS_Shape.hxx>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -614,6 +615,35 @@ int main() {
     BRepCheck_Analyzer analyzer(result);
     CHECK(analyzer.IsValid());
     CHECK(test::volumeOf(result) > 1.0);
+  }
+
+  // The shared prism/history builder remains face-only. Production edge
+  // augmentation belongs to ExtrudeFeature's simple NewBody publication and
+  // must not expand the failure surface of Pocket or strict boolean tools.
+  {
+    auto profile = profileWith(41);
+    profile.geometry.addRectangle({0.0, 0.0}, {20.0, 10.0});
+    SketchExtrusionWithLineage built;
+    std::string error;
+    OperationFailureCode code{OperationFailureCode::None};
+    CHECK(buildSimpleNewBodyExtrusionWithLineage(
+        profile, 91001, 8.0, false, &built, &error, &code));
+    CHECK(error.empty());
+    CHECK(code == OperationFailureCode::None);
+    CHECK(built.shape);
+    CHECK(built.lineage);
+    CHECK(built.lineage->coverage() ==
+          TopologyLineageCoverage::CompleteFaces);
+    CHECK(std::count_if(built.lineage->bindings().begin(),
+                        built.lineage->bindings().end(),
+                        [](const auto& binding) {
+                          return binding.provenance.kind == TopologyKind::Face;
+                        }) == 6);
+    CHECK(std::none_of(built.lineage->bindings().begin(),
+                       built.lineage->bindings().end(),
+                       [](const auto& binding) {
+                         return binding.provenance.kind == TopologyKind::Edge;
+                       }));
   }
 
   return EXIT_SUCCESS;

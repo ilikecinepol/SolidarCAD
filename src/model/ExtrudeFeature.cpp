@@ -780,8 +780,20 @@ bool ExtrudeFeature::rebuildSketchSource(const RebuildContext& context) {
           markError("Extrude " + profileError);
           return false;
         }
+        FaceBoundaryEdgeProvenanceFailure edgeFailure;
+        const auto augmented =
+            augmentCompleteFaceLineageWithUniqueManifoldEdges(
+                TopologySourceSnapshot{id(), built.shape, built.lineage},
+                &edgeFailure);
+        if (!augmented) {
+          markError("Extrude " +
+                    (edgeFailure.detail.empty()
+                         ? std::string("edge lineage is invalid")
+                         : std::move(edgeFailure.detail)));
+          return false;
+        }
         setShapeAndTopologyLineage(std::move(built.shape),
-                                   std::move(built.lineage));
+                                   augmented->augmentedSource.lineage);
         markValid();
         return true;
       }

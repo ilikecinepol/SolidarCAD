@@ -82,7 +82,11 @@ void checkCompleteFaceLineage(
   CHECK(lineage);
   CHECK(lineage->coverage() ==
         solidar::TopologyLineageCoverage::CompleteFaces);
-  CHECK(lineage->bindings().size() == expectedFaceCount);
+  CHECK(static_cast<std::size_t>(std::count_if(
+            lineage->bindings().begin(), lineage->bindings().end(),
+            [](const auto& binding) {
+              return binding.provenance.kind == solidar::TopologyKind::Face;
+            })) == expectedFaceCount);
   std::string error;
   const auto index = feature.topologyIndex(&error);
   CHECK(index);

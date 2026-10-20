@@ -27,7 +27,9 @@ struct SketchExtrusionWithLineage {
 };
 
 // Strict RT1 producer path: one simple sketch contour, one live prism maker,
-// complete face lineage. No boolean, fuse, unify or fallback is performed.
+// complete face-only lineage. No boolean, fuse, unify, edge augmentation or
+// fallback is performed; feature-specific publication policy lives above this
+// shared builder.
 [[nodiscard]] bool buildSimpleNewBodyExtrusionWithLineage(
     const DocumentSketch& profile, FeatureId producerFeatureId,
     double lengthMm, bool reversed, SketchExtrusionWithLineage* result,

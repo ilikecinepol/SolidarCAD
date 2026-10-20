@@ -25,6 +25,8 @@ namespace solidar {
 namespace {
 
 constexpr std::size_t kMaximumLocalNameLength = 16384;
+constexpr std::string_view kFaceBoundaryEdgeNamePrefix =
+    "face-boundary-edge:v1;";
 using ShapeIndexedMap =
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>;
 
@@ -81,7 +83,7 @@ std::string encodedOrigin(const TopologyProvenanceOrigin& origin) {
 
 std::optional<std::string> edgeLocalName(
     const std::array<TopologyProvenanceOrigin, 2>& origins) {
-  std::string result = "face-boundary-edge:v1;";
+  std::string result = std::string(kFaceBoundaryEdgeNamePrefix);
   for (const auto& origin : origins)
     appendLengthPrefixed(result, encodedOrigin(origin));
   if (result.size() > kMaximumLocalNameLength) return std::nullopt;
@@ -105,6 +107,253 @@ struct BoundaryCandidate {
   TopologyProvenanceKey key;
   TopologyProvenanceOrigin origin;
 };
+
+struct EdgeAugmentationCandidate {
+  TopoDS_Edge edge;
+  std::array<TopologyProvenanceOrigin, 2> origins;
+  TopologyProvenanceKey key;
+};
+
+std::optional<CompleteFaceEdgeLineageAugmentationResult>
+augmentCompleteFaceLineageImpl(
+    const TopologySourceSnapshot& source,
+    FaceBoundaryEdgeProvenanceFailure* failure) {
+  const auto fail = [&](FaceBoundaryEdgeProvenanceFailureCode code,
+                        std::string detail)
+      -> std::optional<CompleteFaceEdgeLineageAugmentationResult> {
+    setFailure(failure, code, std::move(detail));
+    return std::nullopt;
+  };
+
+  if (source.featureId == kInvalidFeatureId || !source.shape ||
+      source.shape->IsNull() || !source.lineage)
+    return fail(FaceBoundaryEdgeProvenanceFailureCode::InvalidSource,
+                "Edge-lineage source snapshot is invalid");
+  if (source.lineage->coverage() !=
+      TopologyLineageCoverage::CompleteFaces)
+    return fail(
+        FaceBoundaryEdgeProvenanceFailureCode::IncompleteFaceCoverage,
+        "Edge-lineage source must have CompleteFaces coverage");
+
+  std::string diagnostic;
+  if (!source.lineage->validateForProducer(source.featureId, &diagnostic))
+    return fail(FaceBoundaryEdgeProvenanceFailureCode::InvalidSource,
+                diagnostic.empty() ? "Edge-lineage source is invalid"
+                                   : std::move(diagnostic));
+  if (!TopologyIndex::build(source.shape, 1, source.lineage, &diagnostic))
+    return fail(FaceBoundaryEdgeProvenanceFailureCode::InvalidSource,
+                diagnostic.empty() ? "Edge-lineage source cannot be indexed"
+                                   : std::move(diagnostic));
+
+  ShapeIndexedMap faceMap;
+  TopExp::MapShapes(*source.shape, TopAbs_FACE, faceMap);
+  if (faceMap.IsEmpty())
+    return fail(FaceBoundaryEdgeProvenanceFailureCode::MissingFaceIdentity,
+                "Edge-lineage source has no faces");
+
+  std::vector<FaceIdentity> faces;
+  faces.reserve(static_cast<std::size_t>(faceMap.Extent()));
+  std::vector<TopologyProvenanceKey> seenFaceKeys;
+  for (int faceIndex = 1; faceIndex <= faceMap.Extent(); ++faceIndex) {
+    const TopoDS_Face face = TopoDS::Face(faceMap(faceIndex));
+    std::vector<const TopologyLineageBinding*> matches;
+    for (const auto& binding : source.lineage->bindings()) {
+      if (binding.provenance.kind == TopologyKind::Face && binding.subshape &&
+          binding.subshape->IsSame(face))
+        matches.push_back(&binding);
+    }
+    if (matches.empty())
+      return fail(FaceBoundaryEdgeProvenanceFailureCode::MissingFaceIdentity,
+                  "A canonical output face has no provenance key");
+    if (matches.size() != 1)
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::AmbiguousFaceIdentity,
+          "A canonical output face has multiple provenance keys");
+    const auto& key = matches.front()->provenance;
+    if (key.featureId != source.featureId)
+      return fail(FaceBoundaryEdgeProvenanceFailureCode::ForeignFaceIdentity,
+                  "A canonical output face has a foreign producer");
+    if (std::find(seenFaceKeys.begin(), seenFaceKeys.end(), key) !=
+        seenFaceKeys.end())
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::AmbiguousFaceIdentity,
+          "A face provenance key names multiple canonical faces");
+    seenFaceKeys.push_back(key);
+    faces.push_back({face, key});
+  }
+
+  // Existing edge evidence must already be injective in both directions.
+  // TopologyIndex intentionally tolerates identical aliases, so reject them
+  // explicitly before deriving anything new.
+  std::vector<const TopologyLineageBinding*> existingEdges;
+  for (const auto& binding : source.lineage->bindings()) {
+    if (binding.provenance.kind != TopologyKind::Edge) continue;
+    for (const auto* existing : existingEdges) {
+      if (binding.provenance == existing->provenance ||
+          (binding.subshape && existing->subshape &&
+           binding.subshape->IsSame(*existing->subshape)))
+        return fail(
+            FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity,
+            "Existing edge provenance contains duplicate or conflicting aliases");
+    }
+    existingEdges.push_back(&binding);
+  }
+
+  ShapeIndexedMap edgeMap;
+  TopExp::MapShapes(*source.shape, TopAbs_EDGE, edgeMap);
+  std::vector<EdgeAugmentationCandidate> candidates;
+  candidates.reserve(static_cast<std::size_t>(edgeMap.Extent()));
+  for (int edgeIndex = 1; edgeIndex <= edgeMap.Extent(); ++edgeIndex) {
+    const TopoDS_Edge edge = TopoDS::Edge(edgeMap(edgeIndex));
+    if (edge.IsNull() || BRep_Tool::Degenerated(edge)) continue;
+
+    std::size_t totalOccurrences = 0;
+    std::vector<std::size_t> ancestorIndices;
+    bool supported = true;
+    for (std::size_t faceIndex = 0; faceIndex < faces.size(); ++faceIndex) {
+      std::size_t faceOccurrences = 0;
+      for (TopExp_Explorer explorer(faces[faceIndex].face, TopAbs_EDGE);
+           explorer.More(); explorer.Next()) {
+        if (!explorer.Current().IsSame(edge)) continue;
+        if (explorer.Current().Orientation() != TopAbs_FORWARD &&
+            explorer.Current().Orientation() != TopAbs_REVERSED) {
+          supported = false;
+          break;
+        }
+        ++faceOccurrences;
+      }
+      if (!supported) break;
+      totalOccurrences += faceOccurrences;
+      if (faceOccurrences != 0) {
+        ancestorIndices.push_back(faceIndex);
+        if (faceOccurrences != 1) supported = false;
+      }
+    }
+    if (!supported || totalOccurrences != 2 || ancestorIndices.size() != 2)
+      continue;
+
+    std::array<TopologyProvenanceOrigin, 2> origins{
+        faces[ancestorIndices[0]].key.immediateOrigin(),
+        faces[ancestorIndices[1]].key.immediateOrigin()};
+    if (originLess(origins[1], origins[0])) std::swap(origins[0], origins[1]);
+    const auto localName = edgeLocalName(origins);
+    if (!localName)
+      return fail(FaceBoundaryEdgeProvenanceFailureCode::ResourceLimit,
+                  "Derived edge local name exceeds 16384 bytes");
+    TopologyProvenanceKey key{
+        source.featureId, TopologyKind::Edge,
+        TopologyProvenanceOperation::Generated, TopologySemanticRole::Custom,
+        *localName, {origins[0], origins[1]}};
+    if (!key.isCanonical(&diagnostic))
+      return fail(FaceBoundaryEdgeProvenanceFailureCode::InvalidSource,
+                  diagnostic);
+    candidates.push_back({edge, std::move(origins), std::move(key)});
+  }
+
+  // An unordered face-origin pair is safe only when it identifies one edge.
+  std::vector<bool> uniquePair(candidates.size(), true);
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    for (std::size_t other = 0; other < index; ++other) {
+      if (candidates[index].origins == candidates[other].origins) {
+        uniquePair[index] = false;
+        uniquePair[other] = false;
+      }
+    }
+  }
+
+  // A binding bearing this helper's namespace must still be derivable from
+  // the current topology. In particular, never preserve stale authority for
+  // an edge that is now a seam/open/non-manifold/degenerate edge, or for a
+  // face pair that is no longer injective.
+  for (const auto* binding : existingEdges) {
+    if (!binding->provenance.localName.starts_with(
+            kFaceBoundaryEdgeNamePrefix))
+      continue;
+    const auto candidate = std::find_if(
+        candidates.begin(), candidates.end(), [&](const auto& item) {
+          return binding->subshape &&
+                 binding->subshape->IsSame(item.edge);
+        });
+    if (candidate == candidates.end())
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity,
+          "Existing derived edge identity names unsupported topology");
+    const auto candidateIndex =
+        static_cast<std::size_t>(candidate - candidates.begin());
+    if (!uniquePair[candidateIndex])
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity,
+          "Existing derived edge identity names a repeated face pair");
+    if (binding->provenance != candidate->key)
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity,
+          "Existing derived edge identity does not match its face pair");
+  }
+
+  std::vector<EdgeAugmentationCandidate> additions;
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    if (!uniquePair[index]) continue;
+    const auto& candidate = candidates[index];
+    const TopologyLineageBinding* onEdge = nullptr;
+    const TopologyLineageBinding* withKey = nullptr;
+    for (const auto* binding : existingEdges) {
+      if (binding->subshape && binding->subshape->IsSame(candidate.edge))
+        onEdge = binding;
+      if (binding->provenance == candidate.key) withKey = binding;
+    }
+    if (!onEdge && !withKey) {
+      additions.push_back(candidate);
+      continue;
+    }
+    if (!onEdge || !withKey || onEdge != withKey ||
+        onEdge->provenance != candidate.key || !onEdge->subshape ||
+        !onEdge->subshape->IsSame(candidate.edge))
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity,
+          "Existing edge provenance conflicts with derived edge identity");
+  }
+
+  std::sort(additions.begin(), additions.end(),
+            [](const auto& left, const auto& right) {
+              return left.key.localName < right.key.localName;
+            });
+  std::vector<TopologyLineageBinding> augmentedBindings =
+      source.lineage->bindings();
+  for (const auto& addition : additions) {
+    augmentedBindings.push_back(
+        {addition.key, std::make_shared<TopoDS_Edge>(addition.edge)});
+  }
+  auto augmentedLineage = TopologyLineage::create(
+      std::move(augmentedBindings), TopologyLineageCoverage::CompleteFaces,
+      &diagnostic);
+  if (!augmentedLineage ||
+      !augmentedLineage->validateForProducer(source.featureId, &diagnostic))
+    return fail(FaceBoundaryEdgeProvenanceFailureCode::InvalidSource,
+                diagnostic.empty() ? "Augmented edge lineage is invalid"
+                                   : std::move(diagnostic));
+  auto augmentedIndex =
+      TopologyIndex::build(source.shape, 1, augmentedLineage, &diagnostic);
+  if (!augmentedIndex)
+    return fail(FaceBoundaryEdgeProvenanceFailureCode::InvalidSource,
+                diagnostic.empty() ? "Augmented edge lineage cannot be indexed"
+                                   : std::move(diagnostic));
+  for (const auto& addition : additions) {
+    const auto resolved = augmentedIndex->resolveEdge(
+        TopologyReferenceV2{static_cast<BodyId>(1), addition.key});
+    if (!resolved || !resolved.subshape ||
+        !resolved.subshape->IsSame(addition.edge))
+      return fail(
+          FaceBoundaryEdgeProvenanceFailureCode::ConflictingEdgeIdentity,
+          "Derived edge identity does not resolve uniquely");
+  }
+
+  CompleteFaceEdgeLineageAugmentationResult result;
+  result.augmentedSource =
+      TopologySourceSnapshot{source.featureId, source.shape,
+                             std::move(augmentedLineage)};
+  result.addedBindingCount = additions.size();
+  return result;
+}
 
 std::optional<FaceBoundaryEdgeProvenanceResult> captureImpl(
     const TopologySourceSnapshot& source, const FaceReference& selectedFace,
@@ -345,6 +594,28 @@ std::optional<FaceBoundaryEdgeProvenanceResult> captureImpl(
 }
 
 }  // namespace
+
+std::optional<CompleteFaceEdgeLineageAugmentationResult>
+augmentCompleteFaceLineageWithUniqueManifoldEdges(
+    const TopologySourceSnapshot& source,
+    FaceBoundaryEdgeProvenanceFailure* failure) {
+  if (failure) *failure = {};
+  std::optional<CompleteFaceEdgeLineageAugmentationResult> result;
+  GeometryFailure geometryFailure;
+  const bool completed = runGeometryOperation(
+      [&] { result = augmentCompleteFaceLineageImpl(source, failure); },
+      &geometryFailure);
+  if (!completed) {
+    std::string detail =
+        "Complete-face edge-lineage augmentation raised a geometry exception";
+    if (!geometryFailure.detail.empty()) detail += ": " + geometryFailure.detail;
+    setFailure(failure,
+               FaceBoundaryEdgeProvenanceFailureCode::GeometryException,
+               std::move(detail));
+    return std::nullopt;
+  }
+  return result;
+}
 
 std::optional<FaceBoundaryEdgeProvenanceResult>
 captureUniqueManifoldFaceBoundary(

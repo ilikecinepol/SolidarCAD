@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -55,6 +56,23 @@ struct FaceBoundaryEdgeProvenanceResult {
   TopologySourceSnapshot augmentedSource;
   std::vector<FaceBoundaryEdgeSeed> boundarySeeds;
 };
+
+// Publication-side augmentation used only by ExtrudeFeature's simple NewBody
+// sketch path. Given a coherent CompleteFaces result, every uniquely
+// identified closed two-face manifold edge receives the same
+// face-boundary-edge:v1 identity used by the selected-face capture above.
+// Unsupported edges (open, seam, non-manifold, degenerate, or sharing a face
+// pair) are deliberately omitted. Invalid source evidence and conflicts with
+// existing edge evidence fail atomically.
+struct CompleteFaceEdgeLineageAugmentationResult {
+  TopologySourceSnapshot augmentedSource;
+  std::size_t addedBindingCount{};
+};
+
+[[nodiscard]] std::optional<CompleteFaceEdgeLineageAugmentationResult>
+augmentCompleteFaceLineageWithUniqueManifoldEdges(
+    const TopologySourceSnapshot& source,
+    FaceBoundaryEdgeProvenanceFailure* failure = nullptr);
 
 // Derives persistent Edge provenance for every edge of one exact v2-selected
 // face.  The source must be CompleteFaces and every canonical source face must
