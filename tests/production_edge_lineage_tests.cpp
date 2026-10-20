@@ -37,6 +37,7 @@
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/JoinBodiesFeature.h"
+#include "model/MirrorFeature.h"
 #include "model/MoveFeature.h"
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
@@ -92,6 +93,39 @@ struct MovedBox {
   solidar::MoveFeature* move{};
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
+
+struct MirroredBox {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::SketchId sketchId{solidar::kInvalidSketchId};
+  solidar::ExtrudeFeature* extrusion{};
+  solidar::MirrorFeature* mirror{};
+  std::array<solidar::sketch::GeometryId, 4> geometryIds{};
+};
+
+MirroredBox makeMirroredBox(
+    solidar::MirrorPlane plane = solidar::MirrorPlane::YZ) {
+  MirroredBox result;
+  auto& sketch = result.document.addSketch("Production edge mirror source");
+  sketch.geometry.addRectangle({10.0, 3.0}, {20.0, 9.0});
+  result.sketchId = sketch.id;
+  result.geometryIds = {
+      sketch.geometry.lineId(0), sketch.geometry.lineId(1),
+      sketch.geometry.lineId(2), sketch.geometry.lineId(3)};
+  auto& body = result.document.addBody();
+  auto extrusion =
+      std::make_unique<solidar::ExtrudeFeature>(sketch.id, 5.0);
+  result.extrusion = extrusion.get();
+  const auto extrusionId = extrusion->id();
+  body.addFeature(std::move(extrusion));
+  auto mirror =
+      std::make_unique<solidar::MirrorFeature>(extrusionId, plane);
+  result.mirror = mirror.get();
+  body.addFeature(std::move(mirror));
+  result.body = &body;
+  CHECK(result.document.rebuild());
+  return result;
+}
 
 MovedBox makeMovedBox(solidar::Vector3d offset = {5.0, 7.0, 3.0}) {
   MovedBox result;
@@ -660,6 +694,62 @@ void auditJoinedBoxEdges(const solidar::ShapeFeature& join,
   }
   CHECK(seen.size() == 12);
   CHECK(edgeBindingCount(join) == 12);
+}
+
+void auditMirroredBoxEdges(const solidar::ShapeFeature& mirror,
+                           solidar::BodyId bodyId) {
+  const auto index = mirror.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  std::array<std::size_t, 2> slotCounts{};
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, mirror.id(), raw);
+    CHECK(legacy);
+    const auto rawEdge = index->resolveEdge(legacy.reference);
+    CHECK(rawEdge);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*rawEdge.subshape);
+        }))
+      continue;
+    seen.push_back(*rawEdge.subshape);
+
+    const auto exact = mirror.createEdgeReferenceV2(bodyId, raw);
+    CHECK(exact);
+    CHECK(exact.status ==
+          solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(exact.reference.v2());
+    const auto& key = exact.reference.v2()->provenance;
+    CHECK(key.featureId == mirror.id());
+    CHECK(key.kind == solidar::TopologyKind::Edge);
+    CHECK(key.operation ==
+          solidar::TopologyProvenanceOperation::Generated);
+    CHECK(!key.occurrence);
+    CHECK(key.localName.starts_with("face-boundary-edge:v1;"));
+    CHECK(key.origins.size() == 2);
+    CHECK(key.origins == adjacentFaceOrigins(mirror, *rawEdge.subshape));
+    CHECK(key.origins.front().occurrence);
+    const auto slot = key.origins.front().occurrence->slot;
+    CHECK(slot < slotCounts.size());
+    for (const auto& origin : key.origins) {
+      CHECK(origin.featureId == mirror.id());
+      CHECK(origin.kind == solidar::TopologyKind::Face);
+      CHECK(origin.occurrence);
+      CHECK(origin.occurrence->featureId == mirror.id());
+      CHECK(origin.occurrence->slot == slot);
+    }
+    ++slotCounts[slot];
+
+    const auto resolved = index->resolveEdge(exact.reference);
+    CHECK(resolved);
+    CHECK(resolved.method ==
+          solidar::TopologyMatchMethod::OperationProvenance);
+    CHECK(resolved.subshape->IsSame(*rawEdge.subshape));
+  }
+  CHECK(seen.size() == 24);
+  CHECK(edgeBindingCount(mirror) == 24);
+  CHECK(slotCounts[0] == 12);
+  CHECK(slotCounts[1] == 12);
 }
 
 void auditBlindPocketEdges(const solidar::ShapeFeature& feature,
@@ -2108,6 +2198,282 @@ int main() {
     CHECK(index);
     CHECK(index->rawEdgeCount() > 0);
     const auto exact = moveFeature->createEdgeReferenceV2(body.id(), 0);
+    CHECK(!exact);
+    CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
+  }
+
+  // A strict Mirror publishes two disjoint, occurrence-scoped edge sets. The
+  // corresponding original/reflected vertical carriers are selected only by
+  // geometry and retain their keys across plane and source-profile edits.
+  {
+    auto model = makeMirroredBox();
+    double sourceX0 = 10.0;
+    double sourceY0 = 3.0;
+    double sourceX1 = 20.0;
+    double sourceY1 = 9.0;
+    double length = 5.0;
+    MirrorPlane plane = MirrorPlane::YZ;
+
+    const auto sourceVertical = edgeForExactEndpoints(
+        *model.extrusion, model.body->id(),
+        gp_Pnt(sourceX0, sourceY0, 0.0),
+        gp_Pnt(sourceX0, sourceY0, length));
+    const auto original = edgeForExactEndpoints(
+        *model.mirror, model.body->id(),
+        gp_Pnt(sourceX0, sourceY0, 0.0),
+        gp_Pnt(sourceX0, sourceY0, length));
+    const auto reflected = edgeForExactEndpoints(
+        *model.mirror, model.body->id(),
+        gp_Pnt(-sourceX0, sourceY0, 0.0),
+        gp_Pnt(-sourceX0, sourceY0, length));
+    CHECK(sourceVertical.v2());
+    CHECK(original.v2());
+    CHECK(reflected.v2());
+    const auto originalKey = original.v2()->provenance;
+    const auto reflectedKey = reflected.v2()->provenance;
+
+    const auto originalLeftOrigin = faceOriginForBounds(
+        *model.mirror,
+        {sourceX0, sourceY0, 0.0, sourceX0, sourceY1, length});
+    const auto originalFrontOrigin = faceOriginForBounds(
+        *model.mirror,
+        {sourceX0, sourceY0, 0.0, sourceX1, sourceY0, length});
+    const auto reflectedLeftOrigin = faceOriginForBounds(
+        *model.mirror,
+        {-sourceX0, sourceY0, 0.0, -sourceX0, sourceY1, length});
+    const auto reflectedFrontOrigin = faceOriginForBounds(
+        *model.mirror,
+        {-sourceX1, sourceY0, 0.0, -sourceX0, sourceY0, length});
+
+    const auto checkOccurrence = [&](const TopologyProvenanceKey& key,
+                                     std::uint64_t slot) {
+      CHECK(key.featureId == model.mirror->id());
+      CHECK(key.kind == TopologyKind::Edge);
+      CHECK(key.operation == TopologyProvenanceOperation::Generated);
+      CHECK(!key.occurrence);
+      CHECK(key.origins.size() == 2);
+      for (const auto& origin : key.origins) {
+        CHECK(origin.featureId == model.mirror->id());
+        CHECK(origin.kind == TopologyKind::Face);
+        CHECK(origin.occurrence);
+        CHECK(origin.occurrence->featureId == model.mirror->id());
+        CHECK(origin.occurrence->slot == slot);
+      }
+    };
+    checkOccurrence(originalKey, 0);
+    checkOccurrence(reflectedKey, 1);
+
+    const auto checkMirrored = [&] {
+      CHECK(faceOriginForBounds(
+                *model.mirror,
+                {sourceX0, sourceY0, 0.0, sourceX0, sourceY1, length}) ==
+            originalLeftOrigin);
+      CHECK(faceOriginForBounds(
+                *model.mirror,
+                {sourceX0, sourceY0, 0.0, sourceX1, sourceY0, length}) ==
+            originalFrontOrigin);
+
+      gp_Pnt reflectedFirst;
+      gp_Pnt reflectedLast;
+      if (plane == MirrorPlane::YZ) {
+        reflectedFirst = gp_Pnt(-sourceX0, sourceY0, 0.0);
+        reflectedLast = gp_Pnt(-sourceX0, sourceY0, length);
+        CHECK(faceOriginForBounds(
+                  *model.mirror,
+                  {-sourceX0, sourceY0, 0.0, -sourceX0, sourceY1,
+                   length}) == reflectedLeftOrigin);
+        CHECK(faceOriginForBounds(
+                  *model.mirror,
+                  {-sourceX1, sourceY0, 0.0, -sourceX0, sourceY0,
+                   length}) == reflectedFrontOrigin);
+      } else {
+        CHECK(plane == MirrorPlane::XZ);
+        reflectedFirst = gp_Pnt(sourceX0, -sourceY0, 0.0);
+        reflectedLast = gp_Pnt(sourceX0, -sourceY0, length);
+        CHECK(faceOriginForBounds(
+                  *model.mirror,
+                  {sourceX0, -sourceY1, 0.0, sourceX0, -sourceY0,
+                   length}) == reflectedLeftOrigin);
+        CHECK(faceOriginForBounds(
+                  *model.mirror,
+                  {sourceX0, -sourceY0, 0.0, sourceX1, -sourceY0,
+                   length}) == reflectedFrontOrigin);
+      }
+
+      const gp_Pnt originalFirst(sourceX0, sourceY0, 0.0);
+      const gp_Pnt originalLast(sourceX0, sourceY0, length);
+      checkExactCarrier(
+          *model.mirror, original,
+          {originalLeftOrigin, originalFrontOrigin},
+          {GeomAbs_Line, length, originalFirst, originalLast});
+      checkExactCarrier(
+          *model.mirror, reflected,
+          {reflectedLeftOrigin, reflectedFrontOrigin},
+          {GeomAbs_Line, length, reflectedFirst, reflectedLast});
+
+      const auto rediscoveredOriginal = edgeForExactEndpoints(
+          *model.mirror, model.body->id(), originalFirst, originalLast);
+      const auto rediscoveredReflected = edgeForExactEndpoints(
+          *model.mirror, model.body->id(), reflectedFirst, reflectedLast);
+      CHECK(rediscoveredOriginal.v2());
+      CHECK(rediscoveredReflected.v2());
+      CHECK(rediscoveredOriginal.v2()->provenance == originalKey);
+      CHECK(rediscoveredReflected.v2()->provenance == reflectedKey);
+
+      const auto sourceResolved =
+          model.extrusion->topologyIndex()->resolveEdge(sourceVertical);
+      const auto originalResolved =
+          model.mirror->topologyIndex()->resolveEdge(original);
+      const auto reflectedResolved =
+          model.mirror->topologyIndex()->resolveEdge(reflected);
+      CHECK(sourceResolved);
+      CHECK(originalResolved);
+      CHECK(reflectedResolved);
+      CHECK(originalResolved.subshape->IsSame(*sourceResolved.subshape));
+      CHECK(!reflectedResolved.subshape->IsSame(*sourceResolved.subshape));
+    };
+
+    checkMirrored();
+    auditMirroredBoxEdges(*model.mirror, model.body->id());
+    const auto sourceKeys = edgeKeys(*model.extrusion->topologyLineage());
+    const auto mirrorKeys = edgeKeys(*model.mirror->topologyLineage());
+    CHECK(sourceKeys.size() == 12);
+    CHECK(mirrorKeys.size() == 24);
+    for (const auto& key : mirrorKeys) {
+      CHECK(key.featureId == model.mirror->id());
+      CHECK(std::find(sourceKeys.begin(), sourceKeys.end(), key) ==
+            sourceKeys.end());
+    }
+
+    plane = MirrorPlane::XZ;
+    model.mirror->setPlane(plane);
+    CHECK(model.document.recompute());
+    checkMirrored();
+    auditMirroredBoxEdges(*model.mirror, model.body->id());
+
+    length = 8.0;
+    model.extrusion->setLengthMm(length);
+    CHECK(model.document.recompute());
+    checkMirrored();
+    auditMirroredBoxEdges(*model.mirror, model.body->id());
+
+    sourceX0 = 12.0;
+    sourceY0 = 4.0;
+    sourceX1 = 24.0;
+    sourceY1 = 11.0;
+    sketch::Sketch reordered;
+    reordered.addLine({sourceX0, sourceY1}, {sourceX1, sourceY1});
+    reordered.addLine({sourceX1, sourceY0}, {sourceX0, sourceY0});
+    reordered.addLine({sourceX0, sourceY0}, {sourceX0, sourceY1});
+    reordered.addLine({sourceX1, sourceY1}, {sourceX1, sourceY0});
+    CHECK(reordered.restoreGeometryIds(
+        {model.geometryIds[2], model.geometryIds[0], model.geometryIds[3],
+         model.geometryIds[1]},
+        {}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.sketchId,
+                                               std::move(reordered)));
+    CHECK(model.document.recompute());
+    checkMirrored();
+    auditMirroredBoxEdges(*model.mirror, model.body->id());
+
+    const auto validShape = model.mirror->shape();
+    const auto validLineage = model.mirror->topologyLineage();
+    const auto validIndex = model.mirror->topologyIndex();
+    const auto validRevision = model.mirror->shapeRevision();
+    const auto validOriginal = validIndex->resolveEdge(original);
+    const auto validReflected = validIndex->resolveEdge(reflected);
+    CHECK(validOriginal);
+    CHECK(validReflected);
+    model.mirror->setPlane(static_cast<MirrorPlane>(255));
+    CHECK(!model.document.recompute());
+    CHECK(!model.mirror->shape());
+    CHECK(!model.mirror->topologyLineage());
+    CHECK(model.mirror->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.body->topologySnapshot(model.mirror->id(), &error));
+    CHECK(!error.empty());
+    error.clear();
+    CHECK(!model.mirror->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.mirror->lastValidShape() == validShape);
+    CHECK(model.mirror->lastValidTopologyLineage() == validLineage);
+    CHECK(model.mirror->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    const auto rolledBackOriginal = validIndex->resolveEdge(original);
+    const auto rolledBackReflected = validIndex->resolveEdge(reflected);
+    CHECK(rolledBackOriginal);
+    CHECK(rolledBackReflected);
+    CHECK(rolledBackOriginal.subshape->IsSame(*validOriginal.subshape));
+    CHECK(rolledBackReflected.subshape->IsSame(*validReflected.subshape));
+
+    model.mirror->setPlane(plane);
+    CHECK(model.document.recompute());
+    CHECK(model.mirror->shapeRevision() > validRevision);
+    CHECK(model.body->topologySnapshot(model.mirror->id()));
+    checkMirrored();
+    auditMirroredBoxEdges(*model.mirror, model.body->id());
+  }
+
+  // A fixed reflected Mirror edge feeds Fillet without probing. Its exact
+  // slot-1 identity and strict material effect survive a plane/length edit.
+  {
+    auto model = makeMirroredBox();
+    const auto reflected = edgeForExactEndpoints(
+        *model.mirror, model.body->id(), gp_Pnt(-10.0, 3.0, 0.0),
+        gp_Pnt(-10.0, 3.0, 5.0));
+    const auto left = faceOriginForBounds(
+        *model.mirror, {-10.0, 3.0, 0.0, -10.0, 9.0, 5.0});
+    const auto front = faceOriginForBounds(
+        *model.mirror, {-20.0, 3.0, 0.0, -10.0, 3.0, 5.0});
+    checkExactCarrier(
+        *model.mirror, reflected, {left, front},
+        {GeomAbs_Line, 5.0, gp_Pnt(-10.0, 3.0, 0.0),
+         gp_Pnt(-10.0, 3.0, 5.0)});
+    auto fillet = std::make_unique<FilletFeature>(reflected, 0.75);
+    auto* filletFeature = fillet.get();
+    model.body->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.mirror->shape()) - 1e-5);
+
+    model.mirror->setPlane(MirrorPlane::XZ);
+    model.extrusion->setLengthMm(8.0);
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.mirror, reflected, {left, front},
+        {GeomAbs_Line, 8.0, gp_Pnt(10.0, -3.0, 0.0),
+         gp_Pnt(10.0, -3.0, 8.0)});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.mirror->shape()) - 1e-5);
+  }
+
+  // The legacy no-lineage Mirror path remains shape-only. Its multi-solid
+  // compound can be mirrored but cannot author an exact edge reference.
+  {
+    Document document;
+    auto& profile = document.addSketch("Legacy multi-region mirror");
+    profile.geometry.addRectangle({10.0, 3.0}, {20.0, 9.0});
+    profile.geometry.addRectangle({30.0, 3.0}, {40.0, 9.0});
+    auto& body = document.addBody();
+    auto extrusion = std::make_unique<ExtrudeFeature>(profile.id, 5.0);
+    auto* extrusionFeature = extrusion.get();
+    const auto extrusionId = extrusion->id();
+    body.addFeature(std::move(extrusion));
+    auto mirror =
+        std::make_unique<MirrorFeature>(extrusionId, MirrorPlane::YZ);
+    auto* mirrorFeature = mirror.get();
+    body.addFeature(std::move(mirror));
+    CHECK(document.recompute());
+    CHECK(extrusionFeature->shape());
+    CHECK(!extrusionFeature->topologyLineage());
+    CHECK(mirrorFeature->shape());
+    CHECK(!mirrorFeature->topologyLineage());
+    const auto index = mirrorFeature->topologyIndex();
+    CHECK(index);
+    CHECK(index->rawEdgeCount() > 0);
+    const auto exact = mirrorFeature->createEdgeReferenceV2(body.id(), 0);
     CHECK(!exact);
     CHECK(exact.status == EdgeReferenceV2CreationStatus::Missing);
   }

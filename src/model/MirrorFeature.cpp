@@ -12,6 +12,7 @@
 #include <array>
 
 #include "model/Body.h"
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/GeometryOperation.h"
 #include "model/TopologyReferenceResolver.h"
 #include "model/TransformFeatureHistoryBuilder.h"
@@ -248,8 +249,19 @@ bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
       markError(error);
       return false;
     }
-    setShapeAndTopologyLineage(std::move(built.shape),
-                               std::move(built.lineage));
+    FaceBoundaryEdgeProvenanceFailure edgeFailure;
+    auto augmented = augmentCompleteFaceLineageWithUniqueManifoldEdges(
+        {id(), built.shape, built.lineage}, &edgeFailure);
+    if (!augmented) {
+      markError(edgeFailure.detail.empty()
+                    ? "Mirror edge lineage augmentation failed"
+                    : "Mirror edge lineage augmentation failed: " +
+                          edgeFailure.detail);
+      return false;
+    }
+    setShapeAndTopologyLineage(
+        std::move(built.shape),
+        std::move(augmented->augmentedSource.lineage));
     markValid();
     return true;
   }
