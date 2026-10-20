@@ -265,6 +265,8 @@ solidar_add_test(face_boundary_edge_provenance_tests
   LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(face_prism_topology_history_capture_tests
   LIBRARIES solidar_model LABELS unit regression topology)
+solidar_add_test(revolve_topology_history_capture_tests
+  LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(face_extrude_topology_lineage_tests
   LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(sketch_constraint_integrity_tests

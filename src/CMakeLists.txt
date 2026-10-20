@@ -101,6 +101,8 @@ add_library(solidar_model
   model/OcctTopologyHistoryCapture.h
   model/OcctFacePrismTopologyHistoryCapture.cpp
   model/OcctFacePrismTopologyHistoryCapture.h
+  model/OcctRevolveTopologyHistoryCapture.cpp
+  model/OcctRevolveTopologyHistoryCapture.h
   model/OcctBooleanTopologyHistoryCapture.cpp
   model/OcctBooleanTopologyHistoryCapture.h
   model/TopologyLineage.cpp

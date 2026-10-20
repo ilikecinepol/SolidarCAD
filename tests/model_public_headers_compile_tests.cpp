@@ -33,6 +33,7 @@
 #include "model/MoveToolSession.h"
 #include "model/NumericParameterState.h"
 #include "model/OcctFacePrismTopologyHistoryCapture.h"
+#include "model/OcctRevolveTopologyHistoryCapture.h"
 #include "model/OcctTopologyHistoryCapture.h"
 #include "model/OcctBooleanTopologyHistoryCapture.h"
 #include "model/OperationFailure.h"
