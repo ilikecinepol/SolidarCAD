@@ -57,8 +57,8 @@ struct FaceBoundaryEdgeProvenanceResult {
   std::vector<FaceBoundaryEdgeSeed> boundarySeeds;
 };
 
-// Publication-side augmentation used only by the strict simple NewBody
-// sketch paths in ExtrudeFeature and RevolveFeature. Given a coherent
+// Publication-side augmentation used only by strict supported publication
+// paths in ExtrudeFeature, RevolveFeature, and PocketFeature. Given a coherent
 // CompleteFaces result, every uniquely identified closed two-face manifold
 // edge receives the same face-boundary-edge:v1 identity used by the
 // selected-face capture above.

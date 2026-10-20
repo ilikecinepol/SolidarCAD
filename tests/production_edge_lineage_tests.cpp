@@ -35,6 +35,7 @@
 #include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
+#include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/TopologyReferenceResolver.h"
 
@@ -55,6 +56,42 @@ struct RevolvedRectangle {
   solidar::RevolveFeature* feature{};
   std::array<solidar::sketch::GeometryId, 4> geometryIds{};
 };
+
+struct PocketedBox {
+  solidar::Document document;
+  solidar::Body* body{};
+  solidar::ExtrudeFeature* extrusion{};
+  solidar::PocketFeature* pocket{};
+  solidar::SketchId pocketSketchId{solidar::kInvalidSketchId};
+  solidar::sketch::GeometryId circleId{
+      solidar::sketch::kInvalidGeometryId};
+};
+
+PocketedBox makePocketedBox(double depthMm = 6.0,
+                            solidar::sketch::Point center = {15.0, 14.0},
+                            double radius = 4.0) {
+  PocketedBox result;
+  auto& base = result.document.addSketch("Production edge pocket base");
+  base.geometry.addRectangle({0.0, 0.0}, {40.0, 30.0});
+  auto& body = result.document.addBody();
+  auto extrusion = std::make_unique<solidar::ExtrudeFeature>(base.id, 20.0);
+  result.extrusion = extrusion.get();
+  body.addFeature(std::move(extrusion));
+
+  auto& profile =
+      result.document.addSketch("Production edge circular pocket");
+  profile.placement.origin.z = 20.0;
+  profile.geometry.addCircle(center, radius);
+  result.pocketSketchId = profile.id;
+  result.circleId = profile.geometry.circleId(0);
+  auto pocket =
+      std::make_unique<solidar::PocketFeature>(profile.id, depthMm);
+  result.pocket = pocket.get();
+  body.addFeature(std::move(pocket));
+  result.body = &body;
+  CHECK(result.document.rebuild());
+  return result;
+}
 
 RevolvedRectangle makeRevolvedRectangle(double minimumRadius,
                                         double angleDeg) {
@@ -304,8 +341,8 @@ struct CurveExpectation {
   std::optional<gp_Pnt> last;
 };
 
-void checkRevolveCarrier(
-    const solidar::RevolveFeature& feature, const solidar::EdgeReference& carrier,
+void checkExactCarrier(
+    const solidar::ShapeFeature& feature, const solidar::EdgeReference& carrier,
     std::vector<solidar::TopologyProvenanceOrigin> expectedOrigins,
     const CurveExpectation& expected) {
   std::sort(expectedOrigins.begin(), expectedOrigins.end(), originLess);
@@ -321,6 +358,120 @@ void checkRevolveCarrier(
   CHECK(near(edgeLength(*resolved.subshape), expected.length, 1e-4));
   if (expected.first && expected.last)
     CHECK(hasEndpoints(*resolved.subshape, *expected.first, *expected.last));
+}
+
+solidar::EdgeReference edgeForExactEndpoints(
+    const solidar::ShapeFeature& feature, solidar::BodyId bodyId,
+    const gp_Pnt& expectedFirst, const gp_Pnt& expectedLast) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::optional<solidar::EdgeReference> found;
+  std::vector<TopoDS_Edge> seen;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, feature.id(), raw);
+    CHECK(legacy);
+    const auto resolved = index->resolveEdge(legacy.reference);
+    CHECK(resolved);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*resolved.subshape);
+        }))
+      continue;
+    seen.push_back(*resolved.subshape);
+    if (!hasEndpoints(*resolved.subshape, expectedFirst, expectedLast))
+      continue;
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    CHECK(exact);
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(!found);
+    found = exact.reference;
+  }
+  CHECK(found);
+  return *found;
+}
+
+solidar::EdgeReference edgeForCircle(
+    const solidar::ShapeFeature& feature, solidar::BodyId bodyId,
+    const gp_Pnt& expectedCenter, double expectedRadius) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::optional<solidar::EdgeReference> found;
+  std::vector<TopoDS_Edge> seen;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, feature.id(), raw);
+    CHECK(legacy);
+    const auto resolved = index->resolveEdge(legacy.reference);
+    CHECK(resolved);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*resolved.subshape);
+        }))
+      continue;
+    seen.push_back(*resolved.subshape);
+    BRepAdaptor_Curve curve(*resolved.subshape);
+    if (curve.GetType() != GeomAbs_Circle ||
+        !samePoint(curve.Circle().Location(), expectedCenter) ||
+        !near(curve.Circle().Radius(), expectedRadius))
+      continue;
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    CHECK(exact);
+    CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Created);
+    CHECK(!found);
+    found = exact.reference;
+  }
+  CHECK(found);
+  return *found;
+}
+
+struct ShapeBounds {
+  double x0{};
+  double y0{};
+  double z0{};
+  double x1{};
+  double y1{};
+  double z1{};
+};
+
+bool hasBounds(const TopoDS_Shape& shape, const ShapeBounds& expected) {
+  Bnd_Box bounds;
+  BRepBndLib::Add(shape, bounds);
+  double x0, y0, z0, x1, y1, z1;
+  bounds.Get(x0, y0, z0, x1, y1, z1);
+  return near(x0, expected.x0) && near(y0, expected.y0) &&
+         near(z0, expected.z0) && near(x1, expected.x1) &&
+         near(y1, expected.y1) && near(z1, expected.z1);
+}
+
+solidar::TopologyProvenanceOrigin faceOriginForBounds(
+    const solidar::ShapeFeature& feature, const ShapeBounds& expected) {
+  const auto lineage = feature.topologyLineage();
+  CHECK(lineage);
+  std::optional<solidar::TopologyProvenanceOrigin> found;
+  for (const auto& binding : lineage->bindings()) {
+    if (binding.provenance.kind != solidar::TopologyKind::Face ||
+        !hasBounds(*binding.subshape, expected))
+      continue;
+    CHECK(!found);
+    found = binding.provenance.immediateOrigin();
+  }
+  CHECK(found);
+  return *found;
+}
+
+void checkCircleCarrier(
+    const solidar::ShapeFeature& feature, const solidar::EdgeReference& carrier,
+    std::vector<solidar::TopologyProvenanceOrigin> expectedOrigins,
+    const gp_Pnt& expectedCenter, double expectedRadius) {
+  checkExactCarrier(
+      feature, carrier, std::move(expectedOrigins),
+      {GeomAbs_Circle, 2.0 * std::numbers::pi * expectedRadius,
+       std::nullopt, std::nullopt});
+  const auto resolved = feature.topologyIndex()->resolveEdge(carrier);
+  CHECK(resolved);
+  const BRepAdaptor_Curve curve(*resolved.subshape);
+  CHECK(curve.GetType() == GeomAbs_Circle);
+  CHECK(samePoint(curve.Circle().Location(), expectedCenter));
+  CHECK(near(curve.Circle().Radius(), expectedRadius));
 }
 
 void checkEdgeMissing(const solidar::ShapeFeature& feature,
@@ -366,6 +517,62 @@ void checkAllCanonicalEdgesCreated(const solidar::ShapeFeature& feature,
   }
   CHECK(seen.size() == expectedCount);
   CHECK(edgeBindingCount(feature) == expectedCount);
+}
+
+void auditBlindPocketEdges(const solidar::ShapeFeature& feature,
+                           solidar::BodyId bodyId) {
+  const auto index = feature.topologyIndex();
+  CHECK(index);
+  std::vector<TopoDS_Edge> seen;
+  std::vector<solidar::TopologyProvenanceKey> createdKeys;
+  std::size_t createdLines = 0;
+  std::size_t createdCircles = 0;
+  std::size_t missingLines = 0;
+  for (std::size_t raw = 0; raw < index->rawEdgeCount(); ++raw) {
+    const auto legacy =
+        index->createEdgeReference(bodyId, feature.id(), raw);
+    CHECK(legacy);
+    const auto rawEdge = index->resolveEdge(legacy.reference);
+    CHECK(rawEdge);
+    if (std::any_of(seen.begin(), seen.end(), [&](const auto& edge) {
+          return edge.IsSame(*rawEdge.subshape);
+        }))
+      continue;
+    seen.push_back(*rawEdge.subshape);
+
+    const auto type = BRepAdaptor_Curve(*rawEdge.subshape).GetType();
+    CHECK(type == GeomAbs_Line || type == GeomAbs_Circle);
+    const auto exact = feature.createEdgeReferenceV2(bodyId, raw);
+    if (exact) {
+      CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Created);
+      const auto resolved = index->resolveEdge(exact.reference);
+      CHECK(resolved);
+      CHECK(resolved.method ==
+            solidar::TopologyMatchMethod::OperationProvenance);
+      CHECK(resolved.subshape->IsSame(*rawEdge.subshape));
+      CHECK(exact.reference.v2());
+      createdKeys.push_back(exact.reference.v2()->provenance);
+      if (type == GeomAbs_Line)
+        ++createdLines;
+      else
+        ++createdCircles;
+    } else {
+      CHECK(exact.status == solidar::EdgeReferenceV2CreationStatus::Missing);
+      CHECK(type == GeomAbs_Line);
+      ++missingLines;
+    }
+  }
+  CHECK(seen.size() == 15);
+  CHECK(createdLines == 12);
+  CHECK(createdCircles == 2);
+  CHECK(missingLines == 1);
+  CHECK(createdKeys.size() == 14);
+  CHECK(edgeBindingCount(feature) == 14);
+  for (const auto& binding : feature.topologyLineage()->bindings()) {
+    if (binding.provenance.kind != solidar::TopologyKind::Edge) continue;
+    CHECK(std::count(createdKeys.begin(), createdKeys.end(),
+                     binding.provenance) == 1);
+  }
 }
 
 gp_Pnt revolvedPoint(double x, double radius, double angleDeg) {
@@ -922,14 +1129,14 @@ int main() {
           }};
       for (std::size_t index = 0; index < sides.size(); ++index) {
         const auto& endpoints = sideEndpoints[index];
-        checkRevolveCarrier(
+        checkExactCarrier(
             *model.feature, startLines[index], {start, sides[index]},
             {GeomAbs_Line,
              std::hypot(endpoints[1].first - endpoints[0].first,
                         endpoints[1].second - endpoints[0].second),
              revolvedPoint(endpoints[0].first, endpoints[0].second, 0.0),
              revolvedPoint(endpoints[1].first, endpoints[1].second, 0.0)});
-        checkRevolveCarrier(
+        checkExactCarrier(
             *model.feature, endLines[index], {end, sides[index]},
             {GeomAbs_Line,
              std::hypot(endpoints[1].first - endpoints[0].first,
@@ -945,7 +1152,7 @@ int main() {
           {minimumX, maximumRadius}, {minimumX, minimumRadius}}};
       for (std::size_t index = 0; index < sideArcs.size(); ++index) {
         const auto [x, radius] = arcVertices[index];
-        checkRevolveCarrier(
+        checkExactCarrier(
             *model.feature, sideArcs[index],
             {sides[adjacentSides[index][0]], sides[adjacentSides[index][1]]},
             {GeomAbs_Circle,
@@ -989,7 +1196,7 @@ int main() {
     for (const auto& carrier : endLines) checkEdgeMissing(*model.feature, carrier);
     const std::array<double, 4> fullRadii{6.0, 17.0, 17.0, 6.0};
     for (std::size_t index = 0; index < sideArcs.size(); ++index)
-      checkRevolveCarrier(
+      checkExactCarrier(
           *model.feature, sideArcs[index],
           {sides[adjacentSides[index][0]], sides[adjacentSides[index][1]]},
           {GeomAbs_Circle, 2.0 * std::numbers::pi * fullRadii[index],
@@ -1075,7 +1282,7 @@ int main() {
             .immediateOrigin();
     const auto axisCarrier =
         edgeForOrigins(*model.feature, model.body->id(), {start, end});
-    checkRevolveCarrier(*model.feature, axisCarrier, {start, end},
+    checkExactCarrier(*model.feature, axisCarrier, {start, end},
                         {GeomAbs_Line, 20.0, gp_Pnt(10.0, 0.0, 0.0),
                          gp_Pnt(30.0, 0.0, 0.0)});
     checkAllCanonicalEdgesCreated(*model.feature, model.body->id(), 9);
@@ -1116,7 +1323,7 @@ int main() {
 
     model.feature->setAngleDeg(210.0);
     CHECK(model.document.recompute());
-    checkRevolveCarrier(*model.feature, axisCarrier, {start, end},
+    checkExactCarrier(*model.feature, axisCarrier, {start, end},
                         {GeomAbs_Line, 20.0, gp_Pnt(10.0, 0.0, 0.0),
                          gp_Pnt(30.0, 0.0, 0.0)});
   }
@@ -1137,7 +1344,7 @@ int main() {
             .immediateOrigin();
     const auto rim = edgeForOrigins(*model.feature, model.body->id(),
                                     {outerEnd, outerCylinder});
-    checkRevolveCarrier(
+    checkExactCarrier(
         *model.feature, rim, {outerEnd, outerCylinder},
         {GeomAbs_Circle, 2.0 * std::numbers::pi * 15.0, std::nullopt,
          std::nullopt});
@@ -1151,7 +1358,7 @@ int main() {
 
     model.feature->setAngleDeg(210.0);
     CHECK(model.document.recompute());
-    checkRevolveCarrier(
+    checkExactCarrier(
         *model.feature, rim, {outerEnd, outerCylinder},
         {GeomAbs_Circle, 15.0 * 210.0 * std::numbers::pi / 180.0,
          revolvedPoint(30.0, 15.0, 0.0),
@@ -1159,6 +1366,187 @@ int main() {
     CHECK(filletFeature->shape());
     CHECK(volumeOf(*filletFeature->shape()) <
           volumeOf(*model.feature->shape()) - 1e-5);
+  }
+
+  // A strict blind circular Pocket publishes every closed two-face manifold
+  // edge except the cylindrical seam. Three carriers are chosen solely by
+  // their geometry and then retained across depth and GeometryId-preserving
+  // profile edits.
+  {
+    auto model = makePocketedBox();
+    constexpr double kTop = 20.0;
+    double centerX = 15.0;
+    double centerY = 14.0;
+    double radius = 4.0;
+    double depth = 6.0;
+
+    const auto outerVertical = edgeForExactEndpoints(
+        *model.pocket, model.body->id(), gp_Pnt(0.0, 0.0, 0.0),
+        gp_Pnt(0.0, 0.0, kTop));
+    const auto topRim = edgeForCircle(
+        *model.pocket, model.body->id(), gp_Pnt(centerX, centerY, kTop),
+        radius);
+    const auto floorRim = edgeForCircle(
+        *model.pocket, model.body->id(),
+        gp_Pnt(centerX, centerY, kTop - depth), radius);
+
+    const auto outerXOrigin = faceOriginForBounds(
+        *model.pocket, {0.0, 0.0, 0.0, 0.0, 30.0, kTop});
+    const auto outerYOrigin = faceOriginForBounds(
+        *model.pocket, {0.0, 0.0, 0.0, 40.0, 0.0, kTop});
+    const auto topOrigin = faceOriginForBounds(
+        *model.pocket, {0.0, 0.0, kTop, 40.0, 30.0, kTop});
+    const auto wallOrigin = faceOriginForBounds(
+        *model.pocket,
+        {centerX - radius, centerY - radius, kTop - depth,
+         centerX + radius, centerY + radius, kTop});
+    const auto floorOrigin = faceOriginForBounds(
+        *model.pocket,
+        {centerX - radius, centerY - radius, kTop - depth,
+         centerX + radius, centerY + radius, kTop - depth});
+
+    const auto checkBlind = [&] {
+      CHECK(faceOriginForBounds(
+                *model.pocket, {0.0, 0.0, 0.0, 0.0, 30.0, kTop}) ==
+            outerXOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pocket, {0.0, 0.0, 0.0, 40.0, 0.0, kTop}) ==
+            outerYOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pocket, {0.0, 0.0, kTop, 40.0, 30.0, kTop}) ==
+            topOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pocket,
+                {centerX - radius, centerY - radius, kTop - depth,
+                 centerX + radius, centerY + radius, kTop}) == wallOrigin);
+      CHECK(faceOriginForBounds(
+                *model.pocket,
+                {centerX - radius, centerY - radius, kTop - depth,
+                 centerX + radius, centerY + radius, kTop - depth}) ==
+            floorOrigin);
+      checkExactCarrier(
+          *model.pocket, outerVertical, {outerXOrigin, outerYOrigin},
+          {GeomAbs_Line, kTop, gp_Pnt(0.0, 0.0, 0.0),
+           gp_Pnt(0.0, 0.0, kTop)});
+      checkCircleCarrier(*model.pocket, topRim, {topOrigin, wallOrigin},
+                         gp_Pnt(centerX, centerY, kTop), radius);
+      checkCircleCarrier(*model.pocket, floorRim,
+                         {floorOrigin, wallOrigin},
+                         gp_Pnt(centerX, centerY, kTop - depth), radius);
+      CHECK(near(volumeOf(*model.pocket->shape()),
+                 40.0 * 30.0 * kTop -
+                     std::numbers::pi * radius * radius * depth,
+                 1e-3));
+    };
+
+    checkBlind();
+    auditBlindPocketEdges(*model.pocket, model.body->id());
+
+    centerX = 18.0;
+    centerY = 12.0;
+    radius = 5.0;
+    depth = 9.0;
+    model.pocket->setDepthMm(depth);
+    sketch::Sketch changedCircle;
+    changedCircle.addCircle({centerX, centerY}, radius);
+    CHECK(changedCircle.restoreGeometryIds({}, {model.circleId}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.pocketSketchId,
+                                               std::move(changedCircle)));
+    CHECK(model.document.recompute());
+    checkBlind();
+    auditBlindPocketEdges(*model.pocket, model.body->id());
+
+    // Once the cut exits the bottom, the blind-floor provenance disappears.
+    // The geometrically selected exit rim is independently V2-authorable.
+    model.pocket->setDepthMm(30.0);
+    CHECK(model.document.recompute());
+    checkEdgeMissing(*model.pocket, floorRim);
+    checkExactCarrier(
+        *model.pocket, outerVertical, {outerXOrigin, outerYOrigin},
+        {GeomAbs_Line, kTop, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(0.0, 0.0, kTop)});
+    const auto throughWallOrigin = faceOriginForBounds(
+        *model.pocket,
+        {centerX - radius, centerY - radius, 0.0,
+         centerX + radius, centerY + radius, kTop});
+    const auto bottomOrigin = faceOriginForBounds(
+        *model.pocket, {0.0, 0.0, 0.0, 40.0, 30.0, 0.0});
+    const auto exitRim = edgeForCircle(
+        *model.pocket, model.body->id(), gp_Pnt(centerX, centerY, 0.0),
+        radius);
+    checkCircleCarrier(*model.pocket, exitRim,
+                       {bottomOrigin, throughWallOrigin},
+                       gp_Pnt(centerX, centerY, 0.0), radius);
+
+    depth = 7.0;
+    model.pocket->setDepthMm(depth);
+    CHECK(model.document.recompute());
+    checkBlind();
+
+    const auto validShape = model.pocket->shape();
+    const auto validLineage = model.pocket->topologyLineage();
+    const auto validIndex = model.pocket->topologyIndex();
+    const auto validRevision = model.pocket->shapeRevision();
+    model.pocket->setDepthMm(0.0);
+    CHECK(!model.document.recompute());
+    CHECK(!model.pocket->shape());
+    CHECK(!model.pocket->topologyLineage());
+    CHECK(model.pocket->shapeRevision() == validRevision);
+    std::string error;
+    CHECK(!model.pocket->topologyIndex(&error));
+    CHECK(!error.empty());
+    CHECK(model.pocket->lastValidShape() == validShape);
+    CHECK(model.pocket->lastValidTopologyLineage() == validLineage);
+    CHECK(model.pocket->lastValidTopologyIndex(&error) == validIndex);
+    CHECK(error.empty());
+    CHECK(validIndex->resolveEdge(outerVertical));
+    CHECK(validIndex->resolveEdge(topRim));
+    CHECK(validIndex->resolveEdge(floorRim));
+
+    depth = 8.0;
+    model.pocket->setDepthMm(depth);
+    CHECK(model.document.recompute());
+    checkBlind();
+  }
+
+  // A fixed convex outer Pocket edge feeds Fillet without probing alternate
+  // edges. The exact carrier and strict material removal survive a Pocket
+  // parameter/profile edit.
+  {
+    auto model = makePocketedBox();
+    const auto outer = edgeForExactEndpoints(
+        *model.pocket, model.body->id(), gp_Pnt(0.0, 0.0, 0.0),
+        gp_Pnt(0.0, 0.0, 20.0));
+    const auto outerX = faceOriginForBounds(
+        *model.pocket, {0.0, 0.0, 0.0, 0.0, 30.0, 20.0});
+    const auto outerY = faceOriginForBounds(
+        *model.pocket, {0.0, 0.0, 0.0, 40.0, 0.0, 20.0});
+    checkExactCarrier(
+        *model.pocket, outer, {outerX, outerY},
+        {GeomAbs_Line, 20.0, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(0.0, 0.0, 20.0)});
+    auto fillet = std::make_unique<FilletFeature>(outer, 1.0);
+    auto* filletFeature = fillet.get();
+    model.body->addFeature(std::move(fillet));
+    CHECK(model.document.recompute());
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pocket->shape()) - 1e-5);
+
+    model.pocket->setDepthMm(9.0);
+    sketch::Sketch changedCircle;
+    changedCircle.addCircle({18.0, 12.0}, 5.0);
+    CHECK(changedCircle.restoreGeometryIds({}, {model.circleId}, {}, {}));
+    CHECK(model.document.replaceSketchGeometry(model.pocketSketchId,
+                                               std::move(changedCircle)));
+    CHECK(model.document.recompute());
+    checkExactCarrier(
+        *model.pocket, outer, {outerX, outerY},
+        {GeomAbs_Line, 20.0, gp_Pnt(0.0, 0.0, 0.0),
+         gp_Pnt(0.0, 0.0, 20.0)});
+    CHECK(filletFeature->shape());
+    CHECK(volumeOf(*filletFeature->shape()) <
+          volumeOf(*model.pocket->shape()) - 1e-5);
   }
 
   return EXIT_SUCCESS;

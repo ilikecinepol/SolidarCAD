@@ -15,6 +15,7 @@
 #include <span>
 #include <utility>
 
+#include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/OcctBooleanTopologyHistoryCapture.h"
 #include "model/SketchExtrudeBuilder.h"
 #include "model/SketchProfileBuilder.h"
@@ -217,8 +218,19 @@ bool PocketFeature::rebuildImpl(const RebuildContext& context) {
         }
         committedShape = std::make_shared<TopoDS_Shape>(normalized);
       }
-      setShapeAndTopologyLineage(std::move(committedShape),
-                                 std::move(lineage));
+      FaceBoundaryEdgeProvenanceFailure edgeFailure;
+      const auto augmented =
+          augmentCompleteFaceLineageWithUniqueManifoldEdges(
+              {id(), committedShape, lineage}, &edgeFailure);
+      if (!augmented) {
+        markError("Pocket " +
+                  (edgeFailure.detail.empty()
+                       ? std::string("edge lineage is invalid")
+                       : std::move(edgeFailure.detail)));
+        return false;
+      }
+      setShapeAndTopologyLineage(
+          committedShape, augmented->augmentedSource.lineage);
       markValid();
       return true;
     }

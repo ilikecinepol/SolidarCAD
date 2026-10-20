@@ -84,7 +84,8 @@ std::vector<solidar::TopologyProvenanceKey> keysOf(
   std::vector<solidar::TopologyProvenanceKey> keys;
   keys.reserve(lineage->bindings().size());
   for (const auto& binding : lineage->bindings())
-    keys.push_back(binding.provenance);
+    if (binding.provenance.kind == solidar::TopologyKind::Face)
+      keys.push_back(binding.provenance);
   return keys;
 }
 
@@ -118,9 +119,17 @@ void checkEveryFaceHasV2FactoryReference(
           solidar::TopologyMatchMethod::OperationProvenance);
     created.push_back(v2->provenance);
   }
-  CHECK(created.size() == feature.topologyLineage()->bindings().size());
+  CHECK(created.size() == static_cast<std::size_t>(std::count_if(
+                              feature.topologyLineage()->bindings().begin(),
+                              feature.topologyLineage()->bindings().end(),
+                              [](const auto& binding) {
+                                return binding.provenance.kind ==
+                                       solidar::TopologyKind::Face;
+                              })));
   for (const auto& binding : feature.topologyLineage()->bindings())
-    CHECK(std::count(created.begin(), created.end(), binding.provenance) == 1);
+    if (binding.provenance.kind == solidar::TopologyKind::Face)
+      CHECK(std::count(created.begin(), created.end(), binding.provenance) ==
+            1);
 }
 
 class PartialLineageBoxFeature final : public solidar::ShapeFeature {
@@ -240,7 +249,12 @@ int main() {
   CHECK(pocketPtr->topologyLineage());
   CHECK(pocketPtr->topologyLineage()->coverage() ==
         TopologyLineageCoverage::CompleteFaces);
-  CHECK(pocketPtr->topologyLineage()->bindings().size() == 8);
+  CHECK(static_cast<std::size_t>(std::count_if(
+            pocketPtr->topologyLineage()->bindings().begin(),
+            pocketPtr->topologyLineage()->bindings().end(),
+            [](const auto& binding) {
+              return binding.provenance.kind == TopologyKind::Face;
+            })) == 8);
   CHECK(pocketPtr->shape()->ShapeType() == TopAbs_SOLID);
   CHECK(near(volumeOf(*pocketPtr->shape()),
              40.0 * 30.0 * 20.0 - std::numbers::pi * 16.0 * 8.0,
@@ -253,6 +267,7 @@ int main() {
   std::size_t toolOrigins = 0;
   std::optional<TopologyProvenanceKey> blindFloor;
   for (const auto& binding : pocketPtr->topologyLineage()->bindings()) {
+    if (binding.provenance.kind != TopologyKind::Face) continue;
     CHECK(binding.provenance.featureId == pocketPtr->id());
     CHECK(binding.provenance.kind == TopologyKind::Face);
     CHECK(binding.provenance.role == TopologySemanticRole::BooleanResult);
@@ -368,6 +383,14 @@ int main() {
     CHECK(importedDocument.rebuild());
     CHECK(legacyPocketPtr->shape());
     CHECK(!legacyPocketPtr->topologyLineage());
+    const auto legacyIndex = legacyPocketPtr->topologyIndex();
+    CHECK(legacyIndex);
+    CHECK(legacyIndex->rawEdgeCount() > 0);
+    const auto unavailable =
+        legacyPocketPtr->createEdgeReferenceV2(importedBody.id(), 0);
+    CHECK(!unavailable);
+    CHECK(unavailable.status == EdgeReferenceV2CreationStatus::Missing);
+    CHECK(!unavailable.reference.v2());
   }
 
   // A valid annular profile lies outside the simple strict subset. Complete
