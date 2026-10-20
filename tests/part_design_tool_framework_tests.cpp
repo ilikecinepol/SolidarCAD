@@ -18,6 +18,7 @@
 #include "model/Document.h"
 #include "model/DraftToolSession.h"
 #include "model/FilletToolSession.h"
+#include "model/ImportedShapeFeature.h"
 #include "model/ShellToolSession.h"
 #include "model/TopologyReferenceResolver.h"
 #include "ui/tools/PartDesignToolController.h"
@@ -285,8 +286,18 @@ int main() {
     // chain. Every selection-backed session is routed internally; inactive is
     // a strict no-op.
     solidar::Document clearDocument;
-    const auto face = solidar::makeFaceReference(*box, 1, 2, 0);
-    const auto edge = solidar::makeEdgeReference(*box, 1, 2, 0);
+    auto& clearBody = clearDocument.addBody();
+    auto clearSource = std::make_unique<solidar::ImportedShapeFeature>(box);
+    auto* clearSourcePtr = clearSource.get();
+    clearBody.addFeature(std::move(clearSource));
+    CHECK(clearDocument.recompute());
+    const auto clearSnapshot =
+        clearBody.topologySnapshot(clearSourcePtr->id());
+    CHECK(clearSnapshot);
+    const auto face = clearSnapshot->topologyIndex()->createFaceReference(
+        clearBody.id(), clearSourcePtr->id(), 0).reference;
+    const auto edge = clearSnapshot->topologyIndex()->createEdgeReference(
+        clearBody.id(), clearSourcePtr->id(), 0).reference;
     const auto checkCleared = [&](solidar::PartDesignToolKind kind) {
       const auto effect = coordinator.dispatchActiveAction(
           solidar::PartDesignAction::ClearSelection, &clearDocument);
@@ -295,12 +306,12 @@ int main() {
              effect.transition.activeTool == kind && effect.clearSelection &&
              effect.preserveSelectionMode && coordinator.invariantHolds();
     };
-    CHECK(coordinator.beginFillet(1, 2, box, {edge}, 1.0).effect ==
+    CHECK(coordinator.beginFillet(*clearSnapshot, {edge}, 1.0).effect ==
           solidar::PartDesignTransitionEffect::Activated);
     CHECK(checkCleared(solidar::PartDesignToolKind::Fillet));
     CHECK(coordinator.snapshot(solidar::PartDesignToolKind::Fillet)
               .edges.empty());
-    CHECK(coordinator.beginChamfer(1, 2, box, {edge}, 1.0).effect ==
+    CHECK(coordinator.beginChamfer(*clearSnapshot, {edge}, 1.0).effect ==
           solidar::PartDesignTransitionEffect::Activated);
     CHECK(checkCleared(solidar::PartDesignToolKind::Chamfer));
     CHECK(coordinator.snapshot(solidar::PartDesignToolKind::Chamfer)
@@ -316,7 +327,7 @@ int main() {
     CHECK(checkCleared(solidar::PartDesignToolKind::Shell));
     CHECK(coordinator.snapshot(solidar::PartDesignToolKind::Shell)
               .faces.empty());
-    CHECK(coordinator.beginDraft(clearDocument, 1, 2, box, {face}).effect ==
+    CHECK(coordinator.beginDraft(clearDocument, *clearSnapshot, {face}).effect ==
           solidar::PartDesignTransitionEffect::Activated);
     CHECK(checkCleared(solidar::PartDesignToolKind::Draft));
     CHECK(coordinator.snapshot(solidar::PartDesignToolKind::Draft,
@@ -407,15 +418,9 @@ int main() {
     document = solidar::Document{};
     CHECK(coordinator.invariantHolds());
 
-    // Source-backed tools reject malformed starts atomically. Neither the
-    // controller nor a half-initialized session can remain active.
-    CHECK(coordinator.beginFillet(solidar::kInvalidBodyId, 2, {}, {}, 1.0)
-              .effect == solidar::PartDesignTransitionEffect::Rejected);
-    CHECK(coordinator.beginChamfer(1, solidar::kInvalidFeatureId, {}, {}, 1.0)
-              .effect == solidar::PartDesignTransitionEffect::Rejected);
+    // Raw source injection is unavailable for snapshot-backed tools. The
+    // remaining raw source tool still rejects malformed starts atomically.
     CHECK(coordinator.beginShell(1, 2, {}, {}, 1.0)
-              .effect == solidar::PartDesignTransitionEffect::Rejected);
-    CHECK(coordinator.beginDraft(document, 1, 2, {}, {})
               .effect == solidar::PartDesignTransitionEffect::Rejected);
     CHECK(coordinator.activeTool() == solidar::PartDesignToolKind::None);
     CHECK(coordinator.invariantHolds());
@@ -441,7 +446,7 @@ int main() {
     };
 
     solidar::FilletToolSession fillet;
-    fillet.begin(bodyId, featureId, box, {edge}, 3.0);
+    fillet.beginLegacyV1(bodyId, featureId, box, {edge}, 3.0);
     const auto filletManip = fillet.manipulator();
     CHECK(filletManip.has_value());
     CHECK(finiteUnit(filletManip->direction));
@@ -451,7 +456,7 @@ int main() {
     CHECK(std::abs(filletManip->valueMm - fillet.radiusMm()) < 1e-9);
 
     solidar::ChamferToolSession chamfer;
-    chamfer.begin(bodyId, featureId, box, {edge}, 2.5);
+    chamfer.beginLegacyV1(bodyId, featureId, box, {edge}, 2.5);
     const auto chamferManip = chamfer.manipulator();
     CHECK(chamferManip.has_value());
     CHECK(finiteUnit(chamferManip->direction));
@@ -479,14 +484,14 @@ int main() {
              solidar::TopologySemanticRole::Custom, "session:v2-edge"}});
     fillet.setEdges({v2Edge});
     CHECK(fillet.errorCode() ==
-          solidar::OperationFailureCode::TopologyReferenceInvalid);
+          solidar::OperationFailureCode::TopologyIndexUnavailable);
     CHECK(fillet.error() ==
-          "Fillet does not support topology v2 edge references yet");
+          "Fillet v2 edges require their owning topology index");
     chamfer.setEdges({v2Edge});
     CHECK(chamfer.errorCode() ==
-          solidar::OperationFailureCode::TopologyReferenceInvalid);
+          solidar::OperationFailureCode::TopologyIndexUnavailable);
     CHECK(chamfer.error() ==
-          "Chamfer does not support topology v2 edge references yet");
+          "Chamfer v2 edges require their owning topology index");
 
     auto face = solidar::makeFaceReference(*box, bodyId, featureId, 0);
     CHECK(face.signature());
@@ -505,32 +510,32 @@ int main() {
     plane.type = solidar::NeutralPlaneType::GlobalYZ;
     solidar::AxisReference direction;
     direction.type = solidar::AxisReferenceType::GlobalX;
-    draftSession.begin(draftDocument, bodyId, featureId, box, {foreignFace},
+    draftSession.beginLegacyV1(draftDocument, bodyId, featureId, box, {foreignFace},
                        plane, direction);
     CHECK(draftSession.errorCode() ==
           solidar::OperationFailureCode::TopologyReferenceMismatch);
 
     // Every direct Draft session precondition has one unambiguous typed code.
     solidar::DraftToolSession missingSourceDraft;
-    missingSourceDraft.begin(draftDocument, bodyId, featureId, {}, {face},
+    missingSourceDraft.beginLegacyV1(draftDocument, bodyId, featureId, {}, {face},
                              plane, direction);
     CHECK(missingSourceDraft.errorCode() ==
           solidar::OperationFailureCode::MissingSource);
 
     solidar::DraftToolSession invalidIdsDraft;
-    invalidIdsDraft.begin(draftDocument, solidar::kInvalidBodyId, featureId,
+    invalidIdsDraft.beginLegacyV1(draftDocument, solidar::kInvalidBodyId, featureId,
                           box, {face}, plane, direction);
     CHECK(invalidIdsDraft.errorCode() ==
           solidar::OperationFailureCode::InvalidInput);
 
     solidar::DraftToolSession emptySelectionDraft;
-    emptySelectionDraft.begin(draftDocument, bodyId, featureId, box, {}, plane,
+    emptySelectionDraft.beginLegacyV1(draftDocument, bodyId, featureId, box, {}, plane,
                               direction);
     CHECK(emptySelectionDraft.errorCode() ==
           solidar::OperationFailureCode::InvalidInput);
 
     solidar::DraftToolSession incompleteReferenceDraft;
-    incompleteReferenceDraft.begin(draftDocument, bodyId, featureId, box,
+    incompleteReferenceDraft.beginLegacyV1(draftDocument, bodyId, featureId, box,
                                    {face}, std::nullopt, direction);
     CHECK(incompleteReferenceDraft.errorCode() ==
           solidar::OperationFailureCode::InvalidInput);
@@ -542,7 +547,7 @@ int main() {
         std::make_shared<TopoDS_Shape>(emptyCompound);
     solidar::FaceReference emptyShapeFace{bodyId, featureId, 0};
     solidar::DraftToolSession unavailableIndexDraft;
-    unavailableIndexDraft.begin(draftDocument, bodyId, featureId,
+    unavailableIndexDraft.beginLegacyV1(draftDocument, bodyId, featureId,
                                 unindexableShape, {emptyShapeFace}, plane,
                                 direction);
     CHECK(unavailableIndexDraft.errorCode() ==
@@ -555,7 +560,7 @@ int main() {
     foreignRotationEdge =
         solidar::EdgeReference::fromV1(std::move(foreignRotationEdgeV1));
     solidar::DraftToolSession rotationOwnerDraft;
-    rotationOwnerDraft.begin(draftDocument, bodyId, featureId, box, {face},
+    rotationOwnerDraft.beginLegacyV1(draftDocument, bodyId, featureId, box, {face},
                              plane, direction);
     CHECK(!rotationOwnerDraft.setRotationEdge(draftDocument,
                                               foreignRotationEdge));
@@ -563,7 +568,7 @@ int main() {
           solidar::OperationFailureCode::TopologyReferenceMismatch);
 
     solidar::DraftToolSession rotationCountDraft;
-    rotationCountDraft.begin(draftDocument, bodyId, featureId, box,
+    rotationCountDraft.beginLegacyV1(draftDocument, bodyId, featureId, box,
                              {face, face}, plane, direction);
     CHECK(!rotationCountDraft.setRotationEdge(draftDocument, edge));
     CHECK(rotationCountDraft.errorCode() ==
@@ -579,7 +584,7 @@ int main() {
         solidar::makeEdgeReference(*movedBox, bodyId, featureId, 0);
     CHECK(movedEdge.signature());
     solidar::FilletToolSession movedFillet;
-    movedFillet.begin(bodyId, featureId, movedBox, {movedEdge}, 3.0);
+    movedFillet.beginLegacyV1(bodyId, featureId, movedBox, {movedEdge}, 3.0);
     const auto movedManip = movedFillet.manipulator();
     CHECK(movedManip.has_value());
     CHECK(finiteUnit(movedManip->direction));

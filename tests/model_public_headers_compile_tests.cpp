@@ -18,6 +18,7 @@
 #include "model/FaceExtrudeBuilder.h"
 #include "model/FaceBoundaryEdgeProvenance.h"
 #include "model/Feature.h"
+#include "model/FeatureTopologySnapshot.h"
 #include "model/FilletBuilder.h"
 #include "model/FilletFeature.h"
 #include "model/FilletToolSession.h"

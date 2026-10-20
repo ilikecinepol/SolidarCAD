@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "model/ModelIds.h"
+#include "model/FeatureTopologySnapshot.h"
 #include "model/ShapeFeature.h"
 
 namespace solidar {
@@ -41,6 +42,10 @@ class Body final {
   void markDirtyFrom(std::size_t index) noexcept;
   [[nodiscard]] std::optional<std::size_t> featureIndex(
       FeatureId id) const noexcept;
+  [[nodiscard]] std::optional<FeatureTopologySnapshot> topologySnapshot(
+      FeatureId featureId, std::string* error = nullptr) const;
+  [[nodiscard]] bool matchesTopologySnapshot(
+      const FeatureTopologySnapshot& snapshot) const noexcept;
   void eraseFeaturesFrom(std::size_t index);
 
  private:

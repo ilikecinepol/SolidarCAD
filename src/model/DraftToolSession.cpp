@@ -11,38 +11,77 @@
 #include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
+namespace {
 
-void DraftToolSession::begin(const Document& document, BodyId bodyId,
-                             FeatureId sourceFeatureId,
-                             ShapeFeature::ShapePtr baseShape,
+bool containsV2Reference(
+    const std::vector<FaceReference>& faces,
+    const std::optional<PlaneReference>& neutralPlane,
+    const std::optional<EdgeReference>& rotationEdge) {
+  if (std::any_of(faces.begin(), faces.end(),
+                  [](const FaceReference& face) { return face.isV2(); }))
+    return true;
+  if (neutralPlane && neutralPlane->face && neutralPlane->face->isV2())
+    return true;
+  return rotationEdge && rotationEdge->isV2();
+}
+
+}  // namespace
+
+void DraftToolSession::begin(const Document& document,
+                             FeatureTopologySnapshot source,
                              std::vector<FaceReference> faces,
                              std::optional<PlaneReference> plane,
                              std::optional<AxisReference> direction,
                              double angle, bool reversed,
                              std::optional<FeatureId> editingFeatureId,
-                             std::optional<EdgeReference> rotationEdge,
-                             std::shared_ptr<const TopologyIndex> topologyIndex) {
-  bodyId_ = bodyId; sourceFeatureId_ = sourceFeatureId;
-  baseShape_ = std::move(baseShape); faces_ = std::move(faces);
+                             std::optional<EdgeReference> rotationEdge) {
+  bodyId_ = source.bodyId();
+  sourceFeatureId_ = source.featureId();
+  baseShape_ = source.shape();
+  faces_ = std::move(faces);
   topologyIndexError_.clear();
-  topologyIndex_ = std::move(topologyIndex);
-  if (topologyIndex_ &&
-      (!baseShape_ || baseShape_->IsNull() || !topologyIndex_->shape() ||
-       topologyIndex_->shape().get() != baseShape_.get()))
-    topologyIndex_.reset();
-  if (!topologyIndex_ && baseShape_ && !baseShape_->IsNull())
-    topologyIndex_ = TopologyIndex::build(baseShape_, kInvalidShapeRevision,
-                                          &topologyIndexError_);
+  topologyIndex_ = source.topologyIndex();
+  topologyIndexAuthoritative_ = source.v2Authoritative();
+  sourceSnapshot_ = std::move(source);
   neutralPlane_ = std::move(plane); pullDirection_ = std::move(direction);
   rotationEdge_ = std::move(rotationEdge);
   angleDeg_ = reversed ? -std::abs(angle) : angle;
   editingFeatureId_ = editingFeatureId;
+  previewBuildAttemptCount_ = 0;
   previewShape_.reset(); lastValidPreviewShape_.reset();
   lifecycle_ = ToolLifecycle::Editing; updatePreview(document);
 }
-void DraftToolSession::setFaces(const Document& document, std::vector<FaceReference> value) { faces_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(document); }
-void DraftToolSession::setNeutralPlane(const Document& document, PlaneReference value) { neutralPlane_ = std::move(value); lastValidPreviewShape_.reset(); updatePreview(document); }
-void DraftToolSession::clearNeutralPlane(const Document& document) { neutralPlane_.reset(); lastValidPreviewShape_.reset(); updatePreview(document); }
+
+void DraftToolSession::beginLegacyV1(
+    const Document& document, BodyId bodyId, FeatureId sourceFeatureId,
+    ShapeFeature::ShapePtr baseShape, std::vector<FaceReference> faces,
+    std::optional<PlaneReference> plane,
+    std::optional<AxisReference> direction, double angle, bool reversed,
+    std::optional<FeatureId> editingFeatureId,
+    std::optional<EdgeReference> rotationEdge) {
+  bodyId_ = bodyId;
+  sourceFeatureId_ = sourceFeatureId;
+  baseShape_ = std::move(baseShape);
+  faces_ = std::move(faces);
+  sourceSnapshot_.reset();
+  topologyIndex_.reset();
+  topologyIndexAuthoritative_ = false;
+  topologyIndexError_.clear();
+  neutralPlane_ = std::move(plane);
+  pullDirection_ = std::move(direction);
+  rotationEdge_ = std::move(rotationEdge);
+  ensureLegacyTopologyIndex();
+  angleDeg_ = reversed ? -std::abs(angle) : angle;
+  editingFeatureId_ = editingFeatureId;
+  previewBuildAttemptCount_ = 0;
+  previewShape_.reset();
+  lastValidPreviewShape_.reset();
+  lifecycle_ = ToolLifecycle::Editing;
+  updatePreview(document);
+}
+void DraftToolSession::setFaces(const Document& document, std::vector<FaceReference> value) { faces_ = std::move(value); ensureLegacyTopologyIndex(); lastValidPreviewShape_.reset(); updatePreview(document); }
+void DraftToolSession::setNeutralPlane(const Document& document, PlaneReference value) { neutralPlane_ = std::move(value); ensureLegacyTopologyIndex(); lastValidPreviewShape_.reset(); updatePreview(document); }
+void DraftToolSession::clearNeutralPlane(const Document& document) { neutralPlane_.reset(); ensureLegacyTopologyIndex(); lastValidPreviewShape_.reset(); updatePreview(document); }
 void DraftToolSession::setPullDirection(const Document& document, AxisReference value) { pullDirection_ = value; lastValidPreviewShape_.reset(); updatePreview(document); }
 void DraftToolSession::clearPullDirection(const Document& document) { pullDirection_.reset(); lastValidPreviewShape_.reset(); updatePreview(document); }
 bool DraftToolSession::setPrincipalAxis(const Document& document, int axisIndex) {
@@ -63,6 +102,7 @@ bool DraftToolSession::setPrincipalAxis(const Document& document, int axisIndex)
   neutralPlane_ = plane;
   pullDirection_ = direction;
   rotationEdge_.reset();
+  ensureLegacyTopologyIndex();
   lastValidPreviewShape_.reset();
   updatePreview(document);
   return true;
@@ -85,10 +125,11 @@ bool DraftToolSession::setRotationEdge(const Document& document, EdgeReference v
     error_ = "Draft rotation edge requires exactly one selected face";
     return false;
   }
-  if (value.isV2()) {
-    errorCode_ = OperationFailureCode::TopologyReferenceInvalid;
-    error_ = "Draft does not support topology v2 edge references yet";
-    return false;
+  if (value.isV1() && !topologyIndex_) {
+    const auto previousRotationEdge = rotationEdge_;
+    rotationEdge_ = value;
+    ensureLegacyTopologyIndex();
+    rotationEdge_ = previousRotationEdge;
   }
   if (faces_.front().bodyId() != bodyId_ ||
       faces_.front().featureId() != sourceFeatureId_ ||
@@ -100,6 +141,12 @@ bool DraftToolSession::setRotationEdge(const Document& document, EdgeReference v
   if (!topologyIndex_) {
     errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
     error_ = "Draft topology could not be indexed";
+    if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
+    return false;
+  }
+  if (value.isV2() && !topologyIndexAuthoritative_) {
+    errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
+    error_ = "Draft v2 rotation edge requires its owning topology index";
     if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
     return false;
   }
@@ -126,6 +173,7 @@ void DraftToolSession::clearPrincipalAxis(const Document& document) {
   neutralPlane_.reset();
   pullDirection_.reset();
   rotationEdge_.reset();
+  ensureLegacyTopologyIndex();
   lastValidPreviewShape_.reset();
   updatePreview(document);
 }
@@ -159,6 +207,13 @@ const std::optional<PlaneReference>& DraftToolSession::neutralPlane() const noex
 const std::optional<AxisReference>& DraftToolSession::pullDirection() const noexcept { return pullDirection_; }
 const std::optional<EdgeReference>& DraftToolSession::rotationEdge() const noexcept { return rotationEdge_; }
 double DraftToolSession::angleDeg() const noexcept { return angleDeg_; }
+std::uint64_t DraftToolSession::previewBuildAttemptCount() const noexcept {
+  return previewBuildAttemptCount_;
+}
+const std::optional<FeatureTopologySnapshot>&
+DraftToolSession::sourceSnapshot() const noexcept {
+  return sourceSnapshot_;
+}
 ToolLifecycle DraftToolSession::lifecycle() const noexcept { return lifecycle_; }
 ToolSelectionStage DraftToolSession::selectionStage() const noexcept {
   if (lifecycle_ == ToolLifecycle::Inactive) return ToolSelectionStage::None;
@@ -222,13 +277,6 @@ bool DraftToolSession::updatePreview(const Document& document) {
   for (const auto& face : faces_) {
     if (face.bodyId() != bodyId_ || face.featureId() != sourceFeatureId_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyReferenceMismatch; error_ = "Draft faces no longer match the active Body"; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
   }
-  if (rotationEdge_ && rotationEdge_->isV2()) {
-    previewShape_.reset();
-    errorCode_ = OperationFailureCode::TopologyReferenceInvalid;
-    error_ = "Draft does not support topology v2 edge references yet";
-    lifecycle_ = ToolLifecycle::PreviewInvalid;
-    return false;
-  }
   if (rotationEdge_ &&
       (rotationEdge_->bodyId() != bodyId_ ||
        rotationEdge_->featureId() != sourceFeatureId_)) {
@@ -239,6 +287,15 @@ bool DraftToolSession::updatePreview(const Document& document) {
     return false;
   }
   if (!topologyIndex_) { previewShape_.reset(); errorCode_ = OperationFailureCode::TopologyIndexUnavailable; error_ = "Draft topology could not be indexed"; if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
+  if (containsV2Reference(faces_, neutralPlane_, rotationEdge_) &&
+      !topologyIndexAuthoritative_) {
+    previewShape_.reset();
+    errorCode_ = OperationFailureCode::TopologyIndexUnavailable;
+    error_ = "Draft v2 references require their owning topology index";
+    if (!topologyIndexError_.empty()) error_ += ": " + topologyIndexError_;
+    lifecycle_ = ToolLifecycle::PreviewInvalid;
+    return false;
+  }
   for (const auto& face : faces_) {
     const auto resolved = topologyIndex_->resolveFace(face);
     if (!resolved) { previewShape_.reset(); errorCode_ = operationFailureCode(resolved.failure); error_ = "Draft face could not be resolved: " + resolved.error; lifecycle_ = ToolLifecycle::PreviewInvalid; return false; }
@@ -268,6 +325,7 @@ bool DraftToolSession::updatePreview(const Document& document) {
       return false;
     }
   }
+  ++previewBuildAttemptCount_;
   auto candidate = buildDraftShape(*baseShape_, indices, plane, direction,
                                    std::abs(angleDeg_), angleDeg_ < 0.0,
                                    &error_);
@@ -316,6 +374,16 @@ std::optional<AngularToolManipulator> DraftToolSession::manipulator(
                                 {direction.X(), direction.Y(), direction.Z()},
                                 radius, angleDeg_, -89.99, 89.99};
 }
-void DraftToolSession::cancel() noexcept { previewShape_.reset(); lastValidPreviewShape_.reset(); topologyIndex_.reset(); topologyIndexError_.clear(); faces_.clear(); neutralPlane_.reset(); pullDirection_.reset(); rotationEdge_.reset(); error_.clear(); errorCode_ = OperationFailureCode::None; lifecycle_ = ToolLifecycle::Inactive; }
+void DraftToolSession::cancel() noexcept { previewShape_.reset(); lastValidPreviewShape_.reset(); sourceSnapshot_.reset(); topologyIndex_.reset(); baseShape_.reset(); bodyId_ = kInvalidBodyId; sourceFeatureId_ = kInvalidFeatureId; editingFeatureId_.reset(); topologyIndexAuthoritative_ = false; topologyIndexError_.clear(); faces_.clear(); neutralPlane_.reset(); pullDirection_.reset(); rotationEdge_.reset(); error_.clear(); errorCode_ = OperationFailureCode::None; lifecycle_ = ToolLifecycle::Inactive; }
+
+void DraftToolSession::ensureLegacyTopologyIndex() {
+  if (topologyIndex_ || !baseShape_ || baseShape_->IsNull() ||
+      containsV2Reference(faces_, neutralPlane_, rotationEdge_))
+    return;
+  topologyIndexError_.clear();
+  topologyIndex_ = TopologyIndex::build(baseShape_, kInvalidShapeRevision,
+                                        &topologyIndexError_);
+  topologyIndexAuthoritative_ = false;
+}
 
 }  // namespace solidar

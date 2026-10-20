@@ -136,8 +136,7 @@ int main() {
            solidar::TopologyProvenanceOperation::Seed,
            solidar::TopologySemanticRole::Custom, "fillet:v2-edge"}}));
   CHECK(!document.recompute());
-  CHECK(fillet->error() ==
-        "Fillet does not support topology v2 edge references yet");
+  CHECK(fillet->error().find("Fillet edge could not be resolved: ") == 0);
   fillet->setEdge(legacyFilletEdge);
   CHECK(document.recompute());
   CHECK(fillet->hasShape());
@@ -282,7 +281,7 @@ int main() {
   CHECK(verticalEdges[0].signature() && verticalEdges[1].signature());
 
   solidar::FilletToolSession multiEdgeSession;
-  multiEdgeSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,
+  multiEdgeSession.beginLegacyV1(multiEdgeBody->id(), multiEdgeBox.extrudeId,
                          multiEdgeSource, verticalEdges, 2.0);
   CHECK(multiEdgeSession.lifecycle() ==
         solidar::ToolLifecycle::PreviewValid);
@@ -346,7 +345,7 @@ int main() {
          1e-3);
 
   solidar::FilletToolSession editSession;
-  editSession.begin(multiEdgeBody->id(), multiEdgeBox.extrudeId,
+  editSession.beginLegacyV1(multiEdgeBody->id(), multiEdgeBox.extrudeId,
                     multiEdgeSource, multiFillet->edges(),
                     multiFillet->radiusMm(), multiFillet->id());
   CHECK(editSession.editingFeatureId() == multiFillet->id());
@@ -362,14 +361,14 @@ int main() {
   const double originalVolume = volumeOf(*originalShape);
   const std::size_t originalFeatureCount = previewBody->features().size();
   solidar::FilletToolSession session;
-  session.begin(previewBody->id(), previewBox.extrudeId, originalShape, {}, 2.0);
+  session.beginLegacyV1(previewBody->id(), previewBox.extrudeId, originalShape, {}, 2.0);
   CHECK(session.lifecycle() == solidar::ToolLifecycle::SelectingInput);
   CHECK(session.selectionStage() ==
          solidar::ToolSelectionStage::SelectingInput);
   CHECK(!session.previewShape() && session.error().empty());
   session.setEdges({{previewBody->id(), previewBox.extrudeId, 0}});
   CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
-  session.begin(previewBody->id(), previewBox.extrudeId, originalShape,
+  session.beginLegacyV1(previewBody->id(), previewBox.extrudeId, originalShape,
                 {{previewBody->id(), previewBox.extrudeId, 0}}, 2.0);
   CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
   session.setRadiusFromPanel(3.0);

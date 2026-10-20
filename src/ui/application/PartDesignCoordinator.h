@@ -85,6 +85,7 @@ struct PartDesignToolSnapshot {
   std::optional<PlaneReference> neutralPlane;
   std::optional<AxisReference> pullDirection;
   std::optional<EdgeReference> rotationEdge;
+  std::optional<FeatureTopologySnapshot> sourceTopologySnapshot;
   std::optional<int> principalAxisIndex;
   std::vector<ToolParameterDescriptor> parameters;
   std::optional<LinearToolManipulator> linearManipulator;
@@ -176,18 +177,16 @@ class PartDesignCoordinator final {
   [[nodiscard]] PartDesignToolSnapshot snapshot(
       PartDesignToolKind, const Document&) const;
 
-  PartDesignTransitionOutcome beginFillet(BodyId, FeatureId, ShapeFeature::ShapePtr,
-                   std::vector<EdgeReference>, double,
-                   std::optional<FeatureId> = std::nullopt,
-                   std::shared_ptr<const TopologyIndex> = {});
+  PartDesignTransitionOutcome beginFillet(
+      FeatureTopologySnapshot, std::vector<EdgeReference>, double,
+      std::optional<FeatureId> = std::nullopt);
   void setFilletEdges(std::vector<EdgeReference>);
   void setFilletRadiusFromPanel(double);
   void setFilletRadiusFromManipulator(double);
   bool refineFilletRadiusToBoundary(double);
-  PartDesignTransitionOutcome beginChamfer(BodyId, FeatureId, ShapeFeature::ShapePtr,
-                    std::vector<EdgeReference>, double,
-                    std::optional<FeatureId> = std::nullopt,
-                    std::shared_ptr<const TopologyIndex> = {});
+  PartDesignTransitionOutcome beginChamfer(
+      FeatureTopologySnapshot, std::vector<EdgeReference>, double,
+      std::optional<FeatureId> = std::nullopt);
   void setChamferEdges(std::vector<EdgeReference>);
   void setChamferDistanceFromPanel(double);
   void setChamferDistanceFromManipulator(double);
@@ -205,14 +204,13 @@ class PartDesignCoordinator final {
   bool refineShellThicknessToBoundary(double);
   void setShellOutside(bool);
 
-  PartDesignTransitionOutcome beginDraft(const Document&, BodyId, FeatureId, ShapeFeature::ShapePtr,
-                  std::vector<FaceReference> = {},
-                  std::optional<PlaneReference> = std::nullopt,
-                  std::optional<AxisReference> = std::nullopt,
-                  double = 5.0, bool = false,
-                  std::optional<FeatureId> = std::nullopt,
-                  std::optional<EdgeReference> = std::nullopt,
-                  std::shared_ptr<const TopologyIndex> = {});
+  PartDesignTransitionOutcome beginDraft(
+      const Document&, FeatureTopologySnapshot,
+      std::vector<FaceReference> = {},
+      std::optional<PlaneReference> = std::nullopt,
+      std::optional<AxisReference> = std::nullopt, double = 5.0, bool = false,
+      std::optional<FeatureId> = std::nullopt,
+      std::optional<EdgeReference> = std::nullopt);
   void setDraftFaces(const Document&, std::vector<FaceReference>);
   bool setDraftPrincipalAxis(const Document&, int);
   bool setDraftRotationEdge(const Document&, EdgeReference);

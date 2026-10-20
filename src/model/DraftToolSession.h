@@ -1,24 +1,32 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
 #include "model/DraftFeature.h"
+#include "model/FeatureTopologySnapshot.h"
 #include "model/ToolSession.h"
 
 namespace solidar {
 
 class DraftToolSession final : public ToolSession {
  public:
-  void begin(const Document& document, BodyId bodyId, FeatureId sourceFeatureId,
-             ShapeFeature::ShapePtr baseShape,
+  void begin(const Document& document, FeatureTopologySnapshot source,
              std::vector<FaceReference> faces = {},
              std::optional<PlaneReference> neutralPlane = std::nullopt,
              std::optional<AxisReference> pullDirection = std::nullopt,
              double angleDeg = 5.0, bool reversed = false,
              std::optional<FeatureId> editingFeatureId = std::nullopt,
-             std::optional<EdgeReference> rotationEdge = std::nullopt,
-             std::shared_ptr<const TopologyIndex> topologyIndex = {});
+             std::optional<EdgeReference> rotationEdge = std::nullopt);
+  void beginLegacyV1(
+      const Document& document, BodyId bodyId, FeatureId sourceFeatureId,
+      ShapeFeature::ShapePtr baseShape, std::vector<FaceReference> faces = {},
+      std::optional<PlaneReference> neutralPlane = std::nullopt,
+      std::optional<AxisReference> pullDirection = std::nullopt,
+      double angleDeg = 5.0, bool reversed = false,
+      std::optional<FeatureId> editingFeatureId = std::nullopt,
+      std::optional<EdgeReference> rotationEdge = std::nullopt);
   void setFaces(const Document& document, std::vector<FaceReference> value);
   void setNeutralPlane(const Document& document, PlaneReference value);
   void clearNeutralPlane(const Document& document);
@@ -41,6 +49,9 @@ class DraftToolSession final : public ToolSession {
   [[nodiscard]] const std::optional<AxisReference>& pullDirection() const noexcept;
   [[nodiscard]] const std::optional<EdgeReference>& rotationEdge() const noexcept;
   [[nodiscard]] double angleDeg() const noexcept;
+  [[nodiscard]] std::uint64_t previewBuildAttemptCount() const noexcept;
+  [[nodiscard]] const std::optional<FeatureTopologySnapshot>& sourceSnapshot()
+      const noexcept;
   [[nodiscard]] std::optional<AngularToolManipulator> manipulator(
       const Document& document) const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
@@ -55,11 +66,14 @@ class DraftToolSession final : public ToolSession {
   void cancel() noexcept override;
 
  private:
+  void ensureLegacyTopologyIndex();
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
+  std::optional<FeatureTopologySnapshot> sourceSnapshot_;
   ShapeFeature::ShapePtr baseShape_;
   std::shared_ptr<const TopologyIndex> topologyIndex_;
+  bool topologyIndexAuthoritative_{};
   std::string topologyIndexError_;
   std::vector<FaceReference> faces_;
   std::optional<PlaneReference> neutralPlane_;
@@ -71,6 +85,7 @@ class DraftToolSession final : public ToolSession {
   ShapeFeature::ShapePtr lastValidPreviewShape_;
   std::string error_;
   OperationFailureCode errorCode_{OperationFailureCode::None};
+  std::uint64_t previewBuildAttemptCount_{};
 };
 
 }  // namespace solidar

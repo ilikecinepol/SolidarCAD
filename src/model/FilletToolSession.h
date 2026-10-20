@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "model/ShapeFeature.h"
+#include "model/FeatureTopologySnapshot.h"
 #include "model/EdgeReference.h"
 #include "model/NumericParameterState.h"
 #include "model/ToolSession.h"
@@ -13,11 +14,13 @@ namespace solidar {
 
 class FilletToolSession final : public ToolSession {
  public:
-  void begin(BodyId bodyId, FeatureId sourceFeatureId,
-             ShapeFeature::ShapePtr baseShape,
+  void begin(FeatureTopologySnapshot source,
              std::vector<EdgeReference> edges, double radiusMm,
-             std::optional<FeatureId> editingFeatureId = std::nullopt,
-             std::shared_ptr<const TopologyIndex> topologyIndex = {});
+             std::optional<FeatureId> editingFeatureId = std::nullopt);
+  void beginLegacyV1(BodyId bodyId, FeatureId sourceFeatureId,
+                     ShapeFeature::ShapePtr baseShape,
+                     std::vector<EdgeReference> edges, double radiusMm,
+                     std::optional<FeatureId> editingFeatureId = std::nullopt);
   void setEdges(std::vector<EdgeReference> edges);
   void setRadiusFromPanel(double radiusMm);
   void setRadiusFromManipulator(double radiusMm);
@@ -31,6 +34,8 @@ class FilletToolSession final : public ToolSession {
   [[nodiscard]] std::optional<double> maximumValidRadiusMm() const noexcept;
   [[nodiscard]] bool limitReached() const noexcept;
   [[nodiscard]] std::uint64_t previewBuildAttemptCount() const noexcept;
+  [[nodiscard]] const std::optional<FeatureTopologySnapshot>& sourceSnapshot()
+      const noexcept;
   [[nodiscard]] std::optional<LinearToolManipulator> manipulator() const;
   [[nodiscard]] ToolLifecycle lifecycle() const noexcept override;
   [[nodiscard]] ToolSelectionStage selectionStage() const noexcept override;
@@ -47,8 +52,10 @@ class FilletToolSession final : public ToolSession {
   BodyId bodyId_{kInvalidBodyId};
   FeatureId sourceFeatureId_{kInvalidFeatureId};
   std::optional<FeatureId> editingFeatureId_;
+  std::optional<FeatureTopologySnapshot> sourceSnapshot_;
   ShapeFeature::ShapePtr baseShape_;
   std::shared_ptr<const TopologyIndex> topologyIndex_;
+  bool topologyIndexAuthoritative_{};
   std::string topologyIndexError_;
   std::vector<EdgeReference> edges_;
   NumericParameterState radius_;

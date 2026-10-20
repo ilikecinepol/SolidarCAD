@@ -2,8 +2,10 @@
 
 #include <TopoDS_Shape.hxx>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "model/Body.h"
@@ -11,6 +13,43 @@
 #include "model/TopologyReferenceResolver.h"
 
 namespace solidar {
+namespace {
+
+struct ResolvedEdgeBatch {
+  std::vector<std::size_t> indices;
+  TopologyResolutionFailure failure{TopologyResolutionFailure::None};
+  std::string error;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return failure == TopologyResolutionFailure::None;
+  }
+};
+
+ResolvedEdgeBatch resolveEdgeBatch(const TopologyIndex& topology,
+                                   const std::vector<EdgeReference>& edges) {
+  std::vector<EdgeResolution> resolutions;
+  resolutions.reserve(edges.size());
+  for (const auto& edge : edges)
+    resolutions.push_back(topology.resolveEdge(edge));
+
+  ResolvedEdgeBatch result;
+  for (const auto& resolved : resolutions) {
+    if (!resolved && result.failure == TopologyResolutionFailure::None) {
+      result.failure = resolved.failure;
+      result.error = resolved.error;
+    }
+  }
+  if (!result) return result;
+
+  result.indices.reserve(resolutions.size());
+  for (const auto& resolved : resolutions)
+    if (std::find(result.indices.begin(), result.indices.end(),
+                  resolved.index) == result.indices.end())
+      result.indices.push_back(resolved.index);
+  return result;
+}
+
+}  // namespace
 
 FilletFeature::FilletFeature(EdgeReference edge, double radiusMm,
                              std::string name)
@@ -76,11 +115,6 @@ bool FilletFeature::rebuildImpl(const RebuildContext& context) {
     markError("Fillet edge belongs to a different Body");
     return false;
   }
-  if (std::any_of(edges_.begin(), edges_.end(),
-                  [](const EdgeReference& edge) { return edge.isV2(); })) {
-    markError("Fillet does not support topology v2 edge references yet");
-    return false;
-  }
   const BodyId sourceBody = edges_.front().bodyId();
   const FeatureId sourceFeature = edges_.front().featureId();
   for (const auto& edge : edges_)
@@ -105,33 +139,33 @@ bool FilletFeature::rebuildImpl(const RebuildContext& context) {
     markError("Fillet source Feature could not be resolved");
     return false;
   }
+  const auto* immediatePredecessor = features[ownIndex - 1].get();
+  if (!context.previousFeature ||
+      context.previousFeature != immediatePredecessor ||
+      immediatePredecessor->shape().get() != context.previousShape) {
+    markError("Fillet rebuild context does not match its immediate predecessor");
+    return false;
+  }
 
   std::string topologyError;
-  const auto topology = context.previousFeature
-                            ? context.previousFeature->topologyIndex(&topologyError)
-                            : TopologyIndex::build(*context.previousShape,
-                                                   kInvalidShapeRevision,
-                                                   &topologyError);
+  const auto topology = immediatePredecessor->topologyIndex(&topologyError);
   if (!topology) {
     markError("Fillet topology could not be indexed: " + topologyError);
     return false;
   }
-  std::vector<TopologyReference> references;
-  references.reserve(edges_.size());
-  for (const auto& edge : edges_) references.push_back(*edge.v1());
-  const auto resolutions = topology->resolveEdges(references);
-  std::vector<std::size_t> indices;
-  indices.reserve(edges_.size());
-  for (const auto& resolved : resolutions) {
-    if (!resolved) {
-      markError("Fillet edge could not be resolved: " + resolved.error);
-      return false;
-    }
-    indices.push_back(resolved.index);
+  if (!topology->shape() || topology->shape().get() != context.previousShape ||
+      topology->revision() != immediatePredecessor->shapeRevision()) {
+    markError("Fillet topology index does not match its immediate predecessor");
+    return false;
+  }
+  const auto resolved = resolveEdgeBatch(*topology, edges_);
+  if (!resolved) {
+    markError("Fillet edge could not be resolved: " + resolved.error);
+    return false;
   }
   std::string error;
-  auto result = buildFilletShape(*context.previousShape, indices, radiusMm_,
-                                 &error);
+  auto result = buildFilletShape(*context.previousShape, resolved.indices,
+                                 radiusMm_, &error);
   if (!result) {
     markError(std::move(error));
     return false;

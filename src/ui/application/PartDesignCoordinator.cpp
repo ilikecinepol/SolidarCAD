@@ -391,11 +391,13 @@ PartDesignToolSnapshot PartDesignCoordinator::snapshot(
   switch (kind) {
     case PartDesignToolKind::Fillet:
       result.bodyId = fillet_.bodyId(); result.sourceFeatureId = fillet_.sourceFeatureId();
+      result.sourceTopologySnapshot = fillet_.sourceSnapshot();
       result.edges = fillet_.edges(); result.radiusMm = fillet_.radiusMm();
       result.maximumValidValueMm = fillet_.maximumValidRadiusMm();
       result.limitReached = fillet_.limitReached(); result.linearManipulator = fillet_.manipulator(); break;
     case PartDesignToolKind::Chamfer:
       result.bodyId = chamfer_.bodyId(); result.sourceFeatureId = chamfer_.sourceFeatureId();
+      result.sourceTopologySnapshot = chamfer_.sourceSnapshot();
       result.edges = chamfer_.edges(); result.distanceMm = chamfer_.distanceMm();
       result.maximumValidValueMm = chamfer_.maximumValidDistanceMm();
       result.limitReached = chamfer_.limitReached(); result.linearManipulator = chamfer_.manipulator(); break;
@@ -408,6 +410,7 @@ PartDesignToolSnapshot PartDesignCoordinator::snapshot(
       result.limitReached = shell_.limitReached(); result.linearManipulator = shell_.manipulator(); break;
     case PartDesignToolKind::Draft:
       result.bodyId = draft_.bodyId(); result.sourceFeatureId = draft_.sourceFeatureId();
+      result.sourceTopologySnapshot = draft_.sourceSnapshot();
       result.faces = draft_.faces(); result.neutralPlane = draft_.neutralPlane();
       result.pullDirection = draft_.pullDirection(); result.rotationEdge = draft_.rotationEdge();
       result.angleDeg = draft_.angleDeg(); result.principalAxisIndex = draft_.principalAxisIndex(); break;
@@ -507,19 +510,15 @@ PartDesignTransitionOutcome PartDesignCoordinator::beginAtomic(
           revisionToken()};
 }
 
-PartDesignTransitionOutcome PartDesignCoordinator::beginFillet(BodyId a, FeatureId b, ShapeFeature::ShapePtr c, std::vector<EdgeReference> d, double e, std::optional<FeatureId> f, std::shared_ptr<const TopologyIndex> g) {
-  if (a == kInvalidBodyId || b == kInvalidFeatureId || !c)
-    return rejectBegin(PartDesignToolKind::Fillet);
-  return beginAtomic(PartDesignToolKind::Fillet, [&] { fillet_.begin(a,b,std::move(c),std::move(d),e,f,std::move(g)); });
+PartDesignTransitionOutcome PartDesignCoordinator::beginFillet(FeatureTopologySnapshot a, std::vector<EdgeReference> b, double c, std::optional<FeatureId> d) {
+  return beginAtomic(PartDesignToolKind::Fillet, [&] { fillet_.begin(std::move(a),std::move(b),c,d); });
 }
 void PartDesignCoordinator::setFilletEdges(std::vector<EdgeReference> v) { REQUIRE_ACTIVE(Fillet); fillet_.setEdges(std::move(v)); }
 void PartDesignCoordinator::setFilletRadiusFromPanel(double v) { REQUIRE_ACTIVE(Fillet); fillet_.setRadiusFromPanel(v); }
 void PartDesignCoordinator::setFilletRadiusFromManipulator(double v) { REQUIRE_ACTIVE(Fillet); fillet_.setRadiusFromManipulator(v); }
 bool PartDesignCoordinator::refineFilletRadiusToBoundary(double v) { REQUIRE_ACTIVE_RESULT(Fillet, false); return fillet_.refineRadiusToBoundary(v); }
-PartDesignTransitionOutcome PartDesignCoordinator::beginChamfer(BodyId a, FeatureId b, ShapeFeature::ShapePtr c, std::vector<EdgeReference> d, double e, std::optional<FeatureId> f, std::shared_ptr<const TopologyIndex> g) {
-  if (a == kInvalidBodyId || b == kInvalidFeatureId || !c)
-    return rejectBegin(PartDesignToolKind::Chamfer);
-  return beginAtomic(PartDesignToolKind::Chamfer, [&] { chamfer_.begin(a,b,std::move(c),std::move(d),e,f,std::move(g)); });
+PartDesignTransitionOutcome PartDesignCoordinator::beginChamfer(FeatureTopologySnapshot a, std::vector<EdgeReference> b, double c, std::optional<FeatureId> d) {
+  return beginAtomic(PartDesignToolKind::Chamfer, [&] { chamfer_.begin(std::move(a),std::move(b),c,d); });
 }
 void PartDesignCoordinator::setChamferEdges(std::vector<EdgeReference> v) { REQUIRE_ACTIVE(Chamfer); chamfer_.setEdges(std::move(v)); }
 void PartDesignCoordinator::setChamferDistanceFromPanel(double v) { REQUIRE_ACTIVE(Chamfer); chamfer_.setDistanceFromPanel(v); }
@@ -537,10 +536,8 @@ void PartDesignCoordinator::setShellThicknessFromPanel(double v) { REQUIRE_ACTIV
 void PartDesignCoordinator::setShellThicknessFromManipulator(double v) { REQUIRE_ACTIVE(Shell); shell_.setThicknessFromManipulator(v); }
 bool PartDesignCoordinator::refineShellThicknessToBoundary(double v) { REQUIRE_ACTIVE_RESULT(Shell, false); return shell_.refineThicknessToBoundary(v); }
 void PartDesignCoordinator::setShellOutside(bool v) { REQUIRE_ACTIVE(Shell); shell_.setOutside(v); }
-PartDesignTransitionOutcome PartDesignCoordinator::beginDraft(const Document& d, BodyId a, FeatureId b, ShapeFeature::ShapePtr c, std::vector<FaceReference> e, std::optional<PlaneReference> f, std::optional<AxisReference> g, double h, bool i, std::optional<FeatureId> j, std::optional<EdgeReference> k, std::shared_ptr<const TopologyIndex> l) {
-  if (a == kInvalidBodyId || b == kInvalidFeatureId || !c)
-    return rejectBegin(PartDesignToolKind::Draft);
-  return beginAtomic(PartDesignToolKind::Draft, [&] { draft_.begin(d,a,b,std::move(c),std::move(e),std::move(f),std::move(g),h,i,j,std::move(k),std::move(l)); });
+PartDesignTransitionOutcome PartDesignCoordinator::beginDraft(const Document& d, FeatureTopologySnapshot a, std::vector<FaceReference> b, std::optional<PlaneReference> c, std::optional<AxisReference> e, double f, bool g, std::optional<FeatureId> h, std::optional<EdgeReference> i) {
+  return beginAtomic(PartDesignToolKind::Draft, [&] { draft_.begin(d,std::move(a),std::move(b),std::move(c),std::move(e),f,g,h,std::move(i)); });
 }
 void PartDesignCoordinator::setDraftFaces(const Document& d, std::vector<FaceReference> v) { REQUIRE_ACTIVE(Draft); draft_.setFaces(d,std::move(v)); }
 bool PartDesignCoordinator::setDraftPrincipalAxis(const Document& d, int v) { REQUIRE_ACTIVE_RESULT(Draft, false); return draft_.setPrincipalAxis(d,v); }

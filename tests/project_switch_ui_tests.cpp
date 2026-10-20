@@ -311,9 +311,10 @@ class MainWindowUndoTestAccess {
     } else if (const auto* value = dynamic_cast<const FilletFeature*>(target)) {
       const auto [body, sourceFeature] = source(value->edge().featureId());
       if (!body || !sourceFeature) return false;
-      window.partDesignCoordinator_.beginFillet(body->id(), sourceFeature->id(),
-          sourceFeature->shape(), value->edges(), value->radiusMm(),
-          std::nullopt, sourceFeature->topologyIndex());
+      const auto sourceSnapshot = body->topologySnapshot(sourceFeature->id());
+      if (!sourceSnapshot) return false;
+      window.partDesignCoordinator_.beginFillet(
+          *sourceSnapshot, value->edges(), value->radiusMm());
       window.toolParametersPanel_->setParameterValue(value->radiusMm());
       window.updateFilletToolPreview();
       if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).lifecycle !=
@@ -324,9 +325,10 @@ class MainWindowUndoTestAccess {
     } else if (const auto* value = dynamic_cast<const ChamferFeature*>(target)) {
       const auto [body, sourceFeature] = source(value->edge().featureId());
       if (!body || !sourceFeature) return false;
-      window.partDesignCoordinator_.beginChamfer(body->id(), sourceFeature->id(),
-          sourceFeature->shape(), value->edges(), value->distanceMm(),
-          std::nullopt, sourceFeature->topologyIndex());
+      const auto sourceSnapshot = body->topologySnapshot(sourceFeature->id());
+      if (!sourceSnapshot) return false;
+      window.partDesignCoordinator_.beginChamfer(
+          *sourceSnapshot, value->edges(), value->distanceMm());
       window.toolParametersPanel_->setParameterValue(value->distanceMm());
       window.updateChamferToolPreview();
       if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).lifecycle !=
@@ -350,11 +352,12 @@ class MainWindowUndoTestAccess {
     } else if (const auto* value = dynamic_cast<const DraftFeature*>(target)) {
       const auto [body, sourceFeature] = source(value->sourceFeatureId());
       if (!body || !sourceFeature) return false;
-      window.partDesignCoordinator_.beginDraft(window.document_, body->id(),
-          sourceFeature->id(), sourceFeature->shape(), value->draftedFaces(),
+      const auto sourceSnapshot = body->topologySnapshot(sourceFeature->id());
+      if (!sourceSnapshot) return false;
+      window.partDesignCoordinator_.beginDraft(window.document_, *sourceSnapshot,
+          value->draftedFaces(),
           value->neutralPlane(), value->pullDirection(), value->angleDeg(),
-          value->reversed(), std::nullopt, value->rotationEdge(),
-          sourceFeature->topologyIndex());
+          value->reversed(), std::nullopt, value->rotationEdge());
       window.updateDraftToolPreview();
       if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document_).lifecycle !=
               ToolLifecycle::PreviewValid ||
@@ -779,19 +782,17 @@ class MainWindowUndoTestAccess {
     PartDesignTransitionOutcome outcome;
     switch (kind) {
       case PartDesignToolKind::Fillet:
-        outcome = window.partDesignCoordinator_.beginFillet(
-            kInvalidBodyId, 2, {}, {}, 1.0);
-        break;
       case PartDesignToolKind::Chamfer:
-        outcome = window.partDesignCoordinator_.beginChamfer(
-            1, kInvalidFeatureId, {}, {}, 1.0);
+      case PartDesignToolKind::Draft:
+        outcome.effect = PartDesignTransitionEffect::Rejected;
+        outcome.previousTool = window.partDesignCoordinator_.activeTool();
+        outcome.activeTool = window.partDesignCoordinator_.activeTool();
+        outcome.revision = window.partDesignCoordinator_.revisionToken();
+        outcome.failure = {OperationFailureCode::InvalidInput,
+                           "Rejected test begin"};
         break;
       case PartDesignToolKind::Shell:
         outcome = window.partDesignCoordinator_.beginShell(1, 2, {});
-        break;
-      case PartDesignToolKind::Draft:
-        outcome = window.partDesignCoordinator_.beginDraft(
-            window.document_, 1, 2, {});
         break;
       default:
         return false;
@@ -3966,7 +3967,7 @@ int main(int argc, char** argv) {
     // Zero radius keeps the preview equal to the base shape, so the session is
     // deterministically active and holding B-Rep without depending on whether
     // a particular edge is fillet-able.
-    fillet.begin(body.id(), featureId, shape,
+    fillet.beginLegacyV1(body.id(), featureId, shape,
                  {solidar::EdgeReference{body.id(), featureId, 0}}, 0.0);
     CHECK(fillet.lifecycle() != solidar::ToolLifecycle::Inactive);
     CHECK(fillet.previewShape() != nullptr);

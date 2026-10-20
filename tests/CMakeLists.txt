@@ -242,6 +242,8 @@ solidar_add_test(shell_complex_topology_tests
   LIBRARIES solidar_model LABELS regression)
 solidar_add_test(draft_feature_tests
   LIBRARIES solidar_project Qt6::Core LABELS regression)
+solidar_add_test(edge_reference_v2_consumer_tests
+  LIBRARIES solidar_editor LABELS unit regression topology)
 solidar_add_test(parametric_history_tests
   LIBRARIES solidar_model LABELS regression)
 

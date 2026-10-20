@@ -185,16 +185,16 @@ DraftReferenceResolution resolveDraftEdgeAxisIndexed(
                           "Draft face could not be resolved: " + face.error};
           return false;
         }
-        if (rotationEdge.isV2()) {
-          typedFailure = {
-              OperationFailureCode::TopologyReferenceInvalid,
-              "Draft does not support topology v2 edge references yet"};
-          return false;
+        EdgeResolution edge;
+        if (topology) {
+          edge = topology->resolveEdge(rotationEdge);
+        } else if (const auto* legacy = rotationEdge.v1()) {
+          edge = resolveEdgeReference(baseShape, *legacy);
+        } else {
+          edge.failure = TopologyResolutionFailure::InvalidReference;
+          edge.error =
+              "Draft v2 rotation edge requires its owning topology index";
         }
-        const auto edge = topology
-                              ? topology->resolveEdge(*rotationEdge.v1())
-                              : resolveEdgeReference(baseShape,
-                                                     *rotationEdge.v1());
         if (!edge) {
           typedFailure = {
               operationFailureCode(edge.failure),
@@ -352,6 +352,13 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   const auto& features = context.body->features(); std::size_t ownIndex = features.size();
   for (std::size_t i = 0; i < features.size(); ++i) if (features[i].get() == this) { ownIndex = i; break; }
   if (ownIndex == 0 || ownIndex == features.size() || features[ownIndex - 1]->id() != sourceFeatureId_) { markError("Draft source Feature could not be resolved"); return false; }
+  const auto* immediatePredecessor = features[ownIndex - 1].get();
+  if (!context.previousFeature ||
+      context.previousFeature != immediatePredecessor ||
+      immediatePredecessor->shape().get() != context.previousShape) {
+    markError("Draft rebuild context does not match its immediate predecessor");
+    return false;
+  }
   if (neutralPlane_.type == NeutralPlaneType::BodyFace &&
       (!neutralPlane_.face ||
        neutralPlane_.face->bodyId() != context.body->id() ||
@@ -360,13 +367,14 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
     return false;
   }
   std::string topologyError;
-  const auto topology = context.previousFeature
-                            ? context.previousFeature->topologyIndex(&topologyError)
-                            : TopologyIndex::build(*context.previousShape,
-                                                   kInvalidShapeRevision,
-                                                   &topologyError);
+  const auto topology = immediatePredecessor->topologyIndex(&topologyError);
   if (!topology) {
     markError("Draft topology could not be indexed: " + topologyError);
+    return false;
+  }
+  if (!topology->shape() || topology->shape().get() != context.previousShape ||
+      topology->revision() != immediatePredecessor->shapeRevision()) {
+    markError("Draft topology index does not match its immediate predecessor");
     return false;
   }
   std::vector<std::size_t> indices;
@@ -380,10 +388,6 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   if (rotationEdge_) {
     if (draftedFaces_.size() != 1) {
       markError("Draft rotation edge requires exactly one selected face");
-      return false;
-    }
-    if (rotationEdge_->isV2()) {
-      markError("Draft does not support topology v2 edge references yet");
       return false;
     }
     if (rotationEdge_->bodyId() != context.body->id() ||

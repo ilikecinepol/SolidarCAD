@@ -127,10 +127,11 @@ int main(int argc, char** argv) {
   draftPtr->setAngleDeg(5.0);
   CHECK(document.recompute() && draftPtr->id() == draftId);
 
+  const auto retainedSnapshot = retainedBody->topologySnapshot(sourceId);
+  CHECK(retainedSnapshot);
   solidar::DraftToolSession session;
-  session.begin(document, bodyId, sourceId, retainedSource->shape(), {face},
-                plane, direction, 5.0, false, draftId,
-                std::nullopt, retainedSource->topologyIndex());
+  session.begin(document, *retainedSnapshot, {face}, plane, direction, 5.0,
+                false, draftId);
   CHECK(session.previewShape() && session.manipulator(document));
 
   // Draft keeps topology resolution categories intact end-to-end. Missing and
@@ -144,10 +145,8 @@ int main(int argc, char** argv) {
     solidar::PlaneReference missingPlane{
         solidar::NeutralPlaneType::BodyFace, missingFace};
     solidar::DraftToolSession missingSession;
-    missingSession.begin(document, bodyId, sourceId,
-                         retainedSource->shape(), {face}, missingPlane,
-                         direction, 5.0, false, std::nullopt, std::nullopt,
-                         retainedSource->topologyIndex());
+    missingSession.begin(document, *retainedSnapshot, {face}, missingPlane,
+                         direction);
     CHECK(missingSession.errorCode() ==
           solidar::OperationFailureCode::TopologyReferenceMissing);
 
@@ -157,10 +156,8 @@ int main(int argc, char** argv) {
     solidar::PlaneReference invalidPlane{
         solidar::NeutralPlaneType::BodyFace, invalidFace};
     solidar::DraftToolSession invalidSession;
-    invalidSession.begin(document, bodyId, sourceId,
-                         retainedSource->shape(), {face}, invalidPlane,
-                         direction, 5.0, false, std::nullopt, std::nullopt,
-                         retainedSource->topologyIndex());
+    invalidSession.begin(document, *retainedSnapshot, {face}, invalidPlane,
+                         direction);
     CHECK(invalidSession.errorCode() ==
           solidar::OperationFailureCode::TopologyReferenceInvalid);
 
@@ -183,9 +180,9 @@ int main(int argc, char** argv) {
     solidar::PlaneReference ambiguousPlane{
         solidar::NeutralPlaneType::BodyFace, ambiguousFace};
     solidar::DraftToolSession ambiguousSession;
-    ambiguousSession.begin(document, bodyId, sourceId, compound, {drafted},
+    ambiguousSession.beginLegacyV1(document, bodyId, sourceId, compound, {drafted},
                            ambiguousPlane, direction, 5.0, false,
-                           std::nullopt, std::nullopt, compoundIndex);
+                           std::nullopt, std::nullopt);
     CHECK(ambiguousSession.errorCode() ==
           solidar::OperationFailureCode::TopologyReferenceAmbiguous);
 
@@ -209,9 +206,9 @@ int main(int argc, char** argv) {
     solidar::PlaneReference curvedPlane{
         solidar::NeutralPlaneType::BodyFace, *curved};
     solidar::DraftToolSession curvedSession;
-    curvedSession.begin(document, bodyId, sourceId, cylinder, {*curved},
+    curvedSession.beginLegacyV1(document, bodyId, sourceId, cylinder, {*curved},
                         curvedPlane, direction, 5.0, false, std::nullopt,
-                        std::nullopt, cylinderIndex);
+                        std::nullopt);
     CHECK(curvedSession.errorCode() ==
           solidar::OperationFailureCode::UnsupportedGeometry);
   }
@@ -240,10 +237,9 @@ int main(int argc, char** argv) {
   session.setAngleFromManipulator(document, 5.0);
 
   solidar::DraftToolSession legacyReversedSession;
-  legacyReversedSession.begin(document, bodyId, sourceId,
-                              retainedSource->shape(), {face}, plane, direction,
-                              5.0, true, solidar::kInvalidFeatureId,
-                              std::nullopt, retainedSource->topologyIndex());
+  legacyReversedSession.begin(document, *retainedSnapshot, {face}, plane,
+                              direction, 5.0, true,
+                              solidar::kInvalidFeatureId);
   CHECK(legacyReversedSession.angleDeg() == -5.0);
   CHECK(legacyReversedSession.previewShape());
 
@@ -328,9 +324,9 @@ int main(int argc, char** argv) {
            solidar::TopologySemanticRole::Custom, "draft:v2-edge"}});
   CHECK(!session.setRotationEdge(document, v2RotationEdge));
   CHECK(session.errorCode() ==
-        solidar::OperationFailureCode::TopologyReferenceInvalid);
-  CHECK(session.error() ==
-        "Draft does not support topology v2 edge references yet");
+        solidar::OperationFailureCode::TopologyReferenceMissing);
+  CHECK(session.error().find(
+            "Draft rotation edge could not be resolved: ") == 0);
   CHECK(session.setRotationEdge(document, *adjacentEdge));
 
   draftPtr->setReversed(false);
@@ -339,8 +335,8 @@ int main(int argc, char** argv) {
   CHECK(draftPtr->shape() && !draftPtr->shape()->IsNull());
   draftPtr->setRotationEdge(v2RotationEdge);
   CHECK(!document.recompute());
-  CHECK(draftPtr->error() ==
-        "Draft does not support topology v2 edge references yet");
+  CHECK(draftPtr->error().find(
+            "Draft rotation edge could not be resolved: ") == 0);
   draftPtr->setRotationEdge(adjacentEdge);
   CHECK(document.recompute());
   auto* sourceExtrude = dynamic_cast<solidar::ExtrudeFeature*>(retainedSource);
@@ -425,10 +421,10 @@ int main(int argc, char** argv) {
           std::string::npos);
 
     solidar::DraftToolSession ownerSession;
-    ownerSession.begin(ownerDocument, firstBodyId, firstSource->id(),
+    ownerSession.beginLegacyV1(ownerDocument, firstBodyId, firstSource->id(),
                        firstSource->lastValidShape(), {drafted}, foreignPlane,
                        globalDirection, 5.0, false, std::nullopt,
-                       std::nullopt, firstSource->lastValidTopologyIndex());
+                       std::nullopt);
     CHECK(ownerSession.lifecycle() ==
           solidar::ToolLifecycle::PreviewInvalid);
     CHECK(ownerSession.errorCode() ==
@@ -465,11 +461,10 @@ int main(int argc, char** argv) {
           "Draft neutral plane type is unsupported");
 
     solidar::DraftToolSession unknownPlaneSession;
-    unknownPlaneSession.begin(
+    unknownPlaneSession.beginLegacyV1(
         ownerDocument, firstBodyId, firstSource->id(),
         firstSource->lastValidShape(), {drafted}, unknownPlane,
-        globalDirection, 5.0, false, std::nullopt, std::nullopt,
-        firstSource->lastValidTopologyIndex());
+        globalDirection, 5.0, false, std::nullopt, std::nullopt);
     CHECK(unknownPlaneSession.lifecycle() ==
           solidar::ToolLifecycle::PreviewInvalid);
     CHECK(unknownPlaneSession.error() ==
@@ -573,12 +568,14 @@ int main(int argc, char** argv) {
 
     auto missing = *v2Face.reference.v2();
     missing.provenance.localName += ":missing";
+    const auto sourceSnapshot = v2Body.topologySnapshot(v2SourceId);
+    CHECK(sourceSnapshot);
     solidar::DraftToolSession batch;
-    batch.begin(v2Document, v2BodyId, v2SourceId, v2Source.shape(),
+    batch.begin(v2Document, *sourceSnapshot,
                 {v2Face.reference,
                  solidar::FaceReference::fromV2(std::move(missing))},
                 solidar::PlaneReference{solidar::NeutralPlaneType::GlobalXY},
-                globalZ, 5.0, false, std::nullopt, std::nullopt, topology);
+                globalZ);
     CHECK(batch.lifecycle() == solidar::ToolLifecycle::PreviewInvalid);
     CHECK(!batch.previewShape());
 

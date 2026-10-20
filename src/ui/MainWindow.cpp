@@ -4685,11 +4685,11 @@ void MainWindow::createFillet() {
                            QString::fromUtf8("Рёбра должны принадлежать одному телу"));
       return;
     }
+  const auto sourceSnapshot =
+      body->topologySnapshot(body->activeFeature()->id());
+  if (!sourceSnapshot) return;
   if (!applyPartDesignBeginResult(
-          partDesignCoordinator_.beginFillet(
-              body->id(), body->activeFeature()->id(), body->resultShape(),
-              edges, 0.0, std::nullopt,
-              body->activeFeature()->topologyIndex()),
+          partDesignCoordinator_.beginFillet(*sourceSnapshot, edges, 0.0),
           PartDesignToolKind::Fillet))
     return;
   viewport_->setEdgeMultiSelectionMode(true);
@@ -4810,14 +4810,14 @@ void MainWindow::editPatternFeature(FeatureId featureId,
         auto* draft = dynamic_cast<DraftFeature*>(feature);
         if (!draft) return;
         if (index == 0) return;
-        const auto source = body.features()[index - 1]->shape();
+        const auto sourceSnapshot =
+            body.topologySnapshot(body.features()[index - 1]->id());
+        if (!sourceSnapshot) return;
         if (!applyPartDesignBeginResult(
                 partDesignCoordinator_.beginDraft(
-                    document_, body.id(), body.features()[index - 1]->id(),
-                    source, draft->draftedFaces(), draft->neutralPlane(),
+                    document_, *sourceSnapshot, draft->draftedFaces(), draft->neutralPlane(),
                     draft->pullDirection(), draft->angleDeg(),
-                    draft->reversed(), draft->id(), draft->rotationEdge(),
-                    body.features()[index - 1]->topologyIndex()),
+                    draft->reversed(), draft->id(), draft->rotationEdge()),
                 PartDesignToolKind::Draft))
           return;
         viewport_->setFaceMultiSelectionMode(false);
@@ -5627,11 +5627,11 @@ void MainWindow::createChamfer() {
                            QString::fromUtf8("Рёбра должны принадлежать одному телу"));
       return;
     }
+  const auto sourceSnapshot =
+      body->topologySnapshot(body->activeFeature()->id());
+  if (!sourceSnapshot) return;
   if (!applyPartDesignBeginResult(
-          partDesignCoordinator_.beginChamfer(
-              body->id(), body->activeFeature()->id(), body->resultShape(),
-              edges, 0.0, std::nullopt,
-              body->activeFeature()->topologyIndex()),
+          partDesignCoordinator_.beginChamfer(*sourceSnapshot, edges, 0.0),
           PartDesignToolKind::Chamfer))
     return;
   viewport_->setEdgeMultiSelectionMode(true);
@@ -5981,12 +5981,13 @@ void MainWindow::createDraft() {
   if (!body || !body->activeFeature() || !body->resultShape()) return;
   if (!faces.empty() && faces.front().featureId() != body->activeFeature()->id())
     faces.clear();
+  const auto sourceSnapshot =
+      body->topologySnapshot(body->activeFeature()->id());
+  if (!sourceSnapshot) return;
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginDraft(
-              document_, body->id(), body->activeFeature()->id(),
-              body->resultShape(), faces, std::nullopt, std::nullopt, 5.0,
-              false, std::nullopt, std::nullopt,
-              body->activeFeature()->topologyIndex()),
+              document_, *sourceSnapshot, faces, std::nullopt, std::nullopt,
+              5.0, false),
           PartDesignToolKind::Draft))
     return;
   viewport_->setFaceMultiSelectionMode(false);
@@ -6055,18 +6056,20 @@ void MainWindow::cancelDraftTool() {
 
 void MainWindow::acceptDraftTool() {
   flushPreviewUpdate();
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).lifecycle != ToolLifecycle::PreviewValid ||
-      (!partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).rotationEdge &&
-       (!partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).neutralPlane ||
-        !partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).pullDirection)))
+  const auto state =
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_);
+  if (state.lifecycle != ToolLifecycle::PreviewValid ||
+      (!state.rotationEdge && (!state.neutralPlane || !state.pullDirection)))
+    return;
+  Body* body = document_.findBody(state.bodyId);
+  if (!body || (state.sourceTopologySnapshot &&
+                !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
   auto commit = partDesignCoordinator_.startCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previous = document_;
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).bodyId);
-  if (!body) return;
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
       auto* draft = dynamic_cast<DraftFeature*>(body->features()[index].get());
@@ -6436,14 +6439,18 @@ void MainWindow::cancelChamferTool() {
 
 void MainWindow::acceptChamferTool() {
   flushPreviewUpdate();
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).lifecycle != ToolLifecycle::PreviewValid) return;
+  const auto state =
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer);
+  if (state.lifecycle != ToolLifecycle::PreviewValid) return;
+  Body* body = document_.findBody(state.bodyId);
+  if (!body || (state.sourceTopologySnapshot &&
+                !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
+    return;
   auto commit = partDesignCoordinator_.startCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previousDocument = document_;
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).bodyId);
-  if (!body) return;
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
       auto* chamfer = dynamic_cast<ChamferFeature*>(body->features()[index].get());
@@ -6536,14 +6543,17 @@ void MainWindow::cancelFilletTool() {
 
 void MainWindow::acceptFilletTool() {
   flushPreviewUpdate();
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).lifecycle != ToolLifecycle::PreviewValid) return;
+  const auto state = partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet);
+  if (state.lifecycle != ToolLifecycle::PreviewValid) return;
+  Body* body = document_.findBody(state.bodyId);
+  if (!body || (state.sourceTopologySnapshot &&
+                !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
+    return;
   auto commit = partDesignCoordinator_.startCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previousDocument = document_;
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).bodyId);
-  if (!body) return;
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
       auto* fillet = dynamic_cast<FilletFeature*>(body->features()[index].get());
@@ -7244,20 +7254,19 @@ void MainWindow::editFilletStep(BodyId bodyId, FeatureId featureId) {
   if (!fillet) return;
   const auto& features = body->features();
   if (features.size() < 2) return;
-  ShapeFeature::ShapePtr upstream;
   ShapeFeature* upstreamFeature = nullptr;
   for (std::size_t index = 1; index < features.size(); ++index)
     if (features[index].get() == fillet) {
-      upstream = features[index - 1]->shape();
       upstreamFeature = features[index - 1].get();
       break;
     }
-  if (!upstream || !upstreamFeature) return;
+  if (!upstreamFeature) return;
+  const auto sourceSnapshot = body->topologySnapshot(upstreamFeature->id());
+  if (!sourceSnapshot) return;
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginFillet(
-              body->id(), fillet->edge().featureId(), upstream, fillet->edges(),
-              fillet->radiusMm(), fillet->id(),
-              upstreamFeature->topologyIndex()),
+              *sourceSnapshot, fillet->edges(), fillet->radiusMm(),
+              fillet->id()),
           PartDesignToolKind::Fillet))
     return;
   viewport_->setEdgeMultiSelectionMode(true);
@@ -7284,20 +7293,19 @@ void MainWindow::editChamferStep(BodyId bodyId, FeatureId featureId) {
   if (!chamfer) return;
   const auto& features = body->features();
   if (features.size() < 2) return;
-  ShapeFeature::ShapePtr upstream;
   ShapeFeature* upstreamFeature = nullptr;
   for (std::size_t index = 1; index < features.size(); ++index)
     if (features[index].get() == chamfer) {
-      upstream = features[index - 1]->shape();
       upstreamFeature = features[index - 1].get();
       break;
     }
-  if (!upstream || !upstreamFeature) return;
+  if (!upstreamFeature) return;
+  const auto sourceSnapshot = body->topologySnapshot(upstreamFeature->id());
+  if (!sourceSnapshot) return;
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginChamfer(
-              body->id(), chamfer->edge().featureId(), upstream,
-              chamfer->edges(), chamfer->distanceMm(), chamfer->id(),
-              upstreamFeature->topologyIndex()),
+              *sourceSnapshot, chamfer->edges(), chamfer->distanceMm(),
+              chamfer->id()),
           PartDesignToolKind::Chamfer))
     return;
   viewport_->setEdgeMultiSelectionMode(true);

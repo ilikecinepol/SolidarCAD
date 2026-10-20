@@ -1,5 +1,8 @@
 #include "model/Body.h"
 #include "model/IdGeneration.h"
+#include "model/TopologyReferenceResolver.h"
+
+#include <TopoDS_Shape.hxx>
 
 #include <atomic>
 #include <stdexcept>
@@ -92,6 +95,55 @@ std::optional<std::size_t> Body::featureIndex(FeatureId id) const noexcept {
   for (std::size_t index = 0; index < features_.size(); ++index)
     if (features_[index]->id() == id) return index;
   return std::nullopt;
+}
+
+std::optional<FeatureTopologySnapshot> Body::topologySnapshot(
+    FeatureId featureId, std::string* error) const {
+  const auto index = featureIndex(featureId);
+  if (!index) {
+    if (error) *error = "Topology snapshot Feature is not a member of the Body";
+    return std::nullopt;
+  }
+  const auto* feature = features_[*index].get();
+  const auto shape = feature->shape();
+  if (!feature->isValid() || !shape || shape->IsNull() ||
+      feature->shapeRevision() == kInvalidShapeRevision) {
+    if (error) *error = "Topology snapshot source Feature is invalid";
+    return std::nullopt;
+  }
+  std::string topologyError;
+  const auto topology = feature->topologyIndex(&topologyError);
+  if (!topology || topology->shape().get() != shape.get() ||
+      topology->revision() != feature->shapeRevision()) {
+    if (error)
+      *error = topologyError.empty()
+                   ? "Topology snapshot index does not match the source Feature"
+                   : std::move(topologyError);
+    return std::nullopt;
+  }
+  std::string lineageError;
+  const auto& lineage = topology->lineage();
+  bool v2Authoritative = false;
+  if (lineage && !lineage->validateForProducer(featureId, &lineageError)) {
+    if (error)
+      *error = lineageError.empty() ? "Topology snapshot producer mismatch"
+                                    : std::move(lineageError);
+    return std::nullopt;
+  }
+  v2Authoritative = static_cast<bool>(lineage);
+  return FeatureTopologySnapshot{id_, featureId, feature->shapeRevision(),
+                                 shape, topology, v2Authoritative};
+}
+
+bool Body::matchesTopologySnapshot(
+    const FeatureTopologySnapshot& snapshot) const noexcept {
+  const auto index = featureIndex(snapshot.featureId());
+  if (!index || snapshot.bodyId() != id_) return false;
+  const auto* feature = features_[*index].get();
+  if (!feature->isValid() || feature->shapeRevision() != snapshot.revision() ||
+      feature->shape().get() != snapshot.shape().get())
+    return false;
+  return feature->topologyIndex().get() == snapshot.topologyIndex().get();
 }
 
 void Body::eraseFeaturesFrom(std::size_t index) {

@@ -100,8 +100,7 @@ int main(int argc, char* argv[]) {
              solidar::TopologyProvenanceOperation::Seed,
              solidar::TopologySemanticRole::Custom, "chamfer:v2-edge"}})});
     CHECK(!document.recompute());
-    CHECK(chamfer->error() ==
-          "Chamfer does not support topology v2 edge references yet");
+    CHECK(chamfer->error().find("Chamfer edge could not be resolved: ") == 0);
     chamfer->setEdges({firstReference});
     CHECK(document.recompute());
     const double volumeAtTwo = volumeOf(*chamfer->shape());
@@ -141,9 +140,10 @@ int main(int argc, char* argv[]) {
     CHECK(upstreamTopology);
     const auto sessionIndexBuilds =
         solidar::TopologyIndex::buildAttemptCount();
+    const auto sourceSnapshot = body->topologySnapshot(box.extrudeId);
+    CHECK(sourceSnapshot);
     solidar::ChamferToolSession session;
-    session.begin(box.bodyId, box.extrudeId, upstream, {firstReference}, 1.0,
-                  std::nullopt, upstreamTopology);
+    session.begin(*sourceSnapshot, {firstReference}, 1.0);
     CHECK(session.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(session.previewShape());
     CHECK(session.manipulator());
@@ -179,7 +179,7 @@ int main(int argc, char* argv[]) {
     CHECK(solidar::TopologyIndex::buildAttemptCount() == builderIndexBuilds);
     CHECK(pair.size() == 2);
     solidar::ChamferToolSession pairSession;
-    pairSession.begin(box.bodyId, box.extrudeId, upstream, pair, 1.0);
+    pairSession.beginLegacyV1(box.bodyId, box.extrudeId, upstream, pair, 1.0);
     CHECK(pairSession.lifecycle() == solidar::ToolLifecycle::PreviewValid);
     CHECK(pairSession.previewShape());
     const auto pairReferences = pairSession.edges();
@@ -296,7 +296,7 @@ int main(int argc, char* argv[]) {
     // while the preview remains an independent session result.
     solidar::ChamferFeature editableFeature(pair, 1.0, "Editable chamfer");
     solidar::ChamferToolSession editSession;
-    editSession.begin(box.bodyId, box.extrudeId, upstream,
+    editSession.beginLegacyV1(box.bodyId, box.extrudeId, upstream,
                       editableFeature.edges(), editableFeature.distanceMm(),
                       editableFeature.id());
     CHECK(editSession.editingFeatureId() == editableFeature.id());
