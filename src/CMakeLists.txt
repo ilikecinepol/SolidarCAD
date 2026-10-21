@@ -151,10 +151,13 @@ solidar_warnings(solidar_model)
 add_library(solidar_project
   project/ProjectFile.cpp
   project/ProjectFile.h
+  project/ProjectPersistenceState.h
   project/internal/ProjectFormatV3ModelSemanticValidation.h
   project/internal/ProjectFormatV3TypedSketchValidation.h
+  project/internal/ProjectFormatV4AtomicWriting.h
   project/internal/ProjectFormatV4DocumentEncoding.h
   project/internal/ProjectFormatV4DocumentMaterialization.h
+  project/ProjectFormatV4AtomicWriting.cpp
   project/ProjectFormatV4ReferenceDecoder.cpp
   project/ProjectFormatV4ReferenceDecoder.h
   project/ProjectFormatV4ReferenceEncoder.h
