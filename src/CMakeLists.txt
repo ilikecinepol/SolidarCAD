@@ -155,6 +155,7 @@ add_library(solidar_project
   project/internal/ProjectFormatV3TypedSketchValidation.h
   project/ProjectFormatV4ReferenceDecoder.cpp
   project/ProjectFormatV4ReferenceDecoder.h
+  project/ProjectFormatV4ReferenceEncoder.h
   project/ProjectFormatV4EnvelopeDecoder.cpp
   project/ProjectFormatV4EnvelopeDecoder.h
   project/ProjectFormatV4PayloadScanner.cpp

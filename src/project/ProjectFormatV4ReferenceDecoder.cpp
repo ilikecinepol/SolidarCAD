@@ -1,4 +1,5 @@
 #include "project/ProjectFormatV4ReferenceDecoder.h"
+#include "project/ProjectFormatV4ReferenceEncoder.h"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -13,7 +14,9 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -279,6 +282,60 @@ struct TokenValue {
   bool unsupported{};
 };
 
+template <typename Enum, std::size_t Size>
+struct TokenTable {
+  std::array<std::pair<std::string_view, Enum>, Size> entries;
+};
+
+std::optional<QString> boundedTokenString(const QJsonValue& value);
+
+constexpr TokenTable<TopologyKind, 2> kKindTokens{{{
+    {"Face", TopologyKind::Face},
+    {"Edge", TopologyKind::Edge},
+}}};
+
+constexpr TokenTable<TopologyProvenanceOperation, 5> kOperationTokens{{{
+    {"Seed", TopologyProvenanceOperation::Seed},
+    {"Generated", TopologyProvenanceOperation::Generated},
+    {"Modified", TopologyProvenanceOperation::Modified},
+    {"Retained", TopologyProvenanceOperation::Retained},
+    {"Merge", TopologyProvenanceOperation::Merge},
+}}};
+
+constexpr TokenTable<TopologySemanticRole, 8> kRoleTokens{{{
+    {"SketchBoundary", TopologySemanticRole::SketchBoundary},
+    {"Cap", TopologySemanticRole::Cap},
+    {"Side", TopologySemanticRole::Side},
+    {"Original", TopologySemanticRole::Original},
+    {"Reflected", TopologySemanticRole::Reflected},
+    {"PatternInstance", TopologySemanticRole::PatternInstance},
+    {"BooleanResult", TopologySemanticRole::BooleanResult},
+    {"Custom", TopologySemanticRole::Custom},
+}}};
+
+template <typename Enum, std::size_t Size>
+TokenValue<Enum> decodedToken(
+    const QJsonValue& value, const TokenTable<Enum, Size>& table) {
+  const auto token = boundedTokenString(value);
+  if (!token) return {};
+  for (const auto& [name, decoded] : table.entries) {
+    if (*token == QLatin1String(name.data(), static_cast<qsizetype>(name.size())))
+      return {decoded, true, false};
+  }
+  return {std::nullopt, true, true};
+}
+
+template <typename Enum, std::size_t Size>
+std::optional<QString> encodedToken(Enum value,
+                                    const TokenTable<Enum, Size>& table) {
+  for (const auto& [name, candidate] : table.entries) {
+    if (candidate == value)
+      return QString::fromLatin1(name.data(),
+                                 static_cast<qsizetype>(name.size()));
+  }
+  return std::nullopt;
+}
+
 std::optional<QString> boundedTokenString(const QJsonValue& value) {
   if (!value.isString()) return std::nullopt;
   const QString token = value.toString();
@@ -290,50 +347,16 @@ std::optional<QString> boundedTokenString(const QJsonValue& value) {
 }
 
 TokenValue<TopologyKind> kindToken(const QJsonValue& value) {
-  const auto token = boundedTokenString(value);
-  if (!token) return {};
-  if (*token == QStringLiteral("Face")) return {TopologyKind::Face, true, false};
-  if (*token == QStringLiteral("Edge")) return {TopologyKind::Edge, true, false};
-  return {std::nullopt, true, true};
+  return decodedToken(value, kKindTokens);
 }
 
 TokenValue<TopologyProvenanceOperation> operationToken(
     const QJsonValue& value) {
-  const auto token = boundedTokenString(value);
-  if (!token) return {};
-  if (*token == QStringLiteral("Seed"))
-    return {TopologyProvenanceOperation::Seed, true, false};
-  if (*token == QStringLiteral("Generated"))
-    return {TopologyProvenanceOperation::Generated, true, false};
-  if (*token == QStringLiteral("Modified"))
-    return {TopologyProvenanceOperation::Modified, true, false};
-  if (*token == QStringLiteral("Retained"))
-    return {TopologyProvenanceOperation::Retained, true, false};
-  if (*token == QStringLiteral("Merge"))
-    return {TopologyProvenanceOperation::Merge, true, false};
-  return {std::nullopt, true, true};
+  return decodedToken(value, kOperationTokens);
 }
 
 TokenValue<TopologySemanticRole> roleToken(const QJsonValue& value) {
-  const auto token = boundedTokenString(value);
-  if (!token) return {};
-  if (*token == QStringLiteral("SketchBoundary"))
-    return {TopologySemanticRole::SketchBoundary, true, false};
-  if (*token == QStringLiteral("Cap"))
-    return {TopologySemanticRole::Cap, true, false};
-  if (*token == QStringLiteral("Side"))
-    return {TopologySemanticRole::Side, true, false};
-  if (*token == QStringLiteral("Original"))
-    return {TopologySemanticRole::Original, true, false};
-  if (*token == QStringLiteral("Reflected"))
-    return {TopologySemanticRole::Reflected, true, false};
-  if (*token == QStringLiteral("PatternInstance"))
-    return {TopologySemanticRole::PatternInstance, true, false};
-  if (*token == QStringLiteral("BooleanResult"))
-    return {TopologySemanticRole::BooleanResult, true, false};
-  if (*token == QStringLiteral("Custom"))
-    return {TopologySemanticRole::Custom, true, false};
-  return {std::nullopt, true, true};
+  return decodedToken(value, kRoleTokens);
 }
 
 struct ParsedProvenance {
@@ -718,6 +741,277 @@ ProjectFormatV4ReferenceDecodeResult decodeV2(const QJsonObject& object,
   return result;
 }
 
+ProjectFormatV4ReferenceEncodeResult encodeFailure(QString error) {
+  ProjectFormatV4ReferenceEncodeResult result;
+  result.error = std::move(error);
+  return result;
+}
+
+ProjectFormatV4ReferenceEncodeResult encodeSuccess(
+    QJsonObject reference, std::size_t provenanceRecordCount = 0,
+    std::size_t localNameUtf8Bytes = 0) {
+  ProjectFormatV4ReferenceEncodeResult result;
+  result.status = ProjectFormatV4ReferenceEncodeStatus::Valid;
+  result.reference = std::move(reference);
+  result.provenanceRecordCount = provenanceRecordCount;
+  result.localNameUtf8Bytes = localNameUtf8Bytes;
+  return result;
+}
+
+QJsonArray savedPoint(const TopologyPoint3d& point) {
+  return {point.x, point.y, point.z};
+}
+
+QJsonObject savedBounds(const TopologyBounds& bounds) {
+  return {{"minimum", savedPoint(bounds.minimum)},
+          {"maximum", savedPoint(bounds.maximum)}};
+}
+
+QJsonObject savedFaceSignature(const FaceSignature& signature) {
+  return {{"surfaceType", static_cast<int>(signature.surface)},
+          {"area", signature.area},
+          {"centroid", savedPoint(signature.centroid)},
+          {"normal", savedPoint(signature.normal)},
+          {"bounds", savedBounds(signature.bounds)},
+          {"radius", signature.radius},
+          {"axis", savedPoint(signature.axis)}};
+}
+
+QJsonObject savedEdgeSignature(const EdgeSignature& signature) {
+  return {{"curveType", static_cast<int>(signature.curve)},
+          {"length", signature.length},
+          {"midpoint", savedPoint(signature.midpoint)},
+          {"tangent", savedPoint(signature.tangent)},
+          {"bounds", savedBounds(signature.bounds)},
+          {"radius", signature.radius},
+          {"center", savedPoint(signature.center)}};
+}
+
+bool persistedId(std::uint64_t value) {
+  return value >= 1 &&
+         value <= static_cast<std::uint64_t>(ProjectFile::kMaximumPersistedId);
+}
+
+bool exactUnsignedInteger(std::uint64_t value) {
+  return value <= static_cast<std::uint64_t>(kMaximumExactJsonInteger);
+}
+
+std::optional<QString> savedUtf8String(const std::string& value,
+                                       bool boundedByUtf16,
+                                       QString* error) {
+  const QByteArray bytes(value.data(), static_cast<qsizetype>(value.size()));
+  const QString decoded = QString::fromUtf8(bytes);
+  if (decoded.toUtf8() != bytes) {
+    if (error) *error = QStringLiteral("string is not valid UTF-8");
+    return std::nullopt;
+  }
+  if (boundedByUtf16 &&
+      decoded.size() > ProjectFile::kMaximumStringCharacters) {
+    if (error) *error = QStringLiteral("string exceeds its UTF-16 limit");
+    return std::nullopt;
+  }
+  return decoded;
+}
+
+bool appendLocalName(const std::string& value, QString* encoded,
+                     std::size_t* totalBytes, QString* error) {
+  if (value.empty()) {
+    if (error) *error = QStringLiteral("localName is empty");
+    return false;
+  }
+  auto text = savedUtf8String(value, false, error);
+  if (!text) return false;
+  const std::size_t bytes = value.size();
+  if (bytes > static_cast<std::size_t>(kMaximumLocalNameUtf8Bytes)) {
+    if (error) *error = QStringLiteral("localName exceeds its UTF-8 limit");
+    return false;
+  }
+  if (*totalBytes > kMaximumReferenceLocalNameUtf8Bytes - bytes) {
+    if (error) *error = QStringLiteral("reference local-name budget exceeded");
+    return false;
+  }
+  *totalBytes += bytes;
+  *encoded = std::move(*text);
+  return true;
+}
+
+std::optional<QJsonObject> savedOccurrence(
+    const std::optional<TopologyOccurrenceKey>& occurrence, FeatureId owner,
+    QString* error) {
+  if (!occurrence) return QJsonObject{};
+  if (occurrence->featureId != owner || !persistedId(occurrence->featureId) ||
+      !exactUnsignedInteger(occurrence->slot)) {
+    if (error) *error = QStringLiteral("instanceKey is invalid");
+    return std::nullopt;
+  }
+  return QJsonObject{
+      {"featureId", static_cast<qint64>(occurrence->featureId)},
+      {"slot", static_cast<qint64>(occurrence->slot)}};
+}
+
+std::optional<QJsonObject> savedOrigin(
+    const TopologyProvenanceOrigin& origin, std::size_t* localNameBytes,
+    QString* error) {
+  if (!persistedId(origin.featureId)) {
+    if (error) *error = QStringLiteral("origin featureId is invalid");
+    return std::nullopt;
+  }
+  const auto kind = encodedToken(origin.kind, kKindTokens);
+  const auto operation = encodedToken(origin.operation, kOperationTokens);
+  const auto role = encodedToken(origin.role, kRoleTokens);
+  if (!kind || !operation || !role) {
+    if (error) *error = QStringLiteral("origin enum value is invalid");
+    return std::nullopt;
+  }
+  QString localName;
+  if (!appendLocalName(origin.localName, &localName, localNameBytes, error))
+    return std::nullopt;
+  const auto occurrence = savedOccurrence(origin.occurrence, origin.featureId,
+                                          error);
+  if (!occurrence) return std::nullopt;
+  QJsonObject result{{"featureId", static_cast<qint64>(origin.featureId)},
+                     {"kind", *kind},
+                     {"operation", *operation},
+                     {"role", *role},
+                     {"localName", std::move(localName)}};
+  if (origin.occurrence) result[QStringLiteral("instanceKey")] = *occurrence;
+  return result;
+}
+
+template <typename Reference>
+ProjectFormatV4ReferenceEncodeResult encodeV1Reference(
+    const Reference& carrier, TopologyKind expectedKind) {
+  const TopologyReference* reference = carrier.v1();
+  if (!reference || reference->kind != expectedKind ||
+      !persistedId(reference->bodyId) ||
+      !persistedId(reference->featureId) ||
+      reference->legacyIndex >
+          static_cast<std::size_t>(kMaximumExactJsonInteger))
+    return encodeFailure(QStringLiteral("V1 topology reference is invalid"));
+
+  const auto kind = encodedToken(reference->kind, kKindTokens);
+  if (!kind)
+    return encodeFailure(QStringLiteral("V1 topology kind is invalid"));
+  QJsonObject result{{"referenceVersion", "V1"},
+                     {"bodyId", static_cast<qint64>(reference->bodyId)},
+                     {"featureId", static_cast<qint64>(reference->featureId)},
+                     {"kind", *kind},
+                     {"legacyIndex",
+                      static_cast<qint64>(reference->legacyIndex)}};
+  if (!reference->persistentTag.empty()) {
+    QString error;
+    const auto tag = savedUtf8String(reference->persistentTag, true, &error);
+    if (!tag)
+      return encodeFailure(QStringLiteral("persistentTag is invalid: %1")
+                               .arg(error));
+    result[QStringLiteral("persistentTag")] = *tag;
+  }
+  if (expectedKind == TopologyKind::Face) {
+    if (reference->edgeSignature)
+      return encodeFailure(QStringLiteral("V1 face contains an edge signature"));
+    if (reference->faceSignature)
+      result[QStringLiteral("signature")] =
+          savedFaceSignature(*reference->faceSignature);
+  } else {
+    if (reference->faceSignature)
+      return encodeFailure(QStringLiteral("V1 edge contains a face signature"));
+    if (reference->edgeSignature)
+      result[QStringLiteral("signature")] =
+          savedEdgeSignature(*reference->edgeSignature);
+  }
+
+  const auto decoded =
+      decodeProjectFormatV4TopologyReference(result, expectedKind);
+  if (!decoded.succeeded())
+    return encodeFailure(QStringLiteral("encoded V1 reference is invalid: %1")
+                             .arg(decoded.error));
+  if constexpr (std::is_same_v<Reference, FaceReference>) {
+    if (!std::holds_alternative<FaceReference>(*decoded.reference) ||
+        std::get<FaceReference>(*decoded.reference) != carrier)
+      return encodeFailure(QStringLiteral("V1 face round-trip mismatch"));
+  } else {
+    if (!std::holds_alternative<EdgeReference>(*decoded.reference) ||
+        std::get<EdgeReference>(*decoded.reference) != carrier)
+      return encodeFailure(QStringLiteral("V1 edge round-trip mismatch"));
+  }
+  return encodeSuccess(std::move(result));
+}
+
+template <typename Reference>
+ProjectFormatV4ReferenceEncodeResult encodeV2Reference(
+    const Reference& carrier, TopologyKind expectedKind) {
+  const TopologyReferenceV2* reference = carrier.v2();
+  if (!reference || !persistedId(reference->bodyId) ||
+      !persistedId(reference->provenance.featureId) ||
+      reference->provenance.kind != expectedKind)
+    return encodeFailure(QStringLiteral("V2 topology reference is invalid"));
+
+  TopologyProvenanceKey key = reference->provenance;
+  key.canonicalizeOrigins();
+  std::string canonicalError;
+  if (!key.isCanonical(&canonicalError))
+    return encodeFailure(
+        QStringLiteral("V2 provenance is invalid: %1")
+            .arg(QString::fromLatin1(canonicalError)));
+  if (key.origins.size() > kMaximumTopologyImmediateOrigins)
+    return encodeFailure(QStringLiteral("too many immediate origins"));
+
+  const auto kind = encodedToken(key.kind, kKindTokens);
+  const auto operation = encodedToken(key.operation, kOperationTokens);
+  const auto role = encodedToken(key.role, kRoleTokens);
+  if (!kind || !operation || !role)
+    return encodeFailure(QStringLiteral("V2 provenance enum value is invalid"));
+
+  std::size_t localNameBytes = 0;
+  QString localName;
+  QString error;
+  if (!appendLocalName(key.localName, &localName, &localNameBytes, &error))
+    return encodeFailure(std::move(error));
+  const auto occurrence =
+      savedOccurrence(key.occurrence, key.featureId, &error);
+  if (!occurrence) return encodeFailure(std::move(error));
+
+  QJsonArray origins;
+  for (const auto& origin : key.origins) {
+    auto saved = savedOrigin(origin, &localNameBytes, &error);
+    if (!saved) return encodeFailure(std::move(error));
+    origins.append(std::move(*saved));
+  }
+  QJsonObject provenance{
+      {"featureId", static_cast<qint64>(key.featureId)},
+      {"kind", *kind},
+      {"operation", *operation},
+      {"role", *role},
+      {"localName", std::move(localName)},
+      {"origins", std::move(origins)}};
+  if (key.occurrence)
+    provenance[QStringLiteral("instanceKey")] = *occurrence;
+  QJsonObject result{{"referenceVersion", "V2"},
+                     {"bodyId", static_cast<qint64>(reference->bodyId)},
+                     {"provenance", std::move(provenance)}};
+
+  const auto decoded =
+      decodeProjectFormatV4TopologyReference(result, expectedKind);
+  if (!decoded.succeeded())
+    return encodeFailure(QStringLiteral("encoded V2 reference is invalid: %1")
+                             .arg(decoded.error));
+  const std::size_t provenanceRecordCount = 1 + key.origins.size();
+  TopologyReferenceV2 normalized{reference->bodyId, std::move(key)};
+  if constexpr (std::is_same_v<Reference, FaceReference>) {
+    const FaceReference expected = FaceReference::fromV2(std::move(normalized));
+    if (!std::holds_alternative<FaceReference>(*decoded.reference) ||
+        std::get<FaceReference>(*decoded.reference) != expected)
+      return encodeFailure(QStringLiteral("V2 face round-trip mismatch"));
+  } else {
+    const EdgeReference expected = EdgeReference::fromV2(std::move(normalized));
+    if (!std::holds_alternative<EdgeReference>(*decoded.reference) ||
+        std::get<EdgeReference>(*decoded.reference) != expected)
+      return encodeFailure(QStringLiteral("V2 edge round-trip mismatch"));
+  }
+  return encodeSuccess(std::move(result), provenanceRecordCount,
+                       localNameBytes);
+}
+
 }  // namespace
 
 ProjectFormatV4ReferenceDecodeResult
@@ -741,6 +1035,20 @@ decodeProjectFormatV4TopologyReference(const QJsonValue& value,
   if (version == QStringLiteral("V2")) return decodeV2(object, expectedKind);
   return failure(ProjectFormatV4ReferenceDecodeStatus::Unsupported,
                  QStringLiteral("unsupported referenceVersion"));
+}
+
+ProjectFormatV4ReferenceEncodeResult
+encodeProjectFormatV4TopologyReference(const FaceReference& reference) {
+  return reference.isV1()
+             ? encodeV1Reference(reference, TopologyKind::Face)
+             : encodeV2Reference(reference, TopologyKind::Face);
+}
+
+ProjectFormatV4ReferenceEncodeResult
+encodeProjectFormatV4TopologyReference(const EdgeReference& reference) {
+  return reference.isV1()
+             ? encodeV1Reference(reference, TopologyKind::Edge)
+             : encodeV2Reference(reference, TopologyKind::Edge);
 }
 
 }  // namespace solidar::project
