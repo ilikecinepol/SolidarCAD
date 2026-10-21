@@ -138,21 +138,8 @@ bool unsignedUtf8Less(const QByteArray& left, const QByteArray& right) {
 
 }  // namespace
 
-ProjectFormatV4EnvelopeScanResult scanProjectFormatV4Envelope(
-    QByteArrayView bytes) {
-  if (bytes.isEmpty()) return invalid(QStringLiteral("input is empty"));
-  if (bytes.size() > ProjectFile::kMaximumFileBytes)
-    return invalid(QStringLiteral("input exceeds the project file limit"));
-
-  QJsonParseError parseError;
-  const QJsonDocument parsed = QJsonDocument::fromJson(
-      QByteArray(bytes.data(), bytes.size()), &parseError);
-  if (parseError.error != QJsonParseError::NoError)
-    return invalid(QStringLiteral("invalid JSON: %1").arg(parseError.errorString()));
-  if (!parsed.isObject())
-    return invalid(QStringLiteral("project root must be an object"));
-  const QJsonObject root = parsed.object();
-
+ProjectFormatV4EnvelopeScanResult
+detail::validateProjectFormatV4EnvelopeRoot(const QJsonObject& root) {
   QString error;
   QString format;
   if (!boundedUtf16String(root.value(QStringLiteral("format")),
@@ -299,6 +286,23 @@ ProjectFormatV4EnvelopeScanResult scanProjectFormatV4Envelope(
   result.status = ProjectFormatV4EnvelopeScanStatus::Candidate;
   result.candidate = std::move(candidate);
   return result;
+}
+
+ProjectFormatV4EnvelopeScanResult scanProjectFormatV4Envelope(
+    QByteArrayView bytes) {
+  if (bytes.isEmpty()) return invalid(QStringLiteral("input is empty"));
+  if (bytes.size() > ProjectFile::kMaximumFileBytes)
+    return invalid(QStringLiteral("input exceeds the project file limit"));
+
+  QJsonParseError parseError;
+  const QJsonDocument parsed = QJsonDocument::fromJson(
+      QByteArray(bytes.data(), bytes.size()), &parseError);
+  if (parseError.error != QJsonParseError::NoError)
+    return invalid(
+        QStringLiteral("invalid JSON: %1").arg(parseError.errorString()));
+  if (!parsed.isObject())
+    return invalid(QStringLiteral("project root must be an object"));
+  return detail::validateProjectFormatV4EnvelopeRoot(parsed.object());
 }
 
 }  // namespace solidar::project

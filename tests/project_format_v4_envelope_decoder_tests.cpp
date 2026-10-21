@@ -191,6 +191,39 @@ int main() {
     CHECK(result.candidate->deferredUnknowns.empty());
   }
 
+  // The shared post-parse seam must produce the same exact candidate as the
+  // byte scanner and retain the full v4 envelope checks.
+  {
+    const QByteArray bytes = rootBytes();
+    const QJsonObject root = QJsonDocument::fromJson(bytes).object();
+    const auto fromBytes = scan(bytes);
+    const auto fromRoot =
+        solidar::project::detail::validateProjectFormatV4EnvelopeRoot(root);
+    CHECK(fromBytes.hasCandidate());
+    CHECK(fromRoot.hasCandidate());
+    CHECK(fromRoot.candidate->authoredRoot ==
+          fromBytes.candidate->authoredRoot);
+    CHECK(fromRoot.candidate->document == fromBytes.candidate->document);
+    CHECK(fromRoot.candidate->legacySketches ==
+          fromBytes.candidate->legacySketches);
+    CHECK(fromRoot.candidate->legacyExtrusion ==
+          fromBytes.candidate->legacyExtrusion);
+    CHECK(fromRoot.candidate->model == fromBytes.candidate->model);
+    CHECK(fromRoot.candidate->capabilities ==
+          fromBytes.candidate->capabilities);
+    CHECK(fromRoot.candidate->deferredUnknowns ==
+          fromBytes.candidate->deferredUnknowns);
+
+    QJsonObject malformed = root;
+    malformed.remove(QStringLiteral("document"));
+    const auto rejected =
+        solidar::project::detail::validateProjectFormatV4EnvelopeRoot(
+            malformed);
+    CHECK(rejected.status == ProjectFormatV4EnvelopeScanStatus::Invalid);
+    CHECK(!rejected.hasCandidate());
+    CHECK(!rejected.error.isEmpty());
+  }
+
   // Unknown tokens and malformed opaque nested elements coexist in a
   // Candidate. Independently parse the authored bytes as the preservation
   // oracle and compare every projected JSON value in full.

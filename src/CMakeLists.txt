@@ -155,6 +155,8 @@ add_library(solidar_project
   project/ProjectFormatV4ReferenceDecoder.h
   project/ProjectFormatV4EnvelopeDecoder.cpp
   project/ProjectFormatV4EnvelopeDecoder.h
+  project/ProjectFormatV4PayloadScanner.cpp
+  project/ProjectFormatV4PayloadScanner.h
   io/DocumentExportShapes.cpp
   io/DocumentExportShapes.h
   io/StlExporter.cpp

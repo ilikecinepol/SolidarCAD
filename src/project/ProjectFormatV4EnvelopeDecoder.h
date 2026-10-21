@@ -62,4 +62,14 @@ struct ProjectFormatV4EnvelopeScanResult {
 [[nodiscard]] ProjectFormatV4EnvelopeScanResult
 scanProjectFormatV4Envelope(QByteArrayView bytes);
 
+namespace detail {
+
+// Shared post-parse boundary used by the byte scanner and the next bounded
+// scanner stage. Keeping this seam here prevents mutable candidate projections
+// from bypassing the authoritative v4 envelope contract.
+[[nodiscard]] ProjectFormatV4EnvelopeScanResult
+validateProjectFormatV4EnvelopeRoot(const QJsonObject& root);
+
+}  // namespace detail
+
 }  // namespace solidar::project
