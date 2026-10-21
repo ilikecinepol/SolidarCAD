@@ -2,6 +2,7 @@
 #include "project/internal/ProjectFormatV3ModelSemanticValidation.h"
 #include "project/internal/ProjectFormatV3TypedSketchValidation.h"
 #include "project/internal/ProjectFormatV4DocumentEncoding.h"
+#include "project/internal/ProjectFormatV4DocumentMaterialization.h"
 #include "project/ProjectFormatV4EnvelopeDecoder.h"
 #include "project/ProjectFormatV4ModelValidator.h"
 #include "project/ProjectFormatV4PayloadScanner.h"
@@ -1620,6 +1621,11 @@ struct FeatureDecodeContext {
   std::function<sketch::GeometryId(const QJsonObject&, const char*,
                                    const char*, const char*)>
       restoredSketchLineId;
+  std::function<bool(const QJsonValue&, const QString&, FaceReference*)>
+      faceReference;
+  std::function<bool(const QJsonValue&, const QString&, EdgeReference*)>
+      edgeReference;
+  QString topologyPathPrefix;
 };
 
 using ValidateFeatureFn = bool (*)(const QJsonObject&,
@@ -2269,16 +2275,20 @@ bool decodeImportedShape(const QJsonObject& saved, FeatureId id,
 
 bool decodeExtrude(const QJsonObject& saved, FeatureId id,
                    const std::string& name, Body& body,
-                   const FeatureDecodeContext&) {
+                   const FeatureDecodeContext& context) {
   const auto sourceKind = saved.value("sourceKind").toString();
   const auto lengthMm = saved.value("lengthMm").toDouble();
   const auto operation =
       static_cast<ExtrudeOperation>(saved.value("operation").toInt());
   const auto reversed = saved.value("reversed").toBool();
   if (sourceKind == QStringLiteral("face")) {
+    FaceReference face;
+    if (!context.faceReference(
+            saved.value("face"), context.topologyPathPrefix + ".face.reference",
+            &face))
+      return false;
     body.addFeature(std::make_unique<ExtrudeFeature>(
-        id, loadedFaceReference(saved.value("face")), lengthMm, name,
-        operation, reversed));
+        id, std::move(face), lengthMm, name, operation, reversed));
   } else {
     // Missing sourceKind is the pre-face-extrude project format.
     auto feature = std::make_unique<ExtrudeFeature>(
@@ -2327,40 +2337,61 @@ bool decodePocket(const QJsonObject& saved, FeatureId id,
   return true;
 }
 
-std::vector<EdgeReference> loadedEdges(const QJsonArray& values) {
-  std::vector<EdgeReference> edges;
-  edges.reserve(static_cast<std::size_t>(values.size()));
-  for (const auto value : values) edges.push_back(loadedEdgeReference(value));
-  return edges;
+bool loadedEdges(const QJsonArray& values, const FeatureDecodeContext& context,
+                 std::vector<EdgeReference>* edges) {
+  if (!edges) return false;
+  edges->clear();
+  edges->reserve(static_cast<std::size_t>(values.size()));
+  for (qsizetype index = 0; index < values.size(); ++index) {
+    EdgeReference edge;
+    if (!context.edgeReference(
+            values[index],
+            QStringLiteral("%1.edges[%2].reference")
+                .arg(context.topologyPathPrefix)
+                .arg(index),
+            &edge))
+      return false;
+    edges->push_back(std::move(edge));
+  }
+  return true;
 }
 
 bool decodeFillet(const QJsonObject& saved, FeatureId id,
                   const std::string& name, Body& body,
-                  const FeatureDecodeContext&) {
+                  const FeatureDecodeContext& context) {
+  std::vector<EdgeReference> edges;
+  if (!loadedEdges(saved.value("edges").toArray(), context, &edges))
+    return false;
   body.addFeature(std::make_unique<FilletFeature>(
-      id, loadedEdges(saved.value("edges").toArray()),
-      saved.value("radiusMm").toDouble(), name));
+      id, std::move(edges), saved.value("radiusMm").toDouble(), name));
   return true;
 }
 
 bool decodeChamfer(const QJsonObject& saved, FeatureId id,
                    const std::string& name, Body& body,
-                   const FeatureDecodeContext&) {
+                   const FeatureDecodeContext& context) {
+  std::vector<EdgeReference> edges;
+  if (!loadedEdges(saved.value("edges").toArray(), context, &edges))
+    return false;
   body.addFeature(std::make_unique<ChamferFeature>(
-      id, loadedEdges(saved.value("edges").toArray()),
-      saved.value("distanceMm").toDouble(), name));
+      id, std::move(edges), saved.value("distanceMm").toDouble(), name));
   return true;
 }
 
 bool decodeMirror(const QJsonObject& saved, FeatureId id,
                   const std::string& name, Body& body,
-                  const FeatureDecodeContext&) {
+                  const FeatureDecodeContext& context) {
   const auto source =
       static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger());
-  if (saved.contains("planeFace"))
+  if (saved.contains("planeFace")) {
+    FaceReference face;
+    if (!context.faceReference(
+            saved.value("planeFace"),
+            context.topologyPathPrefix + ".planeFace.reference", &face))
+      return false;
     body.addFeature(std::make_unique<MirrorFeature>(
-        id, source, loadedFaceReference(saved.value("planeFace")), name));
-  else
+        id, source, std::move(face), name));
+  } else
     body.addFeature(std::make_unique<MirrorFeature>(
         id, source, static_cast<MirrorPlane>(saved.value("plane").toInt()),
         name));
@@ -2421,10 +2452,21 @@ bool decodeJoinBodies(const QJsonObject& saved, FeatureId id,
 
 bool decodeShell(const QJsonObject& saved, FeatureId id,
                  const std::string& name, Body& body,
-                 const FeatureDecodeContext&) {
+                 const FeatureDecodeContext& context) {
   std::vector<FaceReference> faces;
-  for (const auto value : saved.value("removedFaces").toArray())
-    faces.push_back(loadedFaceReference(value));
+  const auto values = saved.value("removedFaces").toArray();
+  faces.reserve(static_cast<std::size_t>(values.size()));
+  for (qsizetype index = 0; index < values.size(); ++index) {
+    FaceReference face;
+    if (!context.faceReference(
+            values[index],
+            QStringLiteral("%1.removedFaces[%2].reference")
+                .arg(context.topologyPathPrefix)
+                .arg(index),
+            &face))
+      return false;
+    faces.push_back(std::move(face));
+  }
   body.addFeature(std::make_unique<ShellFeature>(
       id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
       std::move(faces), saved.value("thicknessMm").toDouble(2.0),
@@ -2436,12 +2478,29 @@ bool decodeDraft(const QJsonObject& saved, FeatureId id,
                  const std::string& name, Body& body,
                  const FeatureDecodeContext& context) {
   std::vector<FaceReference> faces;
-  for (const auto value : saved.value("draftedFaces").toArray())
-    faces.push_back(loadedFaceReference(value));
+  const auto drafted = saved.value("draftedFaces").toArray();
+  faces.reserve(static_cast<std::size_t>(drafted.size()));
+  for (qsizetype index = 0; index < drafted.size(); ++index) {
+    FaceReference face;
+    if (!context.faceReference(
+            drafted[index],
+            QStringLiteral("%1.draftedFaces[%2].reference")
+                .arg(context.topologyPathPrefix)
+                .arg(index),
+            &face))
+      return false;
+    faces.push_back(std::move(face));
+  }
   PlaneReference plane{
       static_cast<NeutralPlaneType>(saved.value("neutralPlaneType").toInt())};
-  if (saved.contains("neutralPlaneFace"))
-    plane.face = loadedFaceReference(saved.value("neutralPlaneFace"));
+  if (saved.contains("neutralPlaneFace")) {
+    FaceReference face;
+    if (!context.faceReference(
+            saved.value("neutralPlaneFace"),
+            context.topologyPathPrefix + ".neutralPlaneFace.reference", &face))
+      return false;
+    plane.face = std::move(face);
+  }
   const auto directionType = static_cast<AxisReferenceType>(
       saved.value("pullDirectionType").toInt());
   AxisReference direction{
@@ -2455,8 +2514,14 @@ bool decodeDraft(const QJsonObject& saved, FeatureId id,
           : static_cast<sketch::GeometryId>(
                 saved.value("pullDirectionLineId").toInteger())};
   std::optional<EdgeReference> rotationEdge;
-  if (saved.contains("rotationEdge"))
-    rotationEdge = loadedEdgeReference(saved.value("rotationEdge"));
+  if (saved.contains("rotationEdge")) {
+    EdgeReference edge;
+    if (!context.edgeReference(
+            saved.value("rotationEdge"),
+            context.topologyPathPrefix + ".rotationEdge.reference", &edge))
+      return false;
+    rotationEdge = std::move(edge);
+  }
   body.addFeature(std::make_unique<DraftFeature>(
       id, static_cast<FeatureId>(saved.value("sourceFeatureId").toInteger()),
       std::move(faces), std::move(plane), direction,
@@ -3149,6 +3214,14 @@ std::vector<FeatureCodecDescriptor> featureCodecDescriptors() {
 static bool loadLegacyRoot(const QJsonObject& root,
                            ConstraintTypeEncoding constraintEncoding,
                            ProjectData* data, QString* error);
+using MaterializedFaceReference =
+    std::function<bool(const QJsonValue&, const QString&, FaceReference*)>;
+using MaterializedEdgeReference =
+    std::function<bool(const QJsonValue&, const QString&, EdgeReference*)>;
+static bool populateDocumentRoot(
+    const QJsonObject& root, const ProjectData& legacy, Document* document,
+    const MaterializedFaceReference& faceReference,
+    const MaterializedEdgeReference& edgeReference, QString* error);
 static bool loadDocumentRoot(const QJsonObject& root,
                              const ProjectData& legacy, Document* document,
                              QString* error);
@@ -3980,9 +4053,10 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
   return saved;
 }
 
-static bool loadDocumentRoot(const QJsonObject& root,
-                             const ProjectData& legacy, Document* document,
-                             QString* error) {
+static bool populateDocumentRoot(
+    const QJsonObject& root, const ProjectData& legacy, Document* document,
+    const MaterializedFaceReference& faceReference,
+    const MaterializedEdgeReference& edgeReference, QString* error) {
   if (!document) {
     setError(error, QString::fromUtf8("Не задан документ для загрузки."));
     return false;
@@ -4039,14 +4113,15 @@ static bool loadDocumentRoot(const QJsonObject& root,
     sketch.support.type = static_cast<SketchSupportType>(
         support.value("type").toInt(static_cast<int>(SketchSupportType::BasePlane)));
     if (sketch.support.type == SketchSupportType::Face) {
-      sketch.support.face = {
-          static_cast<BodyId>(support.value("bodyId").toInteger()),
-          static_cast<FeatureId>(support.value("featureId").toInteger()),
-          static_cast<std::size_t>(support.value("faceIndex").toInteger())};
-      sketch.support.face.persistentTag() =
-          support.value("persistentTag").toString().toStdString();
-      sketch.support.face.signature() =
-          readFaceSignature(support.value("signature"));
+      const QJsonValue authored = support.contains("reference")
+                                      ? support.value("reference")
+                                      : QJsonValue{support};
+      if (!faceReference(
+              authored,
+              QStringLiteral("$.model.sketches[%1].support.reference")
+                  .arg(index),
+              &sketch.support.face))
+        return false;
     }
   }
 
@@ -4117,13 +4192,18 @@ static bool loadDocumentRoot(const QJsonObject& root,
     return sketch::kInvalidGeometryId;
   };
 
-  for (const auto bodyValue : model.value("bodies").toArray()) {
+  const auto savedBodies = model.value("bodies").toArray();
+  for (qsizetype bodyIndex = 0; bodyIndex < savedBodies.size(); ++bodyIndex) {
+    const auto bodyValue = savedBodies[bodyIndex];
     const auto savedBody = bodyValue.toObject();
     auto& body = loaded.addBody(
         static_cast<BodyId>(savedBody.value("id").toInteger()),
         savedBody.value("name").toString().toStdString());
     body.setVisible(savedBody.value("visible").toBool(true));
-    for (const auto featureValue : savedBody.value("features").toArray()) {
+    const auto savedFeatures = savedBody.value("features").toArray();
+    for (qsizetype featureIndex = 0; featureIndex < savedFeatures.size();
+         ++featureIndex) {
+      const auto featureValue = savedFeatures[featureIndex];
       const auto saved = featureValue.toObject();
       const auto id = static_cast<FeatureId>(saved.value("id").toInteger());
       const auto name = saved.value("name").toString().toStdString();
@@ -4133,10 +4213,41 @@ static bool loadDocumentRoot(const QJsonObject& root,
         setError(error, QString::fromUtf8("Неизвестный тип фичи: ") + type);
         return false;
       }
-      FeatureDecodeContext context{loaded, error, restoredSketchLineId};
+      FeatureDecodeContext context{
+          loaded,
+          error,
+          restoredSketchLineId,
+          faceReference,
+          edgeReference,
+          QStringLiteral("$.model.bodies[%1].features[%2]")
+              .arg(bodyIndex)
+              .arg(featureIndex)};
       if (!codec->decode(saved, id, name, body, context)) return false;
     }
   }
+  *document = std::move(loaded);
+  return true;
+}
+
+static bool loadDocumentRoot(const QJsonObject& root,
+                             const ProjectData& legacy, Document* document,
+                             QString* error) {
+  const auto faceReference = [](const QJsonValue& value, const QString&,
+                                FaceReference* result) {
+    if (!result) return false;
+    *result = loadedFaceReference(value);
+    return true;
+  };
+  const auto edgeReference = [](const QJsonValue& value, const QString&,
+                                EdgeReference* result) {
+    if (!result) return false;
+    *result = loadedEdgeReference(value);
+    return true;
+  };
+  Document loaded;
+  if (!populateDocumentRoot(root, legacy, &loaded, faceReference,
+                            edgeReference, error))
+    return false;
   if (!loaded.recompute()) {
     setError(error, QString::fromUtf8("Не удалось перестроить проект: ") +
                         QString::fromStdString(loaded.rebuildError()));
@@ -6018,6 +6129,123 @@ bool validateAndSelectLegacyPlan(const QJsonObject& root, qint64 version,
 
 namespace {
 
+bool equivalentV4ModelCandidate(const ProjectFormatV4ModelCandidate& lhs,
+                                const ProjectFormatV4ModelCandidate& rhs) {
+  const auto& leftLegacy = lhs.legacySketch;
+  const auto& rightLegacy = rhs.legacySketch;
+  const auto& left = leftLegacy.topology;
+  const auto& right = rightLegacy.topology;
+  const auto& leftPayload = left.payload;
+  const auto& rightPayload = right.payload;
+  const auto& leftEnvelope = leftPayload.envelope;
+  const auto& rightEnvelope = rightPayload.envelope;
+  return leftLegacy.deferredLegacySketch ==
+             rightLegacy.deferredLegacySketch &&
+         leftEnvelope.authoredRoot == rightEnvelope.authoredRoot &&
+         leftEnvelope.document == rightEnvelope.document &&
+         leftEnvelope.legacySketches == rightEnvelope.legacySketches &&
+         leftEnvelope.legacyExtrusion == rightEnvelope.legacyExtrusion &&
+         leftEnvelope.model == rightEnvelope.model &&
+         leftEnvelope.capabilities == rightEnvelope.capabilities &&
+         leftEnvelope.deferredUnknowns == rightEnvelope.deferredUnknowns &&
+         leftPayload.topologySites == rightPayload.topologySites &&
+         leftPayload.featureOwners == rightPayload.featureOwners &&
+         left.topologyReferences == right.topologyReferences &&
+         left.topologyInspections == right.topologyInspections &&
+         left.deferredUnsupported == right.deferredUnsupported &&
+         left.provenanceRecordCount == right.provenanceRecordCount &&
+         left.localNameUtf8Bytes == right.localNameUtf8Bytes;
+}
+
+struct V4MaterializationInventory {
+  const ProjectFormatV4TopologyAggregateCandidate& topology;
+  std::unordered_map<std::string, std::size_t> byPath;
+  std::vector<bool> consumed;
+  QString* error{};
+
+  bool initialize() {
+    const std::size_t count = topology.payload.topologySites.size();
+    if (!topology.deferredUnsupported.empty() ||
+        topology.payload.envelope.deferredUnknowns.size() != 0 ||
+        topology.topologyReferences.size() != count ||
+        topology.topologyInspections.size() != count) {
+      setError(error,
+               QStringLiteral("v4 topology inventory is incomplete"));
+      return false;
+    }
+    consumed.assign(count, false);
+    byPath.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+      const auto& site = topology.payload.topologySites[index];
+      if (!topology.topologyReferences[index] ||
+          !topology.topologyInspections[index] ||
+          !byPath.emplace(site.path.toStdString(), index).second) {
+        setError(error,
+                 QStringLiteral("v4 topology inventory is not canonical"));
+        return false;
+      }
+    }
+    return true;
+  }
+
+  const DecodedProjectFormatV4TopologyReference* consume(
+      const QJsonValue& authored, const QString& path,
+      TopologyKind expectedKind) {
+    const auto found = byPath.find(path.toStdString());
+    if (found == byPath.end()) {
+      setError(error, path + QStringLiteral(": topology site is missing"));
+      return nullptr;
+    }
+    const std::size_t index = found->second;
+    const auto& site = topology.payload.topologySites[index];
+    const QJsonObject object = authored.toObject();
+    const QJsonValue tagged = object.contains("reference")
+                                  ? object.value("reference")
+                                  : authored;
+    if (consumed[index] || site.expectedKind != expectedKind ||
+        site.authoredReference != tagged) {
+      setError(error, path +
+                          QStringLiteral(": topology site does not match payload"));
+      return nullptr;
+    }
+    consumed[index] = true;
+    return &*topology.topologyReferences[index];
+  }
+
+  bool consumeFace(const QJsonValue& authored, const QString& path,
+                   FaceReference* result) {
+    const auto* reference = consume(authored, path, TopologyKind::Face);
+    const auto* face = reference ? std::get_if<FaceReference>(reference)
+                                 : nullptr;
+    if (!face || !result) {
+      if (reference)
+        setError(error, path + QStringLiteral(": expected a face carrier"));
+      return false;
+    }
+    *result = *face;
+    return true;
+  }
+
+  bool consumeEdge(const QJsonValue& authored, const QString& path,
+                   EdgeReference* result) {
+    const auto* reference = consume(authored, path, TopologyKind::Edge);
+    const auto* edge = reference ? std::get_if<EdgeReference>(reference)
+                                 : nullptr;
+    if (!edge || !result) {
+      if (reference)
+        setError(error, path + QStringLiteral(": expected an edge carrier"));
+      return false;
+    }
+    *result = *edge;
+    return true;
+  }
+
+  bool completelyConsumed() const {
+    return std::all_of(consumed.begin(), consumed.end(),
+                       [](bool value) { return value; });
+  }
+};
+
 struct DecodedPartPayload {
   std::optional<qint64> sourceVersion;
   ProjectPayloadKind payloadKind{ProjectPayloadKind::None};
@@ -6159,6 +6387,96 @@ MaterializedPartPayloadResult materializeAndRecomputePartPayload(
 }
 
 }  // namespace
+
+detail::ProjectFormatV4DocumentMaterializationResult
+detail::materializeProjectFormatV4Document(
+    const ProjectFormatV4ModelCandidate& candidate) {
+  ProjectFormatV4DocumentMaterializationResult result;
+  try {
+    const QJsonObject authoredRoot =
+        candidate.legacySketch.topology.payload.envelope.authoredRoot;
+    auto envelope = scanProjectFormatV4Envelope(
+        QJsonDocument(authoredRoot).toJson(QJsonDocument::Compact));
+    if (!envelope.hasCandidate()) {
+      result.error = QStringLiteral("v4 envelope revalidation failed: %1")
+                         .arg(envelope.error);
+      return result;
+    }
+    auto payload = scanProjectFormatV4Payload(std::move(*envelope.candidate));
+    if (!payload.hasCandidate()) {
+      result.error = QStringLiteral("v4 payload revalidation failed: %1")
+                         .arg(payload.error);
+      return result;
+    }
+    auto validated = validateProjectFormatV4Model(std::move(*payload.candidate));
+    if (validated.status != ProjectFormatV4ModelValidationStatus::Candidate ||
+        !validated.candidate) {
+      result.error = QStringLiteral("v4 model revalidation failed: %1")
+                         .arg(validated.error);
+      return result;
+    }
+    if (!equivalentV4ModelCandidate(candidate, *validated.candidate)) {
+      result.error = QStringLiteral("v4 candidate does not match authored root");
+      return result;
+    }
+
+    ProjectData legacy;
+    bool unsupported = false;
+    QString error;
+    if (!loadV3Root(authoredRoot, &legacy, &error, &unsupported)) {
+      result.error = error.isEmpty()
+                         ? QStringLiteral("v4 sketch materialization failed")
+                         : std::move(error);
+      return result;
+    }
+
+    const auto& topology = validated.candidate->legacySketch.topology;
+    V4MaterializationInventory inventory{topology, {}, {}, &error};
+    if (!inventory.initialize()) {
+      result.error = std::move(error);
+      return result;
+    }
+    const auto faceReference =
+        [&inventory](const QJsonValue& authored, const QString& path,
+                     FaceReference* face) {
+          return inventory.consumeFace(authored, path, face);
+        };
+    const auto edgeReference =
+        [&inventory](const QJsonValue& authored, const QString& path,
+                     EdgeReference* edge) {
+          return inventory.consumeEdge(authored, path, edge);
+        };
+
+    Document materialized;
+    {
+      ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
+      if (!populateDocumentRoot(authoredRoot, legacy, &materialized,
+                                faceReference, edgeReference, &error)) {
+        result.error = error.isEmpty()
+                           ? QStringLiteral("v4 document materialization failed")
+                           : std::move(error);
+        return result;
+      }
+    }
+    if (!inventory.completelyConsumed()) {
+      result.error = QStringLiteral("v4 topology inventory was not fully consumed");
+      return result;
+    }
+    result.status =
+        ProjectFormatV4DocumentMaterializationStatus::Materialized;
+    result.document.emplace(std::move(materialized));
+    return result;
+  } catch (const Standard_Failure& failure) {
+    result.error = QStringLiteral("OCCT failure while materializing v4: %1")
+                       .arg(QString::fromUtf8(failure.what()));
+  } catch (const std::exception& exception) {
+    result.error = QStringLiteral("failure while materializing v4: %1")
+                       .arg(QString::fromUtf8(exception.what()));
+  } catch (...) {
+    result.error = QStringLiteral("unknown failure while materializing v4");
+  }
+  return result;
+}
 
 StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
   StagedProjectLoad result;

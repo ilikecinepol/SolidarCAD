@@ -154,6 +154,7 @@ add_library(solidar_project
   project/internal/ProjectFormatV3ModelSemanticValidation.h
   project/internal/ProjectFormatV3TypedSketchValidation.h
   project/internal/ProjectFormatV4DocumentEncoding.h
+  project/internal/ProjectFormatV4DocumentMaterialization.h
   project/ProjectFormatV4ReferenceDecoder.cpp
   project/ProjectFormatV4ReferenceDecoder.h
   project/ProjectFormatV4ReferenceEncoder.h
