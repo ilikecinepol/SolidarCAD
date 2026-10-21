@@ -266,6 +266,48 @@ int main() {
     CHECK(root.value("model").toObject() == expectedModel);
   }
 
+  // Runtime enrichment of an index-only V1 sketch support is transient. The
+  // v4 encoder must persist the authored carrier literally, without deriving
+  // a tag or signature from the current B-Rep.
+  {
+    Document document;
+    auto& body = document.addBody(kBody, "runtime support owner");
+    body.addFeature(
+        std::make_unique<ImportedShapeFeature>(kProducer, box(), "seed"));
+    CHECK(document.recompute());
+    auto& sketch = document.addSketch(kSketch, "runtime enriched support");
+    const FaceReference authored(kBody, kProducer, 0);
+    sketch.support = {SketchSupportType::Face, authored};
+    document.updateSketchPlacements();
+    CHECK(sketch.supportResolved);
+    CHECK(sketch.support.face == authored);
+    CHECK(sketch.effectiveSupportFace);
+    CHECK(sketch.effectiveSupportFace->signature());
+
+    const auto encoded =
+        encodeProjectFormatV4DocumentRoot(document, metadata());
+    CHECK(encoded.succeeded());
+    const auto reference =
+        encoded.root->value("model")
+            .toObject()
+            .value("sketches")
+            .toArray()[0]
+            .toObject()
+            .value("support")
+            .toObject()
+            .value("reference")
+            .toObject();
+    const QJsonObject expected{{"referenceVersion", "V1"},
+                               {"bodyId", static_cast<qint64>(kBody)},
+                               {"featureId",
+                                static_cast<qint64>(kProducer)},
+                               {"kind", "Face"},
+                               {"legacyIndex", 0}};
+    CHECK(reference == expected);
+    CHECK(!reference.contains("persistentTag"));
+    CHECK(!reference.contains("signature"));
+  }
+
   // One typed fixture exercises all 13 codec tokens, all nine topology-site
   // families, mixed V1/V2 arrays and the P2 accounting oracle.
   {

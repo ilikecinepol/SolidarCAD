@@ -148,6 +148,59 @@ int main() {
     CHECK(topologyDocument.findSketch(supportedId)->support.face ==
           created.reference);
 
+    // Ordinary placement reconciliation may enrich an index-only V1 support
+    // for runtime stability, but the authored carrier remains byte-exact.
+    auto& legacySupported = topologyDocument.addSketch("legacy supported");
+    const auto legacySupportedId = legacySupported.id;
+    const solidar::FaceReference authoredLegacySupport(body.id(), sourceId, 0);
+    legacySupported.support = {solidar::SketchSupportType::Face,
+                               authoredLegacySupport};
+    topologyDocument.updateSketchPlacements();
+    const auto* legacyState =
+        topologyDocument.findSketch(legacySupportedId);
+    CHECK(legacyState);
+    CHECK(legacyState->supportResolved);
+    CHECK(legacyState->support.face == authoredLegacySupport);
+    CHECK(legacyState->support.face.isV1());
+    CHECK(legacyState->support.face.persistentTag().empty());
+    CHECK(!legacyState->support.face.signature());
+    CHECK(legacyState->effectiveSupportAuthoredFace == authoredLegacySupport);
+    CHECK(legacyState->effectiveSupportFace);
+    CHECK(legacyState->effectiveSupportFace->isV1());
+    CHECK(legacyState->effectiveSupportFace->signature());
+    const auto effectiveLegacySupport = *legacyState->effectiveSupportFace;
+    topologyDocument.updateSketchPlacements();
+    legacyState = topologyDocument.findSketch(legacySupportedId);
+    CHECK(legacyState->support.face == authoredLegacySupport);
+    CHECK(legacyState->effectiveSupportFace == effectiveLegacySupport);
+
+    // A direct authored edit invalidates the cached enrichment before the new
+    // reference is resolved.
+    auto invalidAuthoredSupport = authoredLegacySupport;
+    invalidAuthoredSupport.faceIndex() = 999999;
+    auto* editableLegacyState =
+        topologyDocument.findSketch(legacySupportedId);
+    CHECK(editableLegacyState);
+    editableLegacyState->support.face = invalidAuthoredSupport;
+    topologyDocument.updateSketchPlacements();
+    legacyState = topologyDocument.findSketch(legacySupportedId);
+    CHECK(!legacyState->supportResolved);
+    CHECK(legacyState->effectiveSupportAuthoredFace == invalidAuthoredSupport);
+    CHECK(!legacyState->effectiveSupportFace);
+
+    editableLegacyState = topologyDocument.findSketch(legacySupportedId);
+    CHECK(editableLegacyState);
+    editableLegacyState->support.face = authoredLegacySupport;
+    topologyDocument.updateSketchPlacements();
+    legacyState = topologyDocument.findSketch(legacySupportedId);
+    CHECK(legacyState->supportResolved);
+    CHECK(legacyState->support.face == authoredLegacySupport);
+    CHECK(legacyState->effectiveSupportFace == effectiveLegacySupport);
+    CHECK(topologyDocument.recompute());
+    legacyState = topologyDocument.findSketch(legacySupportedId);
+    CHECK(legacyState->support.face == authoredLegacySupport);
+    CHECK(legacyState->effectiveSupportFace == effectiveLegacySupport);
+
     // V1 enrichment is transactional too: resolving an index-only curved
     // face must not leave a signature/tag behind when placement rejects it.
     solidar::Document curvedDocument;
@@ -186,6 +239,7 @@ int main() {
     CHECK(curvedState->support.face == supportBefore);
     CHECK(curvedState->support.face.isV1());
     CHECK(!curvedState->support.face.signature());
+    CHECK(!curvedState->effectiveSupportFace);
   }
 
   {

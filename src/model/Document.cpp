@@ -1031,6 +1031,8 @@ bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
   // Commit support, placement and dirty state only after the entire reference
   // has resolved. A failed attachment must not replace the previous support.
   sketch->support = {SketchSupportType::Face, std::move(reference)};
+  sketch->effectiveSupportAuthoredFace.reset();
+  sketch->effectiveSupportFace.reset();
   sketch->placement = resolvedPlacement.placement;
   sketch->supportResolved = true;
   sketch->placementDirty = false;
@@ -1055,10 +1057,26 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
   sketch.placementDirty = false;
   ++sketch.placementRevision;
   if (sketch.support.type != SketchSupportType::Face) {
+    sketch.effectiveSupportAuthoredFace.reset();
+    sketch.effectiveSupportFace.reset();
     sketch.supportResolved = true;
     return true;
   }
-  auto& reference = sketch.support.face;
+  const FaceReference& authoredReference = sketch.support.face;
+  const auto* authoredLegacy = authoredReference.v1();
+  const bool needsEffectiveSupport =
+      authoredLegacy && !authoredLegacy->faceSignature;
+  if (!needsEffectiveSupport) {
+    sketch.effectiveSupportAuthoredFace.reset();
+    sketch.effectiveSupportFace.reset();
+  } else if (!sketch.effectiveSupportAuthoredFace ||
+             *sketch.effectiveSupportAuthoredFace != authoredReference) {
+    sketch.effectiveSupportAuthoredFace = authoredReference;
+    sketch.effectiveSupportFace.reset();
+  }
+  const FaceReference& reference = sketch.effectiveSupportFace
+                                       ? *sketch.effectiveSupportFace
+                                       : authoredReference;
   const ShapeFeature* feature =
       findFeature(reference.bodyId(), reference.featureId());
   if (!feature || !feature->isValid() || !feature->shape()) {
@@ -1090,7 +1108,10 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
   const auto resolved = resolveFacePlacement(*resolution.subshape);
   sketch.supportResolved = resolved.resolved && resolved.planar;
   if (sketch.supportResolved) {
-    reference = std::move(candidate);
+    if (candidate != authoredReference)
+      sketch.effectiveSupportFace = std::move(candidate);
+    else
+      sketch.effectiveSupportFace.reset();
     sketch.placement = resolved.placement;
   }
   return sketch.supportResolved;

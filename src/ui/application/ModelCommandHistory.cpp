@@ -344,11 +344,15 @@ std::size_t bodyOwnedBytes(const Body& body) {
 }
 
 std::size_t documentSketchOwnedBytes(const DocumentSketch& item) {
-  return sizeof(DocumentSketch) + item.name.capacity() +
-         item.geometry.ownedBytes() +
-         (item.support.type == SketchSupportType::Face
-              ? topologyReferenceBytes(item.support.face)
-              : 0U);
+  std::size_t bytes = sizeof(DocumentSketch) + item.name.capacity() +
+                      item.geometry.ownedBytes();
+  if (item.support.type == SketchSupportType::Face)
+    bytes += topologyReferenceBytes(item.support.face);
+  if (item.effectiveSupportAuthoredFace)
+    bytes += topologyReferenceBytes(*item.effectiveSupportAuthoredFace);
+  if (item.effectiveSupportFace)
+    bytes += topologyReferenceBytes(*item.effectiveSupportFace);
+  return bytes;
 }
 
 bool sameReferenceImage(const ReferenceImage& left,

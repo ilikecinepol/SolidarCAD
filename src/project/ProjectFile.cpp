@@ -3798,7 +3798,13 @@ static bool encodeCurrentPartRoot(
         if (!encodeFace(item.support.face, &encoded)) return false;
         support["reference"] = encoded.value("reference");
       } else {
-        const QJsonObject encoded = savedFaceReference(item.support.face);
+        const FaceReference& persistedFace =
+            item.effectiveSupportAuthoredFace &&
+                    *item.effectiveSupportAuthoredFace == item.support.face &&
+                    item.effectiveSupportFace
+                ? *item.effectiveSupportFace
+                : item.support.face;
+        const QJsonObject encoded = savedFaceReference(persistedFace);
         for (auto it = encoded.constBegin(); it != encoded.constEnd(); ++it)
           support[it.key()] = it.value();
       }

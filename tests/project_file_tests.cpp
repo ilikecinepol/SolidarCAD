@@ -644,6 +644,63 @@ int main(int argc, char* argv[]) {
     CHECK(clone->kind() == feature->kind());
   }
 
+  // The v3 compatibility writer retains its historical recompute-time V1
+  // enrichment even though the authored sketch support is now kept exact for
+  // v4 persistence.
+  {
+    constexpr solidar::SketchId kProfileId = 71;
+    constexpr solidar::SketchId kSupportId = 72;
+    constexpr solidar::BodyId kBodyId = 73;
+    constexpr solidar::FeatureId kExtrudeId = 74;
+    solidar::Document document;
+    auto& profile = document.addSketch(kProfileId, "profile", {});
+    profile.geometry.addRectangle({0.0, 0.0}, {10.0, 8.0});
+    auto& body = document.addBody(kBodyId, "body");
+    body.addFeature(std::make_unique<solidar::ExtrudeFeature>(
+        kExtrudeId, kProfileId, 5.0, "extrude"));
+    CHECK(document.recompute());
+    const auto* extrude = document.findFeature(kExtrudeId);
+    CHECK(extrude && extrude->shape());
+    const auto planar = solidar::test::topPlanarFace(*extrude->shape(), 5.0);
+    CHECK(planar);
+
+    auto& supported = document.addSketch(kSupportId, "supported", {});
+    const solidar::FaceReference authored(kBodyId, kExtrudeId, *planar);
+    supported.support = {solidar::SketchSupportType::Face, authored};
+    document.updateSketchPlacements();
+    CHECK(supported.supportResolved);
+    CHECK(supported.support.face == authored);
+    CHECK(!supported.support.face.signature());
+    CHECK(supported.effectiveSupportFace);
+    CHECK(supported.effectiveSupportFace->signature());
+
+    const QString path =
+        directory.filePath(QStringLiteral("v3-runtime-support-cache.solidar"));
+    QString saveError;
+    CHECK(solidar::project::ProjectFile::saveDocument(path, document,
+                                                       &saveError));
+    QFile file(path);
+    CHECK(file.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(file.readAll()).object();
+    CHECK(root.value("version").toInt() == 3);
+    const auto persistedSupport =
+        root.value("model")
+            .toObject()
+            .value("sketches")
+            .toArray()[1]
+            .toObject()
+            .value("support")
+            .toObject();
+    CHECK(persistedSupport.value("bodyId").toInteger() ==
+          static_cast<qint64>(kBodyId));
+    CHECK(persistedSupport.value("featureId").toInteger() ==
+          static_cast<qint64>(kExtrudeId));
+    CHECK(persistedSupport.value("faceIndex").toInteger() ==
+          static_cast<qint64>(*planar));
+    CHECK(persistedSupport.value("signature").isObject());
+    CHECK(document.findSketch(kSupportId)->support.face == authored);
+  }
+
   // current_part_encoder_semantics_and_rebuild_oracle
   // The public writer boundary must preserve the authored v3 semantics while
   // the decoder rebuilds equivalent transient B-Rep independently.

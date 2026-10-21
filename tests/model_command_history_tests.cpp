@@ -461,6 +461,35 @@ int main() {
     CHECK(longMetrics.retainedBytes > shortMetrics.retainedBytes + 3000);
   }
 
+  // Runtime sketch-support cache strings are owned by the cold history copy
+  // and therefore contribute their dynamic storage to the retained budget.
+  {
+    constexpr std::size_t kTagBytes = 4096;
+    Document withoutCache;
+    auto& uncached = withoutCache.addSketch(903, "uncached support", {});
+    const FaceReference authored(904, 905, 0,
+                                 std::string(kTagBytes, 't'));
+    uncached.support = {SketchSupportType::Face, authored};
+
+    Document withCache = withoutCache;
+    auto* cached = withCache.findSketch(903);
+    CHECK(cached);
+    cached->effectiveSupportAuthoredFace = authored;
+    auto effective = authored;
+    effective.signature() = FaceSignature{};
+    cached->effectiveSupportFace = std::move(effective);
+
+    const Document empty;
+    const auto uncachedMetrics =
+        ModelCommandHistory::inspectDelta(empty, withoutCache);
+    const auto cachedMetrics =
+        ModelCommandHistory::inspectDelta(empty, withCache);
+    CHECK(uncachedMetrics.sliceCount == 1);
+    CHECK(cachedMetrics.sliceCount == 1);
+    CHECK(cachedMetrics.retainedBytes >=
+          uncachedMetrics.retainedBytes + 2 * kTagBytes);
+  }
+
   // A v2 reference embedded in Document state also survives the cold delta
   // clone and the recompute performed by both undo and redo.
   {

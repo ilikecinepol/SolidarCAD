@@ -35,6 +35,12 @@ struct DocumentSketch {
   sketch::Sketch geometry;
   SketchPlacement placement{SketchPlacement::xy()};
   SketchSupport support{};
+  // Runtime-only compatibility cache for index-only V1 face supports. The
+  // authored support above remains the sole persistence source for v4. The
+  // snapshot prevents a stale enriched reference from surviving a direct
+  // authored-support edit.
+  std::optional<FaceReference> effectiveSupportAuthoredFace;
+  std::optional<FaceReference> effectiveSupportFace;
   bool supportResolved{true};
   bool placementDirty{true};
   // Monotonic diagnostic revision for deterministic placement scheduling
