@@ -1,6 +1,11 @@
 #include "project/ProjectFile.h"
 #include "project/internal/ProjectFormatV3ModelSemanticValidation.h"
 #include "project/internal/ProjectFormatV3TypedSketchValidation.h"
+#include "project/internal/ProjectFormatV4DocumentEncoding.h"
+#include "project/ProjectFormatV4EnvelopeDecoder.h"
+#include "project/ProjectFormatV4ModelValidator.h"
+#include "project/ProjectFormatV4PayloadScanner.h"
+#include "project/ProjectFormatV4ReferenceEncoder.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -1605,6 +1610,8 @@ struct FeatureValidationContext {
 struct FeatureEncodeContext {
   const Document& document;
   QString* error{};
+  std::function<bool(const FaceReference&, QJsonObject*)> faceReference;
+  std::function<bool(const EdgeReference&, QJsonObject*)> edgeReference;
 };
 
 struct FeatureDecodeContext {
@@ -2030,8 +2037,11 @@ bool encodeExtrude(const Feature& feature, QJsonObject& saved,
   saved["reversed"] = extrude->reversed();
   if (extrude->isFaceSource()) {
     saved["sourceKind"] = QStringLiteral("face");
-    if (const auto face = extrude->faceReference())
-      saved["face"] = savedFaceReference(*face);
+    if (const auto face = extrude->faceReference()) {
+      QJsonObject encoded;
+      if (!context.faceReference(*face, &encoded)) return false;
+      saved["face"] = encoded;
+    }
   } else {
     saved["sourceKind"] = QStringLiteral("sketch");
     saved["sketchId"] = static_cast<qint64>(extrude->profileSketchId());
@@ -2093,14 +2103,9 @@ bool encodeEdgeTreatment(const Feature& feature, QJsonObject& saved,
   saved[QLatin1String(parameterKey)] = parameterValue;
   QJsonArray edges;
   for (const auto& edge : treatment->edges()) {
-    const auto encoded = savedEdgeReference(edge);
-    if (!encoded) {
-      setError(context.error,
-               QString::fromUtf8(
-                   "Сохранение ссылок v2 на ребра пока не поддерживается."));
-      return false;
-    }
-    edges.append(*encoded);
+    QJsonObject encoded;
+    if (!context.edgeReference(edge, &encoded)) return false;
+    edges.append(encoded);
   }
   saved["edges"] = edges;
   return true;
@@ -2128,8 +2133,11 @@ bool encodeMirror(const Feature& feature, QJsonObject& saved,
   if (!mirror) return false;
   saved["sourceFeatureId"] = static_cast<qint64>(mirror->sourceFeatureId());
   saved["plane"] = static_cast<int>(mirror->plane());
-  if (mirror->planeFace())
-    saved["planeFace"] = savedFaceReference(*mirror->planeFace());
+  if (mirror->planeFace()) {
+    QJsonObject encoded;
+    if (!context.faceReference(*mirror->planeFace(), &encoded)) return false;
+    saved["planeFace"] = encoded;
+  }
   return true;
 }
 
@@ -2190,8 +2198,11 @@ bool encodeShell(const Feature& feature, QJsonObject& saved,
   saved["thicknessMm"] = shell->thicknessMm();
   saved["outside"] = shell->outside();
   QJsonArray faces;
-  for (const auto& face : shell->removedFaces())
-    faces.append(savedFaceReference(face));
+  for (const auto& face : shell->removedFaces()) {
+    QJsonObject encoded;
+    if (!context.faceReference(face, &encoded)) return false;
+    faces.append(encoded);
+  }
   saved["removedFaces"] = faces;
   return true;
 }
@@ -2204,9 +2215,12 @@ bool encodeDraft(const Feature& feature, QJsonObject& saved,
   saved["angleDeg"] = draft->angleDeg();
   saved["reversed"] = draft->reversed();
   saved["neutralPlaneType"] = static_cast<int>(draft->neutralPlane().type);
-  if (draft->neutralPlane().face)
-    saved["neutralPlaneFace"] =
-        savedFaceReference(*draft->neutralPlane().face);
+  if (draft->neutralPlane().face) {
+    QJsonObject encoded;
+    if (!context.faceReference(*draft->neutralPlane().face, &encoded))
+      return false;
+    saved["neutralPlaneFace"] = encoded;
+  }
   saved["pullDirectionType"] = static_cast<int>(draft->pullDirection().type);
   saved["pullDirectionSketchId"] =
       static_cast<qint64>(draft->pullDirection().sketchId);
@@ -2229,18 +2243,16 @@ bool encodeDraft(const Feature& feature, QJsonObject& saved,
     saved["pullDirectionLineId"] = static_cast<qint64>(*lineIndex + 1);
   }
   if (draft->rotationEdge()) {
-    const auto encoded = savedEdgeReference(*draft->rotationEdge());
-    if (!encoded) {
-      setError(context.error,
-               QString::fromUtf8(
-                   "Сохранение ссылок v2 на ребра пока не поддерживается."));
-      return false;
-    }
-    saved["rotationEdge"] = *encoded;
+    QJsonObject encoded;
+    if (!context.edgeReference(*draft->rotationEdge(), &encoded)) return false;
+    saved["rotationEdge"] = encoded;
   }
   QJsonArray faces;
-  for (const auto& face : draft->draftedFaces())
-    faces.append(savedFaceReference(face));
+  for (const auto& face : draft->draftedFaces()) {
+    QJsonObject encoded;
+    if (!context.faceReference(face, &encoded)) return false;
+    faces.append(encoded);
+  }
   saved["draftedFaces"] = faces;
   return true;
 }
@@ -3159,8 +3171,9 @@ bool ProjectFile::create(const QString& path, QString* error) {
   return saveDocument(path, Document{}, error);
 }
 
-static bool serializedProjectRoot(const QString& path, const ProjectData& data,
-                                  QJsonObject* result, QString* error) {
+static bool serializedProjectRootWithMetadata(
+    const QString& name, const QString& createdAt, const ProjectData& data,
+    QJsonObject* result, QString* error) {
   if (!result) {
     setError(error, QString::fromUtf8("Не задано хранилище для проекта."));
     return false;
@@ -3169,8 +3182,8 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
   root["format"] = "solidar-project";
   root["version"] = 1;
   root[kConstraintTypeEncodingKey] = kStableConstraintTypeEncoding;
-  root["name"] = QFileInfo(path).completeBaseName();
-  root["createdAt"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+  root["name"] = name;
+  root["createdAt"] = createdAt;
   root["document"] = QJsonObject{{"widthMm", data.box.widthMm},
                                   {"heightMm", data.box.depthMm},
                                   {"extrusionMm", data.box.heightMm}};
@@ -3523,6 +3536,14 @@ static bool serializedProjectRoot(const QString& path, const ProjectData& data,
   return true;
 }
 
+static bool serializedProjectRoot(const QString& path, const ProjectData& data,
+                                  QJsonObject* result, QString* error) {
+  return serializedProjectRootWithMetadata(
+      QFileInfo(path).completeBaseName(),
+      QDateTime::currentDateTimeUtc().toString(Qt::ISODate), data, result,
+      error);
+}
+
 bool ProjectFile::save(const QString& path, const ProjectData& data,
                        QString* error) {
   const auto saveOperation = [&]() -> bool {
@@ -3581,9 +3602,29 @@ bool ProjectFile::validate(const QString& path, QString* error) {
   return false;
 }
 
-static bool encodeCurrentPartV3Root(const QString& path,
-                                    const Document& document,
-                                    QJsonObject* result, QString* error) {
+enum class ProjectDocumentEncodingDialect { V3, V4 };
+
+struct ProjectDocumentEncodingStats {
+  std::size_t topologyReferenceCount{};
+  std::size_t provenanceRecordCount{};
+  std::size_t localNameUtf8Bytes{};
+};
+
+static bool checkedEncodingAdd(std::size_t delta, std::size_t limit,
+                               std::size_t* value) {
+  if (!value || *value > limit || delta > limit - *value) return false;
+  *value += delta;
+  return true;
+}
+
+static bool encodeCurrentPartRoot(
+    const QString& name, const QString& createdAt, const Document& document,
+    ProjectDocumentEncodingDialect dialect, QJsonObject* result,
+    ProjectDocumentEncodingStats* resultStats, QString* error) {
+  if (!result) {
+    setError(error, QString::fromUtf8("Не задано хранилище для проекта."));
+    return false;
+  }
   ProjectData legacy;
   legacy.box = document.box();
   for (const auto& item : document.sketches()) {
@@ -3596,8 +3637,13 @@ static bool encodeCurrentPartV3Root(const QString& path,
     }
   }
   QJsonObject root;
-  if (!serializedProjectRoot(path, legacy, &root, error)) return false;
-  root["version"] = 3;
+  if (!serializedProjectRootWithMetadata(name, createdAt, legacy, &root,
+                                         error))
+    return false;
+  root["version"] =
+      dialect == ProjectDocumentEncodingDialect::V4 ? 4 : 3;
+  if (dialect == ProjectDocumentEncodingDialect::V4)
+    root["capabilities"] = QJsonArray{QStringLiteral("persistent-topology-v2")};
   auto persistedSketches = root.value("sketches").toArray();
   for (qsizetype position = 0; position < persistedSketches.size();
        ++position) {
@@ -3608,18 +3654,81 @@ static bool encodeCurrentPartV3Root(const QString& path,
   }
   root["sketches"] = persistedSketches;
 
+  ProjectDocumentEncodingStats stats;
+  std::size_t featureTopologyReferenceCount = 0;
+  const auto accountReference =
+      [&](const ProjectFormatV4ReferenceEncodeResult& encoded,
+          QJsonObject* target) {
+        if (!target || !encoded.succeeded()) {
+          setError(error, encoded.error.isEmpty()
+                              ? QString::fromUtf8(
+                                    "Не удалось кодировать топологическую ссылку.")
+                              : encoded.error);
+          return false;
+        }
+        if (!checkedEncodingAdd(
+                1, static_cast<std::size_t>(
+                       ProjectFile::kMaximumFeatureTopologyReferences),
+                &featureTopologyReferenceCount) ||
+            !checkedEncodingAdd(
+                1, static_cast<std::size_t>(
+                       ProjectFile::kMaximumDocumentTopologyReferences),
+                &stats.topologyReferenceCount) ||
+            !checkedEncodingAdd(
+                encoded.provenanceRecordCount,
+                kProjectFormatV4MaximumProvenanceRecords,
+                &stats.provenanceRecordCount) ||
+            !checkedEncodingAdd(encoded.localNameUtf8Bytes,
+                                kProjectFormatV4MaximumLocalNameUtf8Bytes,
+                                &stats.localNameUtf8Bytes)) {
+          setError(error,
+                   QString::fromUtf8(
+                       "Топологические ссылки документа превышают лимит."));
+          return false;
+        }
+        *target = QJsonObject{{"reference", *encoded.reference}};
+        return true;
+      };
+  const auto encodeFace = [&](const FaceReference& face,
+                              QJsonObject* target) {
+    if (dialect == ProjectDocumentEncodingDialect::V4)
+      return accountReference(encodeProjectFormatV4TopologyReference(face),
+                              target);
+    if (!target) return false;
+    *target = savedFaceReference(face);
+    return true;
+  };
+  const auto encodeEdge = [&](const EdgeReference& edge,
+                              QJsonObject* target) {
+    if (dialect == ProjectDocumentEncodingDialect::V4)
+      return accountReference(encodeProjectFormatV4TopologyReference(edge),
+                              target);
+    if (!target) return false;
+    const auto encoded = savedEdgeReference(edge);
+    if (!encoded) {
+      setError(error,
+               QString::fromUtf8(
+                   "Сохранение ссылок v2 на ребра пока не поддерживается."));
+      return false;
+    }
+    *target = *encoded;
+    return true;
+  };
+
   QJsonArray sketches;
   for (const auto& item : document.sketches()) {
+    featureTopologyReferenceCount = 0;
     QJsonObject support{{"type", static_cast<int>(item.support.type)}};
     if (item.support.type == SketchSupportType::Face) {
-      support["bodyId"] = static_cast<qint64>(item.support.face.bodyId());
-      support["featureId"] = static_cast<qint64>(item.support.face.featureId());
-      support["faceIndex"] = static_cast<qint64>(item.support.face.faceIndex());
-      if (!item.support.face.persistentTag().empty())
-        support["persistentTag"] =
-            QString::fromStdString(item.support.face.persistentTag());
-      if (item.support.face.signature())
-        support["signature"] = faceSignature(*item.support.face.signature());
+      if (dialect == ProjectDocumentEncodingDialect::V4) {
+        QJsonObject encoded;
+        if (!encodeFace(item.support.face, &encoded)) return false;
+        support["reference"] = encoded.value("reference");
+      } else {
+        const QJsonObject encoded = savedFaceReference(item.support.face);
+        for (auto it = encoded.constBegin(); it != encoded.constEnd(); ++it)
+          support[it.key()] = it.value();
+      }
     }
     sketches.append(QJsonObject{
         {"id", static_cast<qint64>(item.id)},
@@ -3639,6 +3748,7 @@ static bool encodeCurrentPartV3Root(const QString& path,
   for (const auto& body : document.bodies()) {
     QJsonArray features;
     for (const auto& feature : body.features()) {
+      featureTopologyReferenceCount = 0;
       const auto* codec = findFeatureCodec(feature->kind());
       if (!codec) {
         setError(error, QString::fromUtf8("Неподдерживаемый FeatureKind."));
@@ -3650,8 +3760,9 @@ static bool encodeCurrentPartV3Root(const QString& path,
           {"type", QString::fromLatin1(
                        codec->token.data(),
                        static_cast<qsizetype>(codec->token.size()))}};
-      if (!codec->encode(*feature, saved,
-                         FeatureEncodeContext{document, error}))
+      if (!codec->encode(
+              *feature, saved,
+              FeatureEncodeContext{document, error, encodeFace, encodeEdge}))
         return false;
       features.append(saved);
     }
@@ -3688,9 +3799,84 @@ static bool encodeCurrentPartV3Root(const QString& path,
                                {"referenceImages", referenceImages}};
 
   if (!upgradeSketchSchemaToV3(&root, legacy, error)) return false;
-  if (!validateV2Root(root, legacy, error)) return false;
+  if (dialect == ProjectDocumentEncodingDialect::V3) {
+    if (!validateV2Root(root, legacy, error)) return false;
+  } else {
+    const QByteArray compact = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    if (compact.size() > ProjectFile::kMaximumFileBytes) {
+      setError(error,
+               QString::fromUtf8("Проект превышает допустимый размер файла."));
+      return false;
+    }
+    auto envelope = scanProjectFormatV4Envelope(compact);
+    if (!envelope.hasCandidate()) {
+      setError(error, QStringLiteral("v4 envelope self-validation failed: %1")
+                          .arg(envelope.error));
+      return false;
+    }
+    auto payload = scanProjectFormatV4Payload(std::move(*envelope.candidate));
+    if (!payload.hasCandidate()) {
+      setError(error, QStringLiteral("v4 payload self-validation failed: %1")
+                          .arg(payload.error));
+      return false;
+    }
+    auto model = validateProjectFormatV4Model(std::move(*payload.candidate));
+    if (model.status != ProjectFormatV4ModelValidationStatus::Candidate ||
+        !model.candidate) {
+      setError(error, QStringLiteral("v4 model self-validation failed: %1")
+                          .arg(model.error));
+      return false;
+    }
+    const auto& topology = model.candidate->legacySketch.topology;
+    if (topology.payload.envelope.authoredRoot != root ||
+        topology.topologyReferences.size() != stats.topologyReferenceCount ||
+        topology.provenanceRecordCount != stats.provenanceRecordCount ||
+        topology.localNameUtf8Bytes != stats.localNameUtf8Bytes ||
+        !std::all_of(topology.topologyReferences.begin(),
+                     topology.topologyReferences.end(),
+                     [](const auto& reference) { return reference.has_value(); })) {
+      setError(error,
+               QString::fromUtf8(
+                   "v4 self-validation returned inconsistent accounting."));
+      return false;
+    }
+  }
   *result = std::move(root);
+  if (resultStats) *resultStats = stats;
   return true;
+}
+
+static bool encodeCurrentPartV3Root(const QString& path,
+                                    const Document& document,
+                                    QJsonObject* result, QString* error) {
+  return encodeCurrentPartRoot(
+      QFileInfo(path).completeBaseName(),
+      QDateTime::currentDateTimeUtc().toString(Qt::ISODate), document,
+      ProjectDocumentEncodingDialect::V3, result, nullptr, error);
+}
+
+detail::ProjectFormatV4DocumentEncodeResult
+detail::encodeProjectFormatV4DocumentRoot(
+    const Document& document,
+    const ProjectFormatV4DocumentMetadata& metadata) {
+  ProjectFormatV4DocumentEncodeResult encoded;
+  QJsonObject root;
+  ProjectDocumentEncodingStats stats;
+  QString error;
+  if (!encodeCurrentPartRoot(metadata.name, metadata.createdAt, document,
+                             ProjectDocumentEncodingDialect::V4, &root,
+                             &stats, &error)) {
+    encoded.error = error.isEmpty()
+                        ? QStringLiteral("v4 document encoding failed")
+                        : std::move(error);
+    return encoded;
+  }
+  encoded.status = ProjectFormatV4DocumentEncodeStatus::Valid;
+  encoded.root = std::move(root);
+  encoded.topologyReferenceCount = stats.topologyReferenceCount;
+  encoded.provenanceRecordCount = stats.provenanceRecordCount;
+  encoded.localNameUtf8Bytes = stats.localNameUtf8Bytes;
+  return encoded;
 }
 
 static bool containsUnsupportedV2TopologyReference(const Document& document) {
