@@ -34,6 +34,11 @@ struct ProjectFormatV4TopologyAggregateCandidate {
   ProjectFormatV4PayloadCandidate payload;
   std::vector<std::optional<DecodedProjectFormatV4TopologyReference>>
       topologyReferences;
+  // One entry per payload.topologySites item. Recognized reference variants
+  // retain structural owner metadata even when their payload is unsupported;
+  // future opaque referenceVersion values remain std::nullopt.
+  std::vector<std::optional<ProjectFormatV4ReferenceInspection>>
+      topologyInspections;
   std::vector<ProjectFormatV4DeferredTopologyReference> deferredUnsupported;
   std::size_t provenanceRecordCount{};
   std::size_t localNameUtf8Bytes{};

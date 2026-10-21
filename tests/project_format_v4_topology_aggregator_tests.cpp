@@ -176,6 +176,8 @@ void checkCandidate(const ProjectFormatV4TopologyAggregateResult& result) {
   CHECK(result.hasCandidate());
   CHECK(result.candidate.has_value());
   CHECK(result.error.isEmpty());
+  CHECK(result.candidate->topologyInspections.size() ==
+        result.candidate->payload.topologySites.size());
 }
 
 void checkUnsupported(const ProjectFormatV4TopologyAggregateResult& result) {
@@ -184,6 +186,8 @@ void checkUnsupported(const ProjectFormatV4TopologyAggregateResult& result) {
   CHECK(result.hasCandidate());
   CHECK(result.candidate.has_value());
   CHECK(result.error.isEmpty());
+  CHECK(result.candidate->topologyInspections.size() ==
+        result.candidate->payload.topologySites.size());
 }
 
 void checkInvalid(const ProjectFormatV4TopologyAggregateResult& result) {
@@ -306,6 +310,9 @@ int main() {
     CHECK(result.allTopologyReferencesDecoded());
     const auto& candidate = *result.candidate;
     CHECK(candidate.topologyReferences.size() == 9);
+    CHECK(candidate.topologyInspections.size() == 9);
+    for (const auto& inspection : candidate.topologyInspections)
+      CHECK(inspection.has_value());
     CHECK(candidate.payload.topologySites == original.topologySites);
     CHECK(candidate.payload.featureOwners == original.featureOwners);
     CHECK(candidate.payload.envelope.authoredRoot ==
@@ -392,6 +399,7 @@ int main() {
     checkUnsupported(result);
     CHECK(result.candidate->topologyReferences.size() == 1);
     CHECK(!result.candidate->topologyReferences[0]);
+    CHECK(!result.candidate->topologyInspections[0]);
     CHECK(result.candidate->deferredUnsupported.size() == 1);
     CHECK(result.candidate->deferredUnsupported[0].path ==
           "$.model.bodies[0].features[0].face.reference");
@@ -407,6 +415,7 @@ int main() {
     CHECK(result.candidate->provenanceRecordCount == 1);
     CHECK(result.candidate->localNameUtf8Bytes == 17);
     CHECK(!result.candidate->topologyReferences[0]);
+    CHECK(result.candidate->topologyInspections[0].has_value());
 
     QJsonObject malformed = v1(QStringLiteral("Face"), 10, 2, 1);
     malformed.remove("legacyIndex");

@@ -1,4 +1,5 @@
 #include "project/ProjectFile.h"
+#include "project/internal/ProjectFormatV3ModelSemanticValidation.h"
 #include "project/internal/ProjectFormatV3TypedSketchValidation.h"
 
 #include <QByteArray>
@@ -23,6 +24,7 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <sstream>
@@ -1580,6 +1582,7 @@ struct FeatureValidationContext {
   qsizetype featureIndex{0};
   const QJsonArray& bodyFeatures;
   const FeatureSets& featureSets;
+  QString topologyPathPrefix;
   QString* error{};
   qint64& totalRebuildWork;
   std::function<bool(const QJsonObject&, const char*)> localFeature;
@@ -1588,6 +1591,13 @@ struct FeatureValidationContext {
       sketchLineReference;
   std::function<bool(const QJsonObject&, const char*, const char*)>
       externalFeature;
+  struct TopologyOwner {
+    bool available{false};
+    BodyId bodyId{kInvalidBodyId};
+    FeatureId featureId{kInvalidFeatureId};
+  };
+  std::function<bool(const QJsonValue&, bool, const QString&, TopologyOwner*)>
+      topologyReference;
   std::function<bool(qsizetype)> accountTopologyReferences;
   std::function<bool(const QJsonValue&)> accountProfileGeometry;
 };
@@ -1667,8 +1677,8 @@ bool validateExtrude(const QJsonObject& feature,
           context.error,
           QString::fromUtf8(
               "топологические ссылки документа превышают лимит."));
-    if (!validateTopologyReference(feature.value("face"), true,
-                                   context.featureSets, context.error))
+    if (!context.topologyReference(feature.value("face"), true,
+                                   context.topologyPathPrefix + ".face", nullptr))
       return false;
   } else if (!context.sketchReference(feature, "sketchId")) {
     return false;
@@ -1738,9 +1748,11 @@ bool validateEdgeTreatment(const QJsonObject& feature,
         context.error,
         QString::fromUtf8(
             "выбор рёбер превышает лимит топологических ссылок."));
-  for (const auto reference : references)
-    if (!validateTopologyReference(reference, false, context.featureSets,
-                                   context.error))
+  for (qsizetype index = 0; index < references.size(); ++index)
+    if (!context.topologyReference(
+            references[index], false,
+            QStringLiteral("%1.edges[%2]").arg(context.topologyPathPrefix).arg(index),
+            nullptr))
       return false;
   return finiteNumber(feature.value(QLatin1String(parameterKey)),
                       QString::fromLatin1(parameterKey),
@@ -1765,15 +1777,16 @@ bool validateMirror(const QJsonObject& feature,
                   static_cast<qint64>(MirrorPlane::YZ), context.error))
     return false;
   if (!feature.contains("planeFace")) return true;
+  FeatureValidationContext::TopologyOwner owner;
   if (!context.accountTopologyReferences(1) ||
-      !validateTopologyReference(feature.value("planeFace"), true,
-                                 context.featureSets, context.error))
+      !context.topologyReference(feature.value("planeFace"), true,
+                                 context.topologyPathPrefix + ".planeFace",
+                                 &owner))
     return false;
-  const auto face = feature.value("planeFace").toObject();
-  if (static_cast<BodyId>(face.value("bodyId").toInteger()) !=
-          context.bodyId ||
-      face.value("featureId").toInteger() !=
-          feature.value("sourceFeatureId").toInteger())
+  if (owner.available &&
+      (owner.bodyId != context.bodyId ||
+       owner.featureId != static_cast<FeatureId>(
+                              feature.value("sourceFeatureId").toInteger())))
     return invalid(
         context.error,
         QString::fromUtf8(
@@ -1905,9 +1918,13 @@ bool validateShell(const QJsonObject& feature,
         context.error,
         QString::fromUtf8(
             "выбор граней превышает лимит топологических ссылок."));
-  for (const auto face : faces)
-    if (!validateTopologyReference(face, true, context.featureSets,
-                                   context.error))
+  for (qsizetype index = 0; index < faces.size(); ++index)
+    if (!context.topologyReference(
+            faces[index], true,
+            QStringLiteral("%1.removedFaces[%2]")
+                .arg(context.topologyPathPrefix)
+                .arg(index),
+            nullptr))
       return false;
   return true;
 }
@@ -1937,29 +1954,35 @@ bool validateDraft(const QJsonObject& feature,
         context.error,
         QString::fromUtf8(
             "выбор граней Draft превышает лимит топологических ссылок."));
-  for (const auto face : faces)
-    if (!validateTopologyReference(face, true, context.featureSets,
-                                   context.error))
+  for (qsizetype index = 0; index < faces.size(); ++index)
+    if (!context.topologyReference(
+            faces[index], true,
+            QStringLiteral("%1.draftedFaces[%2]")
+                .arg(context.topologyPathPrefix)
+                .arg(index),
+            nullptr))
       return false;
   if (feature.value("neutralPlaneType").toInt() ==
       static_cast<int>(NeutralPlaneType::BodyFace)) {
     const auto neutralValue = feature.value("neutralPlaneFace");
-    if (!validateTopologyReference(neutralValue, true, context.featureSets,
-                                   context.error))
+    FeatureValidationContext::TopologyOwner owner;
+    if (!context.topologyReference(
+            neutralValue, true,
+            context.topologyPathPrefix + ".neutralPlaneFace", &owner))
       return false;
-    const auto neutral = neutralValue.toObject();
-    if (static_cast<BodyId>(neutral.value("bodyId").toInteger()) !=
-            context.bodyId ||
-        neutral.value("featureId").toInteger() !=
-            feature.value("sourceFeatureId").toInteger())
+    if (owner.available &&
+        (owner.bodyId != context.bodyId ||
+         owner.featureId != static_cast<FeatureId>(
+                                feature.value("sourceFeatureId").toInteger())))
       return invalid(
           context.error,
           QString::fromUtf8(
               "нейтральная грань Draft должна принадлежать исходной фиче текущего тела."));
   }
   if (feature.contains("rotationEdge") &&
-      !validateTopologyReference(feature.value("rotationEdge"), false,
-                                 context.featureSets, context.error))
+      !context.topologyReference(feature.value("rotationEdge"), false,
+                                 context.topologyPathPrefix + ".rotationEdge",
+                                 nullptr))
     return false;
   const int direction = feature.value("pullDirectionType").toInt();
   if (direction <= 2 &&
@@ -2778,6 +2801,21 @@ bool validateV2Root(const QJsonObject& root, const ProjectData& legacy,
                                     static_cast<FeatureId>(featureId),
                                     featureSets, error);
   };
+  auto topologyReference = [&](const QJsonValue& value, bool face,
+                               const QString&,
+                               FeatureValidationContext::TopologyOwner* owner) {
+    if (!validateTopologyReference(value, face, featureSets, error))
+      return false;
+    if (owner) {
+      const auto reference = value.toObject();
+      owner->available = true;
+      owner->bodyId =
+          static_cast<BodyId>(reference.value("bodyId").toInteger());
+      owner->featureId =
+          static_cast<FeatureId>(reference.value("featureId").toInteger());
+    }
+    return true;
+  };
 
   qsizetype totalProfileGeometryItems = 0;
   for (const auto& savedSketch : legacy.sketches)
@@ -2819,6 +2857,7 @@ bool validateV2Root(const QJsonObject& root, const ProjectData& legacy,
           featureIndex,
           bodyFeatures,
           featureSets,
+          {},
           error,
           totalRebuildWork,
           [&](const QJsonObject& candidate, const char* key) {
@@ -2827,6 +2866,7 @@ bool validateV2Root(const QJsonObject& root, const ProjectData& legacy,
           sketchReference,
           sketchLineReference,
           externalFeature,
+          topologyReference,
           accountTopologyReferences,
           accountProfileGeometry};
       if (!codec->validate(feature, context)) return false;
@@ -2836,6 +2876,255 @@ bool validateV2Root(const QJsonObject& root, const ProjectData& legacy,
 }
 
 }  // namespace
+
+namespace detail {
+
+ProjectFormatV3ModelSemanticValidationResult
+validateProjectFormatV3ModelSemantics(
+    const QJsonObject& authoredRoot,
+    const std::vector<ProjectFormatV3TopologyInspectionView>& topology) {
+  QString error;
+  const QJsonObject model = authoredRoot.value("model").toObject();
+  const QJsonArray sketches = model.value("sketches").toArray();
+  const QJsonArray bodies = model.value("bodies").toArray();
+  const QJsonArray legacySketches = authoredRoot.value("sketches").toArray();
+
+  std::unordered_set<SketchId> sketchIds;
+  std::unordered_map<SketchId, qsizetype> sketchLineCounts;
+  for (qsizetype index = 0; index < sketches.size(); ++index) {
+    const SketchId id = static_cast<SketchId>(
+        sketches[index].toObject().value("id").toInteger());
+    sketchIds.insert(id);
+    sketchLineCounts.emplace(
+        id, legacySketches[index].toObject().value("lines").toArray().size());
+  }
+
+  FeatureSets featureSets;
+  for (qsizetype bodyIndex = 0; bodyIndex < bodies.size(); ++bodyIndex) {
+    const auto bodyValue = bodies[bodyIndex];
+    const auto body = bodyValue.toObject();
+    const BodyId bodyId =
+        static_cast<BodyId>(body.value("id").toInteger());
+    auto& features = featureSets[bodyId];
+    for (const auto featureValue : body.value("features").toArray())
+      features.insert(static_cast<FeatureId>(
+          featureValue.toObject().value("id").toInteger()));
+  }
+
+  std::map<QString, std::size_t> topologyByPath;
+  for (std::size_t index = 0; index < topology.size(); ++index) {
+    static const QString suffix = QStringLiteral(".reference");
+    if (!topology[index].path.endsWith(suffix))
+      return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+              QStringLiteral("topology inspection path inventory is invalid")};
+    const QString wrapperPath =
+        topology[index].path.left(topology[index].path.size() - suffix.size());
+    if (wrapperPath.isEmpty() ||
+        !topologyByPath.emplace(wrapperPath, index).second)
+      return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+              QStringLiteral("topology inspection path inventory is invalid")};
+  }
+  std::vector<bool> topologyConsumed(topology.size(), false);
+  bool unsupported = false;
+  auto topologyReference = [&](const QJsonValue& wrapper, bool face,
+                               const QString& path,
+                               FeatureValidationContext::TopologyOwner* owner) {
+    if (!wrapper.isObject() ||
+        !wrapper.toObject().value("reference").isObject())
+      return invalid(&error,
+                     QStringLiteral("v4 topology wrapper is malformed"));
+    const auto found = topologyByPath.find(path);
+    if (found == topologyByPath.end())
+      return invalid(&error,
+                     QStringLiteral("topology inspection path is missing"));
+    const std::size_t topologyIndex = found->second;
+    if (topologyConsumed[topologyIndex])
+      return invalid(&error,
+                     QStringLiteral("topology inspection path is duplicated"));
+    topologyConsumed[topologyIndex] = true;
+    const auto& view = topology[topologyIndex];
+    const QJsonValue authored = wrapper.toObject().value("reference");
+    if (authored != view.authoredReference ||
+        view.expectedKind !=
+            (face ? TopologyKind::Face : TopologyKind::Edge))
+      return invalid(&error,
+                     QStringLiteral("topology inspection inventory is not canonical"));
+    if (!view.bodyId || !view.featureId) {
+      unsupported = true;
+      return true;
+    }
+    if (owner) {
+      owner->available = true;
+      owner->bodyId = *view.bodyId;
+      owner->featureId = *view.featureId;
+    }
+    return true;
+  };
+
+  qsizetype totalTopologyReferences = 0;
+  const auto accountTopologyReferences = [&](qsizetype count) {
+    if (count > ProjectFile::kMaximumFeatureTopologyReferences)
+      return false;
+    totalTopologyReferences += count;
+    return totalTopologyReferences <=
+           ProjectFile::kMaximumDocumentTopologyReferences;
+  };
+
+  for (qsizetype sketchIndex = 0; sketchIndex < sketches.size(); ++sketchIndex) {
+    const auto sketchValue = sketches[sketchIndex];
+    const auto support =
+        sketchValue.toObject().value("support").toObject();
+    if (support.value("type").toInt() ==
+        static_cast<int>(SketchSupportType::Face)) {
+      if (!accountTopologyReferences(1) ||
+          !topologyReference(
+              support, true,
+              QStringLiteral("$.model.sketches[%1].support").arg(sketchIndex),
+              nullptr))
+        return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+                error.isEmpty()
+                    ? QStringLiteral("topology reference limit exceeded")
+                    : error};
+    }
+  }
+
+  auto localFeature = [&](BodyId bodyId, const QJsonObject& feature,
+                          const char* key) {
+    qint64 id = 0;
+    return integerNumber(feature.value(QLatin1String(key)),
+                         QString::fromLatin1(key), 1,
+                         ProjectFile::kMaximumPersistedId, &id, &error) &&
+           validateFeatureReference(bodyId, static_cast<FeatureId>(id),
+                                    featureSets, &error);
+  };
+  auto sketchReference = [&](const QJsonObject& feature, const char* key) {
+    qint64 id = 0;
+    if (!integerNumber(feature.value(QLatin1String(key)),
+                       QString::fromLatin1(key), 1,
+                       ProjectFile::kMaximumPersistedId, &id, &error))
+      return false;
+    if (!sketchIds.contains(static_cast<SketchId>(id)))
+      return invalid(&error,
+                     QString::fromUtf8("ссылка указывает на неизвестный эскиз."));
+    return true;
+  };
+  auto sketchLineReference = [&](const QJsonObject& feature,
+                                 const char* sketchKey, const char* lineIdKey,
+                                 const char* lineIndexKey) {
+    qint64 sketchIdValue = 0, rawLineId = 0, lineIndex = -1;
+    if (!integerNumber(feature.value(QLatin1String(sketchKey)),
+                       QString::fromLatin1(sketchKey), 1,
+                       ProjectFile::kMaximumPersistedId, &sketchIdValue,
+                       &error) ||
+        !integerNumber(feature.value(QLatin1String(lineIdKey)),
+                       QString::fromLatin1(lineIdKey), 1,
+                       kMaximumExactJsonInteger, &rawLineId, &error) ||
+        !integerNumber(feature.value(QLatin1String(lineIndexKey)),
+                       QString::fromLatin1(lineIndexKey), 0,
+                       ProjectFile::kMaximumCollectionItems, &lineIndex,
+                       &error))
+      return false;
+    const auto found =
+        sketchLineCounts.find(static_cast<SketchId>(sketchIdValue));
+    if (found == sketchLineCounts.end())
+      return invalid(&error,
+                     QString::fromUtf8("ось ссылается на неизвестный эскиз."));
+    if (lineIndex >= static_cast<qint64>(found->second))
+      return invalid(&error,
+                     QString::fromUtf8("ось ссылается на неизвестную линию."));
+    if (rawLineId != lineIndex + 1)
+      return invalid(&error,
+                     QString::fromUtf8("ID и позиция линии оси не согласованы."));
+    return true;
+  };
+  auto externalFeature = [&](const QJsonObject& feature, const char* bodyKey,
+                             const char* featureKey) {
+    qint64 bodyId = 0, featureId = 0;
+    return integerNumber(feature.value(QLatin1String(bodyKey)),
+                         QString::fromLatin1(bodyKey), 1,
+                         ProjectFile::kMaximumPersistedId, &bodyId, &error) &&
+           integerNumber(feature.value(QLatin1String(featureKey)),
+                         QString::fromLatin1(featureKey), 1,
+                         ProjectFile::kMaximumPersistedId, &featureId,
+                         &error) &&
+           validateFeatureReference(static_cast<BodyId>(bodyId),
+                                    static_cast<FeatureId>(featureId),
+                                    featureSets, &error);
+  };
+
+  qsizetype totalProfileGeometryItems = 0;
+  for (const auto sketchValue : legacySketches) {
+    const auto sketch = sketchValue.toObject();
+    totalProfileGeometryItems += sketch.value("lines").toArray().size() +
+                                 sketch.value("circles").toArray().size() +
+                                 sketch.value("arcs").toArray().size() +
+                                 sketch.value("beziers").toArray().size();
+  }
+  const auto accountProfileGeometry = [&](const QJsonValue& value) {
+    const auto profile = value.toObject();
+    totalProfileGeometryItems += profile.value("lines").toArray().size() +
+                                 profile.value("circles").toArray().size() +
+                                 profile.value("arcs").toArray().size() +
+                                 profile.value("beziers").toArray().size();
+    return totalProfileGeometryItems <=
+           ProjectFile::kMaximumDocumentSketchGeometryItems;
+  };
+
+  qint64 totalRebuildWork = 0;
+  for (qsizetype bodyIndex = 0; bodyIndex < bodies.size(); ++bodyIndex) {
+    const auto bodyValue = bodies[bodyIndex];
+    const auto body = bodyValue.toObject();
+    const BodyId bodyId =
+        static_cast<BodyId>(body.value("id").toInteger());
+    const QJsonArray features = body.value("features").toArray();
+    for (qsizetype featureIndex = 0; featureIndex < features.size();
+         ++featureIndex) {
+      const QJsonObject feature = features[featureIndex].toObject();
+      if (++totalRebuildWork > ProjectFile::kMaximumDocumentRebuildWork)
+        return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+                QString::fromUtf8(
+                    "параметрическая история превышает лимит перестроения.")};
+      const auto* codec =
+          findFeatureCodec(QStringView{feature.value("type").toString()});
+      if (!codec)
+        return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+                QString::fromUtf8("неизвестный тип фичи.")};
+      FeatureValidationContext context{
+          true,
+          bodyId,
+          featureIndex,
+          features,
+          featureSets,
+          QStringLiteral("$.model.bodies[%1].features[%2]")
+              .arg(bodyIndex)
+              .arg(featureIndex),
+          &error,
+          totalRebuildWork,
+          [&](const QJsonObject& candidate, const char* key) {
+            return localFeature(bodyId, candidate, key);
+          },
+          sketchReference,
+          sketchLineReference,
+          externalFeature,
+          topologyReference,
+          accountTopologyReferences,
+          accountProfileGeometry};
+      if (!codec->validate(feature, context))
+        return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+                error};
+    }
+  }
+  if (std::any_of(topologyConsumed.begin(), topologyConsumed.end(),
+                  [](bool consumed) { return !consumed; }))
+    return {ProjectFormatV3ModelSemanticValidationStatus::Invalid,
+            QStringLiteral("topology inspection inventory is long")};
+  return {unsupported
+              ? ProjectFormatV3ModelSemanticValidationStatus::Unsupported
+              : ProjectFormatV3ModelSemanticValidationStatus::Candidate,
+          {}};
+}
+
+}  // namespace detail
 
 std::vector<FeatureCodecDescriptor> featureCodecDescriptors() {
   std::vector<FeatureCodecDescriptor> descriptors;

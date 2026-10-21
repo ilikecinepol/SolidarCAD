@@ -88,6 +88,8 @@ ProjectFormatV4TopologyAggregateResult aggregateProjectFormatV4Topology(
 
   std::vector<std::optional<DecodedProjectFormatV4TopologyReference>> decoded;
   decoded.reserve(canonical.topologySites.size());
+  std::vector<std::optional<ProjectFormatV4ReferenceInspection>> inspections;
+  inspections.reserve(canonical.topologySites.size());
   std::size_t provenanceRecordCount = 0;
   std::size_t localNameUtf8Bytes = 0;
 
@@ -118,6 +120,7 @@ ProjectFormatV4TopologyAggregateResult aggregateProjectFormatV4Topology(
       return invalid(site.path +
                      QStringLiteral(": decoded reference lacks inspection"));
     }
+    inspections.push_back(reference.inspection);
 
     if (reference.status == ProjectFormatV4ReferenceDecodeStatus::Unsupported) {
       decoded.emplace_back(std::nullopt);
@@ -133,6 +136,7 @@ ProjectFormatV4TopologyAggregateResult aggregateProjectFormatV4Topology(
   ProjectFormatV4TopologyAggregateCandidate candidate;
   candidate.payload = std::move(canonical);
   candidate.topologyReferences = std::move(decoded);
+  candidate.topologyInspections = std::move(inspections);
   candidate.deferredUnsupported = std::move(deferred);
   candidate.provenanceRecordCount = provenanceRecordCount;
   candidate.localNameUtf8Bytes = localNameUtf8Bytes;
