@@ -37,6 +37,9 @@ struct ProjectFormatV4TopologySite {
   QJsonValue authoredReference;
   std::optional<BodyId> containingBodyId;
   std::optional<FeatureId> containingFeatureId;
+
+  friend bool operator==(const ProjectFormatV4TopologySite&,
+                         const ProjectFormatV4TopologySite&) = default;
 };
 
 struct ProjectFormatV4FeatureOwner {
