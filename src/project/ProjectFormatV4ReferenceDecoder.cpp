@@ -37,6 +37,19 @@ ProjectFormatV4ReferenceDecodeResult failure(
   return result;
 }
 
+ProjectFormatV4ReferenceDecodeResult knownUnsupported(
+    ProjectFormatV4ReferenceInspection inspection,
+    std::size_t provenanceRecordCount, std::size_t localNameUtf8Bytes,
+    QString error) {
+  ProjectFormatV4ReferenceDecodeResult result;
+  result.status = ProjectFormatV4ReferenceDecodeStatus::Unsupported;
+  result.inspection = std::move(inspection);
+  result.provenanceRecordCount = provenanceRecordCount;
+  result.localNameUtf8Bytes = localNameUtf8Bytes;
+  result.error = std::move(error);
+  return result;
+}
+
 bool containsField(std::initializer_list<const char*> fields,
                    const QString& value) {
   return std::any_of(fields.begin(), fields.end(), [&](const char* field) {
@@ -569,8 +582,10 @@ ProjectFormatV4ReferenceDecodeResult decodeV1(const QJsonObject& object,
   }
 
   if (kind.unsupported)
-    return failure(ProjectFormatV4ReferenceDecodeStatus::Unsupported,
-                   QStringLiteral("unsupported topology kind token"));
+    return knownUnsupported(
+        {ProjectFormatV4ReferenceVariant::V1, static_cast<BodyId>(bodyId),
+         static_cast<FeatureId>(featureId), {}},
+        0, 0, QStringLiteral("unsupported topology kind token"));
   if (*kind.value != expectedKind)
     return failure(ProjectFormatV4ReferenceDecodeStatus::Invalid,
                    QStringLiteral("topology kind does not match embedding"));
@@ -587,6 +602,9 @@ ProjectFormatV4ReferenceDecodeResult decodeV1(const QJsonObject& object,
   ProjectFormatV4ReferenceDecodeResult result;
   result.status = ProjectFormatV4ReferenceDecodeStatus::Valid;
   result.success = true;
+  result.inspection = ProjectFormatV4ReferenceInspection{
+      ProjectFormatV4ReferenceVariant::V1, static_cast<BodyId>(bodyId),
+      static_cast<FeatureId>(featureId), {}};
   if (expectedKind == TopologyKind::Face)
     result.reference = FaceReference::fromV1(std::move(reference));
   else
@@ -659,9 +677,17 @@ ProjectFormatV4ReferenceDecodeResult decodeV2(const QJsonObject& object,
   if (top.kind.value && *top.kind.value != expectedKind)
     return failure(ProjectFormatV4ReferenceDecodeStatus::Invalid,
                    QStringLiteral("topology kind does not match embedding"));
+  ProjectFormatV4ReferenceInspection inspection{
+      ProjectFormatV4ReferenceVariant::V2, static_cast<BodyId>(bodyId),
+      top.featureId, {}};
+  inspection.immediateOriginFeatureIds.reserve(origins.size());
+  for (const auto& origin : origins)
+    inspection.immediateOriginFeatureIds.push_back(origin.featureId);
+  const std::size_t provenanceRecordCount = 1 + origins.size();
   if (sawUnsupported)
-    return failure(ProjectFormatV4ReferenceDecodeStatus::Unsupported,
-                   QStringLiteral("unsupported provenance token"));
+    return knownUnsupported(std::move(inspection), provenanceRecordCount,
+                            localNameBytes,
+                            QStringLiteral("unsupported provenance token"));
 
   TopologyProvenanceKey key;
   key.featureId = top.featureId;
@@ -681,7 +707,8 @@ ProjectFormatV4ReferenceDecodeResult decodeV2(const QJsonObject& object,
   ProjectFormatV4ReferenceDecodeResult result;
   result.status = ProjectFormatV4ReferenceDecodeStatus::Valid;
   result.success = true;
-  result.provenanceRecordCount = 1 + key.origins.size();
+  result.inspection = std::move(inspection);
+  result.provenanceRecordCount = provenanceRecordCount;
   result.localNameUtf8Bytes = localNameBytes;
   TopologyReferenceV2 reference{static_cast<BodyId>(bodyId), std::move(key)};
   if (expectedKind == TopologyKind::Face)

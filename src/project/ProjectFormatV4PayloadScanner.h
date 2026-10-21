@@ -39,9 +39,19 @@ struct ProjectFormatV4TopologySite {
   std::optional<FeatureId> containingFeatureId;
 };
 
+struct ProjectFormatV4FeatureOwner {
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId featureId{kInvalidFeatureId};
+
+  friend bool operator==(const ProjectFormatV4FeatureOwner&,
+                         const ProjectFormatV4FeatureOwner&) = default;
+};
+
 struct ProjectFormatV4PayloadCandidate {
   ProjectFormatV4EnvelopeCandidate envelope;
   std::vector<ProjectFormatV4TopologySite> topologySites;
+  // Authored structural inventory only; this is not an ownership verdict.
+  std::vector<ProjectFormatV4FeatureOwner> featureOwners;
 };
 
 struct ProjectFormatV4PayloadScanResult {

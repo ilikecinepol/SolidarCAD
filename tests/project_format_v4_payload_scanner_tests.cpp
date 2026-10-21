@@ -11,6 +11,7 @@
 #include <limits>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "model/Document.h"
 #include "model/Feature.h"
@@ -25,6 +26,7 @@ using solidar::FeatureId;
 using solidar::FeatureKind;
 using solidar::TopologyKind;
 using solidar::project::ProjectFormatV4EnvelopeCandidate;
+using solidar::project::ProjectFormatV4FeatureOwner;
 using solidar::project::ProjectFormatV4PayloadCandidate;
 using solidar::project::ProjectFormatV4PayloadScanResult;
 using solidar::project::ProjectFormatV4PayloadScanStatus;
@@ -60,6 +62,10 @@ static_assert(!HasSucceeded<ProjectFormatV4TopologySite>);
 static_assert(!HasSuccessMember<ProjectFormatV4TopologySite>);
 static_assert(!HasDocumentMember<ProjectFormatV4TopologySite>);
 static_assert(!ExposesMaterializedDocument<ProjectFormatV4TopologySite>);
+static_assert(!HasSucceeded<ProjectFormatV4FeatureOwner>);
+static_assert(!HasSuccessMember<ProjectFormatV4FeatureOwner>);
+static_assert(!HasDocumentMember<ProjectFormatV4FeatureOwner>);
+static_assert(!ExposesMaterializedDocument<ProjectFormatV4FeatureOwner>);
 
 QJsonObject parseObject(const QByteArray& bytes) {
   QJsonParseError error;
@@ -334,6 +340,7 @@ int main() {
     const auto result = scan(baseRoot());
     checkCandidate(result);
     CHECK(result.candidate->topologySites.empty());
+    CHECK(result.candidate->featureOwners.empty());
   }
 
   // Every family accepts each opaque reference-object shape without asking
@@ -376,6 +383,37 @@ int main() {
       setModel(&root, {}, {body(1, {featureFor(kind)})});
       checkCandidate(scan(root));
     }
+  }
+
+  // Feature owners are a structural inventory in exact authored body/feature
+  // order, including multiple and zero-feature bodies.
+  {
+    constexpr std::array<FeatureKind, 13> kinds{
+        FeatureKind::ImportedShape, FeatureKind::Extrude,
+        FeatureKind::Revolve,       FeatureKind::Pocket,
+        FeatureKind::Fillet,        FeatureKind::Chamfer,
+        FeatureKind::Mirror,        FeatureKind::Move,
+        FeatureKind::LinearPattern, FeatureKind::CircularPattern,
+        FeatureKind::JoinBodies,    FeatureKind::Shell,
+        FeatureKind::Draft};
+    QJsonArray firstBodyFeatures;
+    QJsonArray secondBodyFeatures;
+    for (std::size_t index = 0; index < kinds.size(); ++index) {
+      const auto featureId = static_cast<qint64>(101 + index);
+      (index < 6 ? firstBodyFeatures : secondBodyFeatures)
+          .append(featureFor(kinds[index], featureId));
+    }
+    const std::vector<ProjectFormatV4FeatureOwner> expected{
+        {10, 101}, {10, 102}, {10, 103}, {10, 104}, {10, 105},
+        {10, 106}, {20, 107}, {20, 108}, {20, 109}, {20, 110},
+        {20, 111}, {20, 112}, {20, 113}};
+    QJsonObject root = baseRoot();
+    setModel(&root, {},
+             {body(5, {}), body(10, firstBodyFeatures),
+              body(20, secondBodyFeatures), body(30, {})});
+    const auto result = scan(root);
+    checkCandidate(result);
+    CHECK(result.candidate->featureOwners == expected);
   }
 
   // Every documented embedding family is enumerated in authored order. Inner
@@ -785,7 +823,9 @@ int main() {
     root["constraintTypeEncoding"] = "future-encoding";
     root["sketches"] = QJsonArray{legacySketch(42)};
     root["extrusion"] = QJsonObject{{"enabled", true}, {"sourceSketch", 0}};
-    setModel(&root, {modelSketch(7)}, {}, {referenceImage(9)});
+    setModel(&root, {modelSketch(7)},
+             {body(8, {featureFor(FeatureKind::Move, 10)})},
+             {referenceImage(9)});
     const ProjectFormatV4EnvelopeCandidate original = envelopeFor(root);
     const auto originalDeferred = original.deferredUnknowns;
     const auto result = solidar::project::scanProjectFormatV4Payload(original);
@@ -798,6 +838,8 @@ int main() {
     CHECK(preserved.model == original.model);
     CHECK(preserved.capabilities == original.capabilities);
     CHECK(preserved.deferredUnknowns == originalDeferred);
+    CHECK(result.candidate->featureOwners ==
+          (std::vector<ProjectFormatV4FeatureOwner>{{8, 10}}));
 
     auto tampered = original;
     tampered.model["bodies"] = QJsonArray{body(99, {})};

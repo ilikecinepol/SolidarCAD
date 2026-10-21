@@ -10,6 +10,7 @@
 #include <limits>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "model/EdgeReference.h"
 #include "model/FaceReference.h"
@@ -21,6 +22,7 @@ namespace {
 using solidar::TopologyKind;
 using solidar::project::ProjectFormatV4ReferenceDecodeResult;
 using solidar::project::ProjectFormatV4ReferenceDecodeStatus;
+using solidar::project::ProjectFormatV4ReferenceVariant;
 
 QJsonArray point(double x, double y, double z) { return {x, y, z}; }
 
@@ -95,14 +97,20 @@ void checkFailure(const ProjectFormatV4ReferenceDecodeResult& result,
   CHECK(!result.success);
   CHECK(!result.succeeded());
   CHECK(!result.reference);
-  CHECK(result.provenanceRecordCount == 0);
-  CHECK(result.localNameUtf8Bytes == 0);
   CHECK(!result.error.isEmpty());
+  if (status == ProjectFormatV4ReferenceDecodeStatus::Invalid) {
+    CHECK(!result.inspection);
+    CHECK(result.provenanceRecordCount == 0);
+    CHECK(result.localNameUtf8Bytes == 0);
+  }
 }
 
 void checkInvalid(const QJsonValue& value, TopologyKind kind) {
-  checkFailure(decode(value, kind),
-               ProjectFormatV4ReferenceDecodeStatus::Invalid);
+  const auto result = decode(value, kind);
+  checkFailure(result, ProjectFormatV4ReferenceDecodeStatus::Invalid);
+  CHECK(!result.inspection);
+  CHECK(result.provenanceRecordCount == 0);
+  CHECK(result.localNameUtf8Bytes == 0);
 }
 
 void checkUnsupported(const QJsonValue& value, TopologyKind kind) {
@@ -123,6 +131,11 @@ int main() {
     CHECK(face.success);
     CHECK(face.provenanceRecordCount == 0);
     CHECK(face.localNameUtf8Bytes == 0);
+    CHECK(face.inspection);
+    CHECK(face.inspection->variant == ProjectFormatV4ReferenceVariant::V1);
+    CHECK(face.inspection->bodyId == 11);
+    CHECK(face.inspection->topLevelFeatureId == 23);
+    CHECK(face.inspection->immediateOriginFeatureIds.empty());
     const auto* carrier =
         std::get_if<FaceReference>(&*face.reference);
     CHECK(carrier && carrier->isV1());
@@ -134,6 +147,7 @@ int main() {
 
     const auto edge = decode(v1(QStringLiteral("Edge")), TopologyKind::Edge);
     CHECK(edge.succeeded());
+    CHECK(edge.inspection == face.inspection);
     const auto* edgeCarrier = std::get_if<EdgeReference>(&*edge.reference);
     CHECK(edgeCarrier && edgeCarrier->isV1());
     CHECK(edgeCarrier->edgeIndex() == 7);
@@ -384,6 +398,11 @@ int main() {
     CHECK(result.succeeded());
     CHECK(result.provenanceRecordCount == 1);
     CHECK(result.localNameUtf8Bytes == 6);
+    CHECK(result.inspection);
+    CHECK(result.inspection->variant == ProjectFormatV4ReferenceVariant::V2);
+    CHECK(result.inspection->bodyId == 11);
+    CHECK(result.inspection->topLevelFeatureId == 23);
+    CHECK(result.inspection->immediateOriginFeatureIds.empty());
     const auto* carrier = std::get_if<FaceReference>(&*result.reference);
     CHECK(carrier && carrier->isV2());
     CHECK(carrier->v2()->bodyId == 11);
@@ -471,6 +490,12 @@ int main() {
     CHECK(result.succeeded());
     CHECK(result.provenanceRecordCount == 3);
     CHECK(result.localNameUtf8Bytes == 8);
+    CHECK(result.inspection);
+    CHECK(result.inspection->variant == ProjectFormatV4ReferenceVariant::V2);
+    CHECK(result.inspection->bodyId == 11);
+    CHECK(result.inspection->topLevelFeatureId == 23);
+    CHECK(result.inspection->immediateOriginFeatureIds ==
+          (std::vector<FeatureId>{1, 2}));
     const auto& key = std::get<FaceReference>(*result.reference).v2()->provenance;
     CHECK(key.featureId == 23);
     CHECK(key.kind == TopologyKind::Face);
@@ -498,9 +523,14 @@ int main() {
   // Unknown version is opaque and forward-compatible. Known variants first
   // expose independent structural defects, then classify unknown tokens.
   {
-    checkUnsupported(QJsonObject{{"referenceVersion", "V9"},
-                                 {"opaque", QJsonArray{1, 2, 3}}},
-                     TopologyKind::Face);
+    const auto opaque = decode(
+        QJsonObject{{"referenceVersion", "V9"},
+                    {"opaque", QJsonArray{1, 2, 3}}},
+        TopologyKind::Face);
+    checkFailure(opaque, ProjectFormatV4ReferenceDecodeStatus::Unsupported);
+    CHECK(!opaque.inspection);
+    CHECK(opaque.provenanceRecordCount == 0);
+    CHECK(opaque.localNameUtf8Bytes == 0);
     checkUnsupported(QJsonObject{{"referenceVersion", "V9"},
                                  {"bodyId", 0},
                                  {"legacyIndex", 1.5},
@@ -547,6 +577,67 @@ int main() {
     value = v2(QStringLiteral("Face"));
     value["provenance"] = key;
     checkUnsupported(value, TopologyKind::Face);
+  }
+
+  // Fully parsed known variants publish structural inspection even when a
+  // bounded future token makes carrier materialization unsupported.
+  {
+    const auto legacy = decode(v1(QStringLiteral("FutureKind")),
+                               TopologyKind::Face);
+    checkFailure(legacy, ProjectFormatV4ReferenceDecodeStatus::Unsupported);
+    CHECK(legacy.inspection);
+    CHECK(legacy.inspection->variant == ProjectFormatV4ReferenceVariant::V1);
+    CHECK(legacy.inspection->bodyId == 11);
+    CHECK(legacy.inspection->topLevelFeatureId == 23);
+    CHECK(legacy.inspection->immediateOriginFeatureIds.empty());
+    CHECK(legacy.provenanceRecordCount == 0);
+    CHECK(legacy.localNameUtf8Bytes == 0);
+
+    const auto futureTop = decode(v2(QStringLiteral("FutureKind")),
+                                  TopologyKind::Face);
+    checkFailure(futureTop,
+                 ProjectFormatV4ReferenceDecodeStatus::Unsupported);
+    CHECK(futureTop.inspection);
+    CHECK(futureTop.inspection->variant ==
+          ProjectFormatV4ReferenceVariant::V2);
+    CHECK(futureTop.inspection->bodyId == 11);
+    CHECK(futureTop.inspection->topLevelFeatureId == 23);
+    CHECK(futureTop.inspection->immediateOriginFeatureIds.empty());
+    CHECK(futureTop.provenanceRecordCount == 1);
+    CHECK(futureTop.localNameUtf8Bytes == 6);
+
+    auto futureOrigin = provenance(
+        7, QStringLiteral("Face"), QStringLiteral("Seed"),
+        QStringLiteral("FutureRole"), QStringLiteral("origin"));
+    const auto originResult = decode(
+        v2(QStringLiteral("Face"), QJsonArray{futureOrigin}),
+        TopologyKind::Face);
+    checkFailure(originResult,
+                 ProjectFormatV4ReferenceDecodeStatus::Unsupported);
+    CHECK(originResult.inspection);
+    CHECK(originResult.inspection->bodyId == 11);
+    CHECK(originResult.inspection->topLevelFeatureId == 23);
+    CHECK(originResult.inspection->immediateOriginFeatureIds ==
+          (std::vector<FeatureId>{7}));
+    CHECK(originResult.provenanceRecordCount == 2);
+    CHECK(originResult.localNameUtf8Bytes == 12);
+  }
+
+  // Invalid results are transactional even after all owner IDs and an
+  // earlier origin have already been parsed.
+  {
+    auto malformedOrigin = provenance(
+        8, QStringLiteral("Face"), QStringLiteral("Seed"),
+        QStringLiteral("Cap"), QStringLiteral("later"));
+    malformedOrigin.remove(QStringLiteral("localName"));
+    checkInvalid(v2(QStringLiteral("Face"),
+                    QJsonArray{provenance(7, QStringLiteral("Face"),
+                                          QStringLiteral("Seed"),
+                                          QStringLiteral("Cap"),
+                                          QStringLiteral("earlier")),
+                               malformedOrigin}),
+                 TopologyKind::Face);
+    checkInvalid(v1(QStringLiteral("Edge")), TopologyKind::Face);
   }
 
   // All enum token families share the bounded, non-empty, valid-UTF-16

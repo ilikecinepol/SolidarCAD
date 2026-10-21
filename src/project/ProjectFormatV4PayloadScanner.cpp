@@ -751,9 +751,9 @@ bool validateFeature(
 }
 
 bool validateModel(
-    const QJsonObject& model,
-    qsizetype* documentGeometryCount,
-    std::vector<ProjectFormatV4TopologySite>* sites, QString* error) {
+    const QJsonObject& model, qsizetype* documentGeometryCount,
+    std::vector<ProjectFormatV4TopologySite>* sites,
+    std::vector<ProjectFormatV4FeatureOwner>* featureOwners, QString* error) {
   const auto codecs = featureCodecDescriptors();
   if (!completeCodecRegistry(codecs, error)) return false;
   const QJsonArray sketches = model.value(QStringLiteral("sketches")).toArray();
@@ -876,6 +876,8 @@ bool validateModel(
           !featureIds.insert(featureId).second)
         return fail(error, path + QStringLiteral(".id"),
                     QStringLiteral("must be document-global unique"));
+      featureOwners->push_back(
+          {static_cast<BodyId>(bodyId), static_cast<FeatureId>(featureId)});
       if (!boundedString(feature.value(QStringLiteral("name")),
                          path + QStringLiteral(".name"), true, error) ||
           !boundedString(feature.value(QStringLiteral("type")),
@@ -976,13 +978,15 @@ ProjectFormatV4PayloadScanResult scanProjectFormatV4Payload(
     return invalid(std::move(error));
 
   std::vector<ProjectFormatV4TopologySite> sites;
+  std::vector<ProjectFormatV4FeatureOwner> featureOwners;
   if (!validateModel(root.value(QStringLiteral("model")).toObject(),
-                     &documentGeometryCount, &sites, &error))
+                     &documentGeometryCount, &sites, &featureOwners, &error))
     return invalid(std::move(error));
 
   ProjectFormatV4PayloadCandidate candidate;
   candidate.envelope = std::move(envelope);
   candidate.topologySites = std::move(sites);
+  candidate.featureOwners = std::move(featureOwners);
   ProjectFormatV4PayloadScanResult result;
   result.status = ProjectFormatV4PayloadScanStatus::Candidate;
   result.candidate = std::move(candidate);

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <optional>
 #include <variant>
+#include <vector>
 
 #include "model/EdgeReference.h"
 #include "model/FaceReference.h"
@@ -18,6 +19,23 @@ enum class ProjectFormatV4ReferenceDecodeStatus {
   Unsupported,
 };
 
+enum class ProjectFormatV4ReferenceVariant {
+  V1,
+  V2,
+};
+
+// Structural metadata from a fully parsed, recognized reference variant.
+// It is not an ownership or resolvability verdict.
+struct ProjectFormatV4ReferenceInspection {
+  ProjectFormatV4ReferenceVariant variant{ProjectFormatV4ReferenceVariant::V1};
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId topLevelFeatureId{kInvalidFeatureId};
+  std::vector<FeatureId> immediateOriginFeatureIds;
+
+  friend bool operator==(const ProjectFormatV4ReferenceInspection&,
+                         const ProjectFormatV4ReferenceInspection&) = default;
+};
+
 using DecodedProjectFormatV4TopologyReference =
     std::variant<FaceReference, EdgeReference>;
 
@@ -26,6 +44,7 @@ struct ProjectFormatV4ReferenceDecodeResult {
       ProjectFormatV4ReferenceDecodeStatus::Invalid};
   bool success{};
   std::optional<DecodedProjectFormatV4TopologyReference> reference;
+  std::optional<ProjectFormatV4ReferenceInspection> inspection;
   std::size_t provenanceRecordCount{};
   std::size_t localNameUtf8Bytes{};
   QString error;
