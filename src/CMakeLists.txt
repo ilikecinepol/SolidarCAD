@@ -151,6 +151,7 @@ solidar_warnings(solidar_model)
 add_library(solidar_project
   project/ProjectFile.cpp
   project/ProjectFile.h
+  project/internal/ProjectFormatV3TypedSketchValidation.h
   project/ProjectFormatV4ReferenceDecoder.cpp
   project/ProjectFormatV4ReferenceDecoder.h
   project/ProjectFormatV4EnvelopeDecoder.cpp
@@ -159,6 +160,8 @@ add_library(solidar_project
   project/ProjectFormatV4PayloadScanner.h
   project/ProjectFormatV4TopologyAggregator.cpp
   project/ProjectFormatV4TopologyAggregator.h
+  project/ProjectFormatV4LegacySketchValidator.cpp
+  project/ProjectFormatV4LegacySketchValidator.h
   io/DocumentExportShapes.cpp
   io/DocumentExportShapes.h
   io/StlExporter.cpp

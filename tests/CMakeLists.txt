@@ -151,6 +151,8 @@ solidar_add_test(project_format_v4_payload_scanner_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
 solidar_add_test(project_format_v4_topology_aggregator_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
+solidar_add_test(project_format_v4_legacy_sketch_validator_tests
+  LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
 solidar_add_test(drawing_source_tests
   LIBRARIES solidar_drawing_ui solidar_project Qt6::Core LABELS regression)
 solidar_add_test(stl_exporter_tests

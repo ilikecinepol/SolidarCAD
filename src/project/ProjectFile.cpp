@@ -1,4 +1,5 @@
 #include "project/ProjectFile.h"
+#include "project/internal/ProjectFormatV3TypedSketchValidation.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -4600,6 +4601,477 @@ static bool loadV3Root(const QJsonObject& root, ProjectData* data,
   *data = std::move(loaded);
   return true;
 }
+
+namespace {
+
+enum class TypedSketchGeometryKind { Line, Circle, Arc, Bezier };
+
+struct TypedSketchGeometryInventory {
+  std::unordered_map<qint64, TypedSketchGeometryKind> kinds;
+  std::unordered_set<qint64> centerElementIds;
+  qint64 maximumElementId{};
+  qint64 maximumGeometryId{};
+};
+
+struct TypedSketchConstraintRecord {
+  QJsonObject authored;
+  qint64 id{};
+};
+
+bool typedSketchWellFormedUtf16(const QString& value) {
+  for (qsizetype index = 0; index < value.size(); ++index) {
+    const QChar current = value.at(index);
+    if (current.isHighSurrogate()) {
+      if (index + 1 >= value.size() ||
+          !value.at(index + 1).isLowSurrogate())
+        return false;
+      ++index;
+    } else if (current.isLowSurrogate()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool collectTypedSketchGeometry(const QJsonObject& saved,
+                                TypedSketchGeometryInventory* inventory,
+                                QString* error) {
+  if (!inventory) return false;
+  const auto collect = [&](const char* field, TypedSketchGeometryKind kind) {
+    const auto values = saved.value(QLatin1String(field)).toArray();
+    for (qsizetype index = 0; index < values.size(); ++index) {
+      if (!values.at(index).isObject())
+        return invalid(error, QStringLiteral("geometry item must be an object."));
+      const auto object = values.at(index).toObject();
+      qint64 id = 0;
+      if (!integerNumber(object.value("id"), QStringLiteral("geometry.id"), 1,
+                         ProjectFile::kMaximumPersistedId, &id, error))
+        return false;
+      if (!inventory->kinds.emplace(id, kind).second)
+        return invalid(error,
+                       QStringLiteral("geometry IDs repeat across sketch kinds."));
+      inventory->maximumGeometryId =
+          std::max(inventory->maximumGeometryId, id);
+      if (kind == TypedSketchGeometryKind::Line) {
+        qint64 elementId = 0;
+        if (!integerNumber(object.value("elementId"),
+                           QStringLiteral("line.elementId"), 1,
+                           ProjectFile::kMaximumPersistedId, &elementId,
+                           error))
+          return false;
+        inventory->maximumElementId =
+            std::max(inventory->maximumElementId, elementId);
+      }
+    }
+    return true;
+  };
+  if (!collect("lines", TypedSketchGeometryKind::Line) ||
+      !collect("circles", TypedSketchGeometryKind::Circle) ||
+      !collect("arcs", TypedSketchGeometryKind::Arc) ||
+      !collect("beziers", TypedSketchGeometryKind::Bezier))
+    return false;
+  for (const auto& value : saved.value("centerNodeElementIds").toArray()) {
+    qint64 elementId = 0;
+    if (!integerNumber(value, QStringLiteral("centerNodeElementIds"), 1,
+                       ProjectFile::kMaximumPersistedId, &elementId, error))
+      return false;
+    inventory->centerElementIds.insert(elementId);
+  }
+  return true;
+}
+
+bool typedSketchPointExists(const TypedSketchGeometryInventory& inventory,
+                            const sketch::PointReference& point) {
+  return std::visit(
+      [&](const auto& source) {
+        using T = std::decay_t<decltype(source)>;
+        if constexpr (std::is_same_v<T, sketch::DatumOriginReference>) {
+          return true;
+        } else if constexpr (std::is_same_v<T,
+                                            sketch::CompositeCenterReference>) {
+          return inventory.centerElementIds.contains(
+              static_cast<qint64>(source.elementId));
+        } else {
+          qint64 id = 0;
+          TypedSketchGeometryKind expected = TypedSketchGeometryKind::Line;
+          if constexpr (std::is_same_v<T, sketch::LineEndpointReference>) {
+            id = static_cast<qint64>(source.lineId);
+            expected = TypedSketchGeometryKind::Line;
+          } else if constexpr (std::is_same_v<
+                                   T, sketch::CircleCenterReference>) {
+            id = static_cast<qint64>(source.circleId);
+            expected = TypedSketchGeometryKind::Circle;
+          } else if constexpr (std::is_same_v<T,
+                                                   sketch::ArcEndpointReference>) {
+            id = static_cast<qint64>(source.arcId);
+            expected = TypedSketchGeometryKind::Arc;
+          } else if constexpr (std::is_same_v<
+                                   T, sketch::BezierPointReference>) {
+            id = static_cast<qint64>(source.bezierId);
+            expected = TypedSketchGeometryKind::Bezier;
+          }
+          const auto found = inventory.kinds.find(id);
+          return found != inventory.kinds.end() && found->second == expected;
+        }
+      },
+      point.payload());
+}
+
+bool typedSketchConstraintReferencesValid(
+    const TypedSketchGeometryInventory& inventory,
+    const sketch::Constraint& constraint, QString* error) {
+  const auto type = static_cast<sketch::ConstraintType>(constraint.type);
+  const auto first =
+      static_cast<qint64>(static_cast<sketch::GeometryId>(constraint.firstGeometry));
+  const auto second = static_cast<qint64>(
+      static_cast<sketch::GeometryId>(constraint.secondGeometry));
+  const auto kind = [&](qint64 id, TypedSketchGeometryKind expected) {
+    const auto found = inventory.kinds.find(id);
+    return found != inventory.kinds.end() && found->second == expected;
+  };
+  const auto anyGeometry = [&](qint64 id) {
+    return inventory.kinds.contains(id);
+  };
+  const auto firstPoint =
+      static_cast<sketch::PointReference>(constraint.firstPoint);
+  const auto secondPoint =
+      static_cast<sketch::PointReference>(constraint.secondPoint);
+  const auto twoPoints = [&] {
+    return typedSketchPointExists(inventory, firstPoint) &&
+           typedSketchPointExists(inventory, secondPoint) &&
+           firstPoint != secondPoint;
+  };
+  const auto twoLines = [&] {
+    return first != second && kind(first, TypedSketchGeometryKind::Line) &&
+           kind(second, TypedSketchGeometryKind::Line);
+  };
+
+  bool valid = false;
+  switch (type) {
+    case sketch::ConstraintType::Horizontal:
+    case sketch::ConstraintType::Vertical:
+    case sketch::ConstraintType::Length:
+      valid = kind(first, TypedSketchGeometryKind::Line);
+      break;
+    case sketch::ConstraintType::Radius:
+    case sketch::ConstraintType::Diameter:
+      valid = kind(first, TypedSketchGeometryKind::Circle);
+      break;
+    case sketch::ConstraintType::Coincident:
+    case sketch::ConstraintType::Distance:
+    case sketch::ConstraintType::DistanceX:
+    case sketch::ConstraintType::DistanceY:
+      valid = twoPoints();
+      break;
+    case sketch::ConstraintType::PointOnLine:
+    case sketch::ConstraintType::Midpoint:
+      valid = kind(first, TypedSketchGeometryKind::Line) &&
+              typedSketchPointExists(inventory, secondPoint);
+      break;
+    case sketch::ConstraintType::PointOnCircle:
+      valid = kind(first, TypedSketchGeometryKind::Circle) &&
+              typedSketchPointExists(inventory, secondPoint);
+      break;
+    case sketch::ConstraintType::PointOnArc:
+      valid = kind(first, TypedSketchGeometryKind::Arc) &&
+              typedSketchPointExists(inventory, secondPoint);
+      break;
+    case sketch::ConstraintType::PointOnXAxis:
+    case sketch::ConstraintType::PointOnYAxis:
+      valid = typedSketchPointExists(inventory, secondPoint);
+      break;
+    case sketch::ConstraintType::Parallel:
+    case sketch::ConstraintType::Perpendicular:
+    case sketch::ConstraintType::Angle:
+    case sketch::ConstraintType::LineDistance:
+      valid = twoLines();
+      break;
+    case sketch::ConstraintType::Equal: {
+      const auto firstKind = inventory.kinds.find(first);
+      const auto secondKind = inventory.kinds.find(second);
+      valid = first != second && firstKind != inventory.kinds.end() &&
+              secondKind != inventory.kinds.end() &&
+              firstKind->second == secondKind->second &&
+              (firstKind->second == TypedSketchGeometryKind::Line ||
+               firstKind->second == TypedSketchGeometryKind::Circle);
+      break;
+    }
+    case sketch::ConstraintType::Tangent: {
+      const auto firstKind = inventory.kinds.find(first);
+      const auto secondKind = inventory.kinds.find(second);
+      valid = first != second && firstKind != inventory.kinds.end() &&
+              secondKind != inventory.kinds.end() &&
+              !(firstKind->second == TypedSketchGeometryKind::Line &&
+                secondKind->second == TypedSketchGeometryKind::Line);
+      break;
+    }
+    case sketch::ConstraintType::Lock:
+      valid = anyGeometry(first);
+      break;
+  }
+  if (!valid)
+    return invalid(error,
+                   QStringLiteral("typed constraint has invalid references."));
+  if (constraint.mode == sketch::ConstraintMode::Reference &&
+      !dimensionalConstraintType(type))
+    return invalid(error,
+                   QStringLiteral("reference mode requires a dimensional constraint."));
+  if (type == sketch::ConstraintType::Angle &&
+      constraint.mode != sketch::ConstraintMode::Reference &&
+      static_cast<double>(constraint.value) >= 180.0)
+    return invalid(error,
+                   QStringLiteral("angle constraint must be below 180 degrees."));
+  return true;
+}
+
+bool typedSketchConstraintIsAnnotatable(sketch::ConstraintType type) {
+  return type == sketch::ConstraintType::Length ||
+         type == sketch::ConstraintType::Diameter ||
+         type == sketch::ConstraintType::Distance ||
+         type == sketch::ConstraintType::DistanceX ||
+         type == sketch::ConstraintType::DistanceY ||
+         type == sketch::ConstraintType::Angle ||
+         type == sketch::ConstraintType::LineDistance;
+}
+
+bool validateTypedSketchObject(
+    const QJsonObject& saved,
+    detail::ProjectFormatV3TypedSketchValidationMode mode,
+    bool* sawUnsupported, QString* unsupportedDiagnostic, QString* error) {
+  TypedSketchGeometryInventory geometry;
+  if (!collectTypedSketchGeometry(saved, &geometry, error)) return false;
+
+  const QJsonArray authoredConstraints = saved.value("constraints").toArray();
+  std::vector<TypedSketchConstraintRecord> records;
+  records.reserve(static_cast<std::size_t>(authoredConstraints.size()));
+  std::unordered_set<qint64> constraintIds;
+  qint64 maximumConstraintId = 0;
+  for (qsizetype index = 0; index < authoredConstraints.size(); ++index) {
+    if (!authoredConstraints.at(index).isObject())
+      return invalid(error, QStringLiteral("constraint v3 must be an object."));
+    const auto object = authoredConstraints.at(index).toObject();
+    if (!exactObjectFields(object, {"id", "mode", "payload"},
+                           QStringLiteral("constraint v3"), error))
+      return false;
+    qint64 id = 0;
+    if (!integerNumber(object.value("id"), QStringLiteral("constraint.id"), 1,
+                       ProjectFile::kMaximumPersistedId, &id, error) ||
+        !constraintIds.insert(id).second)
+      return invalid(error,
+                     QStringLiteral("constraint IDs must be positive and unique."));
+    if (!object.value("mode").isString())
+      return invalid(error, QStringLiteral("constraint mode must be a string."));
+    const QString modeText = object.value("mode").toString();
+    if (modeText != QStringLiteral("driving") &&
+        modeText != QStringLiteral("reference") &&
+        modeText != QStringLiteral("disabled"))
+      return invalid(error, QStringLiteral("unknown constraint mode v3."));
+    if (!object.value("payload").isObject())
+      return invalid(error, QStringLiteral("constraint payload must be an object."));
+    if (mode == detail::ProjectFormatV3TypedSketchValidationMode::StableNameV1) {
+      const auto payload = object.value("payload").toObject();
+      qint64 ignoredType = 0;
+      if (!boundedString(payload.value("typeKey"),
+                         QStringLiteral("constraint.typeKey"), error, false) ||
+          !typedSketchWellFormedUtf16(payload.value("typeKey").toString()) ||
+          !integerNumber(payload.value("type"),
+                         QStringLiteral("constraint.type"), 0,
+                         kMaximumExactJsonInteger, &ignoredType, error))
+        return invalid(error,
+                       QStringLiteral("constraint.typeKey or type is malformed."));
+    }
+    maximumConstraintId = std::max(maximumConstraintId, id);
+    records.push_back({object, id});
+  }
+
+  std::unordered_map<qint64, std::optional<sketch::ConstraintType>>
+      decodedTypes;
+  decodedTypes.reserve(records.size());
+  if (mode == detail::ProjectFormatV3TypedSketchValidationMode::
+                  OpaqueConstraintEncoding) {
+    if (sawUnsupported) *sawUnsupported = true;
+    if (unsupportedDiagnostic && unsupportedDiagnostic->isEmpty())
+      *unsupportedDiagnostic =
+          QStringLiteral("constraint type encoding is unsupported");
+    for (const auto& record : records)
+      decodedTypes.emplace(record.id, std::nullopt);
+  } else {
+    for (const auto& record : records) {
+      const auto payload = record.authored.value("payload").toObject();
+      sketch::ConstraintType type{};
+      bool unsupportedType = false;
+      QString typeDiagnostic;
+      if (!decodeConstraintType(payload, ConstraintTypeEncoding::StableNameV1,
+                                &type, &unsupportedType, &typeDiagnostic)) {
+        if (!unsupportedType) {
+          if (error) *error = std::move(typeDiagnostic);
+          return false;
+        }
+        if (sawUnsupported) *sawUnsupported = true;
+        if (unsupportedDiagnostic && unsupportedDiagnostic->isEmpty())
+          *unsupportedDiagnostic = std::move(typeDiagnostic);
+        decodedTypes.emplace(record.id, std::nullopt);
+        continue;
+      }
+      sketch::Constraint decoded;
+      bool decoderUnsupported = false;
+      if (!decodedConstraintV3(record.authored, &decoded, error,
+                               &decoderUnsupported) || decoderUnsupported)
+        return false;
+      if (!typedSketchConstraintReferencesValid(geometry, decoded, error))
+        return false;
+      decodedTypes.emplace(record.id, type);
+    }
+  }
+
+  const QJsonArray dimensions = saved.value("dimensions").toArray();
+  std::unordered_set<qint64> dimensionIds;
+  std::unordered_set<qint64> annotatedConstraintIds;
+  qint64 maximumDimensionId = 0;
+  for (const auto& value : dimensions) {
+    if (!value.isObject())
+      return invalid(error, QStringLiteral("annotation v3 must be an object."));
+    const auto annotation = value.toObject();
+    if (!exactObjectFields(annotation, {"id", "constraintId", "offset", "angle"},
+                           QStringLiteral("annotation v3"), error))
+      return false;
+    qint64 id = 0;
+    qint64 constraintId = 0;
+    if (!integerNumber(annotation.value("id"), QStringLiteral("dimension.id"),
+                       1, ProjectFile::kMaximumPersistedId, &id, error) ||
+        !dimensionIds.insert(id).second)
+      return invalid(error,
+                     QStringLiteral("dimension IDs must be positive and unique."));
+    if (!integerNumber(annotation.value("constraintId"),
+                       QStringLiteral("dimension.constraintId"), 1,
+                       ProjectFile::kMaximumPersistedId, &constraintId,
+                       error) ||
+        !decodedTypes.contains(constraintId))
+      return invalid(error,
+                     QStringLiteral("annotation has a stale constraintId."));
+    if (!annotatedConstraintIds.insert(constraintId).second)
+      return invalid(error,
+                     QStringLiteral("constraint has duplicate annotations."));
+    if (!finiteNumber(annotation.value("offset"), QStringLiteral("offset"),
+                      -kMaximumModelLengthMm, kMaximumModelLengthMm, error) ||
+        !finiteNumber(annotation.value("angle"), QStringLiteral("angle"),
+                      -kMaximumCoordinateMagnitude,
+                      kMaximumCoordinateMagnitude, error))
+      return false;
+    const auto linkedType = decodedTypes.find(constraintId)->second;
+    if (linkedType && !typedSketchConstraintIsAnnotatable(*linkedType))
+      return invalid(error,
+                     QStringLiteral("annotation targets a non-dimensional constraint."));
+    maximumDimensionId = std::max(maximumDimensionId, id);
+  }
+
+  const auto allocators = saved.value("idAllocators").toObject();
+  qint64 nextElementId = 0;
+  qint64 nextGeometryId = 0;
+  qint64 nextConstraintId = 0;
+  qint64 nextDimensionId = 0;
+  if (!integerNumber(allocators.value("nextElementId"),
+                     QStringLiteral("nextElementId"), 1,
+                     ProjectFile::kMaximumPersistedId, &nextElementId, error) ||
+      !integerNumber(allocators.value("nextGeometryId"),
+                     QStringLiteral("nextGeometryId"), 1,
+                     ProjectFile::kMaximumPersistedId, &nextGeometryId, error) ||
+      !integerNumber(allocators.value("nextConstraintId"),
+                     QStringLiteral("nextConstraintId"), 1,
+                     ProjectFile::kMaximumPersistedId, &nextConstraintId,
+                     error) ||
+      !integerNumber(allocators.value("nextDimensionId"),
+                     QStringLiteral("nextDimensionId"), 1,
+                     ProjectFile::kMaximumPersistedId, &nextDimensionId,
+                     error) ||
+      nextElementId <= geometry.maximumElementId ||
+      nextGeometryId <= geometry.maximumGeometryId ||
+      nextConstraintId <= maximumConstraintId ||
+      nextDimensionId <= maximumDimensionId)
+    return invalid(error,
+                   QStringLiteral("allocator cursors are occupied or invalid."));
+  return true;
+}
+
+}  // namespace
+
+namespace detail {
+
+ProjectFormatV3TypedSketchValidationResult
+validateProjectFormatV3TypedSketches(
+    const QJsonObject& authoredRoot,
+    ProjectFormatV3TypedSketchValidationMode mode) {
+  const auto result = [](ProjectFormatV3TypedSketchValidationStatus status,
+                         QString diagnostic = {}) {
+    ProjectFormatV3TypedSketchValidationResult value;
+    value.status = status;
+    value.diagnostic = std::move(diagnostic);
+    return value;
+  };
+  const auto invalidResult = [&](QString diagnostic) {
+    if (diagnostic.isEmpty())
+      diagnostic = QStringLiteral("typed sketch validation failed");
+    return result(ProjectFormatV3TypedSketchValidationStatus::Invalid,
+                  std::move(diagnostic));
+  };
+
+  QJsonObject legacyProjection{
+      {QStringLiteral("name"), authoredRoot.value(QStringLiteral("name"))},
+      {QStringLiteral("createdAt"),
+       authoredRoot.value(QStringLiteral("createdAt"))},
+      {QStringLiteral("document"),
+       authoredRoot.value(QStringLiteral("document"))},
+      {QStringLiteral("sketches"),
+       authoredRoot.value(QStringLiteral("sketches"))},
+      {QStringLiteral("extrusion"),
+       authoredRoot.value(QStringLiteral("extrusion"))}};
+
+  const QJsonValue sketchesValue =
+      legacyProjection.value(QStringLiteral("sketches"));
+  if (!sketchesValue.isArray())
+    return invalidResult(QStringLiteral("sketches must be an array"));
+  QJsonArray geometryOnlySketches = sketchesValue.toArray();
+  for (qsizetype index = 0; index < geometryOnlySketches.size(); ++index) {
+    if (!geometryOnlySketches.at(index).isObject())
+      return invalidResult(
+          QStringLiteral("sketch %1 must be an object").arg(index));
+    QJsonObject sketch = geometryOnlySketches.at(index).toObject();
+    sketch[QStringLiteral("constraints")] = QJsonArray{};
+    sketch[QStringLiteral("dimensions")] = QJsonArray{};
+    geometryOnlySketches[index] = sketch;
+  }
+  QJsonObject geometryOnly = legacyProjection;
+  geometryOnly[QStringLiteral("sketches")] = geometryOnlySketches;
+
+  QString diagnostic;
+  bool ignoredUnsupported = false;
+  if (!validateLegacyRoot(geometryOnly, false,
+                          LegacySketchSchema::StableNameV1,
+                          ConstraintTypeEncoding::StableNameV1, nullptr,
+                          &ignoredUnsupported, &diagnostic))
+    return invalidResult(std::move(diagnostic));
+
+  const bool opaqueEncoding =
+      mode == ProjectFormatV3TypedSketchValidationMode::
+                  OpaqueConstraintEncoding;
+  bool sawUnsupported = opaqueEncoding;
+  QString unsupportedDiagnostic =
+      opaqueEncoding
+          ? QStringLiteral("constraint type encoding is unsupported")
+          : QString{};
+  const QJsonArray sketches = sketchesValue.toArray();
+  for (const auto& value : sketches) {
+    if (!validateTypedSketchObject(value.toObject(), mode, &sawUnsupported,
+                                   &unsupportedDiagnostic, &diagnostic))
+      return invalidResult(std::move(diagnostic));
+  }
+  return result(sawUnsupported
+                    ? ProjectFormatV3TypedSketchValidationStatus::Unsupported
+                    : ProjectFormatV3TypedSketchValidationStatus::Candidate,
+                std::move(unsupportedDiagnostic));
+}
+
+}  // namespace detail
 
 static bool loadLegacyRoot(const QJsonObject& root,
                            ConstraintTypeEncoding constraintEncoding,
