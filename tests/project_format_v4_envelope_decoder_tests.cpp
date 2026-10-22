@@ -565,51 +565,51 @@ int main() {
     CHECK(first.error == second.error);
   }
 
-  // Isolation guard: a scanner candidate remains unsupported by production
-  // loading and cannot mutate an existing destination. The writer remains v3.
+  // Public integration gate: keep the synthetic envelope assertion local to
+  // the scanner, then prove canonical v4 writer output is loadable. The
+  // compatibility writer overload remains v3.
   {
     QTemporaryDir directory(
         QDir::current().filePath(QStringLiteral("v4-envelope-tests-XXXXXX")));
     CHECK(directory.isValid());
     const QString candidatePath = directory.filePath("candidate-v4.solidar");
-    CHECK(writeBytes(candidatePath, rootBytes()));
     CHECK(scan(rootBytes()).hasCandidate());
+    solidar::Document candidateDocument;
+    candidateDocument.setBox({60.0, 40.0, 25.0});
+    QString error;
+    const solidar::project::ProjectPersistenceState v4{
+        solidar::project::ProjectPersistenceFormat::V4};
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        candidatePath, candidateDocument, v4, &error));
+    QFile candidateFile(candidatePath);
+    CHECK(candidateFile.open(QIODevice::ReadOnly));
+    CHECK(scan(candidateFile.readAll()).hasCandidate());
     const auto staged = solidar::project::ProjectFile::stageLoad(candidatePath);
-    CHECK(staged.status == solidar::project::ProjectLoadStatus::Unsupported);
+    CHECK(staged.status == solidar::project::ProjectLoadStatus::Valid);
     CHECK(staged.sourceVersion == 4);
-    CHECK(staged.payloadKind == solidar::project::ProjectPayloadKind::None);
-    CHECK(!staged.succeeded());
-    CHECK(!staged.document.has_value());
-    CHECK(!staged.error.isEmpty());
+    CHECK(staged.payloadKind ==
+          solidar::project::ProjectPayloadKind::ParametricPartV4);
+    CHECK(staged.succeeded());
+    CHECK(staged.document.has_value());
+    CHECK(staged.persistenceState ==
+          solidar::project::ProjectPersistenceState{
+              solidar::project::ProjectPersistenceFormat::V4});
+    CHECK(staged.error.isEmpty());
 
     solidar::Document destination;
     destination.setBox({91.0, 82.0, 73.0});
     auto& sentinelSketch = destination.addSketch("sentinel-sketch");
     sentinelSketch.geometry.addLine({1.25, -2.5}, {7.75, 9.5});
-    const auto sentinelSketchId = sentinelSketch.id;
     auto& sentinelBody = destination.addBody("sentinel-body");
     sentinelBody.setVisible(false);
-    const auto sentinelBodyId = sentinelBody.id();
-    QString error;
-    CHECK(!solidar::project::ProjectFile::loadDocument(candidatePath,
-                                                       &destination, &error));
-    CHECK(!error.isEmpty());
-    CHECK(destination.sketches().size() == 1);
-    CHECK(destination.bodies().size() == 1);
-    CHECK(destination.sketches().front().id == sentinelSketchId);
-    CHECK(destination.sketches().front().name == "sentinel-sketch");
-    CHECK(destination.sketches().front().geometry.lines().size() == 1);
-    CHECK(destination.sketches().front().geometry.lines().front().start ==
-          (solidar::sketch::Point{1.25, -2.5}));
-    CHECK(destination.sketches().front().geometry.lines().front().end ==
-          (solidar::sketch::Point{7.75, 9.5}));
-    CHECK(destination.bodies().front().id() == sentinelBodyId);
-    CHECK(destination.bodies().front().name() == "sentinel-body");
-    CHECK(!destination.bodies().front().visible());
-    CHECK(destination.bodies().front().features().empty());
-    CHECK(destination.box().widthMm == 91.0);
-    CHECK(destination.box().depthMm == 82.0);
-    CHECK(destination.box().heightMm == 73.0);
+    CHECK(solidar::project::ProjectFile::loadDocument(candidatePath,
+                                                      &destination, &error));
+    CHECK(error.isEmpty());
+    CHECK(destination.sketches().empty());
+    CHECK(destination.bodies().empty());
+    CHECK(destination.box().widthMm == 60.0);
+    CHECK(destination.box().depthMm == 40.0);
+    CHECK(destination.box().heightMm == 25.0);
 
     const QString savedPath = directory.filePath("writer-output.solidar");
     CHECK(solidar::project::ProjectFile::saveDocument(savedPath, destination,

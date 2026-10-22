@@ -3,6 +3,8 @@
 #include "project/internal/ProjectFormatV3TypedSketchValidation.h"
 #include "project/internal/ProjectFormatV4DocumentEncoding.h"
 #include "project/internal/ProjectFormatV4DocumentMaterialization.h"
+#include "project/internal/ProjectFormatV4ApplicationGate.h"
+#include "project/internal/ProjectFormatV4AtomicWriting.h"
 #include "project/ProjectFormatV4EnvelopeDecoder.h"
 #include "project/ProjectFormatV4ModelValidator.h"
 #include "project/ProjectFormatV4PayloadScanner.h"
@@ -3665,6 +3667,7 @@ bool ProjectFile::validate(const QString& path, QString* error) {
     case ProjectPayloadKind::LegacyPartV1:
     case ProjectPayloadKind::ParametricPartV2:
     case ProjectPayloadKind::ParametricPartV3:
+    case ProjectPayloadKind::ParametricPartV4:
       return true;
     case ProjectPayloadKind::None:
       setError(error,
@@ -4057,6 +4060,29 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
     return false;
   }
   return saved;
+}
+
+bool ProjectFile::saveDocument(const QString& path, const Document& document,
+                               ProjectPersistenceState persistenceState,
+                               QString* error) {
+  switch (persistenceState.format) {
+    case ProjectPersistenceFormat::V3:
+      return saveDocument(path, document, error);
+    case ProjectPersistenceFormat::V4: {
+      const auto written =
+          detail::writeProjectFormatV4DocumentAtomically(path, document);
+      if (!written.succeeded()) {
+        setError(error, written.error.isEmpty()
+                            ? QString::fromUtf8(
+                                  "Не удалось атомарно сохранить проект v4.")
+                            : written.error);
+        return false;
+      }
+      return true;
+    }
+  }
+  setError(error, QString::fromUtf8("Неизвестный формат сохранения проекта."));
+  return false;
 }
 
 static bool populateDocumentRoot(
@@ -6484,6 +6510,23 @@ detail::materializeProjectFormatV4Document(
   return result;
 }
 
+bool detail::acceptsProjectFormatV4RecomputeResult(
+    const RecomputeResult& result) noexcept {
+  if (result.success) return result.primaryFailures.empty();
+  if (result.primaryFailures.empty()) return false;
+  return std::all_of(
+      result.primaryFailures.begin(), result.primaryFailures.end(),
+      [](const RecomputeFailure& failure) {
+        if (failure.site != RecomputeFailureSite::Feature &&
+            failure.site != RecomputeFailureSite::SketchSupport)
+          return false;
+        return failure.failure.code ==
+                   OperationFailureCode::TopologyReferenceMissing ||
+               failure.failure.code ==
+                   OperationFailureCode::TopologyReferenceAmbiguous;
+      });
+}
+
 StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
   StagedProjectLoad result;
   try {
@@ -6511,8 +6554,86 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
                      parseError.errorString();
       return result;
     }
+
+    const QJsonObject parsedRoot = parsed.object();
+    qint64 parsedVersion = 0;
+    QString versionError;
+    if (parsedRoot.value("format").isString() &&
+        parsedRoot.value("format").toString() ==
+            QStringLiteral("solidar-project") &&
+        integerNumber(parsedRoot.value("version"), QStringLiteral("version"),
+                      1, kMaximumExactJsonInteger, &parsedVersion,
+                      &versionError) &&
+        parsedVersion == 4) {
+      result.sourceVersion = parsedVersion;
+      ::solidar::detail::ScopedExplicitIdReservationPause reservationPause;
+      auto envelope = scanProjectFormatV4Envelope(QByteArrayView(payload));
+      if (!envelope.hasCandidate()) {
+        result.status =
+            envelope.status == ProjectFormatV4EnvelopeScanStatus::NotApplicable
+                ? ProjectLoadStatus::Unsupported
+                : ProjectLoadStatus::Invalid;
+        result.kind = result.status == ProjectLoadStatus::Unsupported
+                          ? ProjectLoadKind::Unsupported
+                          : ProjectLoadKind::Invalid;
+        result.error = std::move(envelope.error);
+        return result;
+      }
+      auto scanned = scanProjectFormatV4Payload(std::move(*envelope.candidate));
+      if (!scanned.hasCandidate()) {
+        result.error = std::move(scanned.error);
+        return result;
+      }
+      auto validated = validateProjectFormatV4Model(
+          std::move(*scanned.candidate));
+      if (validated.status ==
+          ProjectFormatV4ModelValidationStatus::UnsupportedCandidate) {
+        result.status = ProjectLoadStatus::Unsupported;
+        result.kind = ProjectLoadKind::Unsupported;
+        result.error = std::move(validated.error);
+        return result;
+      }
+      if (validated.status != ProjectFormatV4ModelValidationStatus::Candidate ||
+          !validated.candidate) {
+        result.error = std::move(validated.error);
+        return result;
+      }
+      ProjectData restoredLegacy;
+      bool unsupportedLegacy = false;
+      if (!loadV3Root(
+              validated.candidate->legacySketch.topology.payload.envelope
+                  .authoredRoot,
+              &restoredLegacy, &result.error, &unsupportedLegacy)) {
+        if (unsupportedLegacy) {
+          result.status = ProjectLoadStatus::Unsupported;
+          result.kind = ProjectLoadKind::Unsupported;
+        }
+        return result;
+      }
+      auto materialized = detail::materializeProjectFormatV4Document(
+          *validated.candidate);
+      if (!materialized.succeeded()) {
+        result.error = std::move(materialized.error);
+        return result;
+      }
+      const RecomputeResult recomputed =
+          materialized.document->recomputeDetailed();
+      if (!detail::acceptsProjectFormatV4RecomputeResult(recomputed)) {
+        result.error = QString::fromUtf8(
+            "Документ v4 содержит недопустимую ошибку пересчёта модели.");
+        return result;
+      }
+      result.status = ProjectLoadStatus::Valid;
+      result.payloadKind = ProjectPayloadKind::ParametricPartV4;
+      result.kind = ProjectLoadKind::ValidV2;
+      result.persistenceState.format = ProjectPersistenceFormat::V4;
+      result.legacy = std::move(restoredLegacy);
+      result.document.emplace(std::move(*materialized.document));
+      result.error.clear();
+      return result;
+    }
     auto decoded =
-        decodeAndValidatePartPayload(parsed.object(), result.sourceVersion);
+        decodeAndValidatePartPayload(parsedRoot, result.sourceVersion);
     if (decoded.status != ProjectLoadStatus::Valid) {
       result.status = decoded.status;
       if (decoded.status == ProjectLoadStatus::Unsupported)
@@ -6542,6 +6663,7 @@ StagedProjectLoad ProjectFile::stageLoad(const QString& path) {
     result.kind = ProjectLoadKind::ValidV2;
     result.legacy = std::move(decodedPayload.legacy);
     result.document.emplace(std::move(*materialized.document));
+    result.persistenceState.format = ProjectPersistenceFormat::V3;
     result.error.clear();
     return result;
   } catch (const Standard_Failure& failure) {
@@ -6577,6 +6699,7 @@ bool ProjectFile::load(const QString& path, ProjectData* data, QString* error) {
     case ProjectPayloadKind::LegacyPartV1:
     case ProjectPayloadKind::ParametricPartV2:
     case ProjectPayloadKind::ParametricPartV3:
+    case ProjectPayloadKind::ParametricPartV4:
       *data = std::move(staged.legacy);
       return true;
     case ProjectPayloadKind::None:
@@ -6601,7 +6724,7 @@ bool ProjectFile::loadDocument(const QString& path, Document* document,
   if (classifyPartPayload(staged.payloadKind) !=
       PartPayloadDisposition::Parametric) {
     setError(error, QString::fromUtf8(
-                        "Проект не содержит параметрическую историю v2/v3."));
+                        "Проект не содержит параметрическую историю v2/v3/v4."));
     return false;
   }
   if (!staged.document) {

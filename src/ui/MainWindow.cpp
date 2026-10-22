@@ -977,7 +977,8 @@ void MainWindow::saveProject() {
     if (!path.endsWith(QStringLiteral(".solidar"), Qt::CaseInsensitive))
       path += QStringLiteral(".solidar");
   }
-  const auto saved = projectApplicationService_.save(path, document_);
+  const auto saved = projectApplicationService_.save(
+      path, document_, projectPersistenceState_);
   if (!saved.succeeded()) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка сохранения"),
                           saved.detail);
@@ -1197,7 +1198,7 @@ void MainWindow::removeReferenceImage(ReferenceImageId id) {
 
 void MainWindow::applyImportedDocument(Document staged,
                                        const QString& importedName) {
-  commitDocumentReplacement({std::move(staged), std::nullopt},
+  commitDocumentReplacement({std::move(staged), std::nullopt, std::nullopt},
                             DocumentReplacementOrigin::ImportedStep,
                             importedName);
 }
@@ -1213,26 +1214,38 @@ void MainWindow::commitDocumentReplacement(
   resetTransientModelingPresentation();
   if (modelRibbon_) modelRibbon_->clearActiveTool();
 
-  document_ = std::move(staged.document);
-  document_.reserveIdsForEditing();
-  historicalLegacyExtrusionSourceSketchId_ =
-      staged.historicalLegacyExtrusionSourceSketchId;
+  // Everything below may carry IDs or topology owned by the outgoing
+  // Document. Discard it, and detach the viewport, before destroying that
+  // Document. Queued callbacks are generation-guarded by the invalidation
+  // above.
+  finishEditUiTransaction();
+  mirrorPresentationBefore_.reset();
+  historicalLegacyExtrusionSourceSketchId_.reset();
   selectedExtrusionSource_.reset();
-  currentSketchSupport_ = QStringLiteral("XY");
-  currentSketchPlacement_ = SketchPlacement::xy();
   currentSketchFaceReference_.reset();
   selectedReferenceImageId_ = kInvalidReferenceImageId;
   referenceImageEditBefore_.reset();
   referenceImageEditSelectionBefore_.reset();
+  pendingReferenceImagePath_.clear();
+  pendingReferenceImagePixelSize_ = {};
   sketchViews_.clear();
+  editingSketchIndex_.reset();
   viewport_->resetScene();
+
+  document_ = std::move(staged.document);
+  if (staged.persistenceState)
+    projectPersistenceState_ = *staged.persistenceState;
+  document_.reserveIdsForEditing();
+  historicalLegacyExtrusionSourceSketchId_ =
+      staged.historicalLegacyExtrusionSourceSketchId;
+  currentSketchSupport_ = QStringLiteral("XY");
+  currentSketchPlacement_ = SketchPlacement::xy();
   viewport_->setBox(document_.box());
   for (const auto& item : document_.sketches()) {
     sketchViews_.push_back({item.id});
     viewport_->addSketch(item.id, item.geometry,
                          sketchPresentationLabel(item), item.placement);
   }
-  editingSketchIndex_.reset();
   extrudeOperationManuallyChanged_ = false;
   const bool opened = origin == DocumentReplacementOrigin::OpenProject;
   modelHistory_.clear(opened);
@@ -3038,9 +3051,13 @@ void MainWindow::buildUi() {
             if (isDimension) {
               const auto dimensionIndex =
                   static_cast<std::size_t>(dimensionIndexValue);
+              const std::uint64_t documentGeneration =
+                  previewDocumentGeneration_;
 
               QTimer::singleShot(0, this,
-                                 [this, dimensionIndex, id, mode] {
+                                 [this, documentGeneration, dimensionIndex, id,
+                                  mode] {
+                if (documentGeneration != previewDocumentGeneration_) return;
                 if (!sketchCanvas_) return;
                 if (mode == sketch::ConstraintMode::Disabled)
                   sketchCanvas_->setConstraintModeById(id, mode);
@@ -3052,7 +3069,10 @@ void MainWindow::buildUi() {
               return;
             }
 
-            QTimer::singleShot(0, this, [this, id, mode] {
+            const std::uint64_t documentGeneration =
+                previewDocumentGeneration_;
+            QTimer::singleShot(0, this, [this, documentGeneration, id, mode] {
+              if (documentGeneration != previewDocumentGeneration_) return;
               if (sketchCanvas_)
                 sketchCanvas_->setConstraintModeById(id, mode);
             });
@@ -6627,8 +6647,13 @@ void MainWindow::rebuildHistoryPanel() {
         if (step.sketchId != kInvalidSketchId) editSketchById(step.sketchId);
         else editHistoryFeature(step.bodyId, step.featureId);
       } else if (chosen == remove) {
+        const std::uint64_t documentGeneration =
+            previewDocumentGeneration_;
         QTimer::singleShot(0, this,
-                           [this, step] { removeHistoryStep(step); });
+                           [this, documentGeneration, step] {
+          if (documentGeneration != previewDocumentGeneration_) return;
+          removeHistoryStep(step);
+        });
       }
     });
     historyLayout_->addWidget(button);

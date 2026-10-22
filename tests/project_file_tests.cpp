@@ -2678,21 +2678,22 @@ int main(int argc, char* argv[]) {
     }
 
     {
-      auto unsupportedRoot = validRoot;
-      unsupportedRoot["version"] = 4;
-      const QString unsupportedPath =
-          directory.filePath("unsupported-version.solidar");
-      QFile unsupportedFile(unsupportedPath);
-      CHECK(unsupportedFile.open(QIODevice::WriteOnly));
-      const QByteArray bytes =
-          QJsonDocument(unsupportedRoot).toJson(QJsonDocument::Compact);
-      CHECK(unsupportedFile.write(bytes) == bytes.size());
-      unsupportedFile.close();
-      const auto unsupported =
-          solidar::project::ProjectFile::stageLoad(unsupportedPath);
-      CHECK(unsupported.kind ==
-            solidar::project::ProjectLoadKind::Unsupported);
-      CHECK(!unsupported.error.isEmpty());
+      const QString v4Path = directory.filePath("valid-v4.solidar");
+      const solidar::project::ProjectPersistenceState v4{
+          solidar::project::ProjectPersistenceFormat::V4};
+      CHECK(solidar::project::ProjectFile::saveDocument(v4Path, source, v4,
+                                                        &error));
+      const auto stagedV4 =
+          solidar::project::ProjectFile::stageLoad(v4Path);
+      CHECK(stagedV4.succeeded());
+      CHECK(stagedV4.status == solidar::project::ProjectLoadStatus::Valid);
+      CHECK(stagedV4.sourceVersion == 4);
+      CHECK(stagedV4.payloadKind ==
+            solidar::project::ProjectPayloadKind::ParametricPartV4);
+      CHECK(stagedV4.kind == solidar::project::ProjectLoadKind::ValidV2);
+      CHECK(stagedV4.document.has_value());
+      CHECK(stagedV4.persistenceState == v4);
+      CHECK(stagedV4.error.isEmpty());
     }
 
     auto writeRoot = [&](const QString& name, const QJsonObject& root) {

@@ -7,6 +7,7 @@
 
 #include "model/Document.h"
 #include "model/PatternTypes.h"
+#include "project/ProjectPersistenceState.h"
 #include "sketch/Sketch.h"
 
 namespace solidar::project {
@@ -37,7 +38,8 @@ enum class ProjectPayloadKind {
   None,
   LegacyPartV1,
   ParametricPartV2,
-  ParametricPartV3
+  ParametricPartV3,
+  ParametricPartV4
 };
 
 enum class PartPayloadDisposition { Unsupported, Legacy, Parametric };
@@ -49,6 +51,7 @@ enum class PartPayloadDisposition { Unsupported, Legacy, Parametric };
       return PartPayloadDisposition::Legacy;
     case ProjectPayloadKind::ParametricPartV2:
     case ProjectPayloadKind::ParametricPartV3:
+    case ProjectPayloadKind::ParametricPartV4:
       return PartPayloadDisposition::Parametric;
     case ProjectPayloadKind::None:
     default:
@@ -68,6 +71,7 @@ struct StagedProjectLoad {
   ProjectLoadKind kind{ProjectLoadKind::Invalid};
   ProjectData legacy;
   std::optional<Document> document;
+  ProjectPersistenceState persistenceState;
   QString error;
 
   [[nodiscard]] bool succeeded() const noexcept {
@@ -113,6 +117,9 @@ class ProjectFile final {
   static bool load(const QString& path, ProjectData* data,
                    QString* error = nullptr);
   static bool saveDocument(const QString& path, const Document& document,
+                           QString* error = nullptr);
+  static bool saveDocument(const QString& path, const Document& document,
+                           ProjectPersistenceState persistenceState,
                            QString* error = nullptr);
   static bool loadDocument(const QString& path, Document* document,
                            QString* error = nullptr);

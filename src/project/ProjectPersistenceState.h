@@ -7,9 +7,9 @@ enum class ProjectPersistenceFormat {
   V4,
 };
 
-// Plain project-layer value. Ownership and application wiring are deliberately
-// deferred; a newly created project continues to select the production v3
-// persistence path unless a later integration step explicitly chooses v4.
+// Plain project-layer value committed alongside application Document
+// ownership. New and legacy projects default to v3; opening v4 selects v4 for
+// subsequent saves without changing the serialized Document model itself.
 struct ProjectPersistenceState {
   ProjectPersistenceFormat format{ProjectPersistenceFormat::V3};
 

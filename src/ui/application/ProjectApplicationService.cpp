@@ -89,12 +89,13 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
     }
 
     StagedApplicationDocument candidate;
+    candidate.persistenceState = loaded.persistenceState;
     switch (project::classifyPartPayload(loaded.payloadKind)) {
       case project::PartPayloadDisposition::Parametric:
         if (!loaded.document) {
           return {{ProjectApplicationErrorCode::InvalidProject,
                    QString::fromUtf8(
-                       "Проект v2/v3 не содержит восстановленного документа.")},
+                       "Проект v2/v3/v4 не содержит восстановленного документа.")},
                   std::nullopt};
         }
         candidate.document = std::move(*loaded.document);
@@ -143,9 +144,16 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
 
 ProjectApplicationStatus ProjectApplicationService::save(
     const QString& path, const Document& document) const noexcept {
+  return save(path, document, {project::ProjectPersistenceFormat::V3});
+}
+
+ProjectApplicationStatus ProjectApplicationService::save(
+    const QString& path, const Document& document,
+    project::ProjectPersistenceState persistenceState) const noexcept {
   try {
     QString detail;
-    if (!project::ProjectFile::saveDocument(path, document, &detail))
+    if (!project::ProjectFile::saveDocument(path, document, persistenceState,
+                                            &detail))
       return failure(ProjectApplicationErrorCode::SaveFailed,
                      std::move(detail));
     return {};
@@ -160,7 +168,8 @@ StagedApplicationDocumentResult ProjectApplicationService::stageImportStep(
     const QString& path, const Document& currentDocument,
     const QString& featureName) const noexcept {
   try {
-    StagedApplicationDocument candidate{currentDocument, std::nullopt};
+    StagedApplicationDocument candidate{currentDocument, std::nullopt,
+                                        std::nullopt};
     QString detail;
     if (!io::importDocumentStep(path, &candidate.document, featureName,
                                 &detail)) {

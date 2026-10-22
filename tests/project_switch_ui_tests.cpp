@@ -98,6 +98,11 @@ class MainWindowUndoTestAccess {
     window.modelHistory_.clear();
     window.updateUndoAvailability();
   }
+  static project::ProjectPersistenceState persistenceState(
+      const MainWindow& window) {
+    return window.projectPersistenceState_;
+  }
+  static void saveProject(MainWindow& window) { window.saveProject(); }
   static bool pushBodyMarker(MainWindow& window, const std::string& name) {
     Document previous = window.document_;
     const auto previousSelection = window.captureHistorySelection();
@@ -2207,6 +2212,80 @@ int main(int argc, char** argv) {
   solidar::AppSettings settings(
       directory.filePath(QStringLiteral("settings.ini")));
   using Access = solidar::MainWindowUndoTestAccess;
+
+  // Persistence format is committed together with the Document. Rejected v4
+  // staging preserves every live editor surface, while a successful v4 open
+  // clears the old session and routes subsequent Save through the v4 writer.
+  {
+    const solidar::project::ProjectPersistenceState v3{
+        solidar::project::ProjectPersistenceFormat::V3};
+    const solidar::project::ProjectPersistenceState v4{
+        solidar::project::ProjectPersistenceFormat::V4};
+    solidar::MainWindow persistenceEditor(settings);
+    CHECK(persistenceEditor.loadProject(pathA, &error));
+    CHECK(Access::persistenceState(persistenceEditor) == v3);
+
+    const QString validV4Path =
+        directory.filePath(QStringLiteral("application-v4.solidar"));
+    const auto v4Document = Access::documentCopy(persistenceEditor);
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        validV4Path, v4Document, v4, &error));
+
+    solidar::Document hard = v4Document;
+    auto& hardBody = hard.addBody(910001, "hard v4 body");
+    constexpr solidar::FeatureId hardSourceId = 910002;
+    hardBody.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+        hardSourceId,
+        std::make_shared<const TopoDS_Shape>(
+            BRepPrimAPI_MakeBox(20.0, 10.0, 5.0).Shape()),
+        "hard v4 source"));
+    hardBody.addFeature(std::make_unique<solidar::FilletFeature>(
+        910003, solidar::EdgeReference(hardBody.id(), hardSourceId, 0),
+        1000.0, "hard v4 fillet"));
+    const QString hardV4Path =
+        directory.filePath(QStringLiteral("application-hard-v4.solidar"));
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        hardV4Path, hard, v4, &error));
+
+    CHECK(Access::startTopFaceExtrude(persistenceEditor, 15.0));
+    persistenceEditor.setWindowModified(true);
+    const QString beforePath = persistenceEditor.windowFilePath();
+    const auto beforeSelection = Access::selectionState(persistenceEditor);
+    const auto beforeHistory = Access::historyStepCount(persistenceEditor);
+    const auto beforeBodies = Access::bodyCount(persistenceEditor);
+    CHECK(!persistenceEditor.loadProject(hardV4Path, &error));
+    CHECK(!error.isEmpty());
+    CHECK(persistenceEditor.windowFilePath() == beforePath);
+    CHECK(Access::modified(persistenceEditor));
+    CHECK(Access::persistenceState(persistenceEditor) == v3);
+    CHECK(Access::historyStepCount(persistenceEditor) == beforeHistory);
+    CHECK(Access::bodyCount(persistenceEditor) == beforeBodies);
+    CHECK(Access::activeTool(persistenceEditor) ==
+          solidar::PartDesignToolKind::Extrude);
+    CHECK(Access::exactSelectionState(Access::selectionState(persistenceEditor),
+                                      beforeSelection));
+
+    CHECK(persistenceEditor.loadProject(validV4Path, &error));
+    CHECK(Access::persistenceState(persistenceEditor) == v4);
+    CHECK(Access::activeTool(persistenceEditor) ==
+          solidar::PartDesignToolKind::None);
+    CHECK(!Access::modified(persistenceEditor));
+    CHECK(persistenceEditor.windowFilePath() == validV4Path);
+    Access::saveProject(persistenceEditor);
+    QFile savedV4(validV4Path);
+    CHECK(savedV4.open(QIODevice::ReadOnly));
+    CHECK(QJsonDocument::fromJson(savedV4.readAll())
+              .object()
+              .value(QStringLiteral("version"))
+              .toInteger() == 4);
+
+    solidar::Document imported = Access::documentCopy(persistenceEditor);
+    imported.addBody("STEP-format-preservation sentinel");
+    Access::applyImportedDocument(persistenceEditor, std::move(imported));
+    CHECK(Access::persistenceState(persistenceEditor) == v4);
+    CHECK(persistenceEditor.loadProject(pathA, &error));
+    CHECK(Access::persistenceState(persistenceEditor) == v3);
+  }
 
   // Historical v1 projects have a rendered legacy solid but no Body/B-Rep or
   // FaceReference. Its faces still publish a fully typed semantic source: the

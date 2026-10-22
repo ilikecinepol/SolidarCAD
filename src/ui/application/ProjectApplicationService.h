@@ -5,6 +5,7 @@
 #include <QString>
 
 #include "model/Document.h"
+#include "project/ProjectPersistenceState.h"
 
 namespace solidar {
 
@@ -37,6 +38,7 @@ struct ProjectApplicationStatus {
 struct StagedApplicationDocument {
   Document document;
   std::optional<SketchId> historicalLegacyExtrusionSourceSketchId;
+  std::optional<project::ProjectPersistenceState> persistenceState;
 };
 
 struct StagedApplicationDocumentResult {
@@ -58,6 +60,9 @@ class ProjectApplicationService final {
       const QString& path) const noexcept;
   [[nodiscard]] ProjectApplicationStatus save(
       const QString& path, const Document& document) const noexcept;
+  [[nodiscard]] ProjectApplicationStatus save(
+      const QString& path, const Document& document,
+      project::ProjectPersistenceState persistenceState) const noexcept;
 
   [[nodiscard]] StagedApplicationDocumentResult stageImportStep(
       const QString& path, const Document& currentDocument,

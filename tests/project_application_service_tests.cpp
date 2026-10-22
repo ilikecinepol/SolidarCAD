@@ -52,6 +52,9 @@ int main(int argc, char* argv[]) {
   static_assert(noexcept(service.stageOpen(QString{})));
   static_assert(noexcept(service.save(QString{},
                                       std::declval<const solidar::Document&>())));
+  static_assert(noexcept(service.save(
+      QString{}, std::declval<const solidar::Document&>(),
+      solidar::project::ProjectPersistenceState{})));
   static_assert(noexcept(service.stageImportStep(
       QString{}, std::declval<const solidar::Document&>(), QString{})));
 
@@ -121,6 +124,9 @@ int main(int argc, char* argv[]) {
         openedV1.staged->document.sketches().front().id);
   CHECK(openedV1.staged->document.sketches().front().placement.origin.z ==
         20.0);
+  CHECK(openedV1.staged->persistenceState ==
+        solidar::project::ProjectPersistenceState{
+            solidar::project::ProjectPersistenceFormat::V3});
 
   // Canonical v3 save/open round-trip keeps parametric document ownership in
   // the staged result until the caller explicitly commits it.
@@ -132,6 +138,18 @@ int main(int argc, char* argv[]) {
   CHECK(openedV3.staged->document.bodies().size() == 1);
   CHECK(openedV3.staged->document.bodies().front().features().size() == 1);
   CHECK(!openedV3.staged->historicalLegacyExtrusionSourceSketchId);
+  CHECK(openedV3.staged->persistenceState ==
+        solidar::project::ProjectPersistenceState{
+            solidar::project::ProjectPersistenceFormat::V3});
+
+  const QString v4Path =
+      directory.filePath(QStringLiteral("canonical-v4.solidar"));
+  const solidar::project::ProjectPersistenceState v4{
+      solidar::project::ProjectPersistenceFormat::V4};
+  CHECK(service.save(v4Path, committed, v4).succeeded());
+  auto openedV4 = service.stageOpen(v4Path);
+  CHECK(openedV4.succeeded());
+  CHECK(openedV4.staged->persistenceState == v4);
 
   // STEP import is also staged against a copy. Both successful and failed
   // translations leave the supplied current Document unchanged.
@@ -146,6 +164,7 @@ int main(int argc, char* argv[]) {
   CHECK(importBase.bodies().size() == 1);
   CHECK(importBase.bodies().front().id() == existingId);
   CHECK(imported.staged->document.bodies().size() == 2);
+  CHECK(!imported.staged->persistenceState);
 
   const auto failedImport = service.stageImportStep(
       directory.filePath(QStringLiteral("missing.step")), importBase,

@@ -200,6 +200,7 @@ class MainWindow final : public QMainWindow {
       SketchId excludedSketchId = kInvalidSketchId);
 
   Document document_;
+  project::ProjectPersistenceState projectPersistenceState_;
   ProjectApplicationService projectApplicationService_;
   AppSettings& settings_;
   Viewport* viewport_{nullptr};
