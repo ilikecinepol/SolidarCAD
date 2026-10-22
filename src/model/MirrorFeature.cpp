@@ -201,18 +201,24 @@ bool MirrorFeature::rebuildImpl(const RebuildContext& context) {
     }
     const auto sourceIndex = sourceFeature->topologyIndex(&error);
     if (!sourceIndex) {
-      markError(error.empty() ? "Mirror source topology is unavailable"
+      markError(OperationFailureCode::TopologyIndexUnavailable,
+                error.empty() ? "Mirror source topology is unavailable"
                               : error);
       return false;
     }
     const auto resolved = sourceIndex->resolveFace(*planeFace_);
     if (!resolved) {
-      markError("Mirror plane face could not be resolved");
+      markError(operationFailureCode(resolved.failure),
+                resolved.error.empty()
+                    ? "Mirror plane face could not be resolved"
+                    : "Mirror plane face could not be resolved: " +
+                          resolved.error);
       return false;
     }
     BRepAdaptor_Surface surface(*resolved.subshape);
     if (surface.GetType() != GeomAbs_Plane) {
-      markError("Mirror reference face must be planar");
+      markError(OperationFailureCode::NonPlanarFace,
+                "Mirror reference face must be planar");
       return false;
     }
     const gp_Pln plane = surface.Plane();

@@ -150,7 +150,8 @@ bool FilletFeature::rebuildImpl(const RebuildContext& context) {
   std::string topologyError;
   const auto topology = immediatePredecessor->topologyIndex(&topologyError);
   if (!topology) {
-    markError("Fillet topology could not be indexed: " + topologyError);
+    markError(OperationFailureCode::TopologyIndexUnavailable,
+              "Fillet topology could not be indexed: " + topologyError);
     return false;
   }
   if (!topology->shape() || topology->shape().get() != context.previousShape ||
@@ -160,7 +161,8 @@ bool FilletFeature::rebuildImpl(const RebuildContext& context) {
   }
   const auto resolved = resolveEdgeBatch(*topology, edges_);
   if (!resolved) {
-    markError("Fillet edge could not be resolved: " + resolved.error);
+    markError(operationFailureCode(resolved.failure),
+              "Fillet edge could not be resolved: " + resolved.error);
     return false;
   }
   std::string error;

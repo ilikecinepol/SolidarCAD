@@ -352,6 +352,7 @@ std::size_t documentSketchOwnedBytes(const DocumentSketch& item) {
     bytes += topologyReferenceBytes(*item.effectiveSupportAuthoredFace);
   if (item.effectiveSupportFace)
     bytes += topologyReferenceBytes(*item.effectiveSupportFace);
+  bytes += item.supportFailure.detail.capacity();
   return bytes;
 }
 

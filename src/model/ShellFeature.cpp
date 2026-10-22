@@ -58,7 +58,8 @@ bool ShellFeature::rebuildImpl(const RebuildContext& context) {
                                                    kInvalidShapeRevision,
                                                    &topologyError);
   if (!topology) {
-    markError("Shell topology could not be indexed: " + topologyError);
+    markError(OperationFailureCode::TopologyIndexUnavailable,
+              "Shell topology could not be indexed: " + topologyError);
     return false;
   }
   std::vector<std::size_t> indices;
@@ -67,7 +68,11 @@ bool ShellFeature::rebuildImpl(const RebuildContext& context) {
       markError("Shell faces must belong to the active source Feature"); return false;
     }
     const auto resolved = topology->resolveFace(face);
-    if (!resolved) { markError("Shell face could not be resolved: " + resolved.error); return false; }
+    if (!resolved) {
+      markError(operationFailureCode(resolved.failure),
+                "Shell face could not be resolved: " + resolved.error);
+      return false;
+    }
     indices.push_back(resolved.index);
   }
   std::string error;

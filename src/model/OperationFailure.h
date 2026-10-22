@@ -36,6 +36,9 @@ struct OperationFailure {
   [[nodiscard]] explicit operator bool() const noexcept {
     return code != OperationFailureCode::None;
   }
+
+  friend bool operator==(const OperationFailure&,
+                         const OperationFailure&) = default;
 };
 
 }  // namespace solidar

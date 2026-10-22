@@ -67,7 +67,7 @@ struct FeatureLocation {
 
 struct StructuralDependencyFailure {
   DependencyNode root;
-  std::string diagnostic;
+  OperationFailure failure;
   bool invalidatesSketchSupport{};
 };
 
@@ -169,9 +169,10 @@ DocumentIndex buildDocumentIndex(const Document& document) {
           !index.features.contains(upstreamId)) {
         index.structuralFailures.push_back(
             {node,
-             "Feature #" + std::to_string(node.id) +
-                 " references missing Feature #" +
-                 std::to_string(upstreamId),
+             {OperationFailureCode::MissingSource,
+              "Feature #" + std::to_string(node.id) +
+                  " references missing Feature #" +
+                  std::to_string(upstreamId)},
              false});
         continue;
       }
@@ -181,8 +182,10 @@ DocumentIndex buildDocumentIndex(const Document& document) {
       if (sketchId == kInvalidSketchId || !index.sketches.contains(sketchId)) {
         index.structuralFailures.push_back(
             {node,
-             "Feature #" + std::to_string(node.id) +
-                 " references missing Sketch #" + std::to_string(sketchId),
+             {OperationFailureCode::MissingSource,
+              "Feature #" + std::to_string(node.id) +
+                  " references missing Sketch #" +
+                  std::to_string(sketchId)},
              false});
         continue;
       }
@@ -199,18 +202,20 @@ DocumentIndex buildDocumentIndex(const Document& document) {
     if (owner == index.features.end()) {
       index.structuralFailures.push_back(
           {sketchNode(sketch.id),
-           "Sketch #" + std::to_string(sketch.id) +
-               " references missing support Feature #" +
-               std::to_string(sketch.support.face.featureId()),
+           {OperationFailureCode::MissingSource,
+            "Sketch #" + std::to_string(sketch.id) +
+                " references missing support Feature #" +
+                std::to_string(sketch.support.face.featureId())},
            true});
       continue;
     }
     if (owner->second.bodyId != sketch.support.face.bodyId()) {
       index.structuralFailures.push_back(
           {sketchNode(sketch.id),
-           "Sketch #" + std::to_string(sketch.id) +
-               " support owner Body does not match Feature #" +
-               std::to_string(sketch.support.face.featureId()),
+           {OperationFailureCode::TopologyReferenceMismatch,
+            "Sketch #" + std::to_string(sketch.id) +
+                " support owner Body does not match Feature #" +
+                std::to_string(sketch.support.face.featureId())},
            true});
       continue;
     }
@@ -236,7 +241,7 @@ DocumentIndex buildDocumentIndex(const Document& document) {
               [](const auto& left, const auto& right) {
                 if (left.root < right.root) return true;
                 if (right.root < left.root) return false;
-                return left.diagnostic < right.diagnostic;
+                return left.failure.detail < right.failure.detail;
               });
     index.structuralFailures.erase(
         std::unique(index.structuralFailures.begin(),
@@ -245,7 +250,7 @@ DocumentIndex buildDocumentIndex(const Document& document) {
                       return left.root == right.root;
                     }),
         index.structuralFailures.end());
-    index.error = index.structuralFailures.front().diagnostic;
+    index.error = index.structuralFailures.front().failure.detail;
     return index;
   }
   finalizeTopologicalOrder(&index);
@@ -281,21 +286,24 @@ void applyStructuralDependencyFailures(Document& document,
                                        const DocumentIndex& index) {
   std::vector<bool> unavailable(index.nodes.size());
   std::vector<bool> roots(index.nodes.size());
+  std::vector<OperationFailure> causes(index.nodes.size());
   std::deque<std::size_t> pending;
   for (const auto& failure : index.structuralFailures) {
     const auto root = index.nodeIndex(failure.root);
     if (!root) continue;
     roots[*root] = true;
     unavailable[*root] = true;
+    causes[*root] = failure.failure;
     pending.push_back(*root);
     if (failure.root.kind == DependencyNodeKind::Feature) {
       if (auto* feature =
               document.findFeature(static_cast<FeatureId>(failure.root.id)))
-        feature->markBlocked(failure.diagnostic);
+        feature->markBlocked(failure.failure.code, failure.failure.detail);
     } else if (failure.invalidatesSketchSupport) {
       if (auto* sketch =
               document.findSketch(static_cast<SketchId>(failure.root.id))) {
         sketch->supportResolved = false;
+        sketch->supportFailure = failure.failure;
         sketch->placementDirty = true;
       }
     }
@@ -307,14 +315,15 @@ void applyStructuralDependencyFailures(Document& document,
     for (const std::size_t dependent : index.dependents[node]) {
       if (unavailable[dependent]) continue;
       unavailable[dependent] = true;
+      causes[dependent] = causes[node];
       const DependencyNode dependentNode = index.nodes[dependent];
       if (!roots[dependent] &&
           dependentNode.kind == DependencyNodeKind::Feature) {
         if (auto* feature = document.findFeature(
                 static_cast<FeatureId>(dependentNode.id)))
-          feature->markBlocked(
-              "Blocked by invalid upstream dependency '" +
-              nodeLabel(index, index.nodes[node]) + "'");
+          feature->markBlocked(causes[node].code,
+                               "Blocked by invalid upstream dependency '" +
+                                   nodeLabel(index, index.nodes[node]) + "'");
       }
       pending.push_back(dependent);
     }
@@ -665,15 +674,38 @@ const Body* Document::activeBody() const noexcept {
   return bodies_.empty() ? nullptr : &bodies_.back();
 }
 
-bool Document::rebuild() {
+RecomputeResult Document::recomputeDetailed() {
+  RecomputeResult result;
   GeometryFailure schedulerFailure;
   const bool rebuilt = runGeometryOperation(
       [&]() -> bool {
         const DocumentIndex index = buildDocumentIndex(*this);
         if (!index.error.empty()) {
           dependencyError_ = index.error;
-          if (!index.structuralFailures.empty())
+          if (!index.structuralFailures.empty()) {
             applyStructuralDependencyFailures(*this, index);
+            for (const auto& structural : index.structuralFailures) {
+              RecomputeFailure failure;
+              failure.site = RecomputeFailureSite::Structural;
+              failure.failure = structural.failure;
+              if (structural.root.kind == DependencyNodeKind::Feature) {
+                failure.featureId =
+                    static_cast<FeatureId>(structural.root.id);
+                if (const auto location =
+                        index.features.find(failure.featureId);
+                    location != index.features.end())
+                  failure.bodyId = location->second.bodyId;
+              } else {
+                failure.sketchId = static_cast<SketchId>(structural.root.id);
+              }
+              result.primaryFailures.push_back(std::move(failure));
+            }
+          } else {
+            result.primaryFailures.push_back(
+                {RecomputeFailureSite::Structural, kInvalidBodyId,
+                 kInvalidFeatureId, kInvalidSketchId,
+                 {OperationFailureCode::Unknown, index.error}});
+          }
           return false;
         }
         dependencyError_.clear();
@@ -703,6 +735,7 @@ bool Document::rebuild() {
         }
 
         std::vector<bool> unavailable(index.nodes.size());
+        std::vector<OperationFailure> unavailableFailures(index.nodes.size());
         bool valid = true;
         for (const std::size_t nodeOrdinal : index.topologicalOrder) {
           const DependencyNode node = index.nodes[nodeOrdinal];
@@ -718,13 +751,42 @@ bool Document::rebuild() {
             if (location == index.sketches.end()) {
               dependencyError_ = "Dependency scheduler lost Sketch #" +
                                  std::to_string(node.id);
+              result.primaryFailures.push_back(
+                  {RecomputeFailureSite::Structural, kInvalidBodyId,
+                   kInvalidFeatureId, static_cast<SketchId>(node.id),
+                   {OperationFailureCode::Unknown, dependencyError_}});
               return false;
             }
             DocumentSketch& sketch = sketches_[location->second];
-            if (!upstreamUnavailable && dirtyNodes[nodeOrdinal])
+            if (upstreamUnavailable) {
+              const auto blockedBy = std::find_if(
+                  index.dependencies[nodeOrdinal].begin(),
+                  index.dependencies[nodeOrdinal].end(),
+                  [&unavailable](std::size_t dependency) {
+                    return unavailable[dependency];
+                  });
+              if (blockedBy != index.dependencies[nodeOrdinal].end()) {
+                sketch.supportFailure = unavailableFailures[*blockedBy];
+                unavailableFailures[nodeOrdinal] = sketch.supportFailure;
+              }
+              sketch.supportResolved = false;
+            } else if (dirtyNodes[nodeOrdinal]) {
               updateSketchPlacement(sketch);
-            if (upstreamUnavailable || !sketch.supportResolved)
+            }
+            if (upstreamUnavailable || !sketch.supportResolved) {
               unavailable[nodeOrdinal] = true;
+              if (!upstreamUnavailable) {
+                if (!sketch.supportFailure)
+                  sketch.supportFailure = {
+                      OperationFailureCode::Unknown,
+                      "Sketch support is unresolved without a diagnostic code"};
+                unavailableFailures[nodeOrdinal] = sketch.supportFailure;
+                result.primaryFailures.push_back(
+                    {RecomputeFailureSite::SketchSupport, kInvalidBodyId,
+                     kInvalidFeatureId, sketch.id, sketch.supportFailure});
+                valid = false;
+              }
+            }
             continue;
           }
 
@@ -734,12 +796,20 @@ bool Document::rebuild() {
               location->second.bodyIndex >= bodies_.size()) {
             dependencyError_ =
                 "Dependency scheduler lost Feature #" + std::to_string(node.id);
+            result.primaryFailures.push_back(
+                {RecomputeFailureSite::Structural, kInvalidBodyId,
+                 static_cast<FeatureId>(node.id), kInvalidSketchId,
+                 {OperationFailureCode::Unknown, dependencyError_}});
             return false;
           }
           Body& body = bodies_[location->second.bodyIndex];
           if (location->second.featureIndex >= body.features_.size()) {
             dependencyError_ =
                 "Dependency scheduler lost Feature #" + std::to_string(node.id);
+            result.primaryFailures.push_back(
+                {RecomputeFailureSite::Structural, body.id(),
+                 static_cast<FeatureId>(node.id), kInvalidSketchId,
+                 {OperationFailureCode::Unknown, dependencyError_}});
             return false;
           }
           ShapeFeature& feature =
@@ -751,9 +821,16 @@ bool Document::rebuild() {
                 return unavailable[dependency];
               });
           if (blockedBy != index.dependencies[nodeOrdinal].end()) {
-            feature.markBlocked("Blocked by invalid upstream dependency '" +
-                                nodeLabel(index, index.nodes[*blockedBy]) + "'");
+            OperationFailure rootFailure = unavailableFailures[*blockedBy];
+            if (!rootFailure)
+              rootFailure = {OperationFailureCode::Unknown,
+                             "Upstream dependency failed without a code"};
+            feature.markBlocked(
+                rootFailure.code,
+                "Blocked by invalid upstream dependency '" +
+                    nodeLabel(index, index.nodes[*blockedBy]) + "'");
             unavailable[nodeOrdinal] = true;
+            unavailableFailures[nodeOrdinal] = std::move(rootFailure);
             valid = false;
             continue;
           }
@@ -771,12 +848,24 @@ bool Document::rebuild() {
                                          previousFeature};
             if (!feature.rebuild(context)) {
               unavailable[nodeOrdinal] = true;
+              unavailableFailures[nodeOrdinal] = feature.failure();
+              result.primaryFailures.push_back(
+                  {RecomputeFailureSite::Feature, body.id(), feature.id(),
+                   kInvalidSketchId, feature.failure()});
               valid = false;
               continue;
             }
           }
           if (!feature.isValid()) {
             unavailable[nodeOrdinal] = true;
+            unavailableFailures[nodeOrdinal] = feature.failure();
+            if (!unavailableFailures[nodeOrdinal])
+              unavailableFailures[nodeOrdinal] = {
+                  OperationFailureCode::Unknown,
+                  "Feature is invalid without a diagnostic code"};
+            result.primaryFailures.push_back(
+                {RecomputeFailureSite::Feature, body.id(), feature.id(),
+                 kInvalidSketchId, unavailableFailures[nodeOrdinal]});
             valid = false;
           }
         }
@@ -795,16 +884,25 @@ bool Document::rebuild() {
       dependencyError_ = "Document rebuild failed with an unknown exception";
       break;
     }
-    return false;
+    result.primaryFailures.push_back(
+        {RecomputeFailureSite::Structural, kInvalidBodyId, kInvalidFeatureId,
+         kInvalidSketchId,
+         {OperationFailureCode::GeometryOperationFailed, dependencyError_}});
   }
-  return rebuilt;
+  result.success = rebuilt && result.primaryFailures.empty();
+  return result;
 }
 
-bool Document::recompute() { return rebuild(); }
+bool Document::rebuild() { return recomputeDetailed().success; }
+
+bool Document::recompute() { return recomputeDetailed().success; }
 
 std::string Document::rebuildError() const {
   if (!dependencyError_.empty())
     return dependencyError_;
+  for (const auto& sketch : sketches_)
+    if (!sketch.supportResolved && !sketch.supportFailure.detail.empty())
+      return sketch.supportFailure.detail;
   for (const auto &body : bodies_)
     for (const auto &feature : body.features())
       if (feature->isFailed() && !feature->error().empty())
@@ -1034,6 +1132,7 @@ bool Document::attachSketchToFace(SketchId sketchId, FaceReference reference) {
   sketch->effectiveSupportAuthoredFace.reset();
   sketch->effectiveSupportFace.reset();
   sketch->placement = resolvedPlacement.placement;
+  sketch->supportFailure = {};
   sketch->supportResolved = true;
   sketch->placementDirty = false;
   ++sketch->placementRevision;
@@ -1059,6 +1158,7 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
   if (sketch.support.type != SketchSupportType::Face) {
     sketch.effectiveSupportAuthoredFace.reset();
     sketch.effectiveSupportFace.reset();
+    sketch.supportFailure = {};
     sketch.supportResolved = true;
     return true;
   }
@@ -1080,17 +1180,30 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
   const ShapeFeature* feature =
       findFeature(reference.bodyId(), reference.featureId());
   if (!feature || !feature->isValid() || !feature->shape()) {
+    sketch.supportFailure = {
+        OperationFailureCode::MissingSource,
+        "Sketch support Feature is unavailable"};
     sketch.supportResolved = false;
     return false;
   }
   std::string indexError;
   const auto topology = feature->topologyIndex(&indexError);
   if (!topology) {
+    sketch.supportFailure = {
+        OperationFailureCode::TopologyIndexUnavailable,
+        indexError.empty() ? "Sketch support topology is unavailable"
+                           : std::move(indexError)};
     sketch.supportResolved = false;
     return false;
   }
   const auto resolution = topology->resolveFace(reference);
   if (!resolution) {
+    sketch.supportFailure = {
+        operationFailureCode(resolution.failure),
+        resolution.error.empty()
+            ? "Sketch support face could not be resolved"
+            : "Sketch support face could not be resolved: " +
+                  resolution.error};
     sketch.supportResolved = false;
     return false;
   }
@@ -1100,6 +1213,11 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
     const auto created = topology->createFaceReference(
         candidate.bodyId(), candidate.featureId(), resolution.index);
     if (!created) {
+      sketch.supportFailure = {
+          OperationFailureCode::TopologyResolutionUnexpected,
+          created.error.empty()
+              ? "Sketch support face enrichment failed"
+              : std::move(created.error)};
       sketch.supportResolved = false;
       return false;
     }
@@ -1108,11 +1226,19 @@ bool Document::updateSketchPlacement(DocumentSketch& sketch) {
   const auto resolved = resolveFacePlacement(*resolution.subshape);
   sketch.supportResolved = resolved.resolved && resolved.planar;
   if (sketch.supportResolved) {
+    sketch.supportFailure = {};
     if (candidate != authoredReference)
       sketch.effectiveSupportFace = std::move(candidate);
     else
       sketch.effectiveSupportFace.reset();
     sketch.placement = resolved.placement;
+  } else if (!resolved.resolved) {
+    sketch.supportFailure = {
+        OperationFailureCode::GeometryOperationFailed,
+        "Sketch support placement could not be resolved"};
+  } else {
+    sketch.supportFailure = {OperationFailureCode::NonPlanarFace,
+                             "Sketch support face is not planar"};
   }
   return sketch.supportResolved;
 }

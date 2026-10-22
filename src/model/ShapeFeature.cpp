@@ -128,11 +128,16 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
     const bool completed =
         runGeometryOperation([&] { rebuilt = rebuildImpl(context); }, &failure);
 
-    std::string diagnostic;
+    OperationFailure diagnosticFailure{
+        OperationFailureCode::GeometryOperationFailed, {}};
+    std::string& diagnostic = diagnosticFailure.detail;
     if (!completed) {
       diagnostic = exceptionDiagnostic(failure.kind);
     } else if (!rebuilt) {
-      diagnostic = error();
+      diagnosticFailure = this->failure();
+      if (!diagnosticFailure)
+        diagnosticFailure = {OperationFailureCode::GeometryOperationFailed,
+                             "Geometry rebuild failed"};
     } else if (!isValid()) {
       diagnostic = "Geometry rebuild did not produce a valid feature state";
     } else if (!shape_ || shape_->IsNull()) {
@@ -145,6 +150,8 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
           &validationFailure);
       if (validationCompleted && brepValid) {
         if (topologyLineageAttempted_ && !topologyLineage_) {
+          diagnosticFailure.code =
+              OperationFailureCode::TopologyIndexUnavailable;
           diagnostic = "Geometry rebuild attempted invalid topology lineage";
         } else if (topologyLineageAttempted_) {
           if (topologyLineage_->validateForProducer(id(), &diagnostic)) {
@@ -164,6 +171,11 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
                 topologyError.empty()
                     ? "Geometry rebuild produced invalid topology lineage"
                     : std::move(topologyError);
+            diagnosticFailure.code =
+                OperationFailureCode::TopologyIndexUnavailable;
+          } else {
+            diagnosticFailure.code =
+                OperationFailureCode::TopologyIndexUnavailable;
           }
         } else {
           const ShapeRevision candidateRevision =
@@ -191,7 +203,7 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
     topologyIndexError_ = previousTopologyError;
     if (diagnostic.empty())
       diagnostic = "Geometry rebuild failed";
-    markError(std::move(diagnostic));
+    markError(diagnosticFailure.code, std::move(diagnostic));
     return false;
   } catch (...) {
     shape_ = previousShape;
@@ -202,7 +214,8 @@ bool ShapeFeature::rebuildAtBoundary(const RebuildContext& context) {
     topologyIndexAttempted_ = previousTopologyAttempted;
     topologyIndexError_ = previousTopologyError;
     try {
-      markError("Geometry rebuild failed at the exception boundary");
+      markError(OperationFailureCode::GeometryOperationFailed,
+                "Geometry rebuild failed at the exception boundary");
     } catch (...) {
     }
     return false;

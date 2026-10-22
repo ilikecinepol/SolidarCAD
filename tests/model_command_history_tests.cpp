@@ -478,6 +478,9 @@ int main() {
     auto effective = authored;
     effective.signature() = FaceSignature{};
     cached->effectiveSupportFace = std::move(effective);
+    cached->supportFailure = {
+        OperationFailureCode::TopologyReferenceMissing,
+        std::string(kTagBytes, 'd')};
 
     const Document empty;
     const auto uncachedMetrics =
@@ -487,7 +490,7 @@ int main() {
     CHECK(uncachedMetrics.sliceCount == 1);
     CHECK(cachedMetrics.sliceCount == 1);
     CHECK(cachedMetrics.retainedBytes >=
-          uncachedMetrics.retainedBytes + 2 * kTagBytes);
+          uncachedMetrics.retainedBytes + 3 * kTagBytes);
   }
 
   // A v2 reference embedded in Document state also survives the cold delta

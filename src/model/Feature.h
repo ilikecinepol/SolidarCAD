@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "model/ModelIds.h"
+#include "model/OperationFailure.h"
 
 class TopoDS_Shape;
 
@@ -69,8 +70,11 @@ class Feature {
   [[nodiscard]] bool isValid() const noexcept;
   [[nodiscard]] bool isFailed() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept;
+  [[nodiscard]] const OperationFailure& failure() const noexcept;
+  [[nodiscard]] OperationFailureCode errorCode() const noexcept;
   void setDirty(bool dirty = true) noexcept;
   void markBlocked(std::string message);
+  void markBlocked(OperationFailureCode code, std::string message);
 
   [[nodiscard]] virtual FeatureKind kind() const noexcept {
     return FeatureKind::Unknown;
@@ -92,6 +96,7 @@ class Feature {
   virtual bool rebuildAtBoundary(const RebuildContext& context) = 0;
   void markValid() noexcept;
   void markError(std::string message);
+  void markError(OperationFailureCode code, std::string message);
 
  private:
   friend class Document;
@@ -101,7 +106,7 @@ class Feature {
   FeatureId id_{kInvalidFeatureId};
   std::string name_;
   FeatureState state_{FeatureState::Dirty};
-  std::string error_;
+  OperationFailure failure_;
 };
 
 }  // namespace solidar

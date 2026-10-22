@@ -34,7 +34,11 @@ FeatureState Feature::state() const noexcept { return state_; }
 bool Feature::isDirty() const noexcept { return state_ == FeatureState::Dirty; }
 bool Feature::isValid() const noexcept { return state_ == FeatureState::Valid; }
 bool Feature::isFailed() const noexcept { return state_ == FeatureState::Error; }
-const std::string& Feature::error() const noexcept { return error_; }
+const std::string& Feature::error() const noexcept { return failure_.detail; }
+const OperationFailure& Feature::failure() const noexcept { return failure_; }
+OperationFailureCode Feature::errorCode() const noexcept {
+  return failure_.code;
+}
 
 FeatureDependencies Feature::dependencies() const { return {}; }
 bool Feature::dependsOnSketch(SketchId sketchId) const {
@@ -58,13 +62,16 @@ bool Feature::rebuild(const RebuildContext& context) noexcept {
   try {
     switch (failure.kind) {
       case GeometryFailureKind::OcctException:
-        markError("OpenCASCADE feature rebuild failed");
+        markError(OperationFailureCode::GeometryOperationFailed,
+                  "OpenCASCADE feature rebuild failed");
         break;
       case GeometryFailureKind::StandardException:
-        markError("Feature rebuild failed with a standard exception");
+        markError(OperationFailureCode::GeometryOperationFailed,
+                  "Feature rebuild failed with a standard exception");
         break;
       default:
-        markError("Feature rebuild failed with an unknown exception");
+        markError(OperationFailureCode::GeometryOperationFailed,
+                  "Feature rebuild failed with an unknown exception");
         break;
     }
   } catch (...) {
@@ -75,7 +82,7 @@ bool Feature::rebuild(const RebuildContext& context) noexcept {
 void Feature::setDirty(bool dirty) noexcept {
   if (dirty) {
     state_ = FeatureState::Dirty;
-    error_.clear();
+    failure_ = {};
   } else if (state_ == FeatureState::Dirty) {
     state_ = FeatureState::Valid;
   }
@@ -85,14 +92,26 @@ void Feature::markBlocked(std::string message) {
   markError(std::move(message));
 }
 
+void Feature::markBlocked(OperationFailureCode code, std::string message) {
+  markError(code == OperationFailureCode::None ? OperationFailureCode::Unknown
+                                                : code,
+            std::move(message));
+}
+
 void Feature::markValid() noexcept {
   state_ = FeatureState::Valid;
-  error_.clear();
+  failure_ = {};
 }
 
 void Feature::markError(std::string message) {
+  markError(OperationFailureCode::Unknown, std::move(message));
+}
+
+void Feature::markError(OperationFailureCode code, std::string message) {
   state_ = FeatureState::Error;
-  error_ = std::move(message);
+  failure_ = {code == OperationFailureCode::None ? OperationFailureCode::Unknown
+                                                  : code,
+              std::move(message)};
 }
 
 FeatureId Feature::nextId() noexcept {

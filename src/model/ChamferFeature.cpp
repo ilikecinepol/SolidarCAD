@@ -137,7 +137,8 @@ bool ChamferFeature::rebuildImpl(const RebuildContext& context) {
   std::string topologyError;
   const auto topology = immediatePredecessor->topologyIndex(&topologyError);
   if (!topology) {
-    markError("Chamfer topology could not be indexed: " + topologyError);
+    markError(OperationFailureCode::TopologyIndexUnavailable,
+              "Chamfer topology could not be indexed: " + topologyError);
     return false;
   }
   if (!topology->shape() || topology->shape().get() != context.previousShape ||
@@ -147,7 +148,8 @@ bool ChamferFeature::rebuildImpl(const RebuildContext& context) {
   }
   const auto resolved = resolveEdgeBatch(*topology, edges_);
   if (!resolved) {
-    markError("Chamfer edge could not be resolved: " + resolved.error);
+    markError(operationFailureCode(resolved.failure),
+              "Chamfer edge could not be resolved: " + resolved.error);
     return false;
   }
   std::string error;

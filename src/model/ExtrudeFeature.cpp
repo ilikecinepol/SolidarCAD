@@ -209,6 +209,40 @@ struct StrictBooleanExtrusion {
   std::shared_ptr<const TopologyLineage> lineage;
 };
 
+OperationFailureCode operationFailureCode(
+    FaceBoundaryEdgeProvenanceFailureCode code) noexcept {
+  switch (code) {
+    case FaceBoundaryEdgeProvenanceFailureCode::MissingSelectedFace:
+      return OperationFailureCode::TopologyReferenceMissing;
+    case FaceBoundaryEdgeProvenanceFailureCode::AmbiguousSelectedFace:
+      return OperationFailureCode::TopologyReferenceAmbiguous;
+    case FaceBoundaryEdgeProvenanceFailureCode::InvalidSelectedFace:
+    case FaceBoundaryEdgeProvenanceFailureCode::ForeignSelectedFace:
+      return OperationFailureCode::TopologyReferenceInvalid;
+    case FaceBoundaryEdgeProvenanceFailureCode::GeometryException:
+      return OperationFailureCode::GeometryOperationFailed;
+    default:
+      return OperationFailureCode::TopologyIndexUnavailable;
+  }
+}
+
+OperationFailureCode operationFailureCode(
+    FacePrismTopologyHistoryFailureCode code) noexcept {
+  switch (code) {
+    case FacePrismTopologyHistoryFailureCode::MissingSelectedFace:
+      return OperationFailureCode::TopologyReferenceMissing;
+    case FacePrismTopologyHistoryFailureCode::AmbiguousSelectedFace:
+      return OperationFailureCode::TopologyReferenceAmbiguous;
+    case FacePrismTopologyHistoryFailureCode::InvalidSelectedFace:
+    case FacePrismTopologyHistoryFailureCode::ForeignSelectedFace:
+      return OperationFailureCode::TopologyReferenceInvalid;
+    case FacePrismTopologyHistoryFailureCode::GeometryException:
+      return OperationFailureCode::GeometryOperationFailed;
+    default:
+      return OperationFailureCode::TopologyIndexUnavailable;
+  }
+}
+
 bool augmentStrictBooleanExtrusionEdges(FeatureId producerFeatureId,
                                         StrictBooleanExtrusion* result,
                                         std::string* error) {
@@ -375,32 +409,73 @@ bool buildStrictFaceBooleanExtrusion(
     const RebuildContext& context, const ShapeFeature& current,
     const FaceReference& selectedFace, double lengthMm, bool reversed,
     ExtrudeOperation operation, StrictBooleanExtrusion* result,
-    std::string* error) {
+    std::string* error, OperationFailureCode* failureCode) {
+  if (failureCode)
+    *failureCode = OperationFailureCode::GeometryOperationFailed;
   if (!result || !selectedFace.isV2()) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyReferenceInvalid;
     if (error) *error = "Extrude face reference is not v2";
     return false;
   }
   if (operation != ExtrudeOperation::Join &&
       operation != ExtrudeOperation::Cut) {
+    if (failureCode) *failureCode = OperationFailureCode::InvalidInput;
     if (error) *error = "Extrude face operation is invalid";
     return false;
   }
-  if (!validateImmediatePredecessor(context, current, error)) return false;
+  if (!validateImmediatePredecessor(context, current, error)) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyReferenceMismatch;
+    return false;
+  }
 
   const ShapeFeature& baseFeature = *context.previousFeature;
   const auto baseLineage = baseFeature.topologyLineage();
   if (!baseLineage ||
       baseLineage->coverage() != TopologyLineageCoverage::CompleteFaces) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyIndexUnavailable;
     if (error) *error = "Extrude base face lineage is incomplete";
     return false;
   }
   if (selectedFace.bodyId() != context.body->id()) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyReferenceMismatch;
     if (error) *error = "Extrude face belongs to a different Body";
     return false;
   }
   if (selectedFace.featureId() != baseFeature.id()) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyReferenceMismatch;
     if (error)
       *error = "Extrude face must belong to the immediate source Feature";
+    return false;
+  }
+
+  // Classify the authored v2 provenance against the exact committed source
+  // before the stricter boundary/history capture runs. Those later helpers
+  // intentionally collapse several lineage-integrity failures, while the
+  // application gate must retain Missing versus Ambiguous for this reference.
+  std::string sourceTopologyError;
+  const auto sourceTopology =
+      baseFeature.topologyIndex(&sourceTopologyError);
+  if (!sourceTopology) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyIndexUnavailable;
+    if (error)
+      *error = sourceTopologyError.empty()
+                   ? "Extrude source topology is unavailable"
+                   : std::move(sourceTopologyError);
+    return false;
+  }
+  const auto sourceResolution = sourceTopology->resolveFace(selectedFace);
+  if (!sourceResolution) {
+    if (failureCode)
+      *failureCode = operationFailureCode(sourceResolution.failure);
+    if (error)
+      *error = "Extrude face could not be resolved: " +
+               sourceResolution.error;
     return false;
   }
 
@@ -410,6 +485,8 @@ bool buildStrictFaceBooleanExtrusion(
   auto boundary = captureUniqueManifoldFaceBoundary(
       baseSnapshot, selectedFace, &boundaryFailure);
   if (!boundary) {
+    if (failureCode)
+      *failureCode = operationFailureCode(boundaryFailure.code);
     if (error)
       *error = boundaryFailure.detail.empty()
                    ? "Extrude face boundary provenance capture failed"
@@ -422,6 +499,8 @@ bool buildStrictFaceBooleanExtrusion(
       boundary->augmentedSource.shape, kInvalidShapeRevision,
       boundary->augmentedSource.lineage, &topologyError);
   if (!topology) {
+    if (failureCode)
+      *failureCode = OperationFailureCode::TopologyIndexUnavailable;
     if (error)
       *error = topologyError.empty()
                    ? "Extrude topology could not be indexed"
@@ -430,6 +509,8 @@ bool buildStrictFaceBooleanExtrusion(
   }
   const auto resolved = topology->resolveFace(selectedFace);
   if (!resolved) {
+    if (failureCode)
+      *failureCode = operationFailureCode(resolved.failure);
     if (error)
       *error = "Extrude face could not be resolved: " + resolved.error;
     return false;
@@ -437,7 +518,8 @@ bool buildStrictFaceBooleanExtrusion(
 
   gp_Pln plane;
   gp_Dir normal;
-  if (!resolveFacePlaneAndNormal(*resolved.subshape, &plane, &normal, error))
+  if (!resolveFacePlaneAndNormal(*resolved.subshape, &plane, &normal, error,
+                                 failureCode))
     return false;
   const gp_Vec offset =
       gp_Vec(normal) * (reversed ? -lengthMm : lengthMm);
@@ -452,6 +534,8 @@ bool buildStrictFaceBooleanExtrusion(
   auto prismBuilder = captureFacePrismTopologyHistory(
       prism, current.id(), selectedFace, *boundary, &prismFailure);
   if (!prismBuilder) {
+    if (failureCode)
+      *failureCode = operationFailureCode(prismFailure.code);
     if (error)
       *error = prismFailure.detail.empty()
                    ? "Extrude face prism history capture failed"
@@ -719,10 +803,13 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
     std::string faceError;
     if (source.face.isV2()) {
       StrictBooleanExtrusion built;
+      OperationFailureCode faceFailureCode{
+          OperationFailureCode::GeometryOperationFailed};
       if (!buildStrictFaceBooleanExtrusion(
               context, *this, source.face, lengthMm_, reversed_, operation_,
-              &built, &faceError)) {
-        markError(faceError.empty() ? "Extrude face lineage rebuild failed"
+              &built, &faceError, &faceFailureCode)) {
+        markError(faceFailureCode,
+                  faceError.empty() ? "Extrude face lineage rebuild failed"
                                     : std::move(faceError));
         return false;
       }
@@ -738,15 +825,19 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
 
     const auto topology = context.previousFeature->topologyIndex(&faceError);
     if (!topology) {
-      markError("Extrude topology could not be indexed: " + faceError);
+      markError(OperationFailureCode::TopologyIndexUnavailable,
+                "Extrude topology could not be indexed: " + faceError);
       return false;
     }
     TopoDS_Shape result;
     FaceExtrudeGeometry geometry;
+    OperationFailureCode faceFailureCode{
+        OperationFailureCode::GeometryOperationFailed};
     if (!buildExtrusionFromFace(*context.previousShape, *topology, source.face,
                                 lengthMm_, operation_, reversed_, &result,
-                                &geometry, &faceError)) {
-      markError("Extrude " + faceError);
+                                &geometry, &faceError, nullptr,
+                                &faceFailureCode)) {
+      markError(faceFailureCode, "Extrude " + faceError);
       return false;
     }
     setShape(std::make_shared<TopoDS_Shape>(result));
@@ -754,14 +845,18 @@ bool ExtrudeFeature::rebuildFaceSource(const RebuildContext& context,
     return true;
   } catch (const Standard_Failure& failure) {
     const char* message = failure.what();
-    markError(message && *message ? std::string("OCCT Extrude error: ") + message
-                                  : "OCCT Extrude operation failed");
+    markError(OperationFailureCode::GeometryOperationFailed,
+              message && *message
+                  ? std::string("OCCT Extrude error: ") + message
+                  : "OCCT Extrude operation failed");
     return false;
   } catch (const std::exception& failure) {
-    markError(std::string("Extrude error: ") + failure.what());
+    markError(OperationFailureCode::GeometryOperationFailed,
+              std::string("Extrude error: ") + failure.what());
     return false;
   } catch (...) {
-    markError("Unexpected Extrude geometry error");
+    markError(OperationFailureCode::GeometryOperationFailed,
+              "Unexpected Extrude geometry error");
     return false;
   }
 }

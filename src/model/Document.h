@@ -1,11 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
-#include <optional>
 
 #include "model/Body.h"
+#include "model/OperationFailure.h"
 #include "model/SketchPlacement.h"
 #include "sketch/Sketch.h"
 
@@ -41,6 +42,7 @@ struct DocumentSketch {
   // authored-support edit.
   std::optional<FaceReference> effectiveSupportAuthoredFace;
   std::optional<FaceReference> effectiveSupportFace;
+  OperationFailure supportFailure;
   bool supportResolved{true};
   bool placementDirty{true};
   // Monotonic diagnostic revision for deterministic placement scheduling
@@ -80,6 +82,24 @@ struct FeatureRemovalPlan {
   [[nodiscard]] bool empty() const noexcept {
     return bodyRanges.empty() && bodyIds.empty() && sketchIds.empty();
   }
+};
+
+enum class RecomputeFailureSite { Structural, SketchSupport, Feature };
+
+struct RecomputeFailure {
+  RecomputeFailureSite site{RecomputeFailureSite::Structural};
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId featureId{kInvalidFeatureId};
+  SketchId sketchId{kInvalidSketchId};
+  OperationFailure failure;
+
+  friend bool operator==(const RecomputeFailure&,
+                         const RecomputeFailure&) = default;
+};
+
+struct RecomputeResult {
+  bool success{true};
+  std::vector<RecomputeFailure> primaryFailures;
 };
 
 class Document final {
@@ -127,6 +147,7 @@ class Document final {
   [[nodiscard]] const Body* activeBody() const noexcept;
   [[nodiscard]] bool rebuild();
   [[nodiscard]] bool recompute();
+  [[nodiscard]] RecomputeResult recomputeDetailed();
   [[nodiscard]] bool recomputeFrom(FeatureId featureId);
   [[nodiscard]] std::string rebuildError() const;
   [[nodiscard]] FeatureRemovalPlan planFeatureRemoval(

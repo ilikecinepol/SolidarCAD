@@ -369,7 +369,8 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   std::string topologyError;
   const auto topology = immediatePredecessor->topologyIndex(&topologyError);
   if (!topology) {
-    markError("Draft topology could not be indexed: " + topologyError);
+    markError(OperationFailureCode::TopologyIndexUnavailable,
+              "Draft topology could not be indexed: " + topologyError);
     return false;
   }
   if (!topology->shape() || topology->shape().get() != context.previousShape ||
@@ -381,7 +382,11 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
   for (const auto& face : draftedFaces_) {
     if (face.bodyId() != context.body->id() || face.featureId() != sourceFeatureId_) { markError("Draft faces must belong to the active source Feature"); return false; }
     const auto resolved = topology->resolveFace(face);
-    if (!resolved) { markError("Draft face could not be resolved: " + resolved.error); return false; }
+    if (!resolved) {
+      markError(operationFailureCode(resolved.failure),
+                "Draft face could not be resolved: " + resolved.error);
+      return false;
+    }
     indices.push_back(resolved.index);
   }
   gp_Pln plane; gp_Dir direction; std::string error;
@@ -399,7 +404,7 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
         *context.previousShape, topology.get(), draftedFaces_.front(),
         *rotationEdge_, &plane, &direction);
     if (!resolution) {
-      markError(resolution.failure.detail);
+      markError(resolution.failure.code, resolution.failure.detail);
       return false;
     }
   } else {
@@ -407,7 +412,7 @@ bool DraftFeature::rebuildImpl(const RebuildContext& context) {
         context.document, *context.previousShape, topology.get(),
         neutralPlane_, pullDirection_, &plane, &direction);
     if (!resolution) {
-      markError(resolution.failure.detail);
+      markError(resolution.failure.code, resolution.failure.detail);
       return false;
     }
   }
