@@ -33,6 +33,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDateTime>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -88,6 +89,32 @@
 namespace solidar {
 
 namespace {
+
+QString normalizedSolidarPath(QString path) {
+  if (!path.endsWith(QStringLiteral(".solidar"), Qt::CaseInsensitive))
+    path += QStringLiteral(".solidar");
+  return path;
+}
+
+bool pathsReferToSameFile(const QString& left, const QString& right) {
+  if (left.isEmpty() || right.isEmpty()) return false;
+
+#ifdef Q_OS_WIN
+  constexpr auto comparison = Qt::CaseInsensitive;
+#else
+  constexpr auto comparison = Qt::CaseSensitive;
+#endif
+  const QFileInfo leftInfo(left);
+  const QFileInfo rightInfo(right);
+  const QString leftAbsolute = QDir::cleanPath(leftInfo.absoluteFilePath());
+  const QString rightAbsolute = QDir::cleanPath(rightInfo.absoluteFilePath());
+  if (leftAbsolute.compare(rightAbsolute, comparison) == 0) return true;
+
+  const QString leftCanonical = leftInfo.canonicalFilePath();
+  const QString rightCanonical = rightInfo.canonicalFilePath();
+  return !leftCanonical.isEmpty() && !rightCanonical.isEmpty() &&
+         leftCanonical.compare(rightCanonical, comparison) == 0;
+}
 template <class... Ts>
 struct Overloaded : Ts... {
   using Ts::operator()...;
@@ -385,6 +412,10 @@ void MainWindow::buildMenus() {
   openAction->setShortcut(QKeySequence::Open);
   auto* saveAction = fileMenu->addAction(QString::fromUtf8("Сохранить"));
   saveAction->setShortcut(QKeySequence::Save);
+  saveProjectAsAction_ =
+      fileMenu->addAction(QString::fromUtf8("Сохранить как…"));
+  saveProjectAsAction_->setObjectName(QStringLiteral("saveProjectAsAction"));
+  saveProjectAsAction_->setShortcut(QKeySequence::SaveAs);
   upgradeProjectFormatAction_ = fileMenu->addAction(
       QString::fromUtf8("Обновить формат проекта до v4…"));
   upgradeProjectFormatAction_->setObjectName(
@@ -480,6 +511,8 @@ void MainWindow::buildMenus() {
   connect(createAction, &QAction::triggered, this, &MainWindow::createProject);
   connect(openAction, &QAction::triggered, this, &MainWindow::openProject);
   connect(saveAction, &QAction::triggered, this, &MainWindow::saveProject);
+  connect(saveProjectAsAction_, &QAction::triggered, this,
+          &MainWindow::saveProjectAs);
   connect(upgradeProjectFormatAction_, &QAction::triggered, this,
           &MainWindow::upgradeProjectFormat);
   connect(convertToProductDocumentAction_, &QAction::triggered, this,
@@ -1044,6 +1077,211 @@ bool MainWindow::saveProjectToPath(const QString& path, QString* error) {
   return true;
 }
 
+ProjectApplicationStatus MainWindow::saveProductCloneToPath(
+    const QString& targetPath, const ProductCloneRequest& request) {
+  if (projectPersistenceState_.format !=
+          project::ProjectPersistenceFormat::V5 ||
+      !saveProjectAsIsEligible() ||
+      !projectPersistenceTransitionIsQuiescent()) {
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Документ изделия больше не готов к сохранению копии.")};
+  }
+
+  const QString normalizedTarget = normalizedSolidarPath(targetPath);
+  if (targetPath.isEmpty() || normalizedTarget.isEmpty()) {
+    return {ProjectApplicationErrorCode::SaveFailed,
+            QString::fromUtf8("Не указан путь копии проекта.")};
+  }
+  if (pathsReferToSameFile(normalizedTarget, windowFilePath())) {
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Для текущего файла используйте команду «Сохранить».")};
+  }
+
+  const auto saved = projectApplicationService_.saveProductAsClone(
+      normalizedTarget, productDocument_, request);
+  if (!saved.succeeded()) return saved;
+
+  // The service already published the clone and committed its identity into
+  // the existing carrier. Preserve every live model and presentation object.
+  setProjectPath(normalizedTarget);
+  modelHistory_.markSavepoint();
+  setWindowModified(false);
+  updateUpgradeProjectFormatAction();
+  statusBar()->showMessage(QString::fromUtf8("Копия проекта сохранена"),
+                           4000);
+  return saved;
+}
+
+ProjectApplicationStatus MainWindow::runSaveProjectAsCommand(
+    const SaveProjectAsTargetChooser& chooseTarget,
+    const ProductCloneRequestFactory& makeProductRequest,
+    bool* saveAttempted) {
+  if (saveAttempted) *saveAttempted = false;
+  if (!saveProjectAsIsEligible()) {
+    updateUpgradeProjectFormatAction();
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Текущий проект нельзя сохранить под другим именем.")};
+  }
+  if (!projectPersistenceTransitionIsQuiescent()) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Завершите или отмените текущую операцию перед сохранением копии."),
+        5000);
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8("Есть незавершённая операция.")};
+  }
+
+  // QFileDialog enters a nested event loop. Snapshot stable values only and
+  // retain no references into the product/model graph across the callback.
+  const auto expectedState = projectPersistenceState_;
+  const auto expectedIdentity = productDocument_.identity();
+  const QString expectedPath = windowFilePath();
+  const DefinitionId expectedRoot = productDocument_.rootDefinitionId();
+  const std::size_t expectedDefinitionCount =
+      productDocument_.definitions().size();
+  const std::uint64_t expectedDocumentGeneration = previewDocumentGeneration_;
+  const std::uint64_t expectedHistoryRevision = modelHistory_.currentRevision();
+  const QString suggestedPath = expectedPath.isEmpty()
+      ? QString::fromUtf8("Новый проект.solidar")
+      : QFileInfo(expectedPath).absolutePath() + QLatin1Char('/') +
+            QFileInfo(expectedPath).completeBaseName() +
+            QString::fromUtf8("-копия.solidar");
+
+  QPointer<MainWindow> receiver(this);
+  std::optional<QString> selectedTarget;
+  try {
+    selectedTarget = chooseTarget(suggestedPath);
+  } catch (const std::exception& exception) {
+    if (!receiver)
+      return {ProjectApplicationErrorCode::InvalidProject,
+              QString::fromUtf8(
+                  "Окно проекта было закрыто во время выбора пути.")};
+    if (saveAttempted) *saveAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8(exception.what())};
+  } catch (...) {
+    if (!receiver)
+      return {ProjectApplicationErrorCode::InvalidProject,
+              QString::fromUtf8(
+                  "Окно проекта было закрыто во время выбора пути.")};
+    if (saveAttempted) *saveAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8("Неизвестная ошибка выбора пути.")};
+  }
+  if (!receiver)
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Окно проекта было закрыто во время выбора пути.")};
+  if (!selectedTarget || selectedTarget->isEmpty()) return {};
+
+  const QString normalizedTarget = normalizedSolidarPath(*selectedTarget);
+  if (projectPersistenceState_ != expectedState ||
+      productDocument_.identity() != expectedIdentity ||
+      windowFilePath() != expectedPath ||
+      productDocument_.rootDefinitionId() != expectedRoot ||
+      productDocument_.definitions().size() != expectedDefinitionCount ||
+      previewDocumentGeneration_ != expectedDocumentGeneration ||
+      modelHistory_.currentRevision() != expectedHistoryRevision ||
+      !saveProjectAsIsEligible() ||
+      !projectPersistenceTransitionIsQuiescent()) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Состояние проекта изменилось — сохранение копии отменено."),
+        5000);
+    updateUpgradeProjectFormatAction();
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Состояние проекта изменилось во время выбора пути.")};
+  }
+
+  if (pathsReferToSameFile(normalizedTarget, expectedPath)) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Для текущего файла используйте команду «Сохранить»."),
+        5000);
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8("Выбран текущий файл проекта.")};
+  }
+
+  if (expectedState.format != project::ProjectPersistenceFormat::V5) {
+    if (saveAttempted) *saveAttempted = true;
+    QString error;
+    if (!saveProjectToPath(normalizedTarget, &error))
+      return {ProjectApplicationErrorCode::SaveFailed, error};
+    statusBar()->showMessage(
+        QString::fromUtf8("Проект сохранён под новым именем"), 4000);
+    return {};
+  }
+
+  ProductCloneRequest request;
+  try {
+    request = makeProductRequest(normalizedTarget);
+  } catch (const std::exception& exception) {
+    if (!receiver)
+      return {ProjectApplicationErrorCode::InvalidProject,
+              QString::fromUtf8(
+                  "Окно проекта было закрыто во время подготовки копии.")};
+    if (saveAttempted) *saveAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8(exception.what())};
+  } catch (...) {
+    if (!receiver)
+      return {ProjectApplicationErrorCode::InvalidProject,
+              QString::fromUtf8(
+                  "Окно проекта было закрыто во время подготовки копии.")};
+    if (saveAttempted) *saveAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8("Неизвестная ошибка подготовки копии.")};
+  }
+  if (!receiver)
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Окно проекта было закрыто во время подготовки копии.")};
+  if (saveAttempted) *saveAttempted = true;
+  return saveProductCloneToPath(normalizedTarget, request);
+}
+
+void MainWindow::saveProjectAs() {
+  QPointer<MainWindow> receiver(this);
+  const SaveProjectAsTargetChooser chooseTarget =
+      [this](const QString& suggestedPath) -> std::optional<QString> {
+    const QString selected = QFileDialog::getSaveFileName(
+        this, QString::fromUtf8("Сохранить проект как"), suggestedPath,
+        QString::fromUtf8("Проекты СОЛИДАР3D (*.solidar)"));
+    if (selected.isEmpty()) return std::nullopt;
+    return selected;
+  };
+  const ProductCloneRequestFactory makeRequest =
+      [](const QString& targetPath) {
+    const QByteArray uuid = QUuid::createUuid().toRfc4122();
+    ProjectId::Bytes bytes{};
+    for (qsizetype index = 0;
+         index < uuid.size() && index < static_cast<qsizetype>(bytes.size());
+         ++index)
+      bytes[static_cast<std::size_t>(index)] =
+          static_cast<std::uint8_t>(uuid.at(index));
+    return ProductCloneRequest{
+        ProjectId{bytes}, QFileInfo(targetPath).completeBaseName(),
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate)};
+  };
+
+  bool saveAttempted = false;
+  const auto result =
+      runSaveProjectAsCommand(chooseTarget, makeRequest, &saveAttempted);
+  if (!receiver) return;
+  if (saveAttempted && !result.succeeded()) {
+    QString message = QString::fromUtf8("Не удалось сохранить копию проекта.");
+    if (!result.detail.isEmpty())
+      message += QString::fromUtf8("\n\nТехнические сведения: ") +
+                 result.detail;
+    QMessageBox::critical(this, QString::fromUtf8("Ошибка сохранения копии"),
+                          message);
+  }
+}
+
 bool MainWindow::projectPersistenceTransitionIsQuiescent() const noexcept {
   const bool sketchWorkingCopy =
       workspaceStack_ && workspaceStack_->currentWidget() == sketchCanvas_;
@@ -1063,6 +1301,8 @@ bool MainWindow::projectPersistenceTransitionIsQuiescent() const noexcept {
 }
 
 void MainWindow::updateUpgradeProjectFormatAction() noexcept {
+  if (saveProjectAsAction_)
+    saveProjectAsAction_->setEnabled(saveProjectAsIsEligible());
   if (upgradeProjectFormatAction_)
     upgradeProjectFormatAction_->setEnabled(
         projectPersistenceState_.format ==
@@ -1071,6 +1311,20 @@ void MainWindow::updateUpgradeProjectFormatAction() noexcept {
   if (convertToProductDocumentAction_)
     convertToProductDocumentAction_->setEnabled(
         standaloneProductConversionIsEligible());
+}
+
+bool MainWindow::saveProjectAsIsEligible() const noexcept {
+  const auto format = projectPersistenceState_.format;
+  const auto& identity = productDocument_.identity();
+  const bool singleValidRoot =
+      productDocument_.hasSingleValidRootDefinition();
+  const bool standalone =
+      (format == project::ProjectPersistenceFormat::V3 ||
+       format == project::ProjectPersistenceFormat::V4) &&
+      !identity.has_value();
+  const bool product = format == project::ProjectPersistenceFormat::V5 &&
+                       identity.has_value() && identity->projectId.isValid();
+  return singleValidRoot && (standalone || product);
 }
 
 bool MainWindow::standaloneProductConversionIsEligible() const noexcept {

@@ -1558,6 +1558,9 @@ class MainWindowUndoTestAccess {
   static QAction* upgradeProjectFormatAction(MainWindow& window) {
     return window.upgradeProjectFormatAction_;
   }
+  static QAction* saveProjectAsAction(MainWindow& window) {
+    return window.saveProjectAsAction_;
+  }
   static QAction* convertToProductDocumentAction(MainWindow& window) {
     return window.convertToProductDocumentAction_;
   }
@@ -1569,6 +1572,20 @@ class MainWindowUndoTestAccess {
   }
   static bool productConversionIsEligible(const MainWindow& window) {
     return window.standaloneProductConversionIsEligible();
+  }
+  static bool saveProjectAsIsEligible(const MainWindow& window) {
+    return window.saveProjectAsIsEligible();
+  }
+  static ProjectApplicationStatus saveProductCloneToPath(
+      MainWindow& window, const QString& targetPath,
+      const ProductCloneRequest& request) {
+    return window.saveProductCloneToPath(targetPath, request);
+  }
+  static ProjectApplicationStatus runSaveProjectAsCommand(
+      MainWindow& window, const MainWindow::SaveProjectAsTargetChooser& chooser,
+      const MainWindow::ProductCloneRequestFactory& factory,
+      bool* attempted = nullptr) {
+    return window.runSaveProjectAsCommand(chooser, factory, attempted);
   }
   static ProjectApplicationStatus convertProjectToPath(
       MainWindow& window, const QString& targetPath,
@@ -1611,6 +1628,11 @@ class MainWindowUndoTestAccess {
     const auto* feature =
         dynamic_cast<const ShapeFeature*>(firstFeatureAddress(window));
     return feature ? feature->shapeRevision() : kInvalidShapeRevision;
+  }
+  static const TopologyIndex* firstTopologyAddress(const MainWindow& window) {
+    const auto* feature =
+        dynamic_cast<const ShapeFeature*>(firstFeatureAddress(window));
+    return feature ? feature->lastValidTopologyIndex().get() : nullptr;
   }
   static bool insertAdditionalDefinition(MainWindow& window,
                                          DefinitionId id) {
@@ -1775,6 +1797,12 @@ constexpr solidar::ProjectId kUiV5ProjectId{
 constexpr solidar::ProjectId kUiConversionProjectId{
     {0x10, 0x27, 0x34, 0x49, 0x58, 0x6a, 0x4b, 0x7c,
      0x8d, 0x9e, 0xa0, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5}};
+constexpr solidar::ProjectId kUiCloneProjectId{
+    {0x21, 0x38, 0x45, 0x5a, 0x69, 0x7b, 0x4c, 0x8d,
+     0x9e, 0xaf, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5, 0x06}};
+constexpr solidar::ProjectId kUiSecondCloneProjectId{
+    {0x32, 0x49, 0x56, 0x6b, 0x7a, 0x8c, 0x4d, 0x9e,
+     0xaf, 0xb0, 0xc2, 0xd3, 0xe4, 0xf5, 0x06, 0x17}};
 constexpr solidar::DefinitionId kUiV5RootDefinition{424242};
 
 solidar::StandaloneProductConversionRequest uiConversionRequest(
@@ -1783,6 +1811,13 @@ solidar::StandaloneProductConversionRequest uiConversionRequest(
     QString createdAt = QStringLiteral("2026-10-23T20:15:30Z")) {
   return {kUiConversionProjectId, root, std::move(name),
           std::move(createdAt)};
+}
+
+solidar::ProductCloneRequest uiCloneRequest(
+    solidar::ProjectId projectId = kUiCloneProjectId,
+    QString name = QString::fromUtf8("Копия Ω/雪"),
+    QString createdAt = QStringLiteral("2026-10-23T22:15:30Z")) {
+  return {projectId, std::move(name), std::move(createdAt)};
 }
 
 solidar::ProductDocumentIdentity uiV5Identity() {
@@ -2763,6 +2798,7 @@ int main(int argc, char** argv) {
     CHECK(Access::definitionCount(multiRoot) == 2);
     CHECK(!Access::productConversionIsEligible(multiRoot));
     CHECK(!Access::convertToProductDocumentAction(multiRoot)->isEnabled());
+    CHECK(!Access::saveProjectAsAction(multiRoot)->isEnabled());
 
     QFile sourceFile(pathA);
     CHECK(sourceFile.open(QIODevice::ReadOnly));
@@ -3053,6 +3089,522 @@ int main(int argc, char** argv) {
     CHECK(Access::convertToProductDocumentAction(activeToolEditor)
               ->isEnabled());
     Access::cancelFaceExtrude(activeToolEditor);
+  }
+
+  // Save As is one guarded command for standalone V3/V4 and product V5. It
+  // preserves the carrier format for standalone files and forks identity only
+  // for products, after the modal boundary has been fully revalidated.
+  {
+    const solidar::project::ProjectPersistenceState v3{
+        solidar::project::ProjectPersistenceFormat::V3};
+    const solidar::project::ProjectPersistenceState v4{
+        solidar::project::ProjectPersistenceFormat::V4};
+    const solidar::project::ProjectPersistenceState v5{
+        solidar::project::ProjectPersistenceFormat::V5};
+
+    solidar::MainWindow pathless(settings);
+    auto* saveAsAction = Access::saveProjectAsAction(pathless);
+    auto* upgradeAction = Access::upgradeProjectFormatAction(pathless);
+    CHECK(saveAsAction);
+    CHECK(saveAsAction->objectName() == QStringLiteral("saveProjectAsAction"));
+    CHECK(saveAsAction->text() == QString::fromUtf8("Сохранить как…"));
+    CHECK(saveAsAction->shortcut() == QKeySequence::SaveAs);
+    CHECK(saveAsAction->isEnabled());
+    CHECK(Access::saveProjectAsIsEligible(pathless));
+    auto* fileMenu = qobject_cast<QMenu*>(saveAsAction->parent());
+    CHECK(fileMenu);
+    const auto fileActions = fileMenu->actions();
+    const int saveAsIndex = fileActions.indexOf(saveAsAction);
+    CHECK(saveAsIndex > 0);
+    CHECK(fileActions.at(saveAsIndex - 1)->text() ==
+          QString::fromUtf8("Сохранить"));
+    CHECK(fileActions.indexOf(upgradeAction) == saveAsIndex + 1);
+
+    bool cancelFactoryCalled = false;
+    bool cancelAttempted = true;
+    const auto cancelled = Access::runSaveProjectAsCommand(
+        pathless,
+        [](const QString&) -> std::optional<QString> { return std::nullopt; },
+        [&](const QString&) {
+          cancelFactoryCalled = true;
+          return uiCloneRequest();
+        },
+        &cancelAttempted);
+    CHECK(cancelled.succeeded());
+    CHECK(!cancelAttempted);
+    CHECK(!cancelFactoryCalled);
+    const auto empty = Access::runSaveProjectAsCommand(
+        pathless,
+        [](const QString&) -> std::optional<QString> { return QString(); },
+        [&](const QString&) {
+          cancelFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(empty.succeeded());
+    CHECK(!cancelFactoryCalled);
+
+    QFile v3Source(pathA);
+    CHECK(v3Source.open(QIODevice::ReadOnly));
+    const QByteArray v3SourceBytes = v3Source.readAll();
+    v3Source.close();
+    solidar::MainWindow v3Editor(settings);
+    CHECK(v3Editor.loadProject(pathA, &error));
+    CHECK(Access::persistenceState(v3Editor) == v3);
+    CHECK(Access::saveProjectAsAction(v3Editor)->isEnabled());
+    const QString v3CopyBase =
+        directory.filePath(QStringLiteral("save-as-v3-copy"));
+    const QString v3Copy = v3CopyBase + QStringLiteral(".solidar");
+    bool standaloneFactoryCalled = false;
+    bool v3Attempted = false;
+    const auto savedV3 = Access::runSaveProjectAsCommand(
+        v3Editor,
+        [&](const QString&) -> std::optional<QString> { return v3CopyBase; },
+        [&](const QString&) {
+          standaloneFactoryCalled = true;
+          return uiCloneRequest();
+        },
+        &v3Attempted);
+    CHECK(savedV3.succeeded());
+    CHECK(v3Attempted);
+    CHECK(!standaloneFactoryCalled);
+    CHECK(v3Editor.windowFilePath() == v3Copy);
+    CHECK(Access::persistenceState(v3Editor) == v3);
+    CHECK(Access::identity(v3Editor) == std::nullopt);
+    CHECK(!Access::modified(v3Editor));
+    QFile v3Output(v3Copy);
+    CHECK(v3Output.open(QIODevice::ReadOnly));
+    CHECK(QJsonDocument::fromJson(v3Output.readAll())
+              .object()
+              .value(QStringLiteral("version"))
+              .toInteger() == 3);
+    auto stagedV3Copy = solidar::ProjectApplicationService{}.stageOpen(v3Copy);
+    CHECK(stagedV3Copy.succeeded());
+    CHECK(stagedV3Copy.staged->productDocument().identity() == std::nullopt);
+    CHECK(v3Source.open(QIODevice::ReadOnly));
+    CHECK(v3Source.readAll() == v3SourceBytes);
+    v3Source.close();
+
+    const QString v4SourcePath =
+        directory.filePath(QStringLiteral("save-as-v4-source.solidar"));
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        v4SourcePath, Access::documentCopy(v3Editor), v4, &error));
+    QFile v4Source(v4SourcePath);
+    CHECK(v4Source.open(QIODevice::ReadOnly));
+    const QByteArray v4SourceBytes = v4Source.readAll();
+    v4Source.close();
+    solidar::MainWindow v4Editor(settings);
+    CHECK(v4Editor.loadProject(v4SourcePath, &error));
+    CHECK(Access::saveProjectAsAction(v4Editor)->isEnabled());
+    const QString v4Copy =
+        directory.filePath(QStringLiteral("save-as-v4-copy.solidar"));
+    const auto savedV4 = Access::runSaveProjectAsCommand(
+        v4Editor,
+        [&](const QString&) -> std::optional<QString> { return v4Copy; },
+        [&](const QString&) {
+          standaloneFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(savedV4.succeeded());
+    CHECK(!standaloneFactoryCalled);
+    CHECK(Access::persistenceState(v4Editor) == v4);
+    CHECK(Access::identity(v4Editor) == std::nullopt);
+    QFile v4Output(v4Copy);
+    CHECK(v4Output.open(QIODevice::ReadOnly));
+    CHECK(QJsonDocument::fromJson(v4Output.readAll())
+              .object()
+              .value(QStringLiteral("version"))
+              .toInteger() == 4);
+    auto stagedV4Copy = solidar::ProjectApplicationService{}.stageOpen(v4Copy);
+    CHECK(stagedV4Copy.succeeded());
+    CHECK(stagedV4Copy.staged->productDocument().identity() == std::nullopt);
+    CHECK(v4Source.open(QIODevice::ReadOnly));
+    CHECK(v4Source.readAll() == v4SourceBytes);
+    v4Source.close();
+
+    // Existing source aliases are rejected before either request allocation
+    // or I/O. The absolute normalization also covers a relative alias.
+    bool aliasFactoryCalled = false;
+    const QString v4CurrentPath = v4Editor.windowFilePath();
+    const QString relativeAlias =
+        QDir::current().relativeFilePath(v4CurrentPath);
+    const auto aliasRejected = Access::runSaveProjectAsCommand(
+        v4Editor,
+        [&](const QString&) -> std::optional<QString> { return relativeAlias; },
+        [&](const QString&) {
+          aliasFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(!aliasRejected.succeeded());
+    CHECK(!aliasFactoryCalled);
+    CHECK(Access::statusMessage(v4Editor).contains(
+        QString::fromUtf8("Сохранить")));
+#ifdef Q_OS_WIN
+    const auto caseAliasRejected = Access::runSaveProjectAsCommand(
+        v4Editor,
+        [&](const QString&) -> std::optional<QString> {
+          return v4CurrentPath.toUpper();
+        },
+        [&](const QString&) {
+          aliasFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(!caseAliasRejected.succeeded());
+    CHECK(!aliasFactoryCalled);
+#endif
+
+    // Missing-parent failure is state exact and retryable for standalone
+    // files as well.
+    const QString standaloneBeforeFailure = v4Editor.windowFilePath();
+    const QString missingStandalone =
+        directory.filePath(
+            QStringLiteral("missing-standalone/standalone-copy.solidar"));
+    const auto failedStandalone = Access::runSaveProjectAsCommand(
+        v4Editor,
+        [&](const QString&) -> std::optional<QString> {
+          return missingStandalone;
+        },
+        [&](const QString&) {
+          standaloneFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(!failedStandalone.succeeded());
+    CHECK(failedStandalone.code ==
+          solidar::ProjectApplicationErrorCode::SaveFailed);
+    CHECK(v4Editor.windowFilePath() == standaloneBeforeFailure);
+    CHECK(!QFile::exists(missingStandalone));
+    CHECK(QDir().mkpath(QFileInfo(missingStandalone).absolutePath()));
+    const auto retriedStandalone = Access::runSaveProjectAsCommand(
+        v4Editor,
+        [&](const QString&) -> std::optional<QString> {
+          return missingStandalone;
+        },
+        [&](const QString&) {
+          standaloneFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(retriedStandalone.succeeded());
+    CHECK(!standaloneFactoryCalled);
+    CHECK(v4Editor.windowFilePath() == missingStandalone);
+
+    // Build a rich V5 carrier A through the already-covered conversion path.
+    const QString productAPath =
+        directory.filePath(QStringLiteral("save-as-product-a.solidar"));
+    solidar::MainWindow productEditor(settings);
+    CHECK(productEditor.loadProject(pathA, &error));
+    CHECK(Access::convertProjectToPath(
+              productEditor, productAPath,
+              uiConversionRequest(Access::rootDefinitionId(productEditor),
+                                  QStringLiteral("product A")))
+              .succeeded());
+    CHECK(Access::persistenceState(productEditor) == v5);
+    CHECK(Access::saveProjectAsAction(productEditor)->isEnabled());
+    CHECK(Access::saveProjectAsIsEligible(productEditor));
+    CHECK(Access::pushBodyMarker(productEditor, "clone history one"));
+    CHECK(Access::pushBodyMarker(productEditor, "clone history two"));
+    Access::undoAction(productEditor)->trigger();
+    Access::selectBody(productEditor, Access::firstBodyId(productEditor));
+
+    QString ordinarySaveError;
+    const auto identityABeforeOrdinary = *Access::identity(productEditor);
+    CHECK(Access::saveProjectToPath(productEditor, productAPath,
+                                    &ordinarySaveError));
+    CHECK(ordinarySaveError.isEmpty());
+    CHECK(Access::identity(productEditor) == identityABeforeOrdinary);
+    QFile productAFile(productAPath);
+    CHECK(productAFile.open(QIODevice::ReadOnly));
+    const QByteArray productABytes = productAFile.readAll();
+    productAFile.close();
+
+    // V5 cancellation and same-target checks never construct a clone request.
+    bool productFactoryCalled = false;
+    const auto productCancelled = Access::runSaveProjectAsCommand(
+        productEditor,
+        [](const QString&) -> std::optional<QString> { return std::nullopt; },
+        [&](const QString&) {
+          productFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(productCancelled.succeeded());
+    CHECK(!productFactoryCalled);
+    const auto sameProductRejected = Access::runSaveProjectAsCommand(
+        productEditor,
+        [&](const QString&) -> std::optional<QString> { return productAPath; },
+        [&](const QString&) {
+          productFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(!sameProductRejected.succeeded());
+    CHECK(!productFactoryCalled);
+
+    // Invalid fork identities fail before publication and preserve A.
+    const QString invalidClonePath =
+        directory.filePath(QStringLiteral("invalid-clone.solidar"));
+    const auto nilRejected = Access::saveProductCloneToPath(
+        productEditor, invalidClonePath,
+        uiCloneRequest(solidar::ProjectId{}));
+    CHECK(!nilRejected.succeeded());
+    CHECK(!QFile::exists(invalidClonePath));
+    CHECK(Access::identity(productEditor) == identityABeforeOrdinary);
+    const auto sameIdRejected = Access::saveProductCloneToPath(
+        productEditor, invalidClonePath,
+        uiCloneRequest(identityABeforeOrdinary.projectId));
+    CHECK(!sameIdRejected.succeeded());
+    CHECK(!QFile::exists(invalidClonePath));
+    CHECK(Access::identity(productEditor) == identityABeforeOrdinary);
+
+    const auto* const documentBefore = Access::documentAddress(productEditor);
+    const auto* const bodyBefore = Access::firstBodyAddress(productEditor);
+    const auto* const featureBefore = Access::firstFeatureAddress(productEditor);
+    const auto* const shapeBefore = Access::firstShapeAddress(productEditor);
+    const auto* const topologyBefore =
+        Access::firstTopologyAddress(productEditor);
+    CHECK(bodyBefore);
+    CHECK(featureBefore);
+    CHECK(shapeBefore);
+    CHECK(topologyBefore);
+    const auto rootBefore = Access::rootDefinitionId(productEditor);
+    const auto bodyIdBefore = bodyBefore->id();
+    const auto featureIdBefore = featureBefore->id();
+    const auto shapeRevisionBefore = Access::firstShapeRevision(productEditor);
+    const auto selectionBefore = Access::selectionState(productEditor);
+    const auto undoBefore = Access::undoCount(productEditor);
+    const auto redoBefore = Access::redoCount(productEditor);
+    const auto historyRevisionBefore =
+        Access::currentHistoryRevision(productEditor);
+    const auto previewBefore = Access::previewDocumentGeneration(productEditor);
+    const auto cursorsBefore = consumeModelIdCursors("before UI Save As");
+
+    const QString missingClone =
+        directory.filePath(
+            QStringLiteral("missing-product/product-clone.solidar"));
+    bool failedCloneFactoryCalled = false;
+    const auto failedClone = Access::runSaveProjectAsCommand(
+        productEditor,
+        [&](const QString&) -> std::optional<QString> { return missingClone; },
+        [&](const QString& target) {
+          CHECK(target == missingClone);
+          failedCloneFactoryCalled = true;
+          return uiCloneRequest();
+        });
+    CHECK(!failedClone.succeeded());
+    CHECK(failedClone.code == solidar::ProjectApplicationErrorCode::SaveFailed);
+    CHECK(failedCloneFactoryCalled);
+    CHECK(!QFile::exists(missingClone));
+    CHECK(Access::identity(productEditor) == identityABeforeOrdinary);
+    CHECK(productEditor.windowFilePath() == productAPath);
+
+    const QString productBBase =
+        directory.filePath(QString::fromUtf8("save-as-product-b-Ω"));
+    const QString productBPath = productBBase + QStringLiteral(".solidar");
+    QString productSuggestion;
+    bool successfulFactoryCalled = false;
+    const auto cloned = Access::runSaveProjectAsCommand(
+        productEditor,
+        [&](const QString& suggestion) -> std::optional<QString> {
+          productSuggestion = suggestion;
+          return productBBase;
+        },
+        [&](const QString& target) {
+          successfulFactoryCalled = true;
+          CHECK(target == productBPath);
+          return uiCloneRequest();
+        });
+    CHECK(cloned.succeeded());
+    CHECK(successfulFactoryCalled);
+    CHECK(productSuggestion ==
+          directory.filePath(QStringLiteral("save-as-product-a-копия.solidar")));
+    CHECK(Access::persistenceState(productEditor) == v5);
+    CHECK(productEditor.windowFilePath() == productBPath);
+    CHECK(!Access::modified(productEditor));
+    CHECK(Access::historyAtSavepoint(productEditor));
+    CHECK(Access::saveProjectAsAction(productEditor)->isEnabled());
+    CHECK(!Access::convertToProductDocumentAction(productEditor)->isEnabled());
+    CHECK(!Access::upgradeProjectFormatAction(productEditor)->isEnabled());
+    CHECK(Access::identity(productEditor)->projectId == kUiCloneProjectId);
+    CHECK(Access::identity(productEditor)->metadata.nameUtf8 ==
+          std::string("Копия \xCE\xA9/\xE9\x9B\xAA"));
+    CHECK(Access::identity(productEditor)->metadata.createdAtUtf8 ==
+          "2026-10-23T22:15:30Z");
+    CHECK(Access::documentAddress(productEditor) == documentBefore);
+    CHECK(Access::firstBodyAddress(productEditor) == bodyBefore);
+    CHECK(Access::firstFeatureAddress(productEditor) == featureBefore);
+    CHECK(Access::rootDefinitionId(productEditor) == rootBefore);
+    CHECK(Access::firstBodyId(productEditor) == bodyIdBefore);
+    CHECK(Access::firstFeatureAddress(productEditor)->id() ==
+          featureIdBefore);
+    CHECK(Access::firstShapeAddress(productEditor) == shapeBefore);
+    CHECK(Access::firstTopologyAddress(productEditor) == topologyBefore);
+    CHECK(Access::firstShapeRevision(productEditor) == shapeRevisionBefore);
+    CHECK(Access::exactSelectionState(Access::selectionState(productEditor),
+                                      selectionBefore));
+    CHECK(Access::undoCount(productEditor) == undoBefore);
+    CHECK(Access::redoCount(productEditor) == redoBefore);
+    CHECK(Access::currentHistoryRevision(productEditor) ==
+          historyRevisionBefore);
+    CHECK(Access::previewDocumentGeneration(productEditor) == previewBefore);
+    const auto cursorsAfter = consumeModelIdCursors("after UI Save As");
+    CHECK(cursorsAfter.body == cursorsBefore.body + 1);
+    CHECK(cursorsAfter.sketch == cursorsBefore.sketch + 1);
+    CHECK(cursorsAfter.feature == cursorsBefore.feature + 1);
+    CHECK(productAFile.open(QIODevice::ReadOnly));
+    CHECK(productAFile.readAll() == productABytes);
+    productAFile.close();
+    auto productBStage = solidar::ProjectApplicationService{}.stageOpen(
+        productBPath, solidar::ProductV5OpenPolicy::Allow);
+    CHECK(productBStage.succeeded());
+    CHECK(productBStage.staged->productDocument().identity() ==
+          Access::identity(productEditor));
+    CHECK(productBStage.staged->productDocument().rootDefinitionId() ==
+          Access::rootDefinitionId(productEditor));
+
+    // Ordinary Save and Undo/Redo retain the clone B identity/path. Savepoint
+    // dirtiness continues to follow the unchanged history revision.
+    const auto identityB = *Access::identity(productEditor);
+    CHECK(Access::saveProjectToPath(productEditor, productBPath,
+                                    &ordinarySaveError));
+    CHECK(Access::identity(productEditor) == identityB);
+    Access::undoAction(productEditor)->trigger();
+    CHECK(Access::modified(productEditor));
+    CHECK(Access::identity(productEditor) == identityB);
+    CHECK(productEditor.windowFilePath() == productBPath);
+    Access::redoAction(productEditor)->trigger();
+    CHECK(!Access::modified(productEditor));
+    CHECK(Access::identity(productEditor) == identityB);
+    CHECK(productEditor.windowFilePath() == productBPath);
+
+    // A factory exception is surfaced without writing or changing B.
+    const QString throwingTarget =
+        directory.filePath(QStringLiteral("throwing-clone.solidar"));
+    bool throwingAttempted = false;
+    const auto throwingResult = Access::runSaveProjectAsCommand(
+        productEditor,
+        [&](const QString&) -> std::optional<QString> { return throwingTarget; },
+        [](const QString&) -> solidar::ProductCloneRequest {
+          throw std::runtime_error("clone factory failure");
+        },
+        &throwingAttempted);
+    CHECK(!throwingResult.succeeded());
+    CHECK(throwingAttempted);
+    CHECK(!QFile::exists(throwingTarget));
+    CHECK(Access::identity(productEditor) == identityB);
+
+    // Re-entrant history mutation invalidates the snapshot before factory/I/O.
+    const QString staleClone =
+        directory.filePath(QStringLiteral("stale-save-as.solidar"));
+    bool staleFactoryCalled = false;
+    const auto staleCloneResult = Access::runSaveProjectAsCommand(
+        productEditor,
+        [&](const QString&) -> std::optional<QString> {
+          CHECK(Access::pushBodyMarker(productEditor,
+                                       "Save As chooser mutation"));
+          return staleClone;
+        },
+        [&](const QString&) {
+          staleFactoryCalled = true;
+          return uiCloneRequest(kUiSecondCloneProjectId);
+        });
+    CHECK(!staleCloneResult.succeeded());
+    CHECK(!staleFactoryCalled);
+    CHECK(!QFile::exists(staleClone));
+    CHECK(Access::identity(productEditor) == identityB);
+
+    // A nested successful Save As wins; the stale outer command cannot
+    // allocate or publish its request.
+    const QString nestedSource =
+        directory.filePath(QStringLiteral("nested-source.solidar"));
+    solidar::MainWindow nestedEditor(settings);
+    CHECK(nestedEditor.loadProject(pathA, &error));
+    CHECK(Access::convertProjectToPath(
+              nestedEditor, nestedSource,
+              uiConversionRequest(Access::rootDefinitionId(nestedEditor),
+                                  QStringLiteral("nested A")))
+              .succeeded());
+    const QString nestedWinner =
+        directory.filePath(QStringLiteral("nested-winner.solidar"));
+    const QString staleOuter =
+        directory.filePath(QStringLiteral("stale-outer-save-as.solidar"));
+    bool outerFactoryCalled = false;
+    const auto outerSave = Access::runSaveProjectAsCommand(
+        nestedEditor,
+        [&](const QString&) -> std::optional<QString> {
+          CHECK(Access::saveProductCloneToPath(
+                    nestedEditor, nestedWinner, uiCloneRequest())
+                    .succeeded());
+          return staleOuter;
+        },
+        [&](const QString&) {
+          outerFactoryCalled = true;
+          return uiCloneRequest(kUiSecondCloneProjectId);
+        });
+    CHECK(!outerSave.succeeded());
+    CHECK(!outerFactoryCalled);
+    CHECK(QFile::exists(nestedWinner));
+    CHECK(!QFile::exists(staleOuter));
+    CHECK(nestedEditor.windowFilePath() == nestedWinner);
+    CHECK(Access::identity(nestedEditor)->projectId == kUiCloneProjectId);
+
+    // Loading a replacement from the chooser also invalidates the outer
+    // command before request generation.
+    const QString replacementOuter =
+        directory.filePath(QStringLiteral("replacement-outer.solidar"));
+    bool replacementFactoryCalled = false;
+    const auto replacementResult = Access::runSaveProjectAsCommand(
+        nestedEditor,
+        [&](const QString&) -> std::optional<QString> {
+          CHECK(nestedEditor.loadProject(pathA, &error));
+          return replacementOuter;
+        },
+        [&](const QString&) {
+          replacementFactoryCalled = true;
+          return uiCloneRequest(kUiSecondCloneProjectId);
+        });
+    CHECK(!replacementResult.succeeded());
+    CHECK(!replacementFactoryCalled);
+    CHECK(!QFile::exists(replacementOuter));
+    CHECK(Access::persistenceState(nestedEditor) == v3);
+
+    // Active tools are rejected before the chooser and remain untouched.
+    solidar::MainWindow activeSaveAsEditor(settings);
+    CHECK(activeSaveAsEditor.loadProject(nestedWinner, &error));
+    CHECK(Access::startTopFaceExtrude(activeSaveAsEditor, 15.0));
+    bool activeChooserCalled = false;
+    const auto activeSaveRejected = Access::runSaveProjectAsCommand(
+        activeSaveAsEditor,
+        [&](const QString&) -> std::optional<QString> {
+          activeChooserCalled = true;
+          return directory.filePath(QStringLiteral("active-save-as.solidar"));
+        },
+        [](const QString&) { return uiCloneRequest(kUiSecondCloneProjectId); });
+    CHECK(!activeSaveRejected.succeeded());
+    CHECK(!activeChooserCalled);
+    CHECK(Access::activeTool(activeSaveAsEditor) ==
+          solidar::PartDesignToolKind::Extrude);
+    CHECK(Access::viewportHasToolPreview(activeSaveAsEditor));
+    Access::cancelFaceExtrude(activeSaveAsEditor);
+
+    // Destruction inside the chooser must not access the dead receiver or
+    // invoke the factory.
+    auto* closingSaveAsEditor = new solidar::MainWindow(settings);
+    CHECK(closingSaveAsEditor->loadProject(productBPath, &error));
+    QPointer<solidar::MainWindow> closingSaveAsGuard(closingSaveAsEditor);
+    bool closingFactoryCalled = false;
+    const QString closingTarget =
+        directory.filePath(QStringLiteral("closed-save-as.solidar"));
+    const auto closingResult = Access::runSaveProjectAsCommand(
+        *closingSaveAsEditor,
+        [&](const QString&) -> std::optional<QString> {
+          delete closingSaveAsEditor;
+          closingSaveAsEditor = nullptr;
+          return closingTarget;
+        },
+        [&](const QString&) {
+          closingFactoryCalled = true;
+          return uiCloneRequest(kUiSecondCloneProjectId);
+        });
+    CHECK(closingSaveAsGuard.isNull());
+    CHECK(!closingResult.succeeded());
+    CHECK(!closingFactoryCalled);
+    CHECK(!QFile::exists(closingTarget));
   }
 
   // Product v5 is activated only by the editor boundary. Service callers keep

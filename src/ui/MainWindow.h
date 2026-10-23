@@ -77,12 +77,24 @@ class MainWindow final : public QMainWindow {
   void createProject();
   void openProject();
   void saveProject();
+  void saveProjectAs();
   [[nodiscard]] bool saveProjectToPath(const QString& path, QString* error);
   void upgradeProjectFormat();
   void convertToProductDocument();
   void updateUpgradeProjectFormatAction() noexcept;
   [[nodiscard]] bool projectPersistenceTransitionIsQuiescent() const noexcept;
+  [[nodiscard]] bool saveProjectAsIsEligible() const noexcept;
   [[nodiscard]] bool standaloneProductConversionIsEligible() const noexcept;
+  using SaveProjectAsTargetChooser =
+      std::function<std::optional<QString>(const QString& suggestedPath)>;
+  using ProductCloneRequestFactory =
+      std::function<ProductCloneRequest(const QString& targetPath)>;
+  [[nodiscard]] ProjectApplicationStatus runSaveProjectAsCommand(
+      const SaveProjectAsTargetChooser& chooseTarget,
+      const ProductCloneRequestFactory& makeProductRequest,
+      bool* saveAttempted = nullptr);
+  [[nodiscard]] ProjectApplicationStatus saveProductCloneToPath(
+      const QString& targetPath, const ProductCloneRequest& request);
   using ProductConversionTargetChooser =
       std::function<std::optional<QString>(const QString& suggestedPath)>;
   using ProductConversionRequestFactory = std::function<
@@ -254,6 +266,7 @@ class MainWindow final : public QMainWindow {
   std::optional<FaceReference> currentSketchFaceReference_;
   QAction* undoAction_{nullptr};
   QAction* redoAction_{nullptr};
+  QAction* saveProjectAsAction_{nullptr};
   QAction* upgradeProjectFormatAction_{nullptr};
   QAction* convertToProductDocumentAction_{nullptr};
   QWidget* historyContent_{nullptr};
