@@ -14,6 +14,7 @@
 #include "ui/PartDesignToolHelp.h"
 #include "ui/PartDesignHistory.h"
 #include "ui/PartDesignErrorLocalization.h"
+#include "ui/application/PartDesignCommitPolicy.h"
 #include "ui/FeatureUiRegistry.h"
 #include "ui/HistoryTimelineWidget.h"
 #include "model/PocketFeature.h"
@@ -357,6 +358,11 @@ void MainWindow::buildMenus() {
   openAction->setShortcut(QKeySequence::Open);
   auto* saveAction = fileMenu->addAction(QString::fromUtf8("Сохранить"));
   saveAction->setShortcut(QKeySequence::Save);
+  upgradeProjectFormatAction_ = fileMenu->addAction(
+      QString::fromUtf8("Обновить формат проекта до v4…"));
+  upgradeProjectFormatAction_->setObjectName(
+      QStringLiteral("upgradeProjectFormatAction"));
+  updateUpgradeProjectFormatAction();
   auto* importMenu = fileMenu->addMenu(QString::fromUtf8("Импорт"));
   auto* importStepAction =
       importMenu->addAction(QStringLiteral("STEP (*.step *.stp)"));
@@ -443,6 +449,8 @@ void MainWindow::buildMenus() {
   connect(createAction, &QAction::triggered, this, &MainWindow::createProject);
   connect(openAction, &QAction::triggered, this, &MainWindow::openProject);
   connect(saveAction, &QAction::triggered, this, &MainWindow::saveProject);
+  connect(upgradeProjectFormatAction_, &QAction::triggered, this,
+          &MainWindow::upgradeProjectFormat);
   connect(importStepAction, &QAction::triggered, this, &MainWindow::importStep);
   connect(exportStepAction, &QAction::triggered, this, &MainWindow::exportStep);
   connect(exportStlAction, &QAction::triggered, this, &MainWindow::exportStl);
@@ -990,6 +998,112 @@ void MainWindow::saveProject() {
   statusBar()->showMessage(QString::fromUtf8("Проект сохранён"), 3000);
 }
 
+bool MainWindow::projectUpgradeIsQuiescent() const noexcept {
+  const bool sketchWorkingCopy =
+      workspaceStack_ && workspaceStack_->currentWidget() == sketchCanvas_;
+  const bool legacyPartDesignActive =
+      selectedExtrusionSource_.has_value() ||
+      (extrusionDock_ && extrusionDock_->isVisible());
+  const bool referenceImageTransaction =
+      !pendingReferenceImagePath_.isEmpty() ||
+      pendingReferenceImagePixelSize_.isValid() ||
+      referenceImageEditBefore_.has_value() ||
+      referenceImageEditSelectionBefore_.has_value();
+  return partDesignCoordinator_.activeTool() == PartDesignToolKind::None &&
+         !partDesignCoordinator_.commitPending() &&
+         !partDesignCoordinator_.isReselecting() && !sketchWorkingCopy &&
+         !editUiTransaction_ && !pendingNoChangeUiRestore_ &&
+         !legacyPartDesignActive && !referenceImageTransaction;
+}
+
+void MainWindow::updateUpgradeProjectFormatAction() noexcept {
+  if (!upgradeProjectFormatAction_) return;
+  upgradeProjectFormatAction_->setEnabled(
+      projectPersistenceState_.format ==
+          project::ProjectPersistenceFormat::V3 &&
+      !windowFilePath().isEmpty());
+}
+
+void MainWindow::upgradeProjectFormat() {
+  if (projectPersistenceState_.format ==
+      project::ProjectPersistenceFormat::V4) {
+    updateUpgradeProjectFormatAction();
+    return;
+  }
+  if (windowFilePath().isEmpty()) {
+    updateUpgradeProjectFormatAction();
+    return;
+  }
+  if (!projectUpgradeIsQuiescent()) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Завершите или отмените текущую операцию перед обновлением формата."),
+        5000);
+    return;
+  }
+
+  const QString expectedPath = windowFilePath();
+  const auto expectedState = projectPersistenceState_;
+  const std::uint64_t expectedDocumentGeneration = previewDocumentGeneration_;
+  const std::uint64_t expectedHistoryRevision = modelHistory_.currentRevision();
+  const auto answer = QMessageBox::warning(
+      this, QString::fromUtf8("Обновление формата проекта"),
+      QString::fromUtf8(
+          "Проект будет сохранён в формате v4. Старые версии СОЛИДАР3D могут "
+          "не открыть этот файл. Продолжить?"),
+      QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+  if (answer != QMessageBox::Yes) return;
+
+  // Modal dialogs are re-entrant. Revalidate only stable values; no pointer
+  // captured before exec() is dereferenced here.
+  if (projectPersistenceState_ != expectedState ||
+      projectPersistenceState_.format !=
+          project::ProjectPersistenceFormat::V3 ||
+      windowFilePath() != expectedPath ||
+      previewDocumentGeneration_ != expectedDocumentGeneration ||
+      modelHistory_.currentRevision() != expectedHistoryRevision ||
+      !projectUpgradeIsQuiescent()) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Состояние проекта изменилось — обновление формата отменено."),
+        5000);
+    updateUpgradeProjectFormatAction();
+    return;
+  }
+
+  const auto upgraded = projectApplicationService_.upgradeProjectFormat(
+      expectedPath, document_, expectedState);
+  if (!upgraded.succeeded()) {
+    QMessageBox::critical(this,
+                          QString::fromUtf8("Ошибка обновления формата"),
+                          upgraded.detail);
+    return;
+  }
+
+  projectPersistenceState_.format = project::ProjectPersistenceFormat::V4;
+  modelHistory_.markSavepoint();
+  setWindowModified(false);
+  updateUpgradeProjectFormatAction();
+  statusBar()->showMessage(
+      QString::fromUtf8("Формат проекта обновлён до v4"), 4000);
+}
+
+PartDesignCommitGuard MainWindow::startPartDesignCommit() {
+  const auto kind = partDesignCoordinator_.activeTool();
+  if (projectPersistenceState_.format ==
+          project::ProjectPersistenceFormat::V3 &&
+      kind != PartDesignToolKind::None &&
+      containsV2TopologyReference(
+          partDesignCoordinator_.snapshot(kind, document_))) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Для устойчивых ссылок v2 сначала выберите «Файл → Обновить формат проекта до v4…»."),
+        6000);
+    return {};
+  }
+  return partDesignCoordinator_.startCommit();
+}
+
 void MainWindow::importStep() {
   const QString fileName = QFileDialog::getOpenFileName(
       this, QString::fromUtf8("Импортировать STEP"), QString(),
@@ -1264,6 +1378,7 @@ void MainWindow::commitDocumentReplacement(
     setWindowModified(true);
   }
   updateUndoAvailability();
+  updateUpgradeProjectFormatAction();
   if (!opened)
     statusBar()->showMessage(
         QString::fromUtf8("STEP импортирован: ") + pathOrLabel, 5000);
@@ -1333,6 +1448,7 @@ void MainWindow::setProjectPath(const QString& path) {
   setWindowFilePath(path);
   setWindowTitle(QFileInfo(path).completeBaseName() +
                  QString::fromUtf8(" — СОЛИДАР3D [*]"));
+  updateUpgradeProjectFormatAction();
 }
 
 void MainWindow::buildUi() {
@@ -3876,6 +3992,16 @@ void MainWindow::updateFromSketch(double widthMm, double heightMm) {
 }
 
 void MainWindow::finishSketch() {
+  if (!editingSketchIndex_ && currentSketchFaceReference_ &&
+      currentSketchFaceReference_->isV2() &&
+      projectPersistenceState_.format ==
+          project::ProjectPersistenceFormat::V3) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Для эскиза на грани сначала выберите «Файл → Обновить формат проекта до v4…»."),
+        6000);
+    return;
+  }
   invalidatePreviewUpdates();
   const auto& sketch = sketchCanvas_->sketch();
   // Sketcher owns its orbit while it is active.  Transfer that global camera
@@ -4564,7 +4690,7 @@ void MainWindow::acceptRevolveTool() {
   flushPreviewUpdate();
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle != ToolLifecycle::PreviewValid ||
       !partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference) return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previous = document_;
@@ -5148,7 +5274,7 @@ void MainWindow::cancelMoveTool() {
 void MainWindow::acceptMoveTool() {
   flushPreviewUpdate();
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::Move).lifecycle != ToolLifecycle::PreviewValid) return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Move).bodyId);
@@ -5271,7 +5397,7 @@ void MainWindow::acceptMirrorTool() {
   if (snapshot.lifecycle != ToolLifecycle::PreviewValid ||
       (!snapshot.mirrorPlane && !snapshot.mirrorPlaneFace))
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Body* body = document_.findBody(snapshot.bodyId);
@@ -5418,7 +5544,7 @@ void MainWindow::acceptLinearPatternTool() {
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).lifecycle != ToolLifecycle::PreviewValid ||
       !partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).principalDirection)
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Body* sourceBody = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).bodyId);
@@ -5567,7 +5693,7 @@ void MainWindow::acceptCircularPatternTool() {
           ToolLifecycle::PreviewValid ||
       !partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).principalAxis)
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Body* sourceBody = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).bodyId);
@@ -5795,7 +5921,7 @@ void MainWindow::acceptJoinBodiesTool() {
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).lifecycle != ToolLifecycle::PreviewValid ||
       partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).bodies.size() != 2)
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   const auto inputs = partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).bodies;
@@ -5951,7 +6077,7 @@ void MainWindow::cancelShellTool() {
 void MainWindow::acceptShellTool() {
   flushPreviewUpdate();
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).lifecycle != ToolLifecycle::PreviewValid) return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previous = document_;
@@ -6085,7 +6211,7 @@ void MainWindow::acceptDraftTool() {
   if (!body || (state.sourceTopologySnapshot &&
                 !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previous = document_;
@@ -6274,7 +6400,7 @@ void MainWindow::updateFaceExtrudeToolPreview() {
 void MainWindow::acceptFaceExtrudeTool() {
   flushPreviewUpdate();
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).lifecycle != ToolLifecycle::PreviewValid) return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previous = document_;
@@ -6318,6 +6444,8 @@ void MainWindow::acceptFaceExtrudeTool() {
       auto* extrude =
           dynamic_cast<ExtrudeFeature*>(body->features()[index].get());
       if (!extrude || extrude->id() != *editingId) continue;
+      extrude->setFaceReference(
+          partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).face);
       extrude->setLengthMm(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).lengthMm);
       extrude->setOperation(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).extrudeOperation);
       extrude->setReversed(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).reversed);
@@ -6466,7 +6594,7 @@ void MainWindow::acceptChamferTool() {
   if (!body || (state.sourceTopologySnapshot &&
                 !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previousDocument = document_;
@@ -6569,7 +6697,7 @@ void MainWindow::acceptFilletTool() {
   if (!body || (state.sourceTopologySnapshot &&
                 !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
-  auto commit = partDesignCoordinator_.startCommit();
+  auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
   Document previousDocument = document_;

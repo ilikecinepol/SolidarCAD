@@ -253,6 +253,8 @@ add_library(solidar_viewport3d
   ui/HistoryTimelineWidget.h
   ui/Viewport.cpp
   ui/Viewport.h
+  ui/ViewportReferenceFactory.cpp
+  ui/ViewportReferenceFactory.h
   ui/ViewportInteractionTypes.h
   ui/ViewCube.cpp
   ui/ViewCube.h
@@ -283,6 +285,8 @@ add_library(solidar_editor
   ui/application/ModelCommandHistory.h
   ui/application/PartDesignCoordinator.cpp
   ui/application/PartDesignCoordinator.h
+  ui/application/PartDesignCommitPolicy.cpp
+  ui/application/PartDesignCommitPolicy.h
   ui/application/ProjectApplicationService.cpp
   ui/application/ProjectApplicationService.h
   ui/EditorFactory.cpp

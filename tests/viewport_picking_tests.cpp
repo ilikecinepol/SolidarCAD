@@ -1,6 +1,8 @@
 #include "TestAssertions.h"
 
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <cmath>
@@ -11,7 +13,27 @@
 #include <vector>
 
 #include "ui/ViewportPicking.h"
+#include "ui/ViewportReferenceFactory.h"
 #include "ui/ViewportRuler.h"
+
+namespace {
+
+std::shared_ptr<const TopoDS_Shape> firstSubshape(
+    const TopoDS_Shape& shape, TopAbs_ShapeEnum kind) {
+  TopExp_Explorer explorer(shape, kind);
+  return explorer.More()
+             ? std::make_shared<const TopoDS_Shape>(explorer.Current())
+             : nullptr;
+}
+
+solidar::TopologyProvenanceKey provenance(
+    solidar::FeatureId featureId, solidar::TopologyKind kind,
+    const char* name) {
+  return {featureId, kind, solidar::TopologyProvenanceOperation::Seed,
+          solidar::TopologySemanticRole::Custom, name};
+}
+
+}  // namespace
 
 namespace solidar {
 
@@ -83,6 +105,67 @@ class BodyRenderMeshBenchmarkAdapter final {
 }  // namespace solidar
 
 int main() {
+  // The two Viewport transient factories author V2 whenever operation lineage
+  // is exact. Only exact Missing falls back to a V1 geometric reference;
+  // ambiguity and invalid ownership fail closed.
+  {
+    constexpr solidar::BodyId bodyId = 41;
+    constexpr solidar::FeatureId featureId = 42;
+    const TopoDS_Shape box = BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape();
+    const auto face = firstSubshape(box, TopAbs_FACE);
+    const auto edge = firstSubshape(box, TopAbs_EDGE);
+    CHECK(face);
+    CHECK(edge);
+    const auto faceKey =
+        provenance(featureId, solidar::TopologyKind::Face, "ui:face");
+    const auto edgeKey =
+        provenance(featureId, solidar::TopologyKind::Edge, "ui:edge");
+    const auto lineage = solidar::TopologyLineage::create(
+        {{faceKey, face}, {edgeKey, edge}},
+        solidar::TopologyLineageCoverage::PartialFaces);
+    CHECK(lineage);
+    const auto exact = solidar::TopologyIndex::build(
+        std::make_shared<const TopoDS_Shape>(box), 1, lineage);
+    CHECK(exact);
+    const auto exactFace = solidar::createViewportFaceReference(
+        *exact, bodyId, featureId, 0);
+    const auto exactEdge = solidar::createViewportEdgeReference(
+        *exact, bodyId, featureId, 0);
+    CHECK(exactFace && exactFace->isV2());
+    CHECK(exactEdge && exactEdge->isV2());
+
+    const auto missing = solidar::TopologyIndex::build(
+        std::make_shared<const TopoDS_Shape>(box), 2);
+    CHECK(missing);
+    const auto legacyFace = solidar::createViewportFaceReference(
+        *missing, bodyId, featureId, 0);
+    const auto legacyEdge = solidar::createViewportEdgeReference(
+        *missing, bodyId, featureId, 0);
+    CHECK(legacyFace && legacyFace->isV1());
+    CHECK(legacyEdge && legacyEdge->isV1());
+
+    const auto ambiguousLineage = solidar::TopologyLineage::create(
+        {{faceKey, face},
+         {provenance(featureId, solidar::TopologyKind::Face, "ui:face:2"),
+          face},
+         {edgeKey, edge},
+         {provenance(featureId, solidar::TopologyKind::Edge, "ui:edge:2"),
+          edge}},
+        solidar::TopologyLineageCoverage::PartialFaces);
+    CHECK(ambiguousLineage);
+    const auto ambiguous = solidar::TopologyIndex::build(
+        std::make_shared<const TopoDS_Shape>(box), 3, ambiguousLineage);
+    CHECK(ambiguous);
+    CHECK(!solidar::createViewportFaceReference(
+        *ambiguous, bodyId, featureId, 0));
+    CHECK(!solidar::createViewportEdgeReference(
+        *ambiguous, bodyId, featureId, 0));
+    CHECK(!solidar::createViewportFaceReference(
+        *exact, solidar::kInvalidBodyId, featureId, 0));
+    CHECK(!solidar::createViewportEdgeReference(
+        *exact, solidar::kInvalidBodyId, featureId, 0));
+  }
+
   using solidar::ProjectedPoint;
   const solidar::LinearDragSnapshot drag{{100.0, 80.0}, {4.0, 0.0}, 0.0};
   CHECK(std::abs(solidar::linearValueFromDrag(drag, {100.0, 80.0})) < 1e-9);

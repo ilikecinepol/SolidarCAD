@@ -23,6 +23,7 @@
 #include "model/TopologyReferenceResolver.h"
 #include "ui/tools/PartDesignToolController.h"
 #include "ui/application/PartDesignCoordinator.h"
+#include "ui/application/PartDesignCommitPolicy.h"
 #include "ui/PartDesignToolHelp.h"
 #include "ui/PartDesignErrorLocalization.h"
 
@@ -47,6 +48,53 @@ class FakeSession final : public solidar::ToolSession {
 }
 
 int main() {
+  // The v3 commit gate inspects every topology-bearing snapshot carrier. Keep
+  // this matrix pure so adding a new UI adapter cannot accidentally omit one.
+  {
+    const auto v2Face = solidar::FaceReference::fromV2(
+        {1, solidar::TopologyProvenanceKey{
+                2, solidar::TopologyKind::Face,
+                solidar::TopologyProvenanceOperation::Seed,
+                solidar::TopologySemanticRole::Custom, "face"}});
+    const auto v2Edge = solidar::EdgeReference::fromV2(
+        {1, solidar::TopologyProvenanceKey{
+                2, solidar::TopologyKind::Edge,
+                solidar::TopologyProvenanceOperation::Seed,
+                solidar::TopologySemanticRole::Custom, "edge"}});
+    solidar::PartDesignToolSnapshot snapshot;
+    CHECK(!solidar::containsV2TopologyReference(snapshot));
+
+    snapshot.face = v2Face;
+    CHECK(solidar::containsV2TopologyReference(snapshot));
+    snapshot = {};
+    snapshot.edges = {v2Edge};
+    CHECK(solidar::containsV2TopologyReference(snapshot));
+    snapshot = {};
+    snapshot.faces = {v2Face};
+    CHECK(solidar::containsV2TopologyReference(snapshot));
+    snapshot = {};
+    snapshot.mirrorPlaneFace = v2Face;
+    CHECK(solidar::containsV2TopologyReference(snapshot));
+    snapshot = {};
+    snapshot.neutralPlane = solidar::PlaneReference{
+        solidar::NeutralPlaneType::BodyFace, v2Face};
+    CHECK(solidar::containsV2TopologyReference(snapshot));
+    snapshot = {};
+    snapshot.rotationEdge = v2Edge;
+    CHECK(solidar::containsV2TopologyReference(snapshot));
+
+    snapshot = {};
+    snapshot.face = solidar::FaceReference{1, 2, 0};
+    snapshot.edges = {solidar::EdgeReference{1, 2, 0}};
+    snapshot.faces = {solidar::FaceReference{1, 2, 0}};
+    snapshot.mirrorPlaneFace = solidar::FaceReference{1, 2, 0};
+    snapshot.neutralPlane = solidar::PlaneReference{
+        solidar::NeutralPlaneType::BodyFace,
+        solidar::FaceReference{1, 2, 0}};
+    snapshot.rotationEdge = solidar::EdgeReference{1, 2, 0};
+    CHECK(!solidar::containsV2TopologyReference(snapshot));
+  }
+
   // Localization and UI branching depend only on the stable code. Technical
   // diagnostics may change (including exception text) without changing the
   // message shown to the user.

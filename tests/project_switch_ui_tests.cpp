@@ -7,6 +7,7 @@
 #include <TopoDS_Compound.hxx>
 
 #include <QApplication>
+#include <QAbstractButton>
 #include <QAction>
 #include <QComboBox>
 #include <QDockWidget>
@@ -1507,6 +1508,157 @@ class MainWindowUndoTestAccess {
   static void editSketch(MainWindow& window, SketchId sketchId) {
     window.editSketchById(sketchId);
   }
+  static QAction* upgradeProjectFormatAction(MainWindow& window) {
+    return window.upgradeProjectFormatAction_;
+  }
+  static void upgradeProjectFormat(MainWindow& window) {
+    window.upgradeProjectFormat();
+  }
+  static bool projectUpgradeIsQuiescent(const MainWindow& window) {
+    return window.projectUpgradeIsQuiescent();
+  }
+  static bool startV2FaceExtrude(MainWindow& window) {
+    Body* body = window.document_.activeBody();
+    auto* source = body ? dynamic_cast<ShapeFeature*>(body->activeFeature())
+                        : nullptr;
+    const auto snapshot =
+        body && source ? body->topologySnapshot(source->id()) : std::nullopt;
+    if (!snapshot || !snapshot->topologyIndex()) return false;
+    std::optional<FaceReference> reference;
+    for (std::size_t raw = 0;
+         raw < snapshot->topologyIndex()->rawFaceCount(); ++raw) {
+      const auto created = snapshot->topologyIndex()->createFaceReferenceV2(
+          body->id(), source->id(), raw);
+      if (created) {
+        reference = created.reference;
+        break;
+      }
+    }
+    if (!reference) return false;
+    window.partDesignCoordinator_.beginExtrude(
+        body->id(), source->id(), source->shape(), *reference, 2.0,
+        ExtrudeOperation::Join, false, std::nullopt,
+        snapshot->topologyIndex());
+    window.updateFaceExtrudeToolPreview();
+    return window.partDesignCoordinator_
+               .snapshot(PartDesignToolKind::Extrude, window.document_)
+               .lifecycle == ToolLifecycle::PreviewValid;
+  }
+  static bool startV2Fillet(MainWindow& window) {
+    Body* body = window.document_.activeBody();
+    auto* source = body ? dynamic_cast<ShapeFeature*>(body->activeFeature())
+                        : nullptr;
+    const auto snapshot =
+        body && source ? body->topologySnapshot(source->id()) : std::nullopt;
+    if (!snapshot || !snapshot->topologyIndex()) return false;
+    std::optional<EdgeReference> reference;
+    for (std::size_t raw = 0;
+         raw < snapshot->topologyIndex()->rawEdgeCount(); ++raw) {
+      const auto created = snapshot->topologyIndex()->createEdgeReferenceV2(
+          body->id(), source->id(), raw);
+      if (created) {
+        reference = created.reference;
+        break;
+      }
+    }
+    if (!reference) return false;
+    window.partDesignCoordinator_.beginFillet(*snapshot, {*reference}, 1.0);
+    window.updateFilletToolPreview();
+    return window.partDesignCoordinator_
+               .snapshot(PartDesignToolKind::Fillet, window.document_)
+               .lifecycle == ToolLifecycle::PreviewValid;
+  }
+  static void acceptActiveFaceExtrude(MainWindow& window) {
+    window.acceptFaceExtrudeTool();
+  }
+  static void acceptActiveFillet(MainWindow& window) {
+    window.acceptFilletTool();
+  }
+  static bool finishV2FaceSketch(MainWindow& window) {
+    Body* body = window.document_.activeBody();
+    auto* source = body ? dynamic_cast<ShapeFeature*>(body->activeFeature())
+                        : nullptr;
+    const auto snapshot =
+        body && source ? body->topologySnapshot(source->id()) : std::nullopt;
+    if (!snapshot || !snapshot->topologyIndex()) return false;
+    for (std::size_t raw = 0;
+         raw < snapshot->topologyIndex()->rawFaceCount(); ++raw) {
+      const auto created = snapshot->topologyIndex()->createFaceReferenceV2(
+          body->id(), source->id(), raw);
+      if (!created) continue;
+      sketch::Sketch geometry;
+      geometry.addRectangle({0.0, 0.0}, {2.0, 2.0});
+      window.editingSketchIndex_.reset();
+      window.currentSketchFaceReference_ = created.reference;
+      window.sketchCanvas_->loadSketch(geometry);
+      window.workspaceStack_->setCurrentWidget(window.sketchCanvas_);
+      window.finishSketch();
+      return true;
+    }
+    return false;
+  }
+  static bool sketchWorkspaceActive(const MainWindow& window) {
+    return window.workspaceStack_->currentWidget() == window.sketchCanvas_;
+  }
+  static bool lastFeatureUsesV2Face(const MainWindow& window) {
+    const Body* body = window.document_.activeBody();
+    if (!body || body->features().empty()) return false;
+    const auto* extrude =
+        dynamic_cast<const ExtrudeFeature*>(body->features().back().get());
+    const auto face = extrude ? extrude->faceReference() : std::nullopt;
+    return face && face->isV2();
+  }
+  static bool lastFeatureUsesV1Face(const MainWindow& window) {
+    const Body* body = window.document_.activeBody();
+    if (!body || body->features().empty()) return false;
+    const auto* extrude =
+        dynamic_cast<const ExtrudeFeature*>(body->features().back().get());
+    const auto face = extrude ? extrude->faceReference() : std::nullopt;
+    return face && face->isV1();
+  }
+  static bool editLastFaceExtrudeParameter(MainWindow& window,
+                                           double lengthMm) {
+    Body* body = window.document_.activeBody();
+    if (!body || body->features().empty()) return false;
+    auto* extrude =
+        dynamic_cast<ExtrudeFeature*>(body->features().back().get());
+    if (!extrude || !extrude->faceReference()) return false;
+    window.editFaceExtrudeStep(body, extrude, body->features().size() - 1);
+    if (window.partDesignCoordinator_.activeTool() !=
+        PartDesignToolKind::Extrude)
+      return false;
+    window.partDesignCoordinator_.setExtrudeLengthFromPanel(lengthMm);
+    window.updateFaceExtrudeToolPreview();
+    window.acceptFaceExtrudeTool();
+    return window.partDesignCoordinator_.activeTool() ==
+           PartDesignToolKind::None;
+  }
+  static bool reselectLastFaceExtrudeV2(MainWindow& window) {
+    Body* body = window.document_.activeBody();
+    if (!body || body->features().size() < 2) return false;
+    auto* extrude =
+        dynamic_cast<ExtrudeFeature*>(body->features().back().get());
+    auto* source = dynamic_cast<ShapeFeature*>(
+        body->features()[body->features().size() - 2].get());
+    if (!extrude || !source || !extrude->faceReference()) return false;
+    window.editFaceExtrudeStep(body, extrude, body->features().size() - 1);
+    if (window.partDesignCoordinator_.activeTool() !=
+        PartDesignToolKind::Extrude)
+      return false;
+    const auto topology = source->topologyIndex();
+    if (!topology) return false;
+    for (std::size_t raw = 0; raw < topology->rawFaceCount(); ++raw) {
+      const auto created = topology->createFaceReferenceV2(
+          body->id(), source->id(), raw);
+      if (!created) continue;
+      window.partDesignCoordinator_.setExtrudeFace(created.reference);
+      window.updateFaceExtrudeToolPreview();
+      window.acceptFaceExtrudeTool();
+      return window.partDesignCoordinator_.activeTool() ==
+             PartDesignToolKind::None;
+    }
+    return false;
+  }
 };
 
 }  // namespace solidar
@@ -2285,6 +2437,178 @@ int main(int argc, char** argv) {
     CHECK(Access::persistenceState(persistenceEditor) == v4);
     CHECK(persistenceEditor.loadProject(pathA, &error));
     CHECK(Access::persistenceState(persistenceEditor) == v3);
+  }
+
+  // Native topology picks are V2. A V3 project blocks every commit before
+  // model/history allocation and leaves the transient operation retryable.
+  // Explicit upgrade is the sole format transition and survives Undo/Redo.
+  {
+    const solidar::project::ProjectPersistenceState v3{
+        solidar::project::ProjectPersistenceFormat::V3};
+    const solidar::project::ProjectPersistenceState v4{
+        solidar::project::ProjectPersistenceFormat::V4};
+    const QString gatePath =
+        directory.filePath(QStringLiteral("v3-native-authoring-gate.solidar"));
+    const auto source = solidar::ProjectApplicationService{}.stageOpen(pathA);
+    CHECK(source.succeeded());
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        gatePath, source.staged->document, &error));
+
+    solidar::MainWindow editor(settings);
+    CHECK(editor.loadProject(gatePath, &error));
+    auto* upgradeAction = Access::upgradeProjectFormatAction(editor);
+    CHECK(upgradeAction);
+    CHECK(upgradeAction->objectName() ==
+          QStringLiteral("upgradeProjectFormatAction"));
+    CHECK(upgradeAction->text() ==
+          QString::fromUtf8("Обновить формат проекта до v4…"));
+    CHECK(upgradeAction->isEnabled());
+
+    const auto beforeFaceFeatures = Access::bodyFeatureCount(editor);
+    const auto beforeFaceUndo = Access::undoCount(editor);
+    CHECK(Access::startV2FaceExtrude(editor));
+    CHECK(!Access::projectUpgradeIsQuiescent(editor));
+    Access::acceptActiveFaceExtrude(editor);
+    CHECK(Access::bodyFeatureCount(editor) == beforeFaceFeatures);
+    CHECK(Access::undoCount(editor) == beforeFaceUndo);
+    CHECK(Access::activeTool(editor) ==
+          solidar::PartDesignToolKind::Extrude);
+    CHECK(Access::viewportHasToolPreview(editor));
+
+    // Upgrade never auto-applies or cancels an unfinished operation.
+    upgradeAction->trigger();
+    CHECK(Access::persistenceState(editor) == v3);
+    CHECK(Access::activeTool(editor) ==
+          solidar::PartDesignToolKind::Extrude);
+    Access::cancelFaceExtrude(editor);
+
+    const auto beforeEdgeFeatures = Access::bodyFeatureCount(editor);
+    const auto beforeEdgeUndo = Access::undoCount(editor);
+    CHECK(Access::startV2Fillet(editor));
+    Access::acceptActiveFillet(editor);
+    CHECK(Access::bodyFeatureCount(editor) == beforeEdgeFeatures);
+    CHECK(Access::undoCount(editor) == beforeEdgeUndo);
+    CHECK(Access::activeTool(editor) == solidar::PartDesignToolKind::Fillet);
+    Access::reset(editor);
+    CHECK(editor.loadProject(gatePath, &error));
+
+    const auto beforeSketches = Access::documentSketchCount(editor);
+    const auto beforeSketchUndo = Access::undoCount(editor);
+    CHECK(Access::finishV2FaceSketch(editor));
+    CHECK(Access::sketchWorkspaceActive(editor));
+    CHECK(Access::documentSketchCount(editor) == beforeSketches);
+    CHECK(Access::undoCount(editor) == beforeSketchUndo);
+    CHECK(editor.loadProject(gatePath, &error));
+
+    // Cancel is an exact no-op.
+    const auto cancelBodies = Access::bodyCount(editor);
+    const auto cancelHistory = Access::historyStepCount(editor);
+    QTimer::singleShot(0, [] {
+      if (auto* box = qobject_cast<QMessageBox*>(
+              QApplication::activeModalWidget()))
+        box->button(QMessageBox::Cancel)->click();
+    });
+    upgradeAction->trigger();
+    CHECK(Access::persistenceState(editor) == v3);
+    CHECK(Access::bodyCount(editor) == cancelBodies);
+    CHECK(Access::historyStepCount(editor) == cancelHistory);
+    CHECK(upgradeAction->isEnabled());
+
+    // Write failure after confirmation preserves the complete editor state.
+    const QString failedPath =
+        directory.filePath(QStringLiteral("missing/ui-upgrade.solidar"));
+    editor.setProjectPath(failedPath);
+    const auto failedBodies = Access::bodyCount(editor);
+    const auto failedHistory = Access::historyStepCount(editor);
+    const auto failedUndo = Access::undoCount(editor);
+    const bool failedDirty = Access::modified(editor);
+    QTimer modalDriver;
+    modalDriver.setInterval(0);
+    QObject::connect(&modalDriver, &QTimer::timeout, [&modalDriver] {
+      auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+      if (!box) return;
+      if (box->windowTitle() ==
+          QString::fromUtf8("Обновление формата проекта")) {
+        box->button(QMessageBox::Yes)->click();
+      } else {
+        box->accept();
+        modalDriver.stop();
+      }
+    });
+    modalDriver.start();
+    upgradeAction->trigger();
+    modalDriver.stop();
+    CHECK(Access::persistenceState(editor) == v3);
+    CHECK(editor.windowFilePath() == failedPath);
+    CHECK(Access::bodyCount(editor) == failedBodies);
+    CHECK(Access::historyStepCount(editor) == failedHistory);
+    CHECK(Access::undoCount(editor) == failedUndo);
+    CHECK(Access::modified(editor) == failedDirty);
+    CHECK(!QFile::exists(failedPath));
+
+    // A confirmed successful upgrade writes version 4 first, then changes
+    // state/savepoint. Subsequent native V2 commit is exactly one command.
+    editor.setProjectPath(gatePath);
+    CHECK(Access::startTopFaceExtrude(editor, 15.0));
+    Access::acceptActiveFaceExtrude(editor);
+    CHECK(Access::lastFeatureUsesV1Face(editor));
+    CHECK(Access::projectUpgradeIsQuiescent(editor));
+    CHECK(upgradeAction->isEnabled());
+    QTimer::singleShot(0, [] {
+      if (auto* box = qobject_cast<QMessageBox*>(
+              QApplication::activeModalWidget()))
+        box->button(QMessageBox::Yes)->click();
+    });
+    Access::upgradeProjectFormat(editor);
+    CHECK(Access::persistenceState(editor) == v4);
+    CHECK(!upgradeAction->isEnabled());
+    CHECK(!Access::modified(editor));
+    QFile upgraded(gatePath);
+    CHECK(upgraded.open(QIODevice::ReadOnly));
+    CHECK(QJsonDocument::fromJson(upgraded.readAll())
+              .object()
+              .value(QStringLiteral("version"))
+              .toInteger() == 4);
+
+    // Loading and changing only a parameter preserves the authored V1
+    // carrier. Explicit face reselection replaces it with the fresh V2 pick.
+    CHECK(editor.loadProject(gatePath, &error));
+    CHECK(Access::lastFeatureUsesV1Face(editor));
+    CHECK(Access::editLastFaceExtrudeParameter(editor, 3.0));
+    CHECK(Access::lastFeatureUsesV1Face(editor));
+    CHECK(Access::reselectLastFaceExtrudeV2(editor));
+    CHECK(Access::lastFeatureUsesV2Face(editor));
+
+    const auto beforeCommitUndo = Access::undoCount(editor);
+    CHECK(Access::startV2FaceExtrude(editor));
+    Access::acceptActiveFaceExtrude(editor);
+    CHECK(Access::undoCount(editor) == beforeCommitUndo + 1);
+    CHECK(Access::lastFeatureUsesV2Face(editor));
+    Access::undoAction(editor)->trigger();
+    CHECK(Access::persistenceState(editor) == v4);
+    CHECK(!upgradeAction->isEnabled());
+    // Undo the explicit V2 reselection as well: the document now contains no
+    // authored V2 carrier, but the project format must never downgrade.
+    Access::undoAction(editor)->trigger();
+    CHECK(Access::lastFeatureUsesV1Face(editor));
+    CHECK(Access::persistenceState(editor) == v4);
+    CHECK(!upgradeAction->isEnabled());
+    Access::redoAction(editor)->trigger();
+    CHECK(Access::persistenceState(editor) == v4);
+    CHECK(Access::lastFeatureUsesV2Face(editor));
+    Access::redoAction(editor)->trigger();
+    CHECK(Access::persistenceState(editor) == v4);
+    CHECK(Access::lastFeatureUsesV2Face(editor));
+
+    // Direct V4 invocation is an exact no-op and cannot dirty the savepoint.
+    const auto noOpUndo = Access::undoCount(editor);
+    const auto noOpBodies = Access::bodyCount(editor);
+    const bool noOpDirty = Access::modified(editor);
+    Access::upgradeProjectFormat(editor);
+    CHECK(Access::persistenceState(editor) == v4);
+    CHECK(Access::undoCount(editor) == noOpUndo);
+    CHECK(Access::bodyCount(editor) == noOpBodies);
+    CHECK(Access::modified(editor) == noOpDirty);
   }
 
   // Historical v1 projects have a rendered legacy solid but no Body/B-Rep or

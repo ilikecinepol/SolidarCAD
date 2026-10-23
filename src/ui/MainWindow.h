@@ -76,6 +76,10 @@ class MainWindow final : public QMainWindow {
   void createProject();
   void openProject();
   void saveProject();
+  void upgradeProjectFormat();
+  void updateUpgradeProjectFormatAction() noexcept;
+  [[nodiscard]] bool projectUpgradeIsQuiescent() const noexcept;
+  [[nodiscard]] PartDesignCommitGuard startPartDesignCommit();
   [[nodiscard]] bool confirmProjectReplacement();
   void importStep();
   void importReferenceImage();
@@ -228,6 +232,7 @@ class MainWindow final : public QMainWindow {
   std::optional<FaceReference> currentSketchFaceReference_;
   QAction* undoAction_{nullptr};
   QAction* redoAction_{nullptr};
+  QAction* upgradeProjectFormatAction_{nullptr};
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
   QScrollArea* historyScroll_{nullptr};

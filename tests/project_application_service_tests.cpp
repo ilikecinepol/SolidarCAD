@@ -8,6 +8,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 #include <cstdlib>
@@ -53,6 +55,9 @@ int main(int argc, char* argv[]) {
   static_assert(noexcept(service.save(QString{},
                                       std::declval<const solidar::Document&>())));
   static_assert(noexcept(service.save(
+      QString{}, std::declval<const solidar::Document&>(),
+      solidar::project::ProjectPersistenceState{})));
+  static_assert(noexcept(service.upgradeProjectFormat(
       QString{}, std::declval<const solidar::Document&>(),
       solidar::project::ProjectPersistenceState{})));
   static_assert(noexcept(service.stageImportStep(
@@ -150,6 +155,36 @@ int main(int argc, char* argv[]) {
   auto openedV4 = service.stageOpen(v4Path);
   CHECK(openedV4.succeeded());
   CHECK(openedV4.staged->persistenceState == v4);
+
+  // Explicit upgrade uses the existing atomic v4 writer. A V4 call is an
+  // exact no-op, while a failed V3 upgrade never manufactures a destination.
+  const QString upgradedPath =
+      directory.filePath(QStringLiteral("explicit-upgrade.solidar"));
+  CHECK(service.save(upgradedPath, committed).succeeded());
+  CHECK(service.upgradeProjectFormat(
+                    upgradedPath, committed,
+                    {solidar::project::ProjectPersistenceFormat::V3})
+            .succeeded());
+  QFile upgradedFile(upgradedPath);
+  CHECK(upgradedFile.open(QIODevice::ReadOnly));
+  const auto upgradedRoot =
+      QJsonDocument::fromJson(upgradedFile.readAll()).object();
+  CHECK(upgradedRoot.value(QStringLiteral("version")).toInt() == 4);
+
+  const QString noOpPath =
+      directory.filePath(QStringLiteral("already-v4-no-op.solidar"));
+  CHECK(service.upgradeProjectFormat(noOpPath, solidar::Document{}, v4)
+            .succeeded());
+  CHECK(!QFile::exists(noOpPath));
+
+  const QString missingParent =
+      directory.filePath(QStringLiteral("missing/upgrade.solidar"));
+  const auto failedUpgrade = service.upgradeProjectFormat(
+      missingParent, committed,
+      {solidar::project::ProjectPersistenceFormat::V3});
+  CHECK(!failedUpgrade.succeeded());
+  CHECK(failedUpgrade.code == solidar::ProjectApplicationErrorCode::SaveFailed);
+  CHECK(!QFile::exists(missingParent));
 
   // STEP import is also staged against a copy. Both successful and failed
   // translations leave the supplied current Document unchanged.

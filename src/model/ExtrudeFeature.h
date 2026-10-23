@@ -42,6 +42,7 @@ class ExtrudeFeature final : public ShapeFeature {
   profileOverride() const noexcept;
   void setProfileOverride(std::optional<sketch::Sketch> profile);
   [[nodiscard]] std::optional<FaceReference> faceReference() const noexcept;
+  void setFaceReference(FaceReference face);
   [[nodiscard]] double lengthMm() const noexcept;
   void setLengthMm(double value) noexcept;
   [[nodiscard]] ExtrudeOperation operation() const noexcept;

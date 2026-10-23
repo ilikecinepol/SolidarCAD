@@ -725,6 +725,14 @@ std::optional<FaceReference> ExtrudeFeature::faceReference() const noexcept {
   return std::nullopt;
 }
 
+void ExtrudeFeature::setFaceReference(FaceReference face) {
+  if (auto* current = std::get_if<FaceExtrudeSource>(&source_);
+      current && current->face != face) {
+    current->face = std::move(face);
+    setDirty();
+  }
+}
+
 double ExtrudeFeature::lengthMm() const noexcept { return lengthMm_; }
 
 void ExtrudeFeature::setLengthMm(double value) noexcept {

@@ -63,6 +63,9 @@ class ProjectApplicationService final {
   [[nodiscard]] ProjectApplicationStatus save(
       const QString& path, const Document& document,
       project::ProjectPersistenceState persistenceState) const noexcept;
+  [[nodiscard]] ProjectApplicationStatus upgradeProjectFormat(
+      const QString& path, const Document& document,
+      project::ProjectPersistenceState currentState) const noexcept;
 
   [[nodiscard]] StagedApplicationDocumentResult stageImportStep(
       const QString& path, const Document& currentDocument,

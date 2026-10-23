@@ -164,6 +164,13 @@ ProjectApplicationStatus ProjectApplicationService::save(
   }
 }
 
+ProjectApplicationStatus ProjectApplicationService::upgradeProjectFormat(
+    const QString& path, const Document& document,
+    project::ProjectPersistenceState currentState) const noexcept {
+  if (currentState.format == project::ProjectPersistenceFormat::V4) return {};
+  return save(path, document, {project::ProjectPersistenceFormat::V4});
+}
+
 StagedApplicationDocumentResult ProjectApplicationService::stageImportStep(
     const QString& path, const Document& currentDocument,
     const QString& featureName) const noexcept {

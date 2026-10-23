@@ -1,4 +1,5 @@
 #include "ui/Viewport.h"
+#include "ui/ViewportReferenceFactory.h"
 #include "ui/ThemeManager.h"
 #include "ui/WorldGrid.h"
 #include <QVariantAnimation>
@@ -2424,10 +2425,9 @@ std::optional<FaceReference> Viewport::faceReferenceForGlobalIndex(
   for (const auto& range : bodyTopologyRanges_)
     if (global >= range.firstFace &&
         global < range.firstFace + range.faceCount && range.topologyIndex) {
-      const auto created = range.topologyIndex->createFaceReference(
-          range.bodyId, range.featureId, global - range.firstFace);
-      return created ? std::optional<FaceReference>{created.reference}
-                     : std::nullopt;
+      return createViewportFaceReference(
+          *range.topologyIndex, range.bodyId, range.featureId,
+          global - range.firstFace);
     }
   return std::nullopt;
 }
@@ -2484,10 +2484,9 @@ std::optional<EdgeReference> Viewport::edgeReferenceForGlobalIndex(
   for (const auto& range : bodyTopologyRanges_)
     if (global >= range.firstEdge &&
         global < range.firstEdge + range.edgeCount && range.topologyIndex) {
-      const auto created = range.topologyIndex->createEdgeReference(
-          range.bodyId, range.featureId, global - range.firstEdge);
-      return created ? std::optional<EdgeReference>{created.reference}
-                     : std::nullopt;
+      return createViewportEdgeReference(
+          *range.topologyIndex, range.bodyId, range.featureId,
+          global - range.firstEdge);
     }
   return std::nullopt;
 }
