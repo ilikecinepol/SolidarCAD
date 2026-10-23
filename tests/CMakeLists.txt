@@ -149,6 +149,8 @@ solidar_add_test(product_envelope_v5_decoder_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression)
 solidar_add_test(product_envelope_v5_encoder_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
+solidar_add_test(product_envelope_v5_conversion_tests
+  LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
 solidar_add_test(product_envelope_v5_atomic_writer_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression)
 solidar_add_test(product_envelope_v5_materializer_tests

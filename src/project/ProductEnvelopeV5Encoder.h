@@ -40,4 +40,11 @@ struct ProductEnvelopeV5EncodeResult {
     const ProductDocument& source, ProjectId outputProjectId,
     const ProductEnvelopeV5Metadata& metadata);
 
+// Explicit-root variant for standalone-to-product preparation. The persisted
+// output definition identity is independent of a transient source carrier ID.
+[[nodiscard]] ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
+    const ProductDocument& source, ProjectId outputProjectId,
+    DefinitionId outputRootDefinitionId,
+    const ProductEnvelopeV5Metadata& metadata);
+
 }  // namespace solidar::project

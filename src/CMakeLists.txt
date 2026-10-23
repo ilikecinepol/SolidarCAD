@@ -156,6 +156,8 @@ add_library(solidar_project
   project/ProjectFile.h
   project/ProductEnvelopeV5Decoder.cpp
   project/ProductEnvelopeV5Decoder.h
+  project/ProductEnvelopeV5Conversion.cpp
+  project/ProductEnvelopeV5Conversion.h
   project/ProductEnvelopeV5Encoder.cpp
   project/ProductEnvelopeV5Encoder.h
   project/ProductEnvelopeV5Materialization.cpp

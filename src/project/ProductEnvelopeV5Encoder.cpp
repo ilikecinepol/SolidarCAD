@@ -30,6 +30,14 @@ QString exceptionError(const std::exception& exception) {
 ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
     const ProductDocument& source, ProjectId outputProjectId,
     const ProductEnvelopeV5Metadata& metadata) {
+  return encodeProductEnvelopeV5Root(source, outputProjectId,
+                                     source.rootDefinitionId(), metadata);
+}
+
+ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
+    const ProductDocument& source, ProjectId outputProjectId,
+    DefinitionId outputRootDefinitionId,
+    const ProductEnvelopeV5Metadata& metadata) {
   try {
     const auto encodedProjectId =
         detail::formatCanonicalProjectId(outputProjectId);
@@ -42,7 +50,7 @@ ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
                      QStringLiteral(
                          "product envelope v5 requires exactly one definition"));
     }
-    const std::uint64_t definitionId = source.rootDefinitionId().value();
+    const std::uint64_t definitionId = outputRootDefinitionId.value();
     if (definitionId == 0 ||
         definitionId > static_cast<std::uint64_t>(
                            ProjectFile::kMaximumPersistedId)) {
@@ -102,8 +110,8 @@ ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
     if (scanned.status != ProductEnvelopeV5ScanStatus::Candidate ||
         !scanned.candidate || scanned.candidate->authoredRoot != root ||
         scanned.candidate->projectId != outputProjectId ||
-        scanned.candidate->rootDefinitionId != source.rootDefinitionId() ||
-        scanned.candidate->definitionId != source.rootDefinitionId() ||
+        scanned.candidate->rootDefinitionId != outputRootDefinitionId ||
+        scanned.candidate->definitionId != outputRootDefinitionId ||
         scanned.candidate->metadata != metadata ||
         scanned.candidate->capabilities !=
             QStringList{QStringLiteral("product-envelope-v1")} ||

@@ -224,6 +224,43 @@ int main() {
               .toArray().size() == 1);
   }
 
+  // The compatibility overload preserves the source carrier root, while the
+  // explicit-root overload injects a distinct persisted output identity and
+  // validates its self-scan against that output value.
+  {
+    auto source = product();
+    constexpr DefinitionId kOutputRoot{4242};
+    const auto compatible =
+        encodeProductEnvelopeV5Root(*source, kProjectA, metadata());
+    const auto explicitRoot = encodeProductEnvelopeV5Root(
+        *source, kProjectA, kOutputRoot, metadata());
+    CHECK(compatible.succeeded());
+    CHECK(explicitRoot.succeeded());
+    CHECK(source->rootDefinitionId() == kRootDefinition);
+    CHECK(compatible.payload->root.value("rootDefinitionId").toInteger() ==
+          static_cast<qint64>(kRootDefinition.value()));
+    CHECK(compatible.payload->root.value("definitions")
+              .toArray()
+              .at(0)
+              .toObject()
+              .value("definitionId")
+              .toInteger() == static_cast<qint64>(kRootDefinition.value()));
+    CHECK(explicitRoot.payload->root.value("rootDefinitionId").toInteger() ==
+          static_cast<qint64>(kOutputRoot.value()));
+    CHECK(explicitRoot.payload->root.value("definitions")
+              .toArray()
+              .at(0)
+              .toObject()
+              .value("definitionId")
+              .toInteger() == static_cast<qint64>(kOutputRoot.value()));
+    const auto scanned =
+        scanProductEnvelopeV5(QByteArrayView(explicitRoot.payload->bytes));
+    CHECK(scanned.status == ProductEnvelopeV5ScanStatus::Candidate);
+    CHECK(scanned.candidate);
+    CHECK(scanned.candidate->rootDefinitionId == kOutputRoot);
+    CHECK(scanned.candidate->definitionId == kOutputRoot);
+  }
+
   {
     auto identified = product(Document{}, kProjectA);
     CHECK(identified->identity());
