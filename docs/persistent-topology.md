@@ -2,7 +2,7 @@
 
 SolidarCAD поддерживает два разных контракта топологических ссылок. V1 ищет
 геометрию по семантическим тегам и сигнатурам. V2 использует точный provenance
-ключ, опубликованный поддержанным producer-ом. В одном будущем документе v4
+ключ, опубликованный поддержанным producer-ом. В standalone-документе v4
 разрешена смесь обоих вариантов, но каждый вариант всегда разрешается только
 своим resolver path.
 
@@ -95,8 +95,11 @@ identity по порядку OCCT subshapes.
 ## Persistence boundary
 
 Production writer v3 атомарно отвергает любой V2 carrier и не понижает его до
-V1. Контракт standalone v4 описан в `docs/project-format-v4.md`: P1 закрывает
-in-memory carrier, producers, consumers и rollback, но low-level decoder P2 и
-writer/application gate P3 реализуются отдельно. Derived B-Rep и runtime
-lineage никогда не сериализуются; после загрузки они перестраиваются из
-параметров и provenance.
+V1. Контракт standalone v4 описан в `docs/project-format-v4.md`: P1-P3 закрыли
+in-memory carrier, producers, consumers, rollback, reader/writer и application
+gate. Новый или открытый v1-v3 документ остаётся в состоянии V3; открытый v4 —
+в V4; явный `Upgrade to v4` атомарно переводит V3 в V4. Writer выбирается
+текущим application persistence state, а не содержимым: native V2
+authoring/commit в V3 заблокирован, удаление последней V2-ссылки не понижает V4.
+Derived B-Rep и runtime lineage никогда не сериализуются; после загрузки они
+перестраиваются из параметров и provenance.

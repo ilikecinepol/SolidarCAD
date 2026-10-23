@@ -1,7 +1,7 @@
 # Формат проекта `.solidar` v4
 
-Статус: контракты P0 и in-memory runtime scope P1 завершены; low-level decoder
-P2 и writer/application gate P3 ещё не реализованы.
+Статус: P0-P3 завершены 23 октября 2026 года; standalone v4 доступен через
+production reader, атомарный writer и application format-state gate.
 
 Версия 4 — самостоятельная схема однодетального параметрического документа с
 поддержкой persistent topology v2. Она не является product/component envelope,
@@ -10,8 +10,9 @@ identity-bearing envelope получает отдельную версию сх�
 Как и v1-v3, v4 не сериализует derived B-Rep или runtime lineage index: они
 детерминированно перестраиваются из feature parameters и history provenance.
 
-До завершения этапов P2 и P3 production writer продолжает записывать v3.
-Наличие in-memory lineage не разрешает преждевременно выдавать файл за v4.
+Default для новых и открытых v1-v3 документов остаётся V3. Writer выбирается
+явным `ProjectPersistenceState`: открытый V4 остаётся V4, а наличие in-memory
+lineage само по себе не меняет формат.
 
 ## P1 runtime authoring scope
 
@@ -31,7 +32,7 @@ P1 остаются consumer-only terminal outputs и не публикуют li
 
 Этот runtime producer allowlist не является structural allowlist decoder-а.
 Структурно валидная V2 reference может указывать на существующий
-Fillet/Chamfer/Shell/Draft feature и должна декодироваться P2 как обычный V2
+Fillet/Chamfer/Shell/Draft feature; завершённый P2 декодирует её как обычный V2
 carrier. После recompute отсутствие соответствующего exact key даёт runtime
 `Missing`, а не structural `Invalid`. Decoder не выводит поддержку authoring из
 типа owning feature и не понижает такой carrier до V1.
@@ -242,7 +243,8 @@ hybrid object с полями обоих variants являются `Invalid`.
 V4 не требует переписывать каждую существующую ссылку в V2. Структурно валидная
 authored V2 reference сохраняется буквально даже тогда, когда текущий recompute
 даёт `Missing` или `Ambiguous`. Writer не опрашивает текущую lineage, чтобы
-выбрать variant, понизить V2 до V1 или удалить ссылку. Writer P3 обязан:
+выбрать variant, понизить V2 до V1 или удалить ссылку. Реализованный writer P3
+сохраняет следующие обязательства:
 
 - сохранять V1/V2 variant и все identity fields буквально при load/save, если
   пользователь не совершил явную операцию, создающую или заменяющую ссылку;
@@ -308,7 +310,7 @@ Origins не рекурсивны: origin с полем `origins` всегда `
 | Случай | Результат |
 | --- | --- |
 | Валидный standalone v1-v3 | Существующий standalone reader; семантика не меняется |
-| Валидный v4 со всеми известными capabilities | Декодирование в staged payload после P2; application open только после P3 |
+| Валидный v4 со всеми известными capabilities | Строгий staged decode/materialize/recompute; application open с V4 допускает только primary failures `SketchSupport`/`Feature` с кодом `TopologyReferenceMissing`/`TopologyReferenceAmbiguous`, прочие отклоняются |
 | Версия выше поддерживаемой или синтаксически корректная строка неизвестной capability, `referenceVersion`, `kind`, `operation` или `role` | `Unsupported` |
 | Неверный JSON type, отсутствующее/лишнее поле, hybrid V1/V2 object, duplicate/stale ID, превышение лимита или неканонические origins | `Invalid` |
 | Известный `kind`, не совпадающий с ожидаемым kind embedding site | `Invalid` |
@@ -331,39 +333,39 @@ Origins не рекурсивны: origin с полем `origins` всегда `
 - Reader v4 обязан продолжать читать v1, v2 и v3 прежними путями, без
   обязательной миграции и без изменения их байтов на обычном open.
 - Reader v1-v3 не обязан читать v4 и должен отклонить неизвестную версию.
-- Production writer остаётся v3 до выполнения P2 и P3; завершённый P1 сам по
-  себе не разрешает запись v4.
-- P1 завершил in-memory carrier и всех разрешённых consumers/producers, включая
+- **P1 (завершён 21 октября 2026):** in-memory carrier и все разрешённые
+  consumers/producers, включая
   fail-closed lifecycle regressions и terminal-output negative matrix.
-- P2 добавляет только low-level decoder/structural codec staging и его тесты.
-  Encoder/writer v4 на P2 отсутствует. V4 decoder не
-  регистрируется в `ProjectApplicationService`, UI open, recent/recovery или
-  ином application-open path и не создаёт доступный приложению `Document`.
-  Поэтому до P3 запрещены все пути записи v4: Save, Save As, create/template,
-  autosave, recovery и любые обходные low-level entry points; v4 физически не
-  может попасть в v3 writer.
-- P3 после готовности writer атомарно включает v4 codec в application open и
-  добавляет deterministic save/load matrix. P1 уже заморозил boolean provenance
+- **P2 (завершён 22 октября 2026):** low-level decoder/structural codec staging
+  и его тесты; encoder/writer в границу P2 не входил. Историческая граница P2
+  не регистрировала V4 decoder в
+  `ProjectApplicationService`, UI open, recent/recovery или ином
+  application-open path и не создавала доступный приложению `Document`; до P3
+  application-пути записи V4 оставались запрещены.
+- **P3 (завершён 23 октября 2026):** готовый атомарный writer и V4 codec включены
+  в application open, deterministic save/load matrix и native-authoring gate
+  закреплены commits `8043f70` и `bdba8c9`. P1 ранее заморозил boolean provenance
   algebra: неизменяемые правила `Generated`, `Modified`, `Retained` и `Merge`,
   N-to-1 merge, 1-to-N split, canonical sort/dedup origins, уникальные authored
   local names либо `Ambiguous`, отсутствие разрешаемого key для deleted inputs,
-  а также partial/complete coverage и collision policy. P3 обязан сохранить эту
-  алгебру и подтвердить её save/load regressions без переосмысления. Изменение
+  а также partial/complete coverage и collision policy. P3 сохранил эту
+  алгебру и подтвердил её save/load regressions без переосмысления. Изменение
   алгебры после выпуска v4 потребует новой capability/schema, а не тихой смены
   смысла сохранённых keys.
 
-Завершённый в P1 freeze сам по себе не разрешает production writer v4: writer
-по-прежнему ждёт P2 и P3. Успешный P3 меняет default writer отдельным явно
-проверенным commit/gate, а не автоматически вследствие наличия V2 carrier.
+Завершённый P3 не меняет default writer на V4: default остаётся V3 для новых и
+открытых v1-v3 документов. Конкретный V3/V4 writer выбирается явным persistence
+state, а не автоматически вследствие наличия V2 carrier.
 
-После P3 документ несёт явное persistence format state, независимое от
+Текущий документ несёт явное persistence format state, независимое от
 текущего содержимого:
 
 - открытый v4 остаётся v4 при Save и Save As, даже если все V2 references были
   удалены;
 - открытые v1-v3 и новые документы остаются v3 при Save и Save As;
-- отдельная явная команда upgrade/conversion переводит state v1-v3 -> v4;
-- authoring native V2 reference в состоянии v3 запрещён и требует, чтобы
+- отдельная явная атомарная команда `Upgrade to v4` переводит standalone state
+  V3 -> V4 и не создаёт product envelope или external identity;
+- authoring/commit native V2 reference в состоянии v3 запрещён и требует, чтобы
   пользователь сначала выполнил отдельную явную команду upgrade; создание
   V2-ссылки само по себе не меняет format state, а V2 carrier никогда не
   записывается в v3;
@@ -378,8 +380,10 @@ persistence format state; частичный v4 не публикуется.
 Product/component envelope из ADR
 `docs/decisions/2026-10-18-product-document-envelope.md` не является v4. Его
 первая схема получает номер выше `4` и отдельный capability/reader/writer gate.
-Переход любого standalone v1-v4 выполняется только явной атомарной командой
-conversion. Conversion обязана сохранить все существующие Body/Feature/Sketch/
-Geometry и прочие stable IDs, variant каждой topology reference и полную V2
-provenance; файловый путь не становится identity. Ошибка оставляет исходный
-standalone-файл неизменным и не публикует частичный envelope.
+Будущая `Convert to Product Document` — отдельная операция, не `Upgrade to v4`.
+Она переводит standalone v1-v4 в envelope схемы выше 4 и обязана сохранить все
+существующие Body/Feature/Sketch/Geometry и прочие stable IDs, variant каждой
+topology reference и полную V2 provenance; файловый путь не становится
+identity. Ошибка оставляет исходный standalone-файл неизменным и не публикует
+частичный envelope. Политики Save/Save As/Relocate, replica и identity conflict
+для envelope этим standalone gate не изменены и остаются будущей работой A2+.

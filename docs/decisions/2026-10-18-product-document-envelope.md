@@ -1,25 +1,25 @@
 # Product document envelope и идентичность определений
 
-Дата: 18 октября 2026 г.; уточнение persistence boundary — 19 октября 2026 г.
-Статус: архитектурное решение принято (ветвь B); product envelope отделён от
-standalone project format v4; D1 не завершён
+Дата: 18 октября 2026 г.; уточнение persistence boundary — 19 октября 2026 г.;
+exit D1 — 23 октября 2026 г.
+Статус: решение принято (ветвь B); D1 завершён; standalone v4 отделён от
+product envelope; A1a разблокирован и авторизован
 
 ## Контекст
 
 Пользователь явно выбрал ветвь B для будущего формата изделий и компонентов.
-Это решение фиксирует целевую модель владения и идентичности, но не разрешает
-начинать A1 и не означает выполнение exit-критерия D1.
+23 октября 2026 года выполнен exit-критерий D1 и отдельно авторизован следующий
+ограниченный шаг A1a. Это решение не активирует A2, A7 или product persistence.
 
 Подэтап G0 ядра графа зависимостей закрыт 18 октября 2026 года: единый
 `DocumentIndex` имеет детерминированные cross-body, Sketch и face-support edges,
 структурный abort, affected-closure propagation и same-ID recovery; evidence
 закреплено scheduler/removal/join/pattern regressions и согласовано с roadmap.
-Это не закрывает полный этап Parametric Core 2.0. In-memory carrier persistent
-topology v2 и первые face-lineage producers/transform consumers уже существуют,
-но persistence, полный boolean split/merge contract и reader/writer gates ещё
-не завершены. Поэтому A1 и типы изделия, а также A7 и mates, запрещены до
-прохождения оставшихся gates. Техническая возможность показать статическую
-сборку не является разрешением на реализацию.
+Это не закрывает полный этап Parametric Core 2.0. Persistent topology v2,
+standalone v4 reader/writer и application gate завершены, включая зафиксированный
+boolean split/merge contract и регрессии. Следующим разрешён только A1a;
+production-типы изделия, A2, A7 и mates не активированы. Техническая возможность
+показать статическую сборку не является разрешением на расширение scope.
 
 Текущее приложение по-прежнему владеет одним `Document`. Production-типа
 изделия и перехода application ownership пока нет.
@@ -96,15 +96,17 @@ schema transitions, а также единый application owner. Эти пре�
 
 ## Миграция standalone v1-v4
 
-Production writer сегодня остаётся v3 и single `Document`; reader сохраняет
-standalone v1-v3. V4 определён отдельно как standalone single-part schema для
-persistent topology v2, но его reader/writer ещё не реализованы. До A2
-запрещены persisted product envelope, `ProjectId`, envelope schema metadata,
-conversion workflow, persistence codec и activation product-envelope schema в
-application Open.
+Production reader открывает standalone v1-v4. Новый документ и открытый v1-v3
+несут состояние V3; открытый v4 несёт V4. Обычные Save/Save As сохраняют это
+явное состояние, а отдельный атомарный `Upgrade to v4` переводит V3 в V4.
+Native V2 authoring/commit в V3 заблокирован, удаление последней V2-ссылки не
+понижает V4, а v3 writer по-прежнему отвергает V2. Ни один из этих путей не создаёт
+product envelope или external identity. До A2 запрещены persisted product
+envelope, `ProjectId`, envelope schema metadata, conversion workflow,
+persistence codec и activation product-envelope schema в application Open.
 
 Этот запрет не блокирует последовательность A1 из исходной задачи. После
-прохождения topology gate A1a добавляет Qt-free in-memory, non-production и
+пройденного topology gate A1a добавляет Qt-free in-memory, non-production и
 non-persisted foundation — project-local `DefinitionId`,
 `DefinitionRegistry`, root ID и `PartDefinition`, единолично владеющую
 существующим `Document`. Затем A1b1 может провести тот же единственный
@@ -143,10 +145,9 @@ sidecar не создаётся.
 До conversion:
 
 - обычный `Save` в ту же цель и `Save As` не создают envelope и не записывают
-  `ProjectId`; P2
-  декодирует v4 только в low-level staged tests, не содержит v4 writer и не
-  допускает payload до application open/Save/Save As/autosave/recovery; после
-  P3 Save и Save As сохраняют явный standalone format state: открытый v4
+  `ProjectId`; завершённые P2/P3 проводят v4 через строгие staged
+  decoder/materialization/application gates и атомарный writer. Save и Save As
+  сохраняют явный standalone format state: открытый v4
   остаётся v4, а новый или открытый v1-v3 остаётся v3 до отдельного явного
   standalone upgrade, без content-driven upgrade/downgrade; standalone upgrade
   v1-v3 -> v4 не создаёт product envelope;
@@ -206,25 +207,32 @@ Derived и transformed B-Rep, mesh и GPU-данные не сериализую
 
 ## Последствия и границы rollout
 
-Ветвь B требует явной миграции persistence и поэтапной смены application
-ownership; текущий single-`Document` workflow остаётся фактическим до отдельной
-авторизованной реализации. Цена миграции принята ради одной модели envelope/kind,
-честной linked identity и возможности subassemblies без второй смены основы.
+Ветвь B требует будущей явной миграции product persistence и поэтапной смены
+application ownership; текущий single-`Document` workflow остаётся фактическим
+до следующих отдельно авторизованных шагов. Цена миграции принята ради одной
+модели envelope/kind, честной linked identity и возможности subassemblies без
+второй смены основы.
 
 Этот ADR не вводит production-типы, resolver, occurrences, UI или mates. Он
 также не переиспользует standalone v4 как envelope: product schema будет
-отдельной версией выше 4. A7 mates не начинается до завершения persistent
-topology v2 persistence и её регрессий.
+отдельной версией выше 4. Завершение D1 разрешает только A1a; A2 и A7 не
+активированы.
 
-Graph prerequisite закрыт подэтапом G0. Оставшийся точный gate для разблокировки
-A1 состоит из всех трёх условий:
+Graph prerequisite закрыт подэтапом G0. Исторический точный gate D1 для
+разблокировки A1a состоял из всех трёх условий:
 
 1. persistent topology v2 реализована end-to-end, включая v4 reader/writer,
    freeze boolean algebra и regressions для требуемых split/merge, symmetry и
    pattern provenance случаев;
 2. на точном HEAD получено итоговое зелёное evidence согласованного build/test
    gate;
-3. пользователь дал явную авторизацию начать A1.
+3. пользователь дал явную авторизацию начать A1a.
 
-До выполнения всех условий D1 exit не достигнут, A1 остаётся заблокированным.
-Статическая assembly feasibility сама по себе ни один из этих gates не заменяет.
+Все условия выполнены 23 октября 2026 года на `HEAD bdba8c9`: ключевые commits
+`8043f70` (атомарный open и сохранение V4 state) и `bdba8c9` (format-gate native
+V2 authoring); clean CI собрал 579/579 целей, CTest прошёл 108/108 тестов с
+labels `unit` (57), `regression` (80), `topology` (28), `ui-smoke` (12) и
+`compliance` (4). Локальный verifier прошёл 203/203 целей, 108/108 тестов и
+GUI smoke 8 секунд. D1 завершён; A1a разблокирован и авторизован. A1b, A2 и A7
+сохраняют собственные последовательные границы; остальные пункты Parametric
+Core 2.0 этим evidence не объявляются завершёнными.

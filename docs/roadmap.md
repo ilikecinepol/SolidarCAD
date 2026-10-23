@@ -1,6 +1,6 @@
 # Дорожная карта SolidarCAD
 
-Актуальность: 21 октября 2026 года.
+Актуальность: 23 октября 2026 года.
 
 Этот документ — основной источник статуса этапов. `README.md` содержит краткое
 резюме, `docs/release-checklist.md` — обязательный gate конкретного релизного
@@ -105,36 +105,39 @@ selection/hover, активный инструмент, solver, Undo/Redo и с�
 Sketch и face-support edges, структурный abort, affected closure и same-ID
 recovery. Evidence закреплено в `parametric_history_tests`,
 `feature_removal_tests`, `join_bodies_feature_tests` и
-`pattern_persistence_tests`. Это не закрывает этап 0.3: DocumentSketch migration,
-persistent topology v2, Feature history reorder, branching и suppression
-остаются открытыми.
+`pattern_persistence_tests`. Это не закрывает этап 0.3 целиком: persistent
+topology v2 gate завершён, но DocumentSketch migration, Feature history reorder,
+branching и suppression остаются открытыми.
 
 Persistence gate P0 фиксирует
 [`docs/project-format-v4.md`](project-format-v4.md): v4 — standalone
 single-part topology-capable schema с обязательной отсортированной capability
 `persistent-topology-v2` и строгими tagged V1/V2 references. Standalone v1-v3 не
 меняются, mixed V1/V2 references разрешены, а V2 никогда не использует V1
-fallback. Production writer остаётся v3 до завершения последовательности:
+fallback. Последовательность завершена 23 октября 2026 года; default для новых
+и открытых v1-v3 документов остаётся V3, а конкретный writer выбирается явным
+persistence state:
 
 1. **P1 — carrier и consumers (завершён 21 октября 2026):** разрешённые
    in-memory producers и consumers, atomic rollback, boolean provenance,
    symmetry/pattern occurrence и terminal-output regressions закрыты;
-2. **P2 — codec/staging:** добавить строгий low-level decoder v4 и staged
-   validation tests без encoder/writer, не регистрируя v4 в
-   `ProjectApplicationService`, UI open, autosave или recovery и не публикуя
-   application `Document`; все пути записи v4 остаются запрещены;
-3. **P3 — writer/application gate:** добавить каноническую атомарную запись v4,
-   включить application open и закрепить deterministic format-state matrix:
+2. **P2 — codec/staging (завершён 22 октября 2026):** строгий low-level decoder
+   и staged validation/materialization были добавлены без регистрации v4 в
+   `ProjectApplicationService`, UI open, autosave или recovery и без публикации
+   application `Document`; application writer оставался запрещён до P3;
+3. **P3 — writer/application gate (завершён 23 октября 2026):** каноническая
+   атомарная запись v4 включена в application open; deterministic format-state
+   matrix закреплена:
    v4 остаётся v4; v1-v3 и новые документы остаются v3 до явного upgrade;
-   Save и Save As сохраняют state; authoring V2 в v3 запрещён до отдельной
-   явной команды upgrade; удаление V2 не понижает формат.
+   Save и Save As сохраняют state; native V2 authoring/commit в v3 запрещён до
+   отдельной явной команды upgrade; удаление V2 не понижает формат.
 
 В P1 уже заморожена и покрыта тестами boolean provenance algebra: правила
 Generated/Modified/Retained/Merge, split/merge, canonical origins,
-partial/complete coverage и collision policy. P3 обязан сохранить эту алгебру
-без переосмысления и подтвердить её save/load regressions. Завершённый freeze,
-частичный carrier или reader не разрешают writer v4 до выполнения P2 и P3.
-Ошибка Save не меняет destination или format state.
+partial/complete coverage и collision policy. P3 сохранил эту алгебру без
+переосмысления и подтвердил её save/load regressions. Исторический запрет на
+writer до завершения P2/P3 снят только для явно выбранного V4 state. Ошибка Save
+не меняет destination или format state.
 
 Критерий выхода: сложная однодетальная модель выдерживает изменение размеров,
 редактирование и перестановку допустимых шагов истории, сохранение и повторное
@@ -159,30 +162,34 @@ partial/complete coverage и collision policy. P3 обязан сохранит�
 ссылаться на устойчивые ID и не сериализовать B-Rep как источник истины.
 
 18 октября 2026 года для D1 принята ветвь B: единый identity-bearing
-product/component envelope. Решение и границы миграции зафиксированы в
+product/component envelope. 23 октября D1 завершён, а A1a разблокирован и
+авторизован. Решение и границы миграции зафиксированы в
 [`docs/decisions/2026-10-18-product-document-envelope.md`](decisions/2026-10-18-product-document-envelope.md).
-A1 остаётся заблокированным: G0 графа зависимостей и in-memory P1 закрыты, но
-low-level decoder/staging P2 и writer/application gate P3 ещё не реализованы.
-До снятия блокера также нужно итоговое persistence evidence на точном HEAD.
-Выбор ветви B и пользовательская авторизация продолжения всех этапов уже
-получены. Standalone v4 не является product envelope.
+Gate подтверждён на `HEAD bdba8c9`: commits `8043f70` и `bdba8c9`, clean build
+579/579, CTest 108/108 по labels `unit`, `regression`, `topology`, `ui-smoke` и
+`compliance`, локальный verifier 203/203 + 108/108 + GUI smoke 8 секунд.
+Standalone v4 не является product envelope.
 Первая envelope schema получит отдельный номер выше 4 и явную атомарную
-conversion из v1-v4 с сохранением stable IDs и V2 provenance; mates остаются
-запрещены до прохождения topology v2 gate.
+conversion из v1-v4 с сохранением stable IDs и V2 provenance. A7 не активирован,
+поэтому mates остаются запрещены.
 
-После прохождения gate этапы A1 идут до A2 в заданном порядке: A1a добавляет
+После прохождения gate этапы A1 идут до A2 в заданном порядке: следующим
+разрешён только A1a, который добавляет
 Qt-free in-memory non-production/non-persisted foundation (`DefinitionId`,
 registry, root, `PartDefinition`), A1b1 проводит тот же единственный carrier
 через staged service boundary, A1b2 переводит editor ownership на него. Carrier
 A1 не является product envelope: обычный Open по-прежнему открывает standalone
 document и не активирует envelope schema. До A2 запрещены только persisted
 product envelope, `ProjectId`, envelope schema metadata, conversion workflow,
-persistence codec и application-open activation envelope schema.
+persistence codec и application-open activation envelope schema. A2 и A7 не
+активированы; завершение D1 не закрывает остальные пункты Parametric Core 2.0.
 
 Обычные Save/Save As standalone документа никогда не создают envelope: новый и
-открытый v1-v3 сохраняют v3, v4 сохраняет v4, а product envelope создаётся
-только явной командой `Convert to Product Document`. Это уточнение ADR имеет
-приоритет над ранней формулировкой A2 в неизменяемом файле исходной задачи.
+открытый v1-v3 сохраняют V3, открытый v4 сохраняет V4. Отдельный атомарный
+`Upgrade to v4` переводит standalone V3 в V4 и не создаёт identity. Будущая
+команда `Convert to Product Document` создаст product envelope схемы выше 4.
+Это уточнение ADR имеет приоритет над ранней формулировкой A2 в неизменяемом
+файле исходной задачи.
 
 ## 0.6 — макросы и автоматизация
 
