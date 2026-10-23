@@ -41,20 +41,32 @@ bool DefinitionRegistry::contains(DefinitionId id) const noexcept {
 }
 
 ProductDocument::ProductDocument(DefinitionRegistry&& definitions,
-                                 DefinitionId rootDefinitionId) noexcept
+                                 DefinitionId rootDefinitionId,
+                                 std::optional<ProjectId> projectId) noexcept
     : definitions_(std::move(definitions)),
-      rootDefinitionId_(rootDefinitionId) {}
+      rootDefinitionId_(rootDefinitionId),
+      projectId_(std::move(projectId)) {}
 
 ProductDocumentCreateResult ProductDocument::create(
-    DefinitionRegistry&& definitions, DefinitionId rootDefinitionId) {
+    DefinitionRegistry&& definitions, DefinitionId rootDefinitionId,
+    std::optional<ProjectId> projectId) {
   if (!rootDefinitionId.isValid())
     return {ProductDocumentStatus::InvalidRootId, nullptr};
   if (!definitions.contains(rootDefinitionId))
     return {ProductDocumentStatus::MissingRootDefinition, nullptr};
+  if (projectId.has_value() && !projectId->isValid())
+    return {ProductDocumentStatus::InvalidProjectId, nullptr};
 
   return {ProductDocumentStatus::Valid,
           std::unique_ptr<ProductDocument>(
-              new ProductDocument(std::move(definitions), rootDefinitionId))};
+              new ProductDocument(std::move(definitions), rootDefinitionId,
+                                  std::move(projectId)))};
+}
+
+bool ProductDocument::commitProjectId(ProjectId projectId) noexcept {
+  if (!projectId.isValid()) return false;
+  projectId_ = projectId;
+  return true;
 }
 
 const PartDefinition& ProductDocument::rootDefinition() const noexcept {

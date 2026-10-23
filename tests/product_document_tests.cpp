@@ -7,7 +7,9 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <array>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -19,6 +21,12 @@ namespace {
 constexpr solidar::DefinitionId kRootId{1};
 constexpr solidar::DefinitionId kSecondId{2};
 constexpr solidar::DefinitionId kMissingId{999};
+
+constexpr solidar::ProjectId projectId(std::uint8_t lastByte) {
+  auto bytes = solidar::ProjectId::Bytes{};
+  bytes.back() = lastByte;
+  return solidar::ProjectId{bytes};
+}
 
 solidar::PartDefinition makePart(solidar::DefinitionId id) {
   return solidar::PartDefinition(id, std::make_unique<solidar::Document>());
@@ -38,6 +46,10 @@ concept HasRvalueRootRelease = requires(T&& value) {
 
 int main() {
   static_assert(!std::is_same_v<solidar::DefinitionId, std::uint64_t>);
+  static_assert(!std::is_same_v<solidar::ProjectId,
+                                solidar::ProjectId::Bytes>);
+  static_assert(!std::is_convertible_v<solidar::ProjectId::Bytes,
+                                       solidar::ProjectId>);
   static_assert(!std::is_convertible_v<std::uint64_t,
                                        solidar::DefinitionId>);
   static_assert(!std::is_convertible_v<solidar::DefinitionId,
@@ -65,6 +77,14 @@ int main() {
   static_assert(HasRvalueRootRelease<solidar::ProductDocument>);
   static_assert(noexcept(std::declval<solidar::ProductDocument&&>()
                              .releaseRootDocument()));
+  static_assert(noexcept(std::declval<solidar::ProductDocument&>()
+                             .commitProjectId(solidar::ProjectId{})));
+
+  CHECK(!solidar::ProjectId{}.isValid());
+  CHECK(solidar::kInvalidProjectId == solidar::ProjectId{});
+  CHECK(projectId(1).isValid());
+  CHECK(projectId(1) != projectId(2));
+  CHECK(projectId(1) < projectId(2));
 
   CHECK(!solidar::DefinitionId{}.isValid());
   CHECK(solidar::kInvalidDefinitionId == solidar::DefinitionId{});
@@ -153,6 +173,47 @@ int main() {
     CHECK(!missing.product);
     CHECK(registry.size() == 1);
     CHECK(&registry.find(kRootId)->document() == document);
+  }
+
+  // Optional product identity is authoritative in ProductDocument.  An
+  // invalid optional identity rejects atomically before moving the registry.
+  {
+    solidar::DefinitionRegistry registry;
+    auto root = makePart(kRootId);
+    auto* const document = &root.document();
+    CHECK(registry.insert(std::move(root)) ==
+          solidar::DefinitionInsertStatus::Inserted);
+    auto invalidIdentity = solidar::ProductDocument::create(
+        std::move(registry), kRootId, solidar::ProjectId{});
+    CHECK(invalidIdentity.status ==
+          solidar::ProductDocumentStatus::InvalidProjectId);
+    CHECK(!invalidIdentity.product);
+    CHECK(registry.size() == 1);
+    CHECK(&registry.find(kRootId)->document() == document);
+
+    auto standalone =
+        solidar::ProductDocument::create(std::move(registry), kRootId);
+    CHECK(standalone);
+    CHECK(!standalone.product->projectId().has_value());
+    CHECK(!standalone.product->commitProjectId(solidar::ProjectId{}));
+    CHECK(!standalone.product->projectId().has_value());
+    CHECK(standalone.product->commitProjectId(projectId(1)));
+    CHECK(standalone.product->projectId() == projectId(1));
+    CHECK(!standalone.product->commitProjectId(solidar::ProjectId{}));
+    CHECK(standalone.product->projectId() == projectId(1));
+    CHECK(standalone.product->commitProjectId(projectId(2)));
+    CHECK(standalone.product->projectId() == projectId(2));
+  }
+
+  {
+    solidar::DefinitionRegistry registry;
+    auto root = makePart(kRootId);
+    CHECK(registry.insert(std::move(root)) ==
+          solidar::DefinitionInsertStatus::Inserted);
+    auto identified = solidar::ProductDocument::create(
+        std::move(registry), kRootId, projectId(7));
+    CHECK(identified);
+    CHECK(identified.product->projectId() == projectId(7));
   }
 
   // The successful ownership path moves the same Document allocation through

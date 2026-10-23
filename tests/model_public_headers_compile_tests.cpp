@@ -43,6 +43,7 @@
 #include "model/PatternTypes.h"
 #include "model/PocketFeature.h"
 #include "model/ProductDocument.h"
+#include "model/ProjectId.h"
 #include "model/RevolveFeature.h"
 #include "model/RevolveToolSession.h"
 #include "model/ShapeContainerUtils.h"
@@ -93,6 +94,11 @@ static_assert(!std::is_convertible_v<solidar::EdgeReference,
                                      solidar::TopologyReference>);
 static_assert(!std::is_convertible_v<std::uint64_t, solidar::DefinitionId>);
 static_assert(!std::is_convertible_v<solidar::DefinitionId, std::uint64_t>);
+static_assert(!std::is_convertible_v<solidar::ProjectId::Bytes,
+                                     solidar::ProjectId>);
+static_assert(std::is_trivially_copyable_v<solidar::ProjectId>);
+static_assert(sizeof(solidar::ProjectId) == 16);
+static_assert(noexcept(std::declval<const solidar::ProjectId&>().isValid()));
 static_assert(!std::is_copy_constructible_v<solidar::PartDefinition>);
 static_assert(std::is_nothrow_move_constructible_v<solidar::PartDefinition>);
 static_assert(!std::is_copy_constructible_v<solidar::DefinitionRegistry>);

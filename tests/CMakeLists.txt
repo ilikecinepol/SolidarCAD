@@ -145,6 +145,8 @@ solidar_add_test(pocket_topology_lineage_tests
   LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(project_file_tests
   LIBRARIES solidar_project Qt6::Core LABELS regression)
+solidar_add_test(product_envelope_v5_decoder_tests
+  LIBRARIES solidar_project Qt6::Core LABELS unit regression)
 solidar_add_test(project_decoder_property_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression)
 solidar_add_test(project_format_v4_reference_decoder_tests

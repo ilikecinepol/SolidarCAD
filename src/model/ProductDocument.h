@@ -5,9 +5,11 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "model/Document.h"
+#include "model/ProjectId.h"
 
 namespace solidar {
 
@@ -97,6 +99,7 @@ enum class ProductDocumentStatus {
   Valid,
   InvalidRootId,
   MissingRootDefinition,
+  InvalidProjectId,
 };
 
 enum class ProductDocumentRemoveStatus {
@@ -117,7 +120,8 @@ class ProductDocument final {
   ProductDocument& operator=(ProductDocument&&) noexcept = default;
 
   [[nodiscard]] static ProductDocumentCreateResult create(
-      DefinitionRegistry&& definitions, DefinitionId rootDefinitionId);
+      DefinitionRegistry&& definitions, DefinitionId rootDefinitionId,
+      std::optional<ProjectId> projectId = std::nullopt);
 
   [[nodiscard]] const DefinitionRegistry& definitions() const noexcept {
     return definitions_;
@@ -125,6 +129,12 @@ class ProductDocument final {
   [[nodiscard]] DefinitionId rootDefinitionId() const noexcept {
     return rootDefinitionId_;
   }
+  [[nodiscard]] const std::optional<ProjectId>& projectId() const noexcept {
+    return projectId_;
+  }
+  // Commits an identity prepared by a successful persistence transaction.
+  // Invalid sentinels are rejected without changing the current identity.
+  [[nodiscard]] bool commitProjectId(ProjectId projectId) noexcept;
   [[nodiscard]] const PartDefinition& rootDefinition() const noexcept;
   [[nodiscard]] Document& rootDocument() noexcept;
   [[nodiscard]] const Document& rootDocument() const noexcept;
@@ -135,10 +145,12 @@ class ProductDocument final {
 
  private:
   ProductDocument(DefinitionRegistry&& definitions,
-                  DefinitionId rootDefinitionId) noexcept;
+                  DefinitionId rootDefinitionId,
+                  std::optional<ProjectId> projectId) noexcept;
 
   DefinitionRegistry definitions_;
   DefinitionId rootDefinitionId_;
+  std::optional<ProjectId> projectId_;
 };
 
 struct ProductDocumentCreateResult {

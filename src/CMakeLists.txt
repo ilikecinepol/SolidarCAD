@@ -56,6 +56,7 @@ add_library(solidar_model
   model/PatternTypes.h
   model/ProductDocument.cpp
   model/ProductDocument.h
+  model/ProjectId.h
   model/MirrorFeature.cpp
   model/MirrorFeature.h
   model/MirrorToolSession.cpp
@@ -153,6 +154,8 @@ solidar_warnings(solidar_model)
 add_library(solidar_project
   project/ProjectFile.cpp
   project/ProjectFile.h
+  project/ProductEnvelopeV5Decoder.cpp
+  project/ProductEnvelopeV5Decoder.h
   project/ProjectPersistenceState.h
   project/internal/ProjectFormatV3ModelSemanticValidation.h
   project/internal/ProjectFormatV3TypedSketchValidation.h
