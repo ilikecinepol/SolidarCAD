@@ -56,10 +56,10 @@ class StagedApplicationDocument final {
     return productDocument_;
   }
   [[nodiscard]] const Document& rootDocument() const noexcept {
-    return productDocument_.rootDefinition().document();
+    return productDocument_.rootDocument();
   }
-  [[nodiscard]] std::unique_ptr<Document> releaseRootDocument() && noexcept {
-    return std::move(productDocument_).releaseRootDocument();
+  [[nodiscard]] ProductDocument releaseProductDocument() && noexcept {
+    return std::move(productDocument_);
   }
 
   std::optional<SketchId> historicalLegacyExtrusionSourceSketchId;

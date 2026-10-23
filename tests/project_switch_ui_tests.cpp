@@ -93,7 +93,15 @@ class UnindexedPresentationFeature final : public ShapeFeature {
 
 class MainWindowUndoTestAccess {
  public:
-  static_assert(std::is_same_v<decltype(MainWindow::document_), Document>);
+  static_assert(
+      std::is_same_v<decltype(MainWindow::productDocument_), ProductDocument>);
+  static_assert(!std::is_copy_constructible_v<
+                decltype(MainWindow::productDocument_)>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<MainWindow&>().document()), Document&>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<const MainWindow&>().document()),
+                const Document&>);
 
   inline static std::optional<MainWindow::HistorySelectionState>
       expectedEditUndoSelection_;
@@ -105,13 +113,40 @@ class MainWindowUndoTestAccess {
       const MainWindow& window) {
     return window.projectPersistenceState_;
   }
+  static const Document* documentAddress(const MainWindow& window) {
+    return &window.document();
+  }
+  static std::size_t definitionCount(const MainWindow& window) {
+    return window.productDocument_.definitions().size();
+  }
+  static DefinitionId rootDefinitionId(const MainWindow& window) {
+    return window.productDocument_.rootDefinitionId();
+  }
+  static const Document* rootDefinitionDocumentAddress(
+      const MainWindow& window) {
+    return &window.productDocument_.rootDefinition().document();
+  }
+  static std::weak_ptr<const TopoDS_Shape> firstShapeWeak(
+      const MainWindow& window) {
+    if (window.document().bodies().empty()) return {};
+    const auto* feature = window.document().bodies().front().activeFeature();
+    return feature ? feature->lastValidShape()
+                   : std::weak_ptr<const TopoDS_Shape>{};
+  }
+  static void commitStaged(MainWindow& window,
+                           StagedApplicationDocument&& staged,
+                           const QString& path) {
+    window.commitDocumentReplacement(
+        std::move(staged), MainWindow::DocumentReplacementOrigin::OpenProject,
+        path);
+  }
   static void saveProject(MainWindow& window) { window.saveProject(); }
   static bool pushBodyMarker(MainWindow& window, const std::string& name) {
-    Document previous = window.document_;
+    Document previous = window.document();
     const auto previousSelection = window.captureHistorySelection();
-    window.document_.addBody(name);
-    if (!window.document_.recompute()) {
-      window.document_ = std::move(previous);
+    window.document().addBody(name);
+    if (!window.document().recompute()) {
+      window.document() = std::move(previous);
       return false;
     }
     return window.pushModelTransition(std::move(previous),
@@ -130,7 +165,7 @@ class MainWindowUndoTestAccess {
     return window.modelHistory_.isApplying();
   }
   static void pushThrowingUndo(MainWindow& window) {
-    Document invalid = window.document_;
+    Document invalid = window.document();
     Body* body = invalid.activeBody();
     if (!body) body = &invalid.addBody("failure fixture");
     auto broken = std::make_unique<MoveFeature>(
@@ -144,10 +179,10 @@ class MainWindowUndoTestAccess {
     if (!index || !current.applyFeatureSlice(body->id(), *index, nullptr) ||
         !current.recompute())
       return;
-    window.document_ = std::move(current);
+    window.document() = std::move(current);
     auto state = window.captureHistorySelection();
     static_cast<void>(window.modelHistory_.recordTransition(
-        window.document_, std::move(invalid), state, state));
+        window.document(), std::move(invalid), state, state));
     window.updateUndoAvailability();
   }
   static std::pair<std::size_t, std::size_t> documentDeltaSize(
@@ -156,7 +191,7 @@ class MainWindowUndoTestAccess {
     return {metrics.sliceCount, metrics.retainedBytes};
   }
   static Document documentCopy(const MainWindow& window) {
-    return window.document_;
+    return window.document();
   }
   static bool importedHistoryIsColdAndRebuildable() {
     std::weak_ptr<const TopoDS_Shape> sourceWeak;
@@ -208,7 +243,7 @@ class MainWindowUndoTestAccess {
   static bool selectSentinel(MainWindow& window, BodyId bodyId,
                              FeatureId featureId, int domain) {
     auto* feature = dynamic_cast<ShapeFeature*>(
-        window.document_.findFeature(featureId));
+        window.document().findFeature(featureId));
     if (!feature || !feature->lastValidShape()) return false;
     window.viewport_->setSelectedBodies({});
     window.viewport_->setSelectedBodyEdges({});
@@ -232,14 +267,14 @@ class MainWindowUndoTestAccess {
     window.moveHistoryToEnd();
   }
   static bool commitBodyRemoval(MainWindow& window, BodyId id) {
-    Document previous = window.document_;
+    Document previous = window.document();
     const auto selection = window.captureHistorySelection();
     std::optional<std::size_t> index;
-    for (std::size_t i = 0; i < window.document_.bodies().size(); ++i)
-      if (window.document_.bodies()[i].id() == id) index = i;
-    if (!index || !window.document_.applyBodySlice(*index, std::nullopt) ||
-        !window.document_.recompute()) {
-      window.document_ = std::move(previous);
+    for (std::size_t i = 0; i < window.document().bodies().size(); ++i)
+      if (window.document().bodies()[i].id() == id) index = i;
+    if (!index || !window.document().applyBodySlice(*index, std::nullopt) ||
+        !window.document().recompute()) {
+      window.document() = std::move(previous);
       return false;
     }
     window.refreshBodyViewFromDocument();
@@ -254,16 +289,16 @@ class MainWindowUndoTestAccess {
     if (!target) return false;
     window.resetTransientModelingUi();
     const auto bodyForFeature = [&window](FeatureId id) -> Body* {
-      for (const auto& candidate : window.document_.bodies())
+      for (const auto& candidate : window.document().bodies())
         if (candidate.featureIndex(id))
-          return window.document_.findBody(candidate.id());
+          return window.document().findBody(candidate.id());
       return nullptr;
     };
     const auto source = [&window, &bodyForFeature](FeatureId id)
         -> std::pair<Body*, ShapeFeature*> {
       Body* body = bodyForFeature(id);
       return {body, body ? dynamic_cast<ShapeFeature*>(
-                               window.document_.findFeature(id))
+                               window.document().findFeature(id))
                          : nullptr};
     };
 
@@ -278,7 +313,7 @@ class MainWindowUndoTestAccess {
             value->lengthMm(), value->operation(), value->reversed(),
             std::nullopt, sourceFeature->topologyIndex());
       } else {
-        const auto* profile = window.document_.findSketch(value->profileSketchId());
+        const auto* profile = window.document().findSketch(value->profileSketchId());
         if (!profile) return false;
         window.partDesignCoordinator_.beginSketchExtrude(
             *profile, profile->id, {}, value->lengthMm(), value->operation(),
@@ -292,16 +327,16 @@ class MainWindowUndoTestAccess {
         return false;
       window.acceptFaceExtrudeTool();
     } else if (const auto* value = dynamic_cast<const RevolveFeature*>(target)) {
-      window.partDesignCoordinator_.beginRevolve(window.document_, kInvalidBodyId,
+      window.partDesignCoordinator_.beginRevolve(window.document(), kInvalidBodyId,
                                        kInvalidFeatureId, {});
-      window.partDesignCoordinator_.setRevolveProfile(window.document_, value->profileSketchId(),
+      window.partDesignCoordinator_.setRevolveProfile(window.document(), value->profileSketchId(),
                                             value->profileOverride());
-      window.partDesignCoordinator_.setRevolveAxis(window.document_, value->axis());
-      window.partDesignCoordinator_.setRevolveAngleFromPanel(window.document_, value->angleDeg());
-      window.partDesignCoordinator_.setRevolveOperation(window.document_, value->operation());
-      window.partDesignCoordinator_.setRevolveReversed(window.document_, value->reversed());
+      window.partDesignCoordinator_.setRevolveAxis(window.document(), value->axis());
+      window.partDesignCoordinator_.setRevolveAngleFromPanel(window.document(), value->angleDeg());
+      window.partDesignCoordinator_.setRevolveOperation(window.document(), value->operation());
+      window.partDesignCoordinator_.setRevolveReversed(window.document(), value->reversed());
       window.updateRevolveToolPreview();
-      if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, window.document_).lifecycle !=
+      if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, window.document()).lifecycle !=
               ToolLifecycle::PreviewValid ||
           !window.viewport_->toolPreviewShape_)
         return false;
@@ -362,12 +397,12 @@ class MainWindowUndoTestAccess {
       if (!body || !sourceFeature) return false;
       const auto sourceSnapshot = body->topologySnapshot(sourceFeature->id());
       if (!sourceSnapshot) return false;
-      window.partDesignCoordinator_.beginDraft(window.document_, *sourceSnapshot,
+      window.partDesignCoordinator_.beginDraft(window.document(), *sourceSnapshot,
           value->draftedFaces(),
           value->neutralPlane(), value->pullDirection(), value->angleDeg(),
           value->reversed(), std::nullopt, value->rotationEdge());
       window.updateDraftToolPreview();
-      if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document_).lifecycle !=
+      if (window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document()).lifecycle !=
               ToolLifecycle::PreviewValid ||
           !window.viewport_->toolPreviewShape_)
         return false;
@@ -454,7 +489,7 @@ class MainWindowUndoTestAccess {
                   << static_cast<int>(window.partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).lifecycle)
                   << " chamfer=" << window.partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).error
                   << " shell=" << window.partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).error
-                  << " draft=" << window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document_).error
+                  << " draft=" << window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document()).error
                   << '\n';
       return false;
     }
@@ -462,7 +497,7 @@ class MainWindowUndoTestAccess {
   }
   static bool editFeatureThroughProduction(MainWindow& window, BodyId bodyId,
                                            FeatureId featureId) {
-    const auto* feature = window.document_.findFeature(featureId);
+    const auto* feature = window.document().findFeature(featureId);
     if (!feature) return false;
     const auto oldUndoCount = window.modelHistory_.undoCount();
     expectedEditUndoSelection_ = window.captureHistorySelection();
@@ -487,7 +522,7 @@ class MainWindowUndoTestAccess {
       window.toolParametersPanel_->setParameterValue(25.0);
       window.acceptFaceExtrudeTool();
     } else if (dynamic_cast<const RevolveFeature*>(feature)) {
-      window.partDesignCoordinator_.setRevolveAngleFromPanel(window.document_, 180.0);
+      window.partDesignCoordinator_.setRevolveAngleFromPanel(window.document(), 180.0);
       window.acceptRevolveTool();
     } else if (dynamic_cast<const FilletFeature*>(feature)) {
       window.partDesignCoordinator_.setFilletRadiusFromPanel(1.0);
@@ -502,13 +537,13 @@ class MainWindowUndoTestAccess {
       window.toolParametersPanel_->setParameterValue(1.0);
       window.acceptShellTool();
     } else if (dynamic_cast<const DraftFeature*>(feature)) {
-      window.partDesignCoordinator_.setDraftAngleFromPanel(window.document_, 3.0);
+      window.partDesignCoordinator_.setDraftAngleFromPanel(window.document(), 3.0);
       window.acceptDraftTool();
     } else if (const auto* join =
                    dynamic_cast<const JoinBodiesFeature*>(feature)) {
       const Body* replacementBody = nullptr;
       const ShapeFeature* replacementFeature = nullptr;
-      for (const auto& body : window.document_.bodies()) {
+      for (const auto& body : window.document().bodies()) {
         if (body.id() == bodyId || body.id() == join->firstBodyId() ||
             body.id() == join->secondBodyId() || !body.activeFeature())
           continue;
@@ -516,9 +551,9 @@ class MainWindowUndoTestAccess {
         replacementFeature = body.activeFeature();
         break;
       }
-      const Body* firstBody = window.document_.findBody(join->firstBodyId());
+      const Body* firstBody = window.document().findBody(join->firstBodyId());
       const auto* firstFeature = dynamic_cast<const ShapeFeature*>(
-          window.document_.findFeature(join->firstFeatureId()));
+          window.document().findFeature(join->firstFeatureId()));
       if (!replacementBody || !replacementFeature || !firstBody ||
           !firstFeature)
         return false;
@@ -548,7 +583,7 @@ class MainWindowUndoTestAccess {
   }
   static bool acceptUnchangedFeatureEditThroughProduction(
       MainWindow& window, BodyId bodyId, FeatureId featureId) {
-    const auto* feature = window.document_.findFeature(featureId);
+    const auto* feature = window.document().findFeature(featureId);
     if (!feature) return false;
     const auto undoCount = window.modelHistory_.undoCount();
     const auto redoCount = window.modelHistory_.redoCount();
@@ -601,7 +636,7 @@ class MainWindowUndoTestAccess {
   static bool cancelFeatureEditThroughProduction(MainWindow& window,
                                                  BodyId bodyId,
                                                  FeatureId featureId) {
-    const auto* feature = window.document_.findFeature(featureId);
+    const auto* feature = window.document().findFeature(featureId);
     if (!feature) return false;
     const auto beforeSelection = window.captureHistorySelection();
     const auto undoCount = window.modelHistory_.undoCount();
@@ -650,8 +685,8 @@ class MainWindowUndoTestAccess {
                                BodyId secondBodyId) {
     const auto oldUndoCount = window.modelHistory_.undoCount();
     window.editHistoryFeature(ownerBodyId, joinId);
-    const Body* first = window.document_.findBody(firstBodyId);
-    const Body* second = window.document_.findBody(secondBodyId);
+    const Body* first = window.document().findBody(firstBodyId);
+    const Body* second = window.document().findBody(secondBodyId);
     if (!first || !second || !first->activeFeature() ||
         !second->activeFeature())
       return false;
@@ -671,7 +706,7 @@ class MainWindowUndoTestAccess {
                              FeatureId joinId,
                              BodyId sharedOperand = kInvalidBodyId,
                              BodyId exclusiveOperand = kInvalidBodyId) {
-    const auto payloadBefore = window.document_.findFeature(joinId);
+    const auto payloadBefore = window.document().findFeature(joinId);
     if (!payloadBefore) return false;
     const auto undoBefore = window.modelHistory_.undoCount();
     window.editHistoryFeature(ownerBodyId, joinId);
@@ -690,7 +725,7 @@ class MainWindowUndoTestAccess {
       return false;
     window.cancelJoinBodiesTool();
     return window.modelHistory_.undoCount() == undoBefore &&
-           window.document_.findFeature(joinId) != nullptr &&
+           window.document().findFeature(joinId) != nullptr &&
            transientToolsInactive(window);
   }
   static bool editUndoSelectionRestored(const MainWindow& window) {
@@ -726,15 +761,15 @@ class MainWindowUndoTestAccess {
     });
     window.removeHistoryStep(step);
     return window.modelHistory_.undoCount() == oldUndoCount + 1 &&
-           !window.document_.findFeature(featureId);
+           !window.document().findFeature(featureId);
   }
   static const ShapeFeature* feature(const MainWindow& window, FeatureId id) {
-    return window.document_.findFeature(id);
+    return window.document().findFeature(id);
   }
   static std::vector<FeatureId> featuresOfKind(const MainWindow& window,
                                                FeatureKind kind) {
     std::vector<FeatureId> result;
-    for (const auto& body : window.document_.bodies())
+    for (const auto& body : window.document().bodies())
       for (const auto& feature : body.features())
         if (feature && feature->kind() == kind) result.push_back(feature->id());
     std::sort(result.begin(), result.end());
@@ -744,7 +779,7 @@ class MainWindowUndoTestAccess {
     return window.viewport_->selectedBodies() == std::vector<BodyId>{id};
   }
   static bool bodyVisible(const MainWindow& window, BodyId id) {
-    const auto* body = window.document_.findBody(id);
+    const auto* body = window.document().findBody(id);
     return body && body->visible();
   }
   static bool transientToolsInactive(const MainWindow& window) {
@@ -762,9 +797,9 @@ class MainWindowUndoTestAccess {
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).lifecycle == ToolLifecycle::Inactive &&
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).lifecycle == ToolLifecycle::Inactive &&
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).lifecycle == ToolLifecycle::Inactive &&
-           window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document_).lifecycle == ToolLifecycle::Inactive &&
+           window.partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, window.document()).lifecycle == ToolLifecycle::Inactive &&
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).lifecycle == ToolLifecycle::Inactive &&
-           window.partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, window.document_).lifecycle == ToolLifecycle::Inactive &&
+           window.partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, window.document()).lifecycle == ToolLifecycle::Inactive &&
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).lifecycle == ToolLifecycle::Inactive &&
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::Move).lifecycle == ToolLifecycle::Inactive &&
            window.partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).lifecycle == ToolLifecycle::Inactive &&
@@ -815,7 +850,7 @@ class MainWindowUndoTestAccess {
            transientToolsInactive(window);
   }
   static BodyId featureOwner(const MainWindow& window, FeatureId id) {
-    const Body* body = window.document_.findBodyForFeature(id);
+    const Body* body = window.document().findBodyForFeature(id);
     return body ? body->id() : kInvalidBodyId;
   }
   static MainWindow::HistorySelectionState selectionState(
@@ -945,11 +980,11 @@ class MainWindowUndoTestAccess {
     return window.hasDisplayableModernSolid();
   }
   static bool foreignShapeIsDisplayable(const MainWindow& window) {
-    if (window.document_.bodies().empty()) return false;
+    if (window.document().bodies().empty()) return false;
     auto foreign = std::make_shared<const TopoDS_Shape>(
         BRepPrimAPI_MakeBox(3.0, 4.0, 5.0).Shape());
     return MainWindow::resolveModernSolidPresentation(
-               window.document_.bodies().front(), foreign, true)
+               window.document().bodies().front(), foreign, true)
         .has_value();
   }
   static bool viewportHasBodyPresentations(const MainWindow& window) {
@@ -965,7 +1000,7 @@ class MainWindowUndoTestAccess {
   }
   static bool sketchConsumedByModernFeature(const MainWindow& window,
                                             SketchId sketchId) {
-    return isSketchConsumedByPartDesign(window.document_, sketchId);
+    return isSketchConsumedByPartDesign(window.document(), sketchId);
   }
   static QAction* undoAction(MainWindow& window) { return window.undoAction_; }
   static QAction* redoAction(MainWindow& window) { return window.redoAction_; }
@@ -1042,16 +1077,16 @@ class MainWindowUndoTestAccess {
            window.viewport_->solidSketch_.semanticallyEqual(expected);
   }
   static SketchId firstSketchId(const MainWindow& window) {
-    return window.document_.sketches().empty()
+    return window.document().sketches().empty()
                ? kInvalidSketchId
-               : window.document_.sketches().front().id;
+               : window.document().sketches().front().id;
   }
   static bool commitLegacyExtrusionAsNewBody(MainWindow& window) {
     window.extrusionOperationCombo_->setCurrentIndex(
         static_cast<int>(ExtrudeOperation::NewBody));
     window.extrusionLengthSpin_->setValue(10.0);
     window.extrudeSketch();
-    return !window.document_.bodies().empty();
+    return !window.document().bodies().empty();
   }
   static void removeBody(MainWindow& window, BodyId id) {
     window.removeBody(id);
@@ -1071,25 +1106,25 @@ class MainWindowUndoTestAccess {
     window.removeHistoryStep(step);
   }
   static std::size_t bodyCount(const MainWindow& window) {
-    return window.document_.bodies().size();
+    return window.document().bodies().size();
   }
   static BodyId firstBodyId(const MainWindow& window) {
-    return window.document_.bodies().empty()
-        ? kInvalidBodyId : window.document_.bodies().front().id();
+    return window.document().bodies().empty()
+        ? kInvalidBodyId : window.document().bodies().front().id();
   }
   static std::size_t bodyFeatureCount(const MainWindow& window,
                                       BodyId bodyId) {
-    const Body* body = window.document_.findBody(bodyId);
+    const Body* body = window.document().findBody(bodyId);
     return body ? body->features().size() : 0;
   }
   static bool hasSketch(const MainWindow& window, SketchId sketchId) {
-    return window.document_.findSketch(sketchId) != nullptr;
+    return window.document().findSketch(sketchId) != nullptr;
   }
   static std::size_t sketchViewCount(const MainWindow& window) {
     return window.sketchViews_.size();
   }
   static std::size_t documentSketchCount(const MainWindow& window) {
-    return window.document_.sketches().size();
+    return window.document().sketches().size();
   }
   static bool displayedSketchesMatchDocument(const MainWindow& window) {
     if (window.viewport_->displaySketches_.size() !=
@@ -1100,7 +1135,7 @@ class MainWindowUndoTestAccess {
     };
     for (std::size_t index = 0; index < window.sketchViews_.size(); ++index) {
       const auto& view = window.sketchViews_[index];
-      const auto* model = window.document_.findSketch(view.documentSketchId);
+      const auto* model = window.document().findSketch(view.documentSketchId);
       if (!model) return false;
       const auto& displayed = window.viewport_->displaySketches_[index];
       if (displayed.sketchId != model->id ||
@@ -1118,7 +1153,7 @@ class MainWindowUndoTestAccess {
   }
   static void injectMissingSketchViewAndRefresh(MainWindow& window) {
     if (window.sketchViews_.empty()) return;
-    const auto* model = window.document_.findSketch(
+    const auto* model = window.document().findSketch(
         window.sketchViews_.front().documentSketchId);
     if (!model) return;
     window.sketchCanvas_->loadSketch(model->geometry);
@@ -1261,7 +1296,7 @@ class MainWindowUndoTestAccess {
   static void startSketchExtrude(MainWindow& window, std::size_t index) {
     if (index >= window.sketchViews_.size()) return;
     const auto& entry = window.sketchViews_[index];
-    const auto* sketch = window.document_.findSketch(entry.documentSketchId);
+    const auto* sketch = window.document().findSketch(entry.documentSketchId);
     if (!sketch) return;
     window.createSketchExtrude(
         ExtrusionSourcePick{SketchRegionPick{sketch->id, sketch->placement,
@@ -1271,7 +1306,7 @@ class MainWindowUndoTestAccess {
   static bool startLegacySketchExtrude(MainWindow& window, std::size_t index) {
     if (index >= window.sketchViews_.size()) return false;
     const auto& entry = window.sketchViews_[index];
-    const auto* sketch = window.document_.findSketch(entry.documentSketchId);
+    const auto* sketch = window.document().findSketch(entry.documentSketchId);
     if (!sketch) return false;
     window.viewport_->selectedExtrusionSketch_ = sketch->geometry;
     window.viewport_->selectedExtrusionPlacement_ = sketch->placement;
@@ -1283,7 +1318,7 @@ class MainWindowUndoTestAccess {
     return window.extrusionDock_ && !window.extrusionDock_->isHidden();
   }
   static bool startTopFaceExtrude(MainWindow& window, double zMm) {
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     if (!body || !body->activeFeature() || !body->resultShape()) return false;
     const auto faceIndex = test::topPlanarFace(*body->resultShape(), zMm);
     if (!faceIndex) return false;
@@ -1328,11 +1363,11 @@ class MainWindowUndoTestAccess {
     return window.partDesignCoordinator_.activeTool();
   }
   static std::size_t bodyFeatureCount(const MainWindow& window) {
-    const Body* body = window.document_.activeBody();
+    const Body* body = window.document().activeBody();
     return body ? body->features().size() : 0;
   }
   static ShapeFeature::ShapePtr bodyShape(const MainWindow& window) {
-    const Body* body = window.document_.activeBody();
+    const Body* body = window.document().activeBody();
     return body ? body->resultShape() : ShapeFeature::ShapePtr{};
   }
   static ShapeFeature::ShapePtr displayedBodyShape(const MainWindow& window) {
@@ -1440,7 +1475,7 @@ class MainWindowUndoTestAccess {
   }
   static bool startMoveForActiveBody(MainWindow& window) {
     window.createMove();
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     if (!body || !body->activeFeature() || !body->resultShape()) return false;
     window.partDesignCoordinator_.setMoveBody(body->id(), body->activeFeature()->id(),
                                     body->resultShape());
@@ -1460,7 +1495,7 @@ class MainWindowUndoTestAccess {
     return false;
   }
   static std::optional<Vector3d> lastMoveOffset(const MainWindow& window) {
-    const Body* body = window.document_.activeBody();
+    const Body* body = window.document().activeBody();
     if (!body || body->features().empty()) return std::nullopt;
     const auto* move =
         dynamic_cast<const MoveFeature*>(body->features().back().get());
@@ -1520,7 +1555,7 @@ class MainWindowUndoTestAccess {
     return window.projectUpgradeIsQuiescent();
   }
   static bool startV2FaceExtrude(MainWindow& window) {
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     auto* source = body ? dynamic_cast<ShapeFeature*>(body->activeFeature())
                         : nullptr;
     const auto snapshot =
@@ -1543,11 +1578,11 @@ class MainWindowUndoTestAccess {
         snapshot->topologyIndex());
     window.updateFaceExtrudeToolPreview();
     return window.partDesignCoordinator_
-               .snapshot(PartDesignToolKind::Extrude, window.document_)
+               .snapshot(PartDesignToolKind::Extrude, window.document())
                .lifecycle == ToolLifecycle::PreviewValid;
   }
   static bool startV2Fillet(MainWindow& window) {
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     auto* source = body ? dynamic_cast<ShapeFeature*>(body->activeFeature())
                         : nullptr;
     const auto snapshot =
@@ -1567,7 +1602,7 @@ class MainWindowUndoTestAccess {
     window.partDesignCoordinator_.beginFillet(*snapshot, {*reference}, 1.0);
     window.updateFilletToolPreview();
     return window.partDesignCoordinator_
-               .snapshot(PartDesignToolKind::Fillet, window.document_)
+               .snapshot(PartDesignToolKind::Fillet, window.document())
                .lifecycle == ToolLifecycle::PreviewValid;
   }
   static void acceptActiveFaceExtrude(MainWindow& window) {
@@ -1577,7 +1612,7 @@ class MainWindowUndoTestAccess {
     window.acceptFilletTool();
   }
   static bool finishV2FaceSketch(MainWindow& window) {
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     auto* source = body ? dynamic_cast<ShapeFeature*>(body->activeFeature())
                         : nullptr;
     const auto snapshot =
@@ -1603,7 +1638,7 @@ class MainWindowUndoTestAccess {
     return window.workspaceStack_->currentWidget() == window.sketchCanvas_;
   }
   static bool lastFeatureUsesV2Face(const MainWindow& window) {
-    const Body* body = window.document_.activeBody();
+    const Body* body = window.document().activeBody();
     if (!body || body->features().empty()) return false;
     const auto* extrude =
         dynamic_cast<const ExtrudeFeature*>(body->features().back().get());
@@ -1611,7 +1646,7 @@ class MainWindowUndoTestAccess {
     return face && face->isV2();
   }
   static bool lastFeatureUsesV1Face(const MainWindow& window) {
-    const Body* body = window.document_.activeBody();
+    const Body* body = window.document().activeBody();
     if (!body || body->features().empty()) return false;
     const auto* extrude =
         dynamic_cast<const ExtrudeFeature*>(body->features().back().get());
@@ -1620,7 +1655,7 @@ class MainWindowUndoTestAccess {
   }
   static bool editLastFaceExtrudeParameter(MainWindow& window,
                                            double lengthMm) {
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     if (!body || body->features().empty()) return false;
     auto* extrude =
         dynamic_cast<ExtrudeFeature*>(body->features().back().get());
@@ -1636,7 +1671,7 @@ class MainWindowUndoTestAccess {
            PartDesignToolKind::None;
   }
   static bool reselectLastFaceExtrudeV2(MainWindow& window) {
-    Body* body = window.document_.activeBody();
+    Body* body = window.document().activeBody();
     if (!body || body->features().size() < 2) return false;
     auto* extrude =
         dynamic_cast<ExtrudeFeature*>(body->features().back().get());
@@ -2366,6 +2401,75 @@ int main(int argc, char** argv) {
   solidar::AppSettings settings(
       directory.filePath(QStringLiteral("settings.ini")));
   using Access = solidar::MainWindowUndoTestAccess;
+
+  // MainWindow starts with one valid transient root. A successful replacement
+  // moves the staged carrier (and its exact Document/B-Rep graph) at one hard
+  // boundary. The synchronous resetScene notification must still observe the
+  // old root; only after it returns may the carrier swap destroy that graph.
+  {
+    solidar::MainWindow ownershipEditor(settings);
+    CHECK(Access::definitionCount(ownershipEditor) == 1);
+    CHECK(Access::rootDefinitionId(ownershipEditor).isValid());
+    CHECK(Access::documentAddress(ownershipEditor) ==
+          Access::rootDefinitionDocumentAddress(ownershipEditor));
+    CHECK(ownershipEditor.loadProject(pathA, &error));
+
+    const auto* const outgoingDocument =
+        Access::documentAddress(ownershipEditor);
+    const auto outgoingShape = Access::firstShapeWeak(ownershipEditor);
+    CHECK(!outgoingShape.expired());
+
+    auto staged = solidar::ProjectApplicationService{}.stageOpen(pathA);
+    CHECK(staged.succeeded());
+    const auto* const stagedDocument = &staged.staged->rootDocument();
+    const auto* const stagedBody = &stagedDocument->bodies().front();
+    const auto* const stagedFeature = stagedBody->features().front().get();
+    const auto* const stagedShapeFeature =
+        dynamic_cast<const solidar::ShapeFeature*>(stagedFeature);
+    CHECK(stagedShapeFeature);
+    const auto* const stagedShape = stagedShapeFeature->lastValidShape().get();
+    std::string topologyError;
+    const auto stagedTopology =
+        stagedShapeFeature->lastValidTopologyIndex(&topologyError);
+    CHECK(stagedTopology);
+    CHECK(topologyError.empty());
+
+    const solidar::Document* observedDuringReset = nullptr;
+    bool outgoingShapeAliveDuringReset = false;
+    Access::viewport(ownershipEditor)->beginRulerMeasurement();
+    const auto resetConnection = QObject::connect(
+        Access::viewport(ownershipEditor),
+        &solidar::Viewport::rulerActiveChanged, &ownershipEditor,
+        [&](bool active) {
+          if (active) return;
+          observedDuringReset = Access::documentAddress(ownershipEditor);
+          outgoingShapeAliveDuringReset = !outgoingShape.expired();
+        },
+        Qt::DirectConnection);
+    Access::commitStaged(ownershipEditor, std::move(*staged.staged), pathA);
+    QObject::disconnect(resetConnection);
+
+    CHECK(observedDuringReset == outgoingDocument);
+    CHECK(outgoingShapeAliveDuringReset);
+    CHECK(Access::documentAddress(ownershipEditor) == stagedDocument);
+    CHECK(Access::rootDefinitionDocumentAddress(ownershipEditor) ==
+          stagedDocument);
+    CHECK(&Access::documentAddress(ownershipEditor)->bodies().front() ==
+          stagedBody);
+    CHECK(Access::documentAddress(ownershipEditor)
+              ->bodies()
+              .front()
+              .features()
+              .front()
+              .get() == stagedFeature);
+    const auto* const committedShapeFeature =
+        dynamic_cast<const solidar::ShapeFeature*>(stagedFeature);
+    CHECK(committedShapeFeature);
+    CHECK(committedShapeFeature->lastValidShape().get() == stagedShape);
+    CHECK(committedShapeFeature->lastValidTopologyIndex().get() ==
+          stagedTopology.get());
+    CHECK(outgoingShape.expired());
+  }
 
   // Persistence format is committed together with the Document. Rejected v4
   // staging preserves every live editor surface, while a successful v4 open
@@ -4801,6 +4905,11 @@ int main(int argc, char** argv) {
     const auto oldShape = Access::bodyShape(transactionalEditor);
     CHECK(oldShape && !oldShape->IsNull());
     const double oldVolume = solidar::test::volumeOf(*oldShape);
+    const auto* const oldRootAddress =
+        Access::documentAddress(transactionalEditor);
+    const auto oldRootShapeWeak =
+        Access::firstShapeWeak(transactionalEditor);
+    CHECK(!oldRootShapeWeak.expired());
 
     QFile validFile(pathA);
     CHECK(validFile.open(QIODevice::ReadOnly));
@@ -4818,6 +4927,8 @@ int main(int argc, char** argv) {
     CHECK(!transactionalEditor.loadProject(corruptPath, &error));
     CHECK(!error.isEmpty());
     CHECK(transactionalEditor.windowFilePath() == oldPath);
+    CHECK(Access::documentAddress(transactionalEditor) == oldRootAddress);
+    CHECK(!oldRootShapeWeak.expired());
     CHECK(Access::modified(transactionalEditor));
     CHECK(Access::bodyCount(transactionalEditor) == oldBodyCount);
     CHECK(Access::historyStepCount(transactionalEditor) == oldHistoryCount);

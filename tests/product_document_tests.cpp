@@ -45,6 +45,22 @@ int main() {
   static_assert(!std::is_copy_constructible_v<solidar::PartDefinition>);
   static_assert(!std::is_copy_constructible_v<solidar::DefinitionRegistry>);
   static_assert(!std::is_copy_constructible_v<solidar::ProductDocument>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<solidar::ProductDocument&>()
+                             .rootDocument()),
+                solidar::Document&>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<const solidar::ProductDocument&>()
+                             .rootDocument()),
+                const solidar::Document&>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<solidar::ProductDocument&>()
+                             .definitions()),
+                const solidar::DefinitionRegistry&>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<solidar::ProductDocument&>()
+                             .rootDefinition()),
+                const solidar::PartDefinition&>);
   static_assert(!HasLvalueRootRelease<solidar::ProductDocument>);
   static_assert(HasRvalueRootRelease<solidar::ProductDocument>);
   static_assert(noexcept(std::declval<solidar::ProductDocument&&>()
@@ -174,6 +190,8 @@ int main() {
     CHECK(created.product->rootDefinitionId() == kRootId);
     CHECK(created.product->definitions().size() == 1);
     CHECK(&created.product->rootDefinition().document() == documentAddress);
+    CHECK(&created.product->rootDocument() == documentAddress);
+    CHECK(&std::as_const(*created.product).rootDocument() == documentAddress);
     CHECK(created.product->rootDefinition().document().findBody(body.id()) ==
           bodyAddress);
 

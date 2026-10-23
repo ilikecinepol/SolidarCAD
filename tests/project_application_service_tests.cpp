@@ -41,12 +41,17 @@ bool writeBytes(const QString& path, const QByteArray& bytes) {
 }
 
 template <typename T>
-concept HasLvalueRootRelease = requires(T& value) {
-  value.releaseRootDocument();
+concept HasLvalueProductRelease = requires(T& value) {
+  value.releaseProductDocument();
 };
 
 template <typename T>
-concept HasRvalueRootRelease = requires(T&& value) {
+concept HasRvalueProductRelease = requires(T&& value) {
+  std::move(value).releaseProductDocument();
+};
+
+template <typename T>
+concept HasStagedRootRelease = requires(T&& value) {
   std::move(value).releaseRootDocument();
 };
 
@@ -69,10 +74,15 @@ int main(int argc, char* argv[]) {
                 solidar::StagedApplicationDocument>);
   static_assert(std::is_nothrow_move_assignable_v<
                 solidar::StagedApplicationDocument>);
-  static_assert(!HasLvalueRootRelease<solidar::StagedApplicationDocument>);
-  static_assert(HasRvalueRootRelease<solidar::StagedApplicationDocument>);
+  static_assert(!HasLvalueProductRelease<solidar::StagedApplicationDocument>);
+  static_assert(HasRvalueProductRelease<solidar::StagedApplicationDocument>);
+  static_assert(!HasStagedRootRelease<solidar::StagedApplicationDocument>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<solidar::StagedApplicationDocument&&>()
+                             .releaseProductDocument()),
+                solidar::ProductDocument>);
   static_assert(noexcept(std::declval<solidar::StagedApplicationDocument&&>()
-                             .releaseRootDocument()));
+                             .releaseProductDocument()));
   static_assert(noexcept(service.stageOpen(QString{})));
   static_assert(noexcept(service.save(QString{},
                                       std::declval<const solidar::Document&>())));
@@ -220,11 +230,11 @@ int main(int argc, char* argv[]) {
   const auto* const stagedTopologyAddress = stagedTopology.get();
   const auto stagedRevision = stagedShapeFeature->shapeRevision();
 
-  auto releasedV3 = std::move(*openedV3.staged).releaseRootDocument();
-  CHECK(releasedV3);
-  CHECK(releasedV3.get() == stagedDocument);
-  CHECK(&releasedV3->bodies().front() == stagedBody);
-  CHECK(releasedV3->bodies().front().features().front().get() ==
+  auto releasedV3 =
+      std::move(*openedV3.staged).releaseProductDocument();
+  CHECK(&releasedV3.rootDocument() == stagedDocument);
+  CHECK(&releasedV3.rootDocument().bodies().front() == stagedBody);
+  CHECK(releasedV3.rootDocument().bodies().front().features().front().get() ==
         stagedFeature);
   const auto* const releasedShapeFeature =
       dynamic_cast<const solidar::ShapeFeature*>(stagedFeature);

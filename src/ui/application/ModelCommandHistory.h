@@ -72,9 +72,10 @@ struct DocumentDeltaMetrics {
   std::size_t retainedBytes{};
 };
 
-// Non-QObject application service for committed model commands.  Document
-// remains owned by MainWindow; this service owns only cold, bounded deltas and
-// stable editor state needed to apply Undo/Redo symmetrically.
+// Non-QObject application service for committed model commands. The active
+// root Document remains owned by MainWindow's ProductDocument; this service
+// owns only cold, bounded deltas and stable editor state needed to apply
+// Undo/Redo symmetrically.
 class ModelCommandHistory final {
  public:
   static constexpr std::size_t kDefaultByteBudget =

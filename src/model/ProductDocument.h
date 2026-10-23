@@ -126,6 +126,8 @@ class ProductDocument final {
     return rootDefinitionId_;
   }
   [[nodiscard]] const PartDefinition& rootDefinition() const noexcept;
+  [[nodiscard]] Document& rootDocument() noexcept;
+  [[nodiscard]] const Document& rootDocument() const noexcept;
   [[nodiscard]] std::unique_ptr<Document> releaseRootDocument() && noexcept;
 
   [[nodiscard]] DefinitionInsertStatus insert(PartDefinition&& definition);

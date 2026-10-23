@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "model/Document.h"
+#include "model/ProductDocument.h"
 #include "ui/PartDesignHistory.h"
 #include "ui/PreviewUpdateCoordinator.h"
 #include "ui/ViewportInteractionTypes.h"
@@ -203,7 +204,13 @@ class MainWindow final : public QMainWindow {
   void configureSketchSceneReferences(
       SketchId excludedSketchId = kInvalidSketchId);
 
-  Document document_;
+  ProductDocument productDocument_;
+  [[nodiscard]] Document& document() noexcept {
+    return productDocument_.rootDocument();
+  }
+  [[nodiscard]] const Document& document() const noexcept {
+    return productDocument_.rootDocument();
+  }
   project::ProjectPersistenceState projectPersistenceState_;
   ProjectApplicationService projectApplicationService_;
   AppSettings& settings_;

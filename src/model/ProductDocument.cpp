@@ -61,6 +61,14 @@ const PartDefinition& ProductDocument::rootDefinition() const noexcept {
   return *definitions_.find(rootDefinitionId_);
 }
 
+Document& ProductDocument::rootDocument() noexcept {
+  return definitions_.definitions_.find(rootDefinitionId_)->second.document();
+}
+
+const Document& ProductDocument::rootDocument() const noexcept {
+  return rootDefinition().document();
+}
+
 std::unique_ptr<Document> ProductDocument::releaseRootDocument() && noexcept {
   auto root = definitions_.definitions_.find(rootDefinitionId_);
   if (root == definitions_.definitions_.end()) return {};

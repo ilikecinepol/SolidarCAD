@@ -153,7 +153,12 @@ QString sketchPresentationLabel(const DocumentSketch& sketch) {
 }  // namespace
 
 MainWindow::MainWindow(AppSettings& settings, QWidget* parent)
-    : QMainWindow(parent), settings_(settings) {
+    : QMainWindow(parent),
+      productDocument_(
+          std::move(StagedApplicationDocument(Document{}, std::nullopt,
+                                              std::nullopt))
+              .releaseProductDocument()),
+      settings_(settings) {
   previewUpdates_ = std::make_unique<PreviewUpdateCoordinator>(this);
   buildUi();
   buildMenus();
@@ -177,7 +182,7 @@ bool MainWindow::applyPartDesignBeginResult(
     PartDesignTransitionOutcome outcome, PartDesignToolKind kind) {
   PartDesignUiEffect effect;
   effect.transition = outcome;
-  effect.state = partDesignCoordinator_.snapshot(kind, document_);
+  effect.state = partDesignCoordinator_.snapshot(kind, document());
   if (outcome.effect == PartDesignTransitionEffect::Activated) {
     applyPartDesignUiEffect(std::move(effect));
     return true;
@@ -474,7 +479,7 @@ bool MainWindow::pushModelTransition(
       ? std::move(*committedAfter)
       : captureHistorySelection();
   const auto result = modelHistory_.recordTransition(
-      document_, std::move(previous), std::move(beforeSelection),
+      document(), std::move(previous), std::move(beforeSelection),
       std::move(afterSelection));
 
   if (result.status == HistoryCommitStatus::NoChange) {
@@ -525,10 +530,10 @@ void MainWindow::completeModelTransitionUi() {
 bool MainWindow::pushPresentationTransition(
     HistorySelectionState before, HistorySelectionState after) {
   if (modelHistory_.isApplying()) return true;
-  Document previous = document_;
+  Document previous = document();
   const bool previousModified = isWindowModified();
   const auto result = modelHistory_.recordTransition(
-      document_, std::move(previous), std::move(before), std::move(after));
+      document(), std::move(previous), std::move(before), std::move(after));
   if (result.status == HistoryCommitStatus::Rejected) {
     applyPresentationState(result.state.presentation);
     setWindowModified(previousModified);
@@ -624,20 +629,20 @@ void MainWindow::restoreHistorySelection(const HistorySelectionState& state) {
   if (!state.faces.empty()) {
     std::vector<FaceReference> valid;
     for (const auto& face : state.faces)
-      if (document_.findBody(face.bodyId()) &&
-          document_.findFeature(face.featureId())) valid.push_back(face);
+      if (document().findBody(face.bodyId()) &&
+          document().findFeature(face.featureId())) valid.push_back(face);
     viewport_->setSelectedBodyFaces(valid);
   } else if (!state.edges.empty()) {
     std::vector<EdgeReference> valid;
     for (const auto& edge : state.edges)
-      if (document_.findBody(edge.bodyId()) &&
-          document_.findFeature(edge.featureId())) valid.push_back(edge);
+      if (document().findBody(edge.bodyId()) &&
+          document().findFeature(edge.featureId())) valid.push_back(edge);
     viewport_->setSelectedBodyEdges(valid);
   }
   else if (!state.bodies.empty()) {
     std::vector<BodyId> valid;
     for (const auto id : state.bodies)
-      if (document_.findBody(id)) valid.push_back(id);
+      if (document().findBody(id)) valid.push_back(id);
     viewport_->setSelectedBodies(valid);
   }
 }
@@ -687,10 +692,10 @@ void MainWindow::synchronizeCommittedState(
   sketchViews_.clear();
   sketchViews_.reserve(state.sketchViewIds.size());
   for (const SketchId id : state.sketchViewIds)
-    if (document_.findSketch(id)) sketchViews_.push_back({id});
+    if (document().findSketch(id)) sketchViews_.push_back({id});
   historicalLegacyExtrusionSourceSketchId_ =
       state.historicalLegacyExtrusionSourceSketchId;
-  viewport_->setBox(document_.box());
+  viewport_->setBox(document().box());
   syncSketchPresentationFromDocument();
   refreshBodyViewFromDocument();
   rebuildFeatureTree();
@@ -777,7 +782,7 @@ MainWindow::PreviewSourceSnapshot MainWindow::capturePreviewSource(
   if (bodyId == kInvalidBodyId || featureId == kInvalidFeatureId)
     return snapshot;
   if (const auto* feature = findHistoryFeature(
-          static_cast<const Document&>(document_), bodyId, featureId)) {
+          static_cast<const Document&>(document()), bodyId, featureId)) {
     snapshot.shapeRevision = feature->shapeRevision();
     snapshot.shape = feature->lastValidShape();
   }
@@ -793,7 +798,7 @@ bool MainWindow::previewSourceIsCurrent(
     return !snapshot.shape &&
            snapshot.shapeRevision == kInvalidShapeRevision;
   const auto* feature = findHistoryFeature(
-      static_cast<const Document&>(document_), snapshot.bodyId,
+      static_cast<const Document&>(document()), snapshot.bodyId,
       snapshot.featureId);
   return feature && feature->shapeRevision() == snapshot.shapeRevision &&
          feature->lastValidShape().get() == snapshot.shape.get();
@@ -830,7 +835,7 @@ void MainWindow::flushPreviewUpdate() {
   // Boundary refinement is reserved for an explicit exact boundary (release,
   // Enter or Apply), and a valid value is a zero-build no-op in the session.
   applyPartDesignUiEffect(partDesignCoordinator_.dispatchActiveInput(
-      document_, toolParametersPanel_->parameterValue(),
+      document(), toolParametersPanel_->parameterValue(),
       PartDesignParameterSource::Boundary));
 }
 
@@ -849,7 +854,7 @@ void MainWindow::undoLastAction() {
     }
   } else {
     const auto result =
-        modelHistory_.undo(document_, captureHistorySelection());
+        modelHistory_.undo(document(), captureHistorySelection());
     if (result.changed) {
       synchronizeCommittedState(result.state);
     } else if (!result.error.empty()) {
@@ -873,7 +878,7 @@ void MainWindow::redoLastAction() {
     return;
   }
   const auto result =
-      modelHistory_.redo(document_, captureHistorySelection());
+      modelHistory_.redo(document(), captureHistorySelection());
   if (result.changed) {
     synchronizeCommittedState(result.state);
   } else if (!result.error.empty()) {
@@ -986,7 +991,7 @@ void MainWindow::saveProject() {
       path += QStringLiteral(".solidar");
   }
   const auto saved = projectApplicationService_.save(
-      path, document_, projectPersistenceState_);
+      path, document(), projectPersistenceState_);
   if (!saved.succeeded()) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка сохранения"),
                           saved.detail);
@@ -1072,7 +1077,7 @@ void MainWindow::upgradeProjectFormat() {
   }
 
   const auto upgraded = projectApplicationService_.upgradeProjectFormat(
-      expectedPath, document_, expectedState);
+      expectedPath, document(), expectedState);
   if (!upgraded.succeeded()) {
     QMessageBox::critical(this,
                           QString::fromUtf8("Ошибка обновления формата"),
@@ -1094,7 +1099,7 @@ PartDesignCommitGuard MainWindow::startPartDesignCommit() {
           project::ProjectPersistenceFormat::V3 &&
       kind != PartDesignToolKind::None &&
       containsV2TopologyReference(
-          partDesignCoordinator_.snapshot(kind, document_))) {
+          partDesignCoordinator_.snapshot(kind, document()))) {
     statusBar()->showMessage(
         QString::fromUtf8(
             "Для устойчивых ссылок v2 сначала выберите «Файл → Обновить формат проекта до v4…»."),
@@ -1112,7 +1117,7 @@ void MainWindow::importStep() {
 
   const QString importedName = QFileInfo(fileName).completeBaseName();
   auto staged = projectApplicationService_.stageImportStep(
-      fileName, document_, importedName);
+      fileName, document(), importedName);
   if (!staged.succeeded()) {
     QMessageBox::critical(
         this, QString::fromUtf8("Не удалось импортировать STEP"),
@@ -1174,7 +1179,7 @@ void MainWindow::finishReferenceImageImport(const SketchPlanePick& pick) {
   } else if (const auto* bodyFace = std::get_if<BodyFacePick>(&pick.source)) {
     const auto& reference = bodyFace->face;
     const ShapeFeature* feature =
-        document_.findFeature(reference.bodyId(), reference.featureId());
+        document().findFeature(reference.bodyId(), reference.featureId());
     const auto topology = feature ? feature->topologyIndex() : nullptr;
     const auto resolvedFace =
         topology ? topology->resolveFace(reference) : FaceResolution{};
@@ -1194,10 +1199,10 @@ void MainWindow::finishReferenceImageImport(const SketchPlanePick& pick) {
   }
 
   const auto previousSelection = captureHistorySelection();
-  Document previous = document_;
+  Document previous = document();
   ReferenceImageId addedId = kInvalidReferenceImageId;
   try {
-    auto& image = document_.addReferenceImage(
+    auto& image = document().addReferenceImage(
         QFileInfo(pendingReferenceImagePath_).completeBaseName().toStdString(),
         pendingReferenceImagePath_.toStdString(),
         pick.presentationLabel.toStdString(), placement,
@@ -1232,7 +1237,7 @@ void MainWindow::finishReferenceImageImport(const SketchPlanePick& pick) {
 
 void MainWindow::updateReferenceImageParameter(int parameterIndex,
                                                double value) {
-  auto* image = document_.findReferenceImage(selectedReferenceImageId_);
+  auto* image = document().findReferenceImage(selectedReferenceImageId_);
   if (!image || !std::isfinite(value) || parameterIndex < 0 ||
       parameterIndex > 3)
     return;
@@ -1244,7 +1249,7 @@ void MainWindow::updateReferenceImageParameter(int parameterIndex,
   if (std::abs(current - modelValue) <= 1e-12) return;
 
   if (!referenceImageEditBefore_) {
-    referenceImageEditBefore_ = document_;
+    referenceImageEditBefore_ = document();
     referenceImageEditSelectionBefore_ = captureHistorySelection();
   }
   if (parameterIndex == 0)
@@ -1259,7 +1264,7 @@ void MainWindow::updateReferenceImageParameter(int parameterIndex,
   // Keep drag and typed edits live without creating one Undo step per mouse
   // move. The snapshot is committed once on release/Enter/selection change.
   setWindowModified(true);
-  viewport_->setReferenceImages(document_.referenceImages());
+  viewport_->setReferenceImages(document().referenceImages());
   viewport_->setReferenceImageManipulator(*image);
 }
 
@@ -1272,7 +1277,7 @@ void MainWindow::commitReferenceImageEdit() {
   referenceImageEditSelectionBefore_.reset();
   if (!pushModelTransition(std::move(previous), std::move(previousSelection),
                            captureCommittedEndState())) {
-    viewport_->setReferenceImages(document_.referenceImages());
+    viewport_->setReferenceImages(document().referenceImages());
     showSelectedReferenceImageManipulator();
     return;
   }
@@ -1280,7 +1285,7 @@ void MainWindow::commitReferenceImageEdit() {
 }
 
 void MainWindow::showSelectedReferenceImageManipulator() {
-  const auto* image = document_.findReferenceImage(selectedReferenceImageId_);
+  const auto* image = document().findReferenceImage(selectedReferenceImageId_);
   if (!image || !image->visible) {
     if (viewport_->referenceImageManipulatorActive())
       viewport_->clearToolManipulator();
@@ -1293,10 +1298,10 @@ void MainWindow::showSelectedReferenceImageManipulator() {
 
 void MainWindow::removeReferenceImage(ReferenceImageId id) {
   commitReferenceImageEdit();
-  if (!document_.findReferenceImage(id)) return;
+  if (!document().findReferenceImage(id)) return;
   const auto previousSelection = captureHistorySelection();
-  Document previous = document_;
-  if (!document_.removeReferenceImage(id)) return;
+  Document previous = document();
+  if (!document().removeReferenceImage(id)) return;
   if (!pushModelTransition(std::move(previous), previousSelection,
                            captureCommittedEndState()))
     return;
@@ -1305,7 +1310,7 @@ void MainWindow::removeReferenceImage(ReferenceImageId id) {
     if (viewport_->referenceImageManipulatorActive())
       viewport_->clearToolManipulator();
   }
-  viewport_->setReferenceImages(document_.referenceImages());
+  viewport_->setReferenceImages(document().referenceImages());
   rebuildFeatureTree();
   completeModelTransitionUi();
 }
@@ -1321,6 +1326,7 @@ void MainWindow::applyImportedDocument(Document staged,
 void MainWindow::commitDocumentReplacement(
     StagedApplicationDocument staged, DocumentReplacementOrigin origin,
     const QString& pathOrLabel) {
+  const bool opened = origin == DocumentReplacementOrigin::OpenProject;
   const auto persistenceState = staged.persistenceState;
   const auto historicalLegacyExtrusionSourceSketchId =
       staged.historicalLegacyExtrusionSourceSketchId;
@@ -1351,24 +1357,28 @@ void MainWindow::commitDocumentReplacement(
   editingSketchIndex_.reset();
   viewport_->resetScene();
 
-  auto replacementDocument = std::move(staged).releaseRootDocument();
-  document_ = std::move(*replacementDocument);
+  // History deltas may own cold model slices from the outgoing root. Release
+  // them at the hard boundary, after all observers have detached but before
+  // the old ProductDocument is destroyed.
+  modelHistory_.clear(opened);
+
+  // The staged carrier is the only replacement commit point. Its root
+  // Document allocation moves intact; every later use reacquires the root.
+  productDocument_ = std::move(staged).releaseProductDocument();
   if (persistenceState)
     projectPersistenceState_ = *persistenceState;
-  document_.reserveIdsForEditing();
   historicalLegacyExtrusionSourceSketchId_ =
       historicalLegacyExtrusionSourceSketchId;
+  document().reserveIdsForEditing();
   currentSketchSupport_ = QStringLiteral("XY");
   currentSketchPlacement_ = SketchPlacement::xy();
-  viewport_->setBox(document_.box());
-  for (const auto& item : document_.sketches()) {
+  viewport_->setBox(document().box());
+  for (const auto& item : document().sketches()) {
     sketchViews_.push_back({item.id});
     viewport_->addSketch(item.id, item.geometry,
                          sketchPresentationLabel(item), item.placement);
   }
   extrudeOperationManuallyChanged_ = false;
-  const bool opened = origin == DocumentReplacementOrigin::OpenProject;
-  modelHistory_.clear(opened);
   if (opened) sketchCanvas_->resetSketch();
   rebuildFeatureTree();
   rebuildHistoryPanel();
@@ -1405,7 +1415,7 @@ void MainWindow::exportStep() {
     fileName += QStringLiteral(".step");
 
   const auto exported = projectApplicationService_.exportStep(fileName,
-                                                               document_);
+                                                               document());
   if (!exported.succeeded()) {
     QMessageBox::critical(
         this, QString::fromUtf8("Не удалось экспортировать STEP"),
@@ -1418,7 +1428,7 @@ void MainWindow::exportStep() {
 
 void MainWindow::exportStl() {
   const auto preflight =
-      projectApplicationService_.preflightStlExport(document_);
+      projectApplicationService_.preflightStlExport(document());
   if (!preflight.succeeded()) {
     QMessageBox::information(
         this, QString::fromUtf8("Экспорт STL"),
@@ -1441,7 +1451,7 @@ void MainWindow::exportStl() {
     fileName += QStringLiteral(".stl");
 
   const auto exported = projectApplicationService_.exportStl(fileName,
-                                                              document_);
+                                                              document());
   if (!exported.succeeded()) {
     QMessageBox::critical(this, QString::fromUtf8("Ошибка экспорта STL"),
                           exported.detail);
@@ -1472,9 +1482,9 @@ void MainWindow::buildUi() {
   viewport_ = new Viewport(workspaceStack_);
   drawingSheet_ = new DrawingSheetView(this);
   drawingSheet_->hide();
-  viewport_->setBox(document_.box());
+  viewport_->setBox(document().box());
   viewport_->setSketch(sketchCanvas_->sketch(), currentSketchPlacement_);
-  drawingSheet_->setRectangle(document_.box().widthMm, document_.box().depthMm);
+  drawingSheet_->setRectangle(document().box().widthMm, document().box().depthMm);
   workspaceStack_->addWidget(viewport_);
   workspaceStack_->addWidget(sketchCanvas_);
   setCentralWidget(workspaceStack_);
@@ -1501,7 +1511,7 @@ void MainWindow::buildUi() {
   extrusionLengthSpin_->setRange(-100000.0, 100000.0);
   extrusionLengthSpin_->setDecimals(2);
   extrusionLengthSpin_->setSuffix(QStringLiteral(" mm"));
-  extrusionLengthSpin_->setValue(document_.box().heightMm);
+  extrusionLengthSpin_->setValue(document().box().heightMm);
   extrusionForm->addRow(QString::fromUtf8("Длина:"), extrusionLengthSpin_);
   extrusionOperationCombo_ = new QComboBox(extrusionPanel);
   extrusionOperationCombo_->addItems(
@@ -1614,15 +1624,15 @@ void MainWindow::buildUi() {
           [this](int) {
             invalidatePreviewUpdates();
             rebuildRevolveAxisChoices();
-            partDesignCoordinator_.clearRevolveAxis(document_);
+            partDesignCoordinator_.clearRevolveAxis(document());
             const auto id = static_cast<SketchId>(revolveProfileCombo_->currentData().toULongLong());
             if (id == kInvalidSketchId) {
-              partDesignCoordinator_.clearRevolveProfile(document_);
+              partDesignCoordinator_.clearRevolveProfile(document());
               revolveProfileSummary_->setText(
                   QString::fromUtf8("Профиль не выбран"));
               viewport_->beginExtrusionSurfaceSelection();
             } else {
-              partDesignCoordinator_.setRevolveProfile(document_, id);
+              partDesignCoordinator_.setRevolveProfile(document(), id);
               revolveProfileSummary_->setText(
                   QString::fromUtf8("Выбран весь эскиз"));
               const auto found = std::find_if(
@@ -1640,7 +1650,7 @@ void MainWindow::buildUi() {
           [this](int) {
             invalidatePreviewUpdates();
             if (revolveAxisCombo_->currentIndex() <= 0) {
-              partDesignCoordinator_.clearRevolveAxis(document_); updateRevolveToolPreview(); return;
+              partDesignCoordinator_.clearRevolveAxis(document()); updateRevolveToolPreview(); return;
             }
             AxisReference reference;
             const qulonglong value = revolveAxisCombo_->currentData().toULongLong();
@@ -1651,7 +1661,7 @@ void MainWindow::buildUi() {
             else if (value == Viewport::kGlobalZAxisToken)
               reference.type = AxisReferenceType::GlobalZ;
             else {
-              reference.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId;
+              reference.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId;
               if (value == 1)
                 reference.type = AxisReferenceType::SketchHorizontalAxis;
               else if (value == 2)
@@ -1661,50 +1671,50 @@ void MainWindow::buildUi() {
                 reference.lineId = static_cast<sketch::GeometryId>(value - 3);
               }
             }
-            partDesignCoordinator_.setRevolveAxis(document_, reference); updateRevolveToolPreview();
+            partDesignCoordinator_.setRevolveAxis(document(), reference); updateRevolveToolPreview();
           });
   connect(revolveAngleSpin_, &QDoubleSpinBox::valueChanged, this,
           [this](double value) {
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::Inactive)
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::Inactive)
               return;
             auto effect = std::make_shared<PartDesignUiEffect>();
             schedulePreviewUpdate(
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId,
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).sourceFeatureId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).sourceFeatureId,
                 [this, value, effect] {
-                  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle !=
+                  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle !=
                       ToolLifecycle::Inactive)
                     *effect = partDesignCoordinator_.dispatchActiveInput(
-                        document_, value, PartDesignParameterSource::Panel);
+                        document(), value, PartDesignParameterSource::Panel);
                 },
                 [this, effect] { applyPartDesignUiEffect(std::move(*effect)); });
           });
   connect(revolveOperationCombo_, &QComboBox::currentIndexChanged, this,
           [this](int value) {
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::Inactive)
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::Inactive)
               return;
             const auto operation = static_cast<ExtrudeOperation>(value);
             schedulePreviewUpdate(
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId,
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).sourceFeatureId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).sourceFeatureId,
                 [this, operation] {
-                  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle !=
+                  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle !=
                       ToolLifecycle::Inactive)
-                    partDesignCoordinator_.setRevolveOperation(document_, operation);
+                    partDesignCoordinator_.setRevolveOperation(document(), operation);
                 },
                 [this] { updateRevolveToolPreview(); });
           });
   connect(revolveReverseCheck_, &QCheckBox::toggled, this,
           [this](bool value) {
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::Inactive)
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::Inactive)
               return;
             schedulePreviewUpdate(
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId,
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).sourceFeatureId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).sourceFeatureId,
                 [this, value] {
-                  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle !=
+                  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle !=
                       ToolLifecycle::Inactive)
-                    partDesignCoordinator_.setRevolveReversed(document_, value);
+                    partDesignCoordinator_.setRevolveReversed(document(), value);
                 },
                 [this] { updateRevolveToolPreview(); });
           });
@@ -1740,8 +1750,8 @@ void MainWindow::buildUi() {
   connect(reselectProfile, &QPushButton::clicked, this, [this] {
     invalidatePreviewUpdates();
     partDesignCoordinator_.beginReselection(ToolSelectionStage::SelectingInput);
-    partDesignCoordinator_.clearRevolveAxis(document_);
-    partDesignCoordinator_.clearRevolveProfile(document_);
+    partDesignCoordinator_.clearRevolveAxis(document());
+    partDesignCoordinator_.clearRevolveProfile(document());
     viewport_->clearToolManipulator();
     {
       const QSignalBlocker blocker(revolveProfileCombo_);
@@ -1758,13 +1768,13 @@ void MainWindow::buildUi() {
     std::size_t sketchIndex = static_cast<std::size_t>(-1);
     const auto found = std::find_if(
         sketchViews_.begin(), sketchViews_.end(), [this](const auto& entry) {
-          return entry.documentSketchId == partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId;
+          return entry.documentSketchId == partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId;
         });
     if (found != sketchViews_.end())
       sketchIndex = static_cast<std::size_t>(
           std::distance(sketchViews_.begin(), found));
     partDesignCoordinator_.beginReselection(ToolSelectionStage::SelectingReference);
-    partDesignCoordinator_.clearRevolveAxis(document_);
+    partDesignCoordinator_.clearRevolveAxis(document());
     viewport_->clearToolManipulator();
     updateRevolveToolPreview();
     viewport_->beginRevolveAxisSelection(sketchIndex);
@@ -1781,13 +1791,13 @@ void MainWindow::buildUi() {
               revolveAngleSpin_->setValue(angle);
               auto effect = std::make_shared<PartDesignUiEffect>();
               schedulePreviewUpdate(
-                  partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId,
-                  partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).sourceFeatureId,
+                  partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId,
+                  partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).sourceFeatureId,
                   [this, angle, effect] {
                     if (partDesignCoordinator_.activeTool() ==
                         PartDesignToolKind::Revolve)
                       *effect = partDesignCoordinator_.dispatchActiveInput(
-                          document_, angle,
+                          document(), angle,
                           PartDesignParameterSource::Manipulator);
                   },
                   [this, effect] {
@@ -2533,14 +2543,14 @@ void MainWindow::buildUi() {
                 kind != PartDesignToolKind::Extrude &&
                 kind != PartDesignToolKind::Fillet)
               return;
-            const auto state = partDesignCoordinator_.snapshot(kind, document_);
+            const auto state = partDesignCoordinator_.snapshot(kind, document());
             auto effect = std::make_shared<PartDesignUiEffect>();
             schedulePreviewUpdate(
                 state.bodyId, state.sourceFeatureId,
                 [this, kind, value, effect] {
                   if (partDesignCoordinator_.activeTool() == kind)
                     *effect = partDesignCoordinator_.dispatchActiveInput(
-                        document_, value, PartDesignParameterSource::Panel);
+                        document(), value, PartDesignParameterSource::Panel);
                 },
                 [this, effect] {
                   applyPartDesignUiEffect(std::move(*effect));
@@ -2563,8 +2573,8 @@ void MainWindow::buildUi() {
             else if (kind == PartDesignToolKind::Draft) {
               partDesignCoordinator_.beginReselection(
                   ToolSelectionStage::SelectingInput);
-              partDesignCoordinator_.setDraftFaces(document_, {});
-              partDesignCoordinator_.clearDraftPrincipalAxis(document_);
+              partDesignCoordinator_.setDraftFaces(document(), {});
+              partDesignCoordinator_.clearDraftPrincipalAxis(document());
               viewport_->clearToolManipulator();
               viewport_->beginDraftFaceSelection();
               updateDraftToolPreview();
@@ -2577,12 +2587,12 @@ void MainWindow::buildUi() {
           this, [this] {
             invalidatePreviewUpdates();
             applyPartDesignUiEffect(partDesignCoordinator_.dispatchActiveAction(
-                PartDesignAction::ClearSelection, &document_));
+                PartDesignAction::ClearSelection, &document()));
           });
   connect(viewport_, &Viewport::toolManipulatorValueChanged, this,
           [this](double value) {
             const auto kind = partDesignCoordinator_.activeTool();
-            const auto state = partDesignCoordinator_.snapshot(kind, document_);
+            const auto state = partDesignCoordinator_.snapshot(kind, document());
             if (kind == PartDesignToolKind::LinearPattern) {
               const QSignalBlocker blocker(linearPatternSpacingSpin_);
               linearPatternSpacingSpin_->setValue(value);
@@ -2608,7 +2618,7 @@ void MainWindow::buildUi() {
                 [this, kind, value, effect] {
                   if (partDesignCoordinator_.activeTool() == kind)
                     *effect = partDesignCoordinator_.dispatchActiveInput(
-                        document_, value,
+                        document(), value,
                         PartDesignParameterSource::Manipulator);
                 },
                 [this, effect] {
@@ -2648,8 +2658,8 @@ void MainWindow::buildUi() {
     } else if (partDesignCoordinator_.activeTool() == PartDesignToolKind::Draft) {
       auto faces = viewport_->selectedBodyFaces();
       if (faces.size() > 1) faces.resize(1);
-      partDesignCoordinator_.setDraftFaces(document_, faces);
-      partDesignCoordinator_.clearDraftPrincipalAxis(document_);
+      partDesignCoordinator_.setDraftFaces(document(), faces);
+      partDesignCoordinator_.clearDraftPrincipalAxis(document());
       updateDraftToolPreview();
       if (!faces.empty()) {
         partDesignCoordinator_.beginReselection(
@@ -2673,14 +2683,14 @@ void MainWindow::buildUi() {
               if (const auto editingId =
                       partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).editingFeatureId) {
                 const Body* owner = nullptr;
-                for (const auto& candidate : document_.bodies())
+                for (const auto& candidate : document().bodies())
                   if (candidate.featureIndex(*editingId)) {
                     owner = &candidate;
                     break;
                   }
                 if (owner && owner->id() == bodyId) continue;
               }
-              Body* body = document_.findBody(bodyId);
+              Body* body = document().findBody(bodyId);
               if (!body || !body->activeFeature() || !body->resultShape())
                 continue;
               inputs.push_back({bodyId, body->activeFeature()->id(),
@@ -2723,13 +2733,13 @@ void MainWindow::buildUi() {
             toolParametersPanel_->setParameterValue(value);
             auto effect = std::make_shared<PartDesignUiEffect>();
             schedulePreviewUpdate(
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).bodyId,
-                partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).sourceFeatureId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).bodyId,
+                partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).sourceFeatureId,
                 [this, value, effect] {
                   if (partDesignCoordinator_.activeTool() ==
                       PartDesignToolKind::Draft)
                     *effect = partDesignCoordinator_.dispatchActiveInput(
-                        document_, value,
+                        document(), value,
                         PartDesignParameterSource::Manipulator);
                 },
                 [this, effect] {
@@ -3273,7 +3283,7 @@ void MainWindow::buildUi() {
               modelRibbon_->clearActiveTool();
               return;
             }
-            if (!document_.activeBody()) {
+            if (!document().activeBody()) {
               QMessageBox::information(this, QString::fromUtf8("Вырезать"),
                   QString::fromUtf8("Сначала создайте Body."));
               return;
@@ -3362,7 +3372,7 @@ void MainWindow::buildUi() {
                                      QString::fromUtf8("Не удалось определить грань Body."));
                 return;
               }
-              const ShapeFeature* feature = document_.findFeature(
+              const ShapeFeature* feature = document().findFeature(
                   faceReference.bodyId(), faceReference.featureId());
               const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
               if (!shape) {
@@ -3419,7 +3429,7 @@ void MainWindow::buildUi() {
             sketchCanvas_->setInitialViewUp(
                 {targetUp.x, targetUp.y, targetUp.z});
             sketchCanvas_->setInitialViewDirection(targetEye);
-            sketchCanvas_->setReferenceBody(document_.box(),
+            sketchCanvas_->setReferenceBody(document().box(),
                                              currentSketchPlacement_,
                                              hasDisplayableModernSolid() ||
                                                  hasHistoricalLegacyExtrusion());
@@ -3462,14 +3472,14 @@ void MainWindow::buildUi() {
               createFaceExtrude(face->face);
               return;
             }
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle != ToolLifecycle::Inactive) {
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle != ToolLifecycle::Inactive) {
               updateRevolveProfileSelection(pick);
               return;
             }
             selectedExtrusionSource_ = pick;
             statusBar()->showMessage(QString::fromUtf8("Поверхность: ") +
                                      pick.presentationLabel);
-            extrusionLengthSpin_->setValue(document_.box().heightMm);
+            extrusionLengthSpin_->setValue(document().box().heightMm);
             viewport_->showExtrusionManipulator(
                 extrusionReverseCheck_->isChecked()
                     ? -extrusionLengthSpin_->value()
@@ -3582,10 +3592,10 @@ void MainWindow::buildUi() {
               commitReferenceImageEdit();
               const auto imageId = static_cast<ReferenceImageId>(
                   item->data(0, Qt::UserRole + 3).toULongLong());
-              auto* image = document_.findReferenceImage(imageId);
+              auto* image = document().findReferenceImage(imageId);
               if (!image || image->visible == visible) return;
               const auto previousSelection = captureHistorySelection();
-              Document previous = document_;
+              Document previous = document();
               image->visible = visible;
               if (!pushModelTransition(std::move(previous), previousSelection,
                                        captureCommittedEndState())) {
@@ -3594,20 +3604,20 @@ void MainWindow::buildUi() {
                                     visible ? Qt::Unchecked : Qt::Checked);
                 return;
               }
-              viewport_->setReferenceImages(document_.referenceImages());
+              viewport_->setReferenceImages(document().referenceImages());
               if (imageId == selectedReferenceImageId_)
                 showSelectedReferenceImageManipulator();
               completeModelTransitionUi();
               if (workspaceStack_->currentWidget() == sketchCanvas_)
                 sketchCanvas_->updateSceneImages(
-                    document_.referenceImages());
+                    document().referenceImages());
               return;
             }
             if (kind == 3 && bodyId != kInvalidBodyId) {
-              Body* body = document_.findBody(bodyId);
+              Body* body = document().findBody(bodyId);
               if (!body || body->visible() == visible) return;
               const auto previousSelection = captureHistorySelection();
-              Document previous = document_;
+              Document previous = document();
               auto committedAfter = captureCommittedEndState();
               body->setVisible(visible);
               if (!pushModelTransition(std::move(previous), previousSelection,
@@ -3636,7 +3646,7 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::revolveAxisPicked, this,
           [this](qulonglong axisToken) {
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::Inactive) return;
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::Inactive) return;
             invalidatePreviewUpdates();
             AxisReference axis;
             if (axisToken == Viewport::kGlobalXAxisToken) {
@@ -3646,17 +3656,17 @@ void MainWindow::buildUi() {
             } else if (axisToken == Viewport::kGlobalZAxisToken) {
               axis.type = AxisReferenceType::GlobalZ;
             } else if (axisToken == 1) {
-              axis.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId;
+              axis.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId;
               axis.type = AxisReferenceType::SketchHorizontalAxis;
             } else if (axisToken == 2) {
-              axis.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId;
+              axis.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId;
               axis.type = AxisReferenceType::SketchVerticalAxis;
             } else {
-              axis.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId;
+              axis.sketchId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId;
               axis.type = AxisReferenceType::SketchLine;
               axis.lineId = static_cast<sketch::GeometryId>(axisToken - 3);
             }
-            partDesignCoordinator_.setRevolveAxis(document_, axis);
+            partDesignCoordinator_.setRevolveAxis(document(), axis);
             partDesignCoordinator_.finishReselection();
             const int comboIndex = revolveAxisCombo_->findData(axisToken);
             if (comboIndex >= 0) {
@@ -3670,7 +3680,7 @@ void MainWindow::buildUi() {
   connect(viewport_, &Viewport::moveBodyPicked, this, [this](BodyId bodyId) {
     if (partDesignCoordinator_.snapshot(PartDesignToolKind::Move).lifecycle == ToolLifecycle::Inactive) return;
     invalidatePreviewUpdates();
-    Body* body = document_.findBody(bodyId);
+    Body* body = document().findBody(bodyId);
     if (!body || !body->activeFeature() || !body->resultShape()) {
       statusBar()->showMessage(
           QString::fromUtf8("Выбранное тело не содержит геометрии"), 3000);
@@ -3712,7 +3722,7 @@ void MainWindow::buildUi() {
             if (partDesignCoordinator_.snapshot(PartDesignToolKind::Mirror).lifecycle == ToolLifecycle::Inactive)
               return;
             invalidatePreviewUpdates();
-            Body* body = document_.findBody(bodyId);
+            Body* body = document().findBody(bodyId);
             if (!body || !body->activeFeature() || !body->resultShape()) {
               statusBar()->showMessage(
                   QString::fromUtf8("Выбранное тело не содержит геометрии"),
@@ -3777,7 +3787,7 @@ void MainWindow::buildUi() {
                 ToolLifecycle::Inactive)
               return;
             invalidatePreviewUpdates();
-            Body* body = document_.findBody(bodyId);
+            Body* body = document().findBody(bodyId);
             if (!body || !body->activeFeature() || !body->resultShape()) {
               statusBar()->showMessage(
                   QString::fromUtf8("Выбранное тело не содержит геометрии"),
@@ -3823,7 +3833,7 @@ void MainWindow::buildUi() {
                 ToolLifecycle::Inactive)
               return;
             invalidatePreviewUpdates();
-            Body* body = document_.findBody(bodyId);
+            Body* body = document().findBody(bodyId);
             if (!body || !body->activeFeature() || !body->resultShape()) {
               statusBar()->showMessage(
                   QString::fromUtf8("Выбранное тело не содержит геометрии"),
@@ -3865,11 +3875,11 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::draftAxisPicked, this,
           [this](int axisIndex) {
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).lifecycle == ToolLifecycle::Inactive ||
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).lifecycle == ToolLifecycle::Inactive ||
                 axisIndex < 0 || axisIndex > 2)
               return;
             invalidatePreviewUpdates();
-            if (!partDesignCoordinator_.setDraftPrincipalAxis(document_, axisIndex)) return;
+            if (!partDesignCoordinator_.setDraftPrincipalAxis(document(), axisIndex)) return;
             partDesignCoordinator_.finishReselection();
             viewport_->showDraftAxisSelection(axisIndex);
             updateDraftToolPreview();
@@ -3879,10 +3889,10 @@ void MainWindow::buildUi() {
           });
   connect(viewport_, &Viewport::draftEdgeAxisPicked, this,
           [this](const EdgeReference& edge) {
-            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).lifecycle == ToolLifecycle::Inactive)
+            if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).lifecycle == ToolLifecycle::Inactive)
               return;
             invalidatePreviewUpdates();
-            if (!partDesignCoordinator_.setDraftRotationEdge(document_, edge)) {
+            if (!partDesignCoordinator_.setDraftRotationEdge(document(), edge)) {
               updateDraftToolPreview();
               viewport_->beginDraftAxisSelection();
               statusBar()->showMessage(QString::fromUtf8(
@@ -4031,7 +4041,7 @@ void MainWindow::finishSketch() {
   if (editingSketchIndex_) {
     const std::size_t index = *editingSketchIndex_;
     if (index >= sketchViews_.size() ||
-        !document_.findSketch(sketchViews_[index].documentSketchId)) {
+        !document().findSketch(sketchViews_[index].documentSketchId)) {
       editingSketchIndex_.reset();
       workspaceStack_->setCurrentWidget(viewport_);
       statusBar()->showMessage(
@@ -4043,28 +4053,28 @@ void MainWindow::finishSketch() {
   if (editingSketchIndex_) {
     const std::size_t index = *editingSketchIndex_;
     const SketchId sketchId = sketchViews_[index].documentSketchId;
-    Document previousDocument = document_;
-    if (!document_.replaceSketchGeometry(sketchId, sketch)) {
+    Document previousDocument = document();
+    if (!document().replaceSketchGeometry(sketchId, sketch)) {
       editingSketchIndex_.reset();
       workspaceStack_->setCurrentWidget(viewport_);
       statusBar()->showMessage(
           QString::fromUtf8("Эскиз больше не существует в документе"), 4000);
       return;
     }
-    document_.findSketch(sketchId)->placement = currentSketchPlacement_;
-    const bool recomputeSucceeded = document_.recompute();
+    document().findSketch(sketchId)->placement = currentSketchPlacement_;
+    const bool recomputeSucceeded = document().recompute();
     if (!recomputeSucceeded) {
       completionMessage =
           QString::fromUtf8(
               "Эскиз обновлён, перестроение модели завершилось с ошибкой: %1")
-              .arg(QString::fromStdString(document_.rebuildError()));
+              .arg(QString::fromStdString(document().rebuildError()));
     }
     auto committedAfter = captureCommittedEndState();
     if (!pushModelTransition(std::move(previousDocument), previousSelection,
                              std::move(committedAfter)))
       return;
     refreshBodyViewFromDocument();
-    const auto* committedSketch = document_.findSketch(sketchId);
+    const auto* committedSketch = document().findSketch(sketchId);
     viewport_->updateSketch(index, sketch,
                             sketchPresentationLabel(*committedSketch),
                             currentSketchPlacement_);
@@ -4072,13 +4082,13 @@ void MainWindow::finishSketch() {
         historicalLegacyExtrusionSourceSketchId_ == sketchId)
       viewport_->setSolidSketch(sketch, currentSketchPlacement_);
   } else {
-    Document previousDocument = document_;
-    auto& modelSketch = document_.addSketch(
-        "Sketch " + std::to_string(document_.sketches().size() + 1));
+    Document previousDocument = document();
+    auto& modelSketch = document().addSketch(
+        "Sketch " + std::to_string(document().sketches().size() + 1));
     modelSketch.geometry = sketch;
     modelSketch.placement = currentSketchPlacement_;
     if (currentSketchFaceReference_)
-      document_.attachSketchToFace(modelSketch.id,
+      document().attachSketchToFace(modelSketch.id,
                                    *currentSketchFaceReference_);
     const SketchId modelSketchId = modelSketch.id;
     auto committedAfter = captureCommittedEndState();
@@ -4124,7 +4134,7 @@ void MainWindow::updateLegacyExtrusionPreview() {
   DocumentSketch profile;
   if (const auto* region =
           std::get_if<SketchRegionPick>(&selectedExtrusionSource_->source)) {
-    if (const auto* source = document_.findSketch(region->sketchId))
+    if (const auto* source = document().findSketch(region->sketchId))
       profile = *source;
     profile.id = region->sketchId;
     profile.geometry = region->geometry;
@@ -4143,7 +4153,7 @@ void MainWindow::updateLegacyExtrusionPreview() {
       extrusionLengthSpin_->value(), extrusionReverseCheck_->isChecked());
   const auto operation = static_cast<ExtrudeOperation>(
       std::clamp(extrusionOperationCombo_->currentIndex(), 0, 2));
-  const Body* body = document_.activeBody();
+  const Body* body = document().activeBody();
   const auto baseShape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
   if (operation != ExtrudeOperation::NewBody && !baseShape) {
     viewport_->clearToolPreviewShape();
@@ -4185,11 +4195,11 @@ std::optional<ExtrudeOperation>
 MainWindow::detectAutomaticExtrudeOperation() const {
   if (extrudeOperationManuallyChanged_) return std::nullopt;
   ExtrudeOperation operation = ExtrudeOperation::NewBody;
-  const Body* body = document_.activeBody();
+  const Body* body = document().activeBody();
   const std::size_t index = viewport_->extrusionCandidateSketchIndex();
   const DocumentSketch* profile =
       index < sketchViews_.size()
-          ? document_.findSketch(sketchViews_[index].documentSketchId)
+          ? document().findSketch(sketchViews_[index].documentSketchId)
           : nullptr;
   const auto targetShape = body ? body->resultShape() : ShapeFeature::ShapePtr{};
   if (profile && targetShape) {
@@ -4216,7 +4226,7 @@ void MainWindow::updateAutomaticExtrudeOperation() {
 
 void MainWindow::scheduleAutomaticExtrudeOperation() {
   if (extrudeOperationManuallyChanged_) return;
-  const Body* body = document_.activeBody();
+  const Body* body = document().activeBody();
   const BodyId bodyId = body ? body->id() : kInvalidBodyId;
   const FeatureId featureId = body && body->activeFeature()
                                   ? body->activeFeature()->id()
@@ -4266,7 +4276,7 @@ void MainWindow::extrudeSketch() {
                              : static_cast<std::size_t>(-1);
   DocumentSketch* modelSketch =
       sourceIndex < sketchViews_.size()
-          ? document_.findSketch(sketchViews_[sourceIndex].documentSketchId)
+          ? document().findSketch(sketchViews_[sourceIndex].documentSketchId)
           : nullptr;
   // The viewport owns the user's exact region pick.  The source DocumentSketch
   // may contain several independent contours, so preferring the whole sketch
@@ -4326,24 +4336,24 @@ void MainWindow::extrudeSketch() {
   const auto operation = static_cast<ExtrudeOperation>(
       std::clamp(extrusionOperationCombo_->currentIndex(), 0, 2));
   const bool reversed = input.reversed;
-  if (operation != ExtrudeOperation::NewBody && !document_.activeBody()) {
+  if (operation != ExtrudeOperation::NewBody && !document().activeBody()) {
     QMessageBox::warning(this, QString::fromUtf8("Выдавливание"),
                          QString::fromUtf8(
                              "Для объединения или вырезания нужен активный Body."));
     return;
   }
 
-  Document previousDocument = document_;
+  Document previousDocument = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (!modelSketch || legacySource) {
-    modelSketch = &document_.addSketch(
-        "Extrude profile " + std::to_string(document_.sketches().size() + 1));
+    modelSketch = &document().addSketch(
+        "Extrude profile " + std::to_string(document().sketches().size() + 1));
     modelSketch->geometry = sketch;
     modelSketch->placement = selectedProfile.placement;
   }
   Body* modelBody = operation == ExtrudeOperation::NewBody
-                        ? &document_.addBody()
-                        : document_.activeBody();
+                        ? &document().addBody()
+                        : document().activeBody();
   auto extrudeFeature = std::make_unique<ExtrudeFeature>(
       modelSketch->id, height,
       "Extrude " + std::to_string(modelBody->features().size() + 1),
@@ -4353,9 +4363,9 @@ void MainWindow::extrudeSketch() {
   if (hasPickedProfile)
     extrudeFeature->setProfileOverride(sketch);
   modelBody->addFeature(std::move(extrudeFeature));
-  if (!document_.rebuild()) {
-    const std::string error = document_.rebuildError();
-    document_ = previousDocument;
+  if (!document().rebuild()) {
+    const std::string error = document().rebuildError();
+    document() = previousDocument;
     refreshBodyViewFromDocument();
     QMessageBox::warning(this, QString::fromUtf8("Ошибка выдавливания"),
                          QString::fromStdString(error));
@@ -4390,10 +4400,10 @@ void MainWindow::extrudeSketch() {
 
 void MainWindow::syncSketchPresentationFromDocument() {
   if (historicalLegacyExtrusionSourceSketchId_ &&
-      !document_.findSketch(*historicalLegacyExtrusionSourceSketchId_))
+      !document().findSketch(*historicalLegacyExtrusionSourceSketchId_))
     historicalLegacyExtrusionSourceSketchId_.reset();
   for (std::size_t index = sketchViews_.size(); index-- > 0;) {
-    if (document_.findSketch(sketchViews_[index].documentSketchId)) continue;
+    if (document().findSketch(sketchViews_[index].documentSketchId)) continue;
     sketchViews_.erase(sketchViews_.begin() +
                        static_cast<std::ptrdiff_t>(index));
     if (editingSketchIndex_) {
@@ -4407,7 +4417,7 @@ void MainWindow::syncSketchPresentationFromDocument() {
   std::vector<SketchPresentationSnapshot> snapshots;
   snapshots.reserve(sketchViews_.size());
   for (const auto& view : sketchViews_) {
-    const auto* modelSketch = document_.findSketch(view.documentSketchId);
+    const auto* modelSketch = document().findSketch(view.documentSketchId);
     if (!modelSketch) continue;
     snapshots.push_back({modelSketch->id, modelSketch->geometry,
                          sketchPresentationLabel(*modelSketch),
@@ -4417,7 +4427,7 @@ void MainWindow::syncSketchPresentationFromDocument() {
 }
 
 bool MainWindow::hasCommittedModernSolid() const noexcept {
-  return std::any_of(document_.bodies().begin(), document_.bodies().end(),
+  return std::any_of(document().bodies().begin(), document().bodies().end(),
                      [](const Body& body) {
                        return !body.features().empty();
                      });
@@ -4439,7 +4449,7 @@ MainWindow::resolveModernSolidPresentation(
 
 bool MainWindow::hasDisplayableModernSolid() const {
   return std::any_of(
-      document_.bodies().begin(), document_.bodies().end(),
+      document().bodies().begin(), document().bodies().end(),
       [](const Body& body) {
         return resolveModernSolidPresentation(
                    body, body.lastValidResultShape(), body.visible())
@@ -4448,24 +4458,24 @@ bool MainWindow::hasDisplayableModernSolid() const {
 }
 
 bool MainWindow::hasExportableModernSolid(QString* error) const {
-  const auto result = projectApplicationService_.preflightStlExport(document_);
+  const auto result = projectApplicationService_.preflightStlExport(document());
   if (!result.succeeded() && error) *error = result.detail;
   return result.succeeded();
 }
 
 bool MainWindow::hasHistoricalLegacyExtrusion() const noexcept {
   return historicalLegacyExtrusionSourceSketchId_ &&
-         document_.findSketch(*historicalLegacyExtrusionSourceSketchId_);
+         document().findSketch(*historicalLegacyExtrusionSourceSketchId_);
 }
 
 void MainWindow::refreshBodyViewFromDocument(
     const std::vector<BodyId>& transientVisibleBodies) {
-  viewport_->setReferenceImages(document_.referenceImages());
+  viewport_->setReferenceImages(document().referenceImages());
   if (historicalLegacyExtrusionSourceSketchId_ &&
-      !document_.findSketch(*historicalLegacyExtrusionSourceSketchId_))
+      !document().findSketch(*historicalLegacyExtrusionSourceSketchId_))
     historicalLegacyExtrusionSourceSketchId_.reset();
   std::vector<BodyViewShape> shapes;
-  for (const Body& body : document_.bodies()) {
+  for (const Body& body : document().bodies()) {
     // Rendering explicitly uses the last validated committed result. The
     // authoritative resultShape() stays empty while the active Feature is in
     // Error, so tool/dependency code cannot consume this presentation fallback.
@@ -4484,8 +4494,8 @@ void MainWindow::refreshBodyViewFromDocument(
   bool showHistoricalLegacyExtrusion = false;
   const bool anyVisibleBodyShape = !shapes.empty();
   viewport_->setBodyShapes(std::move(shapes));
-  if (document_.bodies().empty() && hasHistoricalLegacyExtrusion()) {
-    const auto* sourceSketch = document_.findSketch(
+  if (document().bodies().empty() && hasHistoricalLegacyExtrusion()) {
+    const auto* sourceSketch = document().findSketch(
         *historicalLegacyExtrusionSourceSketchId_);
     // resetScene() deliberately clears the cached legacy mesh. Reconstruct it
     // from the authoritative Sketch selected by stable ID on every refresh.
@@ -4499,13 +4509,13 @@ void MainWindow::refreshBodyViewFromDocument(
   // has cleared the B-Rep mesh.
   viewport_->setSolidVisible(anyVisibleBodyShape ||
                              showHistoricalLegacyExtrusion);
-  drawingSheet_->setDocument(document_);
+  drawingSheet_->setDocument(document());
   // A view entry can only observe an existing committed sketch. If an
   // interrupted/corrupt transition leaves a stale ID, discard the derived
   // presentation and repair its positional UI references; never keep drawing
   // the old cached geometry or map the entry to a different sketch.
   for (std::size_t index = sketchViews_.size(); index-- > 0;) {
-    if (document_.findSketch(sketchViews_[index].documentSketchId)) continue;
+    if (document().findSketch(sketchViews_[index].documentSketchId)) continue;
     viewport_->removeSketch(index);
     sketchViews_.erase(sketchViews_.begin() +
                        static_cast<std::ptrdiff_t>(index));
@@ -4518,7 +4528,7 @@ void MainWindow::refreshBodyViewFromDocument(
   }
   for (std::size_t index = 0; index < sketchViews_.size(); ++index) {
     const auto* modelSketch =
-        document_.findSketch(sketchViews_[index].documentSketchId);
+        document().findSketch(sketchViews_[index].documentSketchId);
     if (!modelSketch) continue;
     viewport_->updateSketch(index, modelSketch->geometry,
                             sketchPresentationLabel(*modelSketch),
@@ -4529,10 +4539,10 @@ void MainWindow::refreshBodyViewFromDocument(
 void MainWindow::createRevolve() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
-  Body* body = document_.activeBody();
+  Body* body = document().activeBody();
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginRevolve(
-              document_, body ? body->id() : kInvalidBodyId,
+              document(), body ? body->id() : kInvalidBodyId,
               body && body->activeFeature() ? body->activeFeature()->id()
                                             : kInvalidFeatureId,
               body ? body->resultShape() : ShapeFeature::ShapePtr{}),
@@ -4543,7 +4553,7 @@ void MainWindow::createRevolve() {
     revolveProfileCombo_->clear();
     revolveProfileCombo_->addItem(QString::fromUtf8("Выбрать профиль"),
                                   QVariant::fromValue<qulonglong>(kInvalidSketchId));
-    for (const auto& sketch : document_.sketches())
+    for (const auto& sketch : document().sketches())
       revolveProfileCombo_->addItem(QString::fromStdString(sketch.name),
                                     QVariant::fromValue<qulonglong>(sketch.id));
   }
@@ -4557,7 +4567,7 @@ void MainWindow::createRevolve() {
     revolveOperationCombo_->setCurrentIndex(
         static_cast<int>(initialOperation));
   }
-  partDesignCoordinator_.setRevolveOperation(document_, initialOperation);
+  partDesignCoordinator_.setRevolveOperation(document(), initialOperation);
   revolveReverseCheck_->setChecked(false);
   revolveProfileSummary_->setText(QString::fromUtf8(
       "Щёлкните область в 3D-виде. Ctrl добавляет или убирает области."));
@@ -4570,7 +4580,7 @@ void MainWindow::createRevolve() {
 
 void MainWindow::updateRevolveProfileSelection(
     const ExtrusionSourcePick& pick) {
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::Inactive) return;
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::Inactive) return;
   invalidatePreviewUpdates();
 
   const auto* region = std::get_if<SketchRegionPick>(&pick.source);
@@ -4581,9 +4591,9 @@ void MainWindow::updateRevolveProfileSelection(
                      selectedProfile.arcs().empty() &&
                      selectedProfile.beziers().empty();
   const SketchId id = region ? region->sketchId : kInvalidSketchId;
-  if (empty || id == kInvalidSketchId || !document_.findSketch(id)) {
-    partDesignCoordinator_.clearRevolveAxis(document_);
-    partDesignCoordinator_.clearRevolveProfile(document_);
+  if (empty || id == kInvalidSketchId || !document().findSketch(id)) {
+    partDesignCoordinator_.clearRevolveAxis(document());
+    partDesignCoordinator_.clearRevolveProfile(document());
     {
       const QSignalBlocker blocker(revolveProfileCombo_);
       revolveProfileCombo_->setCurrentIndex(0);
@@ -4596,13 +4606,13 @@ void MainWindow::updateRevolveProfileSelection(
     return;
   }
 
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId != id &&
-      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference &&
-      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference->type != AxisReferenceType::GlobalX &&
-      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference->type != AxisReferenceType::GlobalY &&
-      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference->type != AxisReferenceType::GlobalZ)
-    partDesignCoordinator_.clearRevolveAxis(document_);
-  partDesignCoordinator_.setRevolveProfile(document_, id, selectedProfile);
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId != id &&
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference &&
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference->type != AxisReferenceType::GlobalX &&
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference->type != AxisReferenceType::GlobalY &&
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference->type != AxisReferenceType::GlobalZ)
+    partDesignCoordinator_.clearRevolveAxis(document());
+  partDesignCoordinator_.setRevolveProfile(document(), id, selectedProfile);
   partDesignCoordinator_.finishReselection();
   {
     const QSignalBlocker blocker(revolveProfileCombo_);
@@ -4643,7 +4653,7 @@ void MainWindow::rebuildRevolveAxisChoices() {
   if (sketchId == kInvalidSketchId) return;
   revolveAxisCombo_->addItem(QString::fromUtf8("Горизонтальная ось"), 1);
   revolveAxisCombo_->addItem(QString::fromUtf8("Вертикальная ось"), 2);
-  const auto* sketch = document_.findSketch(sketchId);
+  const auto* sketch = document().findSketch(sketchId);
   if (!sketch) return;
   for (std::size_t i = 0; i < sketch->geometry.lines().size(); ++i)
     revolveAxisCombo_->addItem(QString::fromUtf8("Линия %1").arg(i + 1),
@@ -4651,35 +4661,35 @@ void MainWindow::rebuildRevolveAxisChoices() {
 }
 
 void MainWindow::updateRevolveToolPreview() {
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::Inactive) return;
-  const bool valid = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::PreviewValid;
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::Inactive) return;
+  const bool valid = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::PreviewValid;
   revolveAcceptButton_->setEnabled(valid);
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).previewShape) {
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).previewShape) {
     viewport_->setToolPreviewPresentation(
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).extrudeOperation == ExtrudeOperation::NewBody
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).extrudeOperation == ExtrudeOperation::NewBody
             ? ToolPreviewPresentation::OverlaySourceSelection
             : ToolPreviewPresentation::ReplaceSource);
-    viewport_->setToolPreviewShape(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId,
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).sourceFeatureId, partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).previewShape);
-    if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).extrudeOperation != ExtrudeOperation::NewBody)
+    viewport_->setToolPreviewShape(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId,
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).sourceFeatureId, partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).previewShape);
+    if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).extrudeOperation != ExtrudeOperation::NewBody)
       viewport_->setToolPreviewReplacedBodies(
-          {partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId});
+          {partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId});
   } else
     viewport_->clearToolPreviewShape();
-  if (const auto manipulator = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).angularManipulator)
+  if (const auto manipulator = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).angularManipulator)
     viewport_->setAngularToolManipulator(*manipulator);
   else
     viewport_->clearToolManipulator();
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle == ToolLifecycle::PreviewInvalid) {
-    revolveStepHint_->setText(QString::fromStdString(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).error));
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle == ToolLifecycle::PreviewInvalid) {
+    revolveStepHint_->setText(QString::fromStdString(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).error));
     revolveStepHint_->setProperty("uiRole", "danger");
-    statusBar()->showMessage(QString::fromStdString(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).error));
+    statusBar()->showMessage(QString::fromStdString(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).error));
   } else {
     const QString hint = valid
         ? partDesignToolStepHint(PartDesignToolKind::Revolve,
                                  ToolSelectionStage::EditingParameters)
         : partDesignToolStepHint(PartDesignToolKind::Revolve,
-                                 partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).selectionStage);
+                                 partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).selectionStage);
     revolveStepHint_->setText(QString::fromUtf8("Сейчас: ") + hint);
     revolveStepHint_->setProperty("uiRole", "secondaryText");
   }
@@ -4694,44 +4704,44 @@ void MainWindow::cancelRevolveTool() {
 
 void MainWindow::acceptRevolveTool() {
   flushPreviewUpdate();
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle != ToolLifecycle::PreviewValid ||
-      !partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference) return;
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle != ToolLifecycle::PreviewValid ||
+      !partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference) return;
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Body* body = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).editingFeatureId
-                   ? document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).bodyId)
-                   : partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).extrudeOperation == ExtrudeOperation::NewBody
-                         ? &document_.addBody()
-                         : document_.activeBody();
+  Body* body = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).editingFeatureId
+                   ? document().findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).bodyId)
+                   : partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).extrudeOperation == ExtrudeOperation::NewBody
+                         ? &document().addBody()
+                         : document().activeBody();
   if (!body) return;
-  if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).editingFeatureId) {
+  if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
       auto* feature = dynamic_cast<RevolveFeature*>(body->features()[index].get());
       if (!feature || feature->id() != *editingId) continue;
-      feature->setProfileSketchId(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId);
-      feature->setProfileOverride(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileOverride);
-      feature->setAxis(*partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference);
-      feature->setAngleDeg(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).angleDeg);
-      feature->setOperation(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).extrudeOperation);
-      feature->setReversed(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).reversed);
+      feature->setProfileSketchId(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId);
+      feature->setProfileOverride(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileOverride);
+      feature->setAxis(*partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference);
+      feature->setAngleDeg(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).angleDeg);
+      feature->setOperation(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).extrudeOperation);
+      feature->setReversed(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).reversed);
       body->markDirtyFrom(index);
       break;
     }
   } else {
     auto feature = std::make_unique<RevolveFeature>(
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileSketchId, *partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).axisReference,
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).angleDeg,
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileSketchId, *partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).axisReference,
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).angleDeg,
         "Revolve " + std::to_string(body->features().size() + 1),
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).extrudeOperation, partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).reversed);
-    feature->setProfileOverride(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).profileOverride);
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).extrudeOperation, partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).reversed);
+    feature->setProfileOverride(partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).profileOverride);
     body->addFeature(std::move(feature));
   }
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous; refreshBodyViewFromDocument();
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous; refreshBodyViewFromDocument();
     statusBar()->showMessage(error); return;
   }
   auto committedAfter = captureCommittedEndState();
@@ -4745,14 +4755,14 @@ void MainWindow::acceptRevolveTool() {
 
 void MainWindow::createPocket() {
   if (!ensureHistoryAtEnd()) return;
-  Body* body = document_.activeBody();
+  Body* body = document().activeBody();
   if (!body || !body->resultShape() || sketchViews_.empty()) {
     QMessageBox::information(this, QString::fromUtf8("Карман"),
                              QString::fromUtf8("Сначала создайте Body и эскиз на его грани."));
     return;
   }
   const auto& historySketch = sketchViews_.back();
-  DocumentSketch* profile = document_.findSketch(historySketch.documentSketchId);
+  DocumentSketch* profile = document().findSketch(historySketch.documentSketchId);
   if (!profile || profile->support.type != SketchSupportType::Face ||
       !profile->supportResolved || !profile->geometry.isClosed()) {
     QMessageBox::warning(this, QString::fromUtf8("Карман"),
@@ -4770,20 +4780,20 @@ void MainWindow::createPocket() {
 bool MainWindow::acceptPocketTransition(
     SketchId profileId, double depthMm,
     std::optional<FeatureId> editingFeatureId) {
-  Body* body = document_.activeBody();
+  Body* body = document().activeBody();
   if (editingFeatureId)
-    for (const auto& candidate : document_.bodies())
+    for (const auto& candidate : document().bodies())
       if (candidate.featureIndex(*editingFeatureId)) {
-        body = document_.findBody(candidate.id());
+        body = document().findBody(candidate.id());
         break;
       }
-  if (!body || !document_.findSketch(profileId) || depthMm <= 0.0)
+  if (!body || !document().findSketch(profileId) || depthMm <= 0.0)
     return false;
-  Document previousDocument = document_;
+  Document previousDocument = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (editingFeatureId) {
     auto* pocket = dynamic_cast<PocketFeature*>(
-        document_.findFeature(*editingFeatureId));
+        document().findFeature(*editingFeatureId));
     if (!pocket) return false;
     pocket->setDepthMm(depthMm);
   } else {
@@ -4791,9 +4801,9 @@ bool MainWindow::acceptPocketTransition(
         profileId, depthMm,
         "Pocket " + std::to_string(body->features().size())));
   }
-  if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = std::move(previousDocument);
+  if (!document().rebuild()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = std::move(previousDocument);
     refreshBodyViewFromDocument();
     statusBar()->showMessage(error, 4000);
     return false;
@@ -4819,8 +4829,8 @@ void MainWindow::createFillet() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   auto edges = viewport_->selectedBodyEdges();
-  Body* body = edges.empty() ? document_.activeBody()
-                             : document_.findBody(edges.front().bodyId());
+  Body* body = edges.empty() ? document().activeBody()
+                             : document().findBody(edges.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) {
     QMessageBox::information(this, QString::fromUtf8("Скругление"),
                              QString::fromUtf8("Сначала создайте тело."));
@@ -4865,8 +4875,8 @@ void MainWindow::createFillet() {
 
 void MainWindow::editPatternFeature(FeatureId featureId,
                                     FeatureEditorRoute route) {
-  Body* owner = document_.findBodyForFeature(featureId);
-  ShapeFeature* feature = document_.findFeature(featureId);
+  Body* owner = document().findBodyForFeature(featureId);
+  ShapeFeature* feature = document().findFeature(featureId);
   const auto featureIndex =
       owner ? owner->featureIndex(featureId) : std::nullopt;
   if (!owner || !feature || !featureIndex) return;
@@ -4883,15 +4893,15 @@ void MainWindow::editPatternFeature(FeatureId featureId,
                                        : body.features()[index - 1]->id();
         if (!applyPartDesignBeginResult(
                 partDesignCoordinator_.beginRevolve(
-                    document_, body.id(), sourceId, upstream, revolve->id()),
+                    document(), body.id(), sourceId, upstream, revolve->id()),
                 PartDesignToolKind::Revolve))
           return;
-        partDesignCoordinator_.setRevolveProfile(document_, revolve->profileSketchId(),
+        partDesignCoordinator_.setRevolveProfile(document(), revolve->profileSketchId(),
                                        revolve->profileOverride());
-        partDesignCoordinator_.setRevolveAxis(document_, revolve->axis());
-        partDesignCoordinator_.setRevolveAngleFromPanel(document_, revolve->angleDeg());
-        partDesignCoordinator_.setRevolveOperation(document_, revolve->operation());
-        partDesignCoordinator_.setRevolveReversed(document_, revolve->reversed());
+        partDesignCoordinator_.setRevolveAxis(document(), revolve->axis());
+        partDesignCoordinator_.setRevolveAngleFromPanel(document(), revolve->angleDeg());
+        partDesignCoordinator_.setRevolveOperation(document(), revolve->operation());
+        partDesignCoordinator_.setRevolveReversed(document(), revolve->reversed());
         {
           const QSignalBlocker profileBlocker(revolveProfileCombo_);
           const QSignalBlocker angleBlocker(revolveAngleSpin_);
@@ -4967,7 +4977,7 @@ void MainWindow::editPatternFeature(FeatureId featureId,
         if (!sourceSnapshot) return;
         if (!applyPartDesignBeginResult(
                 partDesignCoordinator_.beginDraft(
-                    document_, *sourceSnapshot, draft->draftedFaces(), draft->neutralPlane(),
+                    document(), *sourceSnapshot, draft->draftedFaces(), draft->neutralPlane(),
                     draft->pullDirection(), draft->angleDeg(),
                     draft->reversed(), draft->id(), draft->rotationEdge()),
                 PartDesignToolKind::Draft))
@@ -4979,13 +4989,13 @@ void MainWindow::editPatternFeature(FeatureId featureId,
             QString::fromUtf8("Поверхность"), QString::fromUtf8("Угол"),
             QString::fromUtf8("°"));
         toolParametersPanel_->setParameterRange(-89.99, 89.99, 2);
-        toolParametersPanel_->setParameterValue(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).angleDeg);
+        toolParametersPanel_->setParameterValue(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).angleDeg);
         toolParametersDock_->show(); toolParametersDock_->raise();
-        if (const auto axis = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).principalAxisIndex)
+        if (const auto axis = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).principalAxisIndex)
           viewport_->showDraftAxisSelection(*axis);
-        else if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).rotationEdge)
+        else if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).rotationEdge)
           viewport_->showDraftEdgeAxisSelection(
-              *partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).rotationEdge);
+              *partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).rotationEdge);
         updateDraftToolPreview();
         static_cast<void>(viewport_->focusToolParameterField(false));
         return;
@@ -5088,7 +5098,7 @@ void MainWindow::editPatternFeature(FeatureId featureId,
           source = body.features()[index - 1]->shape();
           sourceFeatureId = body.features()[index - 1]->id();
         } else {
-          sourceBody = document_.findBody(linear->sourceBodyId());
+          sourceBody = document().findBody(linear->sourceBodyId());
           if (sourceBody)
             for (const auto& candidate : sourceBody->features())
               if (candidate->id() == linear->sourceFeatureId()) {
@@ -5150,7 +5160,7 @@ void MainWindow::editPatternFeature(FeatureId featureId,
           source = body.features()[index - 1]->shape();
           sourceFeatureId = body.features()[index - 1]->id();
         } else {
-          sourceBody = document_.findBody(circular->sourceBodyId());
+          sourceBody = document().findBody(circular->sourceBodyId());
           if (sourceBody)
             for (const auto& candidate : sourceBody->features())
               if (candidate->id() == circular->sourceFeatureId()) {
@@ -5206,7 +5216,7 @@ void MainWindow::createMove() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   const bool hasBody = std::any_of(
-      document_.bodies().begin(), document_.bodies().end(),
+      document().bodies().begin(), document().bodies().end(),
       [](const Body& body) { return body.activeFeature() && body.resultShape(); });
   if (!hasBody) {
     QMessageBox::information(this, QString::fromUtf8("Перемещение"),
@@ -5283,9 +5293,9 @@ void MainWindow::acceptMoveTool() {
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Move).bodyId);
+  Body* body = document().findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Move).bodyId);
   if (!body) return;
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Move).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
@@ -5307,9 +5317,9 @@ void MainWindow::acceptMoveTool() {
         partDesignCoordinator_.snapshot(PartDesignToolKind::Move).sourceFeatureId, partDesignCoordinator_.snapshot(PartDesignToolKind::Move).offsetMm,
         "Move " + std::to_string(body->features().size() + 1)));
   }
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     moveStepHint_->setText(error);
     moveStepHint_->setProperty("uiRole", "danger");
@@ -5332,7 +5342,7 @@ void MainWindow::createMirror() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   const bool hasBody = std::any_of(
-      document_.bodies().begin(), document_.bodies().end(),
+      document().bodies().begin(), document().bodies().end(),
       [](const Body& body) { return body.activeFeature() && body.resultShape(); });
   if (!hasBody) {
     QMessageBox::information(this, QString::fromUtf8("Зеркало"),
@@ -5406,9 +5416,9 @@ void MainWindow::acceptMirrorTool() {
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Body* body = document_.findBody(snapshot.bodyId);
+  Body* body = document().findBody(snapshot.bodyId);
   if (!body) return;
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = snapshot.editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
@@ -5439,9 +5449,9 @@ void MainWindow::acceptMirrorTool() {
       body->addFeature(std::make_unique<MirrorFeature>(
           snapshot.sourceFeatureId, *snapshot.mirrorPlane, name));
   }
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     mirrorStepHint_->setText(error);
     mirrorStepHint_->setProperty("uiRole", "danger");
@@ -5467,7 +5477,7 @@ void MainWindow::createLinearPattern() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   const bool hasBody = std::any_of(
-      document_.bodies().begin(), document_.bodies().end(),
+      document().bodies().begin(), document().bodies().end(),
       [](const Body& body) { return body.activeFeature() && body.resultShape(); });
   if (!hasBody) {
     QMessageBox::information(this, QString::fromUtf8("Линейный массив"),
@@ -5553,13 +5563,13 @@ void MainWindow::acceptLinearPatternTool() {
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Body* sourceBody = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).bodyId);
+  Body* sourceBody = document().findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).bodyId);
   if (!sourceBody) return;
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).editingFeatureId) {
     auto* linear =
-        dynamic_cast<LinearPatternFeature*>(document_.findFeature(*editingId));
+        dynamic_cast<LinearPatternFeature*>(document().findFeature(*editingId));
     if (!linear) return;
     linear->setDirection(*partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).principalDirection);
     linear->setSpacingMm(partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).spacingMm);
@@ -5576,7 +5586,7 @@ void MainWindow::acceptLinearPatternTool() {
     const BodyId sourceBodyId = sourceBody->id();
     Body* targetBody = partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).patternOperation ==
                                PatternOperation::NewBody
-                           ? &document_.addBody()
+                           ? &document().addBody()
                            : sourceBody;
     targetBody->addFeature(std::make_unique<LinearPatternFeature>(
         sourceBodyId, partDesignCoordinator_.snapshot(PartDesignToolKind::LinearPattern).sourceFeatureId,
@@ -5587,9 +5597,9 @@ void MainWindow::acceptLinearPatternTool() {
         "Linear Pattern " +
             std::to_string(targetBody->features().size() + 1)));
   }
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     linearPatternStepHint_->setText(error);
     linearPatternStepHint_->setProperty("uiRole", "danger");
@@ -5613,7 +5623,7 @@ void MainWindow::createCircularPattern() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   const bool hasBody = std::any_of(
-      document_.bodies().begin(), document_.bodies().end(),
+      document().bodies().begin(), document().bodies().end(),
       [](const Body& body) { return body.activeFeature() && body.resultShape(); });
   if (!hasBody) {
     QMessageBox::information(this, QString::fromUtf8("Круговой массив"),
@@ -5702,13 +5712,13 @@ void MainWindow::acceptCircularPatternTool() {
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Body* sourceBody = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).bodyId);
+  Body* sourceBody = document().findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).bodyId);
   if (!sourceBody) return;
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).editingFeatureId) {
     auto* circular = dynamic_cast<CircularPatternFeature*>(
-        document_.findFeature(*editingId));
+        document().findFeature(*editingId));
     if (!circular) return;
     circular->setAxis(*partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).principalAxis);
     circular->setAngleDeg(partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).angleDeg);
@@ -5725,7 +5735,7 @@ void MainWindow::acceptCircularPatternTool() {
     const BodyId sourceBodyId = sourceBody->id();
     Body* targetBody = partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).patternOperation ==
                                PatternOperation::NewBody
-                           ? &document_.addBody()
+                           ? &document().addBody()
                            : sourceBody;
     targetBody->addFeature(std::make_unique<CircularPatternFeature>(
         sourceBodyId, partDesignCoordinator_.snapshot(PartDesignToolKind::CircularPattern).sourceFeatureId,
@@ -5736,9 +5746,9 @@ void MainWindow::acceptCircularPatternTool() {
         "Circular Pattern " +
             std::to_string(targetBody->features().size() + 1)));
   }
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     circularPatternStepHint_->setText(error);
     circularPatternStepHint_->setProperty("uiRole", "danger");
@@ -5762,8 +5772,8 @@ void MainWindow::createChamfer() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   auto edges = viewport_->selectedBodyEdges();
-  Body* body = edges.empty() ? document_.activeBody()
-                             : document_.findBody(edges.front().bodyId());
+  Body* body = edges.empty() ? document().activeBody()
+                             : document().findBody(edges.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) {
     QMessageBox::information(this, QString::fromUtf8("Фаска"),
                              QString::fromUtf8("Сначала создайте тело."));
@@ -5808,7 +5818,7 @@ void MainWindow::createChamfer() {
 void MainWindow::createJoinBodies() {
   if (!ensureHistoryAtEnd()) return;
   std::size_t availableBodies = 0;
-  for (const Body& body : document_.bodies())
+  for (const Body& body : document().bodies())
     if (body.visible() && body.resultShape()) ++availableBodies;
   if (availableBodies < 2) {
     QMessageBox::information(
@@ -5838,14 +5848,14 @@ void MainWindow::createJoinBodies() {
 void MainWindow::editJoinBodiesStep(BodyId bodyId, FeatureId featureId) {
   if (!ensureHistoryAtEnd()) return;
   auto* join = dynamic_cast<JoinBodiesFeature*>(
-      findHistoryFeature(document_, bodyId, featureId));
+      findHistoryFeature(document(), bodyId, featureId));
   if (!join) return;
   const auto makeInput = [this](BodyId sourceBodyId,
                                 FeatureId sourceFeatureId)
       -> std::optional<JoinBodyInput> {
-    const Body* sourceBody = document_.findBody(sourceBodyId);
+    const Body* sourceBody = document().findBody(sourceBodyId);
     const auto* source = dynamic_cast<const ShapeFeature*>(
-        document_.findFeature(sourceFeatureId));
+        document().findFeature(sourceFeatureId));
     if (!sourceBody || !source || !source->lastValidShape()) return std::nullopt;
     return JoinBodyInput{sourceBodyId, sourceFeatureId,
                          source->lastValidShape()};
@@ -5863,7 +5873,7 @@ void MainWindow::editJoinBodiesStep(BodyId bodyId, FeatureId featureId) {
   // without mutating committed visibility before the edit is accepted.
   std::vector<BodyId> selectableOperands;
   for (const BodyId operandId : {join->firstBodyId(), join->secondBodyId()})
-    if (!bodyConsumedByJoin(document_, operandId, featureId))
+    if (!bodyConsumedByJoin(document(), operandId, featureId))
       selectableOperands.push_back(operandId);
   refreshBodyViewFromDocument(selectableOperands);
   toolParametersPanel_->configureSelectionOnly(
@@ -5931,12 +5941,12 @@ void MainWindow::acceptJoinBodiesTool() {
   if (!commit) return;
   invalidatePreviewUpdates();
   const auto inputs = partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).bodies;
-  Body* first = document_.findBody(inputs[0].bodyId);
-  Body* second = document_.findBody(inputs[1].bodyId);
+  Body* first = document().findBody(inputs[0].bodyId);
+  Body* second = document().findBody(inputs[1].bodyId);
   auto* firstFeature = dynamic_cast<ShapeFeature*>(
-      document_.findFeature(inputs[0].featureId));
+      document().findFeature(inputs[0].featureId));
   auto* secondFeature = dynamic_cast<ShapeFeature*>(
-      document_.findFeature(inputs[1].featureId));
+      document().findFeature(inputs[1].featureId));
   if (!first || !second || first == second || !firstFeature ||
       !secondFeature || !first->featureIndex(inputs[0].featureId) ||
       !second->featureIndex(inputs[1].featureId) ||
@@ -5947,19 +5957,19 @@ void MainWindow::acceptJoinBodiesTool() {
     return;
   }
 
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::JoinBodies).editingFeatureId) {
     Body* owner = nullptr;
-    for (const auto& candidate : document_.bodies())
+    for (const auto& candidate : document().bodies())
       if (candidate.featureIndex(*editingId)) {
-        owner = document_.findBody(candidate.id());
+        owner = document().findBody(candidate.id());
         break;
       }
     auto* join = dynamic_cast<JoinBodiesFeature*>(
-        document_.findFeature(*editingId));
+        document().findFeature(*editingId));
     if (!owner || !join || owner == first || owner == second) {
-      document_ = std::move(previous);
+      document() = std::move(previous);
       return;
     }
     const BodyId oldFirst = join->firstBodyId();
@@ -5970,21 +5980,21 @@ void MainWindow::acceptJoinBodiesTool() {
     for (const BodyId oldId : {oldFirst, oldSecond})
       if (oldId != inputs[0].bodyId && oldId != inputs[1].bodyId)
         detached.push_back(oldId);
-    releaseUnconsumedJoinOperands(document_, detached);
+    releaseUnconsumedJoinOperands(document(), detached);
   } else {
-    Body& resultBody = document_.addBody(
-        "Joined Body " + std::to_string(document_.bodies().size() + 1));
+    Body& resultBody = document().addBody(
+        "Joined Body " + std::to_string(document().bodies().size() + 1));
     resultBody.addFeature(std::make_unique<JoinBodiesFeature>(
         inputs[0].bodyId, inputs[0].featureId, inputs[1].bodyId,
         inputs[1].featureId, "Соединение тел"));
   }
-  first = document_.findBody(inputs[0].bodyId);
-  second = document_.findBody(inputs[1].bodyId);
+  first = document().findBody(inputs[0].bodyId);
+  second = document().findBody(inputs[1].bodyId);
   first->setVisible(false);
   second->setVisible(false);
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
     return;
@@ -6005,8 +6015,8 @@ void MainWindow::createShell() {
   if (!ensureHistoryAtEnd()) return;
   resetTransientModelingUi();
   auto faces = viewport_->selectedBodyFaces();
-  Body* body = faces.empty() ? document_.activeBody()
-                             : document_.findBody(faces.front().bodyId());
+  Body* body = faces.empty() ? document().activeBody()
+                             : document().findBody(faces.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) return;
   if (!faces.empty() && faces.front().featureId() != body->activeFeature()->id())
     faces.clear();
@@ -6086,9 +6096,9 @@ void MainWindow::acceptShellTool() {
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).bodyId);
+  Body* body = document().findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).bodyId);
   if (!body) return;
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
@@ -6106,9 +6116,9 @@ void MainWindow::acceptShellTool() {
         partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).thicknessMm, partDesignCoordinator_.snapshot(PartDesignToolKind::Shell).outside,
         "Оболочка " + std::to_string(body->features().size())));
   }
-  if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().rebuild()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
     return;
@@ -6128,8 +6138,8 @@ void MainWindow::createDraft() {
   resetTransientModelingUi();
   auto faces = viewport_->selectedBodyFaces();
   if (faces.size() > 1) faces.resize(1);
-  Body* body = faces.empty() ? document_.activeBody()
-                             : document_.findBody(faces.front().bodyId());
+  Body* body = faces.empty() ? document().activeBody()
+                             : document().findBody(faces.front().bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) return;
   if (!faces.empty() && faces.front().featureId() != body->activeFeature()->id())
     faces.clear();
@@ -6138,7 +6148,7 @@ void MainWindow::createDraft() {
   if (!sourceSnapshot) return;
   if (!applyPartDesignBeginResult(
           partDesignCoordinator_.beginDraft(
-              document_, *sourceSnapshot, faces, std::nullopt, std::nullopt,
+              document(), *sourceSnapshot, faces, std::nullopt, std::nullopt,
               5.0, false),
           PartDesignToolKind::Draft))
     return;
@@ -6168,9 +6178,9 @@ void MainWindow::createDraft() {
 }
 
 void MainWindow::updateDraftToolPreview() {
-  const auto state = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).lifecycle;
+  const auto state = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).lifecycle;
   if (state == ToolLifecycle::Inactive) return;
-  toolParametersPanel_->setSelectionCount(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).faces.size());
+  toolParametersPanel_->setSelectionCount(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).faces.size());
   const bool valid = state == ToolLifecycle::PreviewValid;
   toolParametersPanel_->setAcceptEnabled(valid);
   toolParametersPanel_->setStatus(
@@ -6183,19 +6193,19 @@ void MainWindow::updateDraftToolPreview() {
                               PartDesignToolKind::Draft,
                               ToolSelectionStage::SelectingReference)
                   : localizedPartDesignError(PartDesignToolKind::Draft,
-                                             partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).failure),
+                                             partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).failure),
       state == ToolLifecycle::PreviewInvalid);
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).previewShape) {
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).previewShape) {
     viewport_->setToolPreviewPresentation(
         ToolPreviewPresentation::ReplaceSource);
-    viewport_->setToolPreviewShape(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).bodyId,
-                                   partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).sourceFeatureId,
-                                   partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).previewShape);
-    viewport_->setToolPreviewReplacedBodies({partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).bodyId});
+    viewport_->setToolPreviewShape(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).bodyId,
+                                   partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).sourceFeatureId,
+                                   partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).previewShape);
+    viewport_->setToolPreviewReplacedBodies({partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).bodyId});
   } else {
     viewport_->clearToolPreviewShape();
   }
-  if (const auto manipulator = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).angularManipulator)
+  if (const auto manipulator = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).angularManipulator)
     viewport_->setAngularToolManipulator(*manipulator);
   else
     viewport_->clearToolManipulator();
@@ -6209,51 +6219,51 @@ void MainWindow::cancelDraftTool() {
 void MainWindow::acceptDraftTool() {
   flushPreviewUpdate();
   const auto state =
-      partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_);
+      partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document());
   if (state.lifecycle != ToolLifecycle::PreviewValid ||
       (!state.rotationEdge && (!state.neutralPlane || !state.pullDirection)))
     return;
-  Body* body = document_.findBody(state.bodyId);
+  Body* body = document().findBody(state.bodyId);
   if (!body || (state.sourceTopologySnapshot &&
                 !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
-  if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).editingFeatureId) {
+  if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
       auto* draft = dynamic_cast<DraftFeature*>(body->features()[index].get());
       if (!draft || draft->id() != *editingId) continue;
-      draft->setDraftedFaces(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).faces);
-      if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).neutralPlane)
-        draft->setNeutralPlane(*partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).neutralPlane);
-      if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).pullDirection)
-        draft->setPullDirection(*partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).pullDirection);
-      draft->setRotationEdge(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).rotationEdge);
-      draft->setAngleDeg(std::abs(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).angleDeg));
-      draft->setReversed(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).angleDeg < 0.0);
+      draft->setDraftedFaces(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).faces);
+      if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).neutralPlane)
+        draft->setNeutralPlane(*partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).neutralPlane);
+      if (partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).pullDirection)
+        draft->setPullDirection(*partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).pullDirection);
+      draft->setRotationEdge(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).rotationEdge);
+      draft->setAngleDeg(std::abs(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).angleDeg));
+      draft->setReversed(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).angleDeg < 0.0);
       body->markDirtyFrom(index);
       break;
     }
   } else {
-    const PlaneReference plane = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).neutralPlane.value_or(
+    const PlaneReference plane = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).neutralPlane.value_or(
         PlaneReference{NeutralPlaneType::GlobalXY});
-    const AxisReference direction = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).pullDirection.value_or(
+    const AxisReference direction = partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).pullDirection.value_or(
         AxisReference{AxisReferenceType::GlobalZ, kInvalidSketchId,
                       sketch::kInvalidGeometryId});
     body->addFeature(std::make_unique<DraftFeature>(
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).sourceFeatureId, partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).faces,
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).sourceFeatureId, partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).faces,
         plane, direction,
-        std::abs(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).angleDeg),
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).angleDeg < 0.0,
+        std::abs(partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).angleDeg),
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).angleDeg < 0.0,
         "Уклон " + std::to_string(body->features().size()),
-        partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document_).rotationEdge));
+        partDesignCoordinator_.snapshot(PartDesignToolKind::Draft, document()).rotationEdge));
   }
-  if (!document_.rebuild()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().rebuild()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
     return;
@@ -6273,9 +6283,9 @@ void MainWindow::createSketchExtrude(const ExtrusionSourcePick& pick) {
   const auto* region = std::get_if<SketchRegionPick>(&pick.source);
   if (!region || region->sketchId == kInvalidSketchId) return;
   const SketchId sketchId = region->sketchId;
-  DocumentSketch* profile = document_.findSketch(sketchId);
+  DocumentSketch* profile = document().findSketch(sketchId);
   if (!profile) return;
-  Body* activeBody = document_.activeBody();
+  Body* activeBody = document().activeBody();
   SketchProfileSelectionContext context;
   context.profile = *profile;
   std::optional<sketch::Sketch> profileOverride;
@@ -6327,8 +6337,8 @@ void MainWindow::createFaceExtrude(const FaceReference& face) {
   // Native face extrusion shares the Extrude ribbon entry; picking a real
   // B-Rep body face (rather than a sketch contour) starts this face-source
   // session. Never interrupt a running revolve profile re-selection.
-  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document_).lifecycle != ToolLifecycle::Inactive) return;
-  Body* body = document_.findBody(face.bodyId());
+  if (partDesignCoordinator_.snapshot(PartDesignToolKind::Revolve, document()).lifecycle != ToolLifecycle::Inactive) return;
+  Body* body = document().findBody(face.bodyId());
   if (!body || !body->activeFeature() || !body->resultShape()) {
     statusBar()->showMessage(QString::fromUtf8("Сначала создайте тело."), 3000);
     return;
@@ -6409,14 +6419,14 @@ void MainWindow::acceptFaceExtrudeTool() {
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Document previous = document_;
+  Document previous = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).sketchSource) {
     Body* targetBody = nullptr;
     if (partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).extrudeOperation == ExtrudeOperation::NewBody) {
-      targetBody = &document_.addBody();
+      targetBody = &document().addBody();
     } else {
-      targetBody = document_.activeBody();
+      targetBody = document().activeBody();
       if (!targetBody) return;
     }
     auto feature = std::make_unique<ExtrudeFeature>(
@@ -6425,9 +6435,9 @@ void MainWindow::acceptFaceExtrudeTool() {
         partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).reversed);
     feature->setProfileOverride(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).profileOverride);
     targetBody->addFeature(std::move(feature));
-    if (!document_.recompute()) {
-      const QString error = QString::fromStdString(document_.rebuildError());
-      document_ = previous;
+    if (!document().recompute()) {
+      const QString error = QString::fromStdString(document().rebuildError());
+      document() = previous;
       refreshBodyViewFromDocument();
       toolParametersPanel_->setStatus(error, true);
       return;
@@ -6443,7 +6453,7 @@ void MainWindow::acceptFaceExtrudeTool() {
     statusBar()->showMessage(QString::fromUtf8("Создано выдавливание профиля"), 3000);
     return;
   }
-  Body* body = document_.findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).bodyId);
+  Body* body = document().findBody(partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).bodyId);
   if (!body) return;
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
@@ -6463,9 +6473,9 @@ void MainWindow::acceptFaceExtrudeTool() {
         partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).face, partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).lengthMm, "Extrude",
         partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).extrudeOperation, partDesignCoordinator_.snapshot(PartDesignToolKind::Extrude).reversed));
   }
-  if (!document_.recompute()) {
-    const QString error = QString::fromStdString(document_.rebuildError());
-    document_ = previous;
+  if (!document().recompute()) {
+    const QString error = QString::fromStdString(document().rebuildError());
+    document() = previous;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
     return;
@@ -6596,14 +6606,14 @@ void MainWindow::acceptChamferTool() {
   const auto state =
       partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer);
   if (state.lifecycle != ToolLifecycle::PreviewValid) return;
-  Body* body = document_.findBody(state.bodyId);
+  Body* body = document().findBody(state.bodyId);
   if (!body || (state.sourceTopologySnapshot &&
                 !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Document previousDocument = document_;
+  Document previousDocument = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
@@ -6619,11 +6629,11 @@ void MainWindow::acceptChamferTool() {
         partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).edges, partDesignCoordinator_.snapshot(PartDesignToolKind::Chamfer).distanceMm,
         "Фаска " + std::to_string(body->features().size())));
   }
-  if (!document_.rebuild()) {
+  if (!document().rebuild()) {
     const QString error = localizedPartDesignError(
         PartDesignToolKind::Chamfer,
-        {OperationFailureCode::Unknown, document_.rebuildError()});
-    document_ = previousDocument;
+        {OperationFailureCode::Unknown, document().rebuildError()});
+    document() = previousDocument;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
     return;
@@ -6699,14 +6709,14 @@ void MainWindow::acceptFilletTool() {
   flushPreviewUpdate();
   const auto state = partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet);
   if (state.lifecycle != ToolLifecycle::PreviewValid) return;
-  Body* body = document_.findBody(state.bodyId);
+  Body* body = document().findBody(state.bodyId);
   if (!body || (state.sourceTopologySnapshot &&
                 !body->matchesTopologySnapshot(*state.sourceTopologySnapshot)))
     return;
   auto commit = startPartDesignCommit();
   if (!commit) return;
   invalidatePreviewUpdates();
-  Document previousDocument = document_;
+  Document previousDocument = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   if (const auto editingId = partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).editingFeatureId) {
     for (std::size_t index = 0; index < body->features().size(); ++index) {
@@ -6722,11 +6732,11 @@ void MainWindow::acceptFilletTool() {
         partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).edges, partDesignCoordinator_.snapshot(PartDesignToolKind::Fillet).radiusMm,
         "Скругление " + std::to_string(body->features().size())));
   }
-  if (!document_.rebuild()) {
+  if (!document().rebuild()) {
     const QString error = localizedPartDesignError(
         PartDesignToolKind::Fillet,
-        {OperationFailureCode::Unknown, document_.rebuildError()});
-    document_ = previousDocument;
+        {OperationFailureCode::Unknown, document().rebuildError()});
+    document() = previousDocument;
     refreshBodyViewFromDocument();
     toolParametersPanel_->setStatus(error, true);
     return;
@@ -6753,7 +6763,7 @@ void MainWindow::rebuildHistoryPanel() {
     delete item;
   }
   historySteps_.clear();
-  historySteps_ = buildPartDesignHistory(document_, document_.activeBody());
+  historySteps_ = buildPartDesignHistory(document(), document().activeBody());
   if (wasAtEnd) historyPosition_ = static_cast<int>(historySteps_.size());
   auto addStep = [this](const HistoryStep& step, int position) {
     auto* button = new QToolButton(historyContent_);
@@ -6826,8 +6836,8 @@ void MainWindow::moveHistoryToEnd() {
 
 void MainWindow::removeHistoryStep(const HistoryStep& step) {
   const FeatureRemovalPlan plan = step.sketchId != kInvalidSketchId
-      ? document_.planSketchRemoval(step.sketchId)
-      : document_.planFeatureRemoval(step.bodyId, step.featureId);
+      ? document().planSketchRemoval(step.sketchId)
+      : document().planFeatureRemoval(step.bodyId, step.featureId);
   if (!plan.applicable) {
     QMessageBox::warning(
         this, QString::fromUtf8("Ошибка удаления"),
@@ -6842,7 +6852,7 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   // against Document so the confirmation names every cross-Body dependent
   // that will actually be removed.
   for (const auto& range : plan.bodyRanges) {
-    const Body* body = document_.findBody(range.bodyId);
+    const Body* body = document().findBody(range.bodyId);
     if (!body) continue;
     for (const FeatureId featureId : range.featureIds) {
       if (featureId == step.featureId) continue;
@@ -6859,7 +6869,7 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   }
   for (const SketchId sketchId : plan.sketchIds) {
     if (sketchId == step.sketchId) continue;
-    const DocumentSketch* sketch = document_.findSketch(sketchId);
+    const DocumentSketch* sketch = document().findSketch(sketchId);
     if (sketch)
       dependents << QString::fromUtf8("• Эскиз / %1")
                         .arg(QString::fromStdString(sketch->name));
@@ -6876,16 +6886,16 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   if (box.exec() != QMessageBox::Yes) return;
 
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Document previous = document_;
+  Document previous = document();
   const auto removedJoinOperands = removedJoinOperandIds(previous, plan);
   std::string error;
-  const bool removed = document_.applyRemovalPlan(plan, &error);
+  const bool removed = document().applyRemovalPlan(plan, &error);
   if (removed)
-    releaseUnconsumedJoinOperands(document_, removedJoinOperands);
-  const bool recomputed = removed && document_.recompute();
-  const std::string rebuildError = recomputed ? std::string{} : document_.rebuildError();
+    releaseUnconsumedJoinOperands(document(), removedJoinOperands);
+  const bool recomputed = removed && document().recompute();
+  const std::string rebuildError = recomputed ? std::string{} : document().rebuildError();
   if (!recomputed) {
-    document_ = previous;
+    document() = previous;
     QMessageBox::warning(this, QString::fromUtf8("Ошибка удаления"),
                          QString::fromStdString(
                              error.empty() ? rebuildError : error));
@@ -6896,7 +6906,7 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
   committedAfter.presentation.sketchVisibilities.clear();
   for (std::size_t index = 0; index < sketchViews_.size(); ++index) {
     const SketchId id = sketchViews_[index].documentSketchId;
-    if (!document_.findSketch(id)) continue;
+    if (!document().findSketch(id)) continue;
     committedAfter.sketchViewIds.push_back(id);
     committedAfter.presentation.sketchVisibilities.push_back(
         previousSelection.presentation.sketchVisibilities.size() > index
@@ -6908,7 +6918,7 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
     return;
   resetTransientModelingUi();
   for (std::size_t index = sketchViews_.size(); index-- > 0;)
-    if (!document_.findSketch(sketchViews_[index].documentSketchId)) {
+    if (!document().findSketch(sketchViews_[index].documentSketchId)) {
       viewport_->removeSketch(index);
       sketchViews_.erase(sketchViews_.begin() +
                            static_cast<std::ptrdiff_t>(index));
@@ -6927,9 +6937,9 @@ void MainWindow::removeHistoryStep(const HistoryStep& step) {
 
 void MainWindow::removeBody(BodyId bodyId) {
   if (!ensureHistoryAtEnd()) return;
-  const Body* body = document_.findBody(bodyId);
+  const Body* body = document().findBody(bodyId);
   if (!body) return;
-  const FeatureRemovalPlan plan = document_.planBodyRemoval(bodyId);
+  const FeatureRemovalPlan plan = document().planBodyRemoval(bodyId);
   if (!plan.applicable) {
     QMessageBox::warning(
         this, QString::fromUtf8("Ошибка удаления"),
@@ -6940,7 +6950,7 @@ void MainWindow::removeBody(BodyId bodyId) {
   }
   QStringList dependents;
   for (const auto& range : plan.bodyRanges) {
-    const Body* dependentBody = document_.findBody(range.bodyId);
+    const Body* dependentBody = document().findBody(range.bodyId);
     if (!dependentBody) continue;
     for (const FeatureId featureId : range.featureIds) {
       const auto feature = std::find_if(
@@ -6955,7 +6965,7 @@ void MainWindow::removeBody(BodyId bodyId) {
     }
   }
   for (const SketchId sketchId : plan.sketchIds) {
-    const DocumentSketch* sketch = document_.findSketch(sketchId);
+    const DocumentSketch* sketch = document().findSketch(sketchId);
     if (sketch)
       dependents << QString::fromUtf8("• Эскиз / %1")
                         .arg(QString::fromStdString(sketch->name));
@@ -6972,16 +6982,16 @@ void MainWindow::removeBody(BodyId bodyId) {
   if (box.exec() != QMessageBox::Yes) return;
 
   const HistorySelectionState previousSelection = captureHistorySelection();
-  Document previousDocument = document_;
+  Document previousDocument = document();
   const auto removedJoinOperands =
       removedJoinOperandIds(previousDocument, plan);
   std::string error;
-  const bool removed = document_.applyRemovalPlan(plan, &error);
+  const bool removed = document().applyRemovalPlan(plan, &error);
   if (removed)
-    releaseUnconsumedJoinOperands(document_, removedJoinOperands);
-  if (!removed || !document_.recompute()) {
-    const std::string rebuildError = document_.rebuildError();
-    document_ = previousDocument;
+    releaseUnconsumedJoinOperands(document(), removedJoinOperands);
+  if (!removed || !document().recompute()) {
+    const std::string rebuildError = document().rebuildError();
+    document() = previousDocument;
     QMessageBox::warning(
         this, QString::fromUtf8("Ошибка удаления"),
         QString::fromStdString(error.empty() ? rebuildError : error));
@@ -6993,7 +7003,7 @@ void MainWindow::removeBody(BodyId bodyId) {
   committedAfter.presentation.sketchVisibilities.clear();
   for (std::size_t index = 0; index < sketchViews_.size(); ++index) {
     const SketchId id = sketchViews_[index].documentSketchId;
-    if (!document_.findSketch(id)) continue;
+    if (!document().findSketch(id)) continue;
     committedAfter.sketchViewIds.push_back(id);
     committedAfter.presentation.sketchVisibilities.push_back(
         previousSelection.presentation.sketchVisibilities.size() > index
@@ -7005,7 +7015,7 @@ void MainWindow::removeBody(BodyId bodyId) {
     return;
   resetTransientModelingUi();
   for (std::size_t index = sketchViews_.size(); index-- > 0;)
-    if (!document_.findSketch(sketchViews_[index].documentSketchId)) {
+    if (!document().findSketch(sketchViews_[index].documentSketchId)) {
       viewport_->removeSketch(index);
       sketchViews_.erase(sketchViews_.begin() +
                            static_cast<std::ptrdiff_t>(index));
@@ -7029,8 +7039,8 @@ void MainWindow::applyHistoryPosition(int position) {
     refreshBodyViewFromDocument();
   } else {
     std::vector<BodyViewShape> shapes;
-    for (const Body& body : document_.bodies()) {
-      if (const Body* active = document_.activeBody(); active && body.id() == active->id())
+    for (const Body& body : document().bodies()) {
+      if (const Body* active = document().activeBody(); active && body.id() == active->id())
         continue;
       if (auto shape = body.lastValidResultShape()) {
         const ShapeFeature* feature = presentationOwner(body, shape);
@@ -7046,7 +7056,7 @@ void MainWindow::applyHistoryPosition(int position) {
       const HistoryStep& step = historySteps_[historyPosition_ - 1];
       if (step.shape) {
         const auto* feature = findHistoryFeature(
-            static_cast<const Document&>(document_), step.bodyId,
+            static_cast<const Document&>(document()), step.bodyId,
             step.featureId);
         auto topology = feature ? feature->lastValidTopologyIndex() : nullptr;
         if (topology)
@@ -7080,7 +7090,7 @@ bool MainWindow::configureSketchEditContext(bool autoProjectSupportFace) {
   if (!currentSketchFaceReference_) return true;
   const FaceReference reference = *currentSketchFaceReference_;
   const ShapeFeature* feature =
-      document_.findFeature(reference.bodyId(), reference.featureId());
+      document().findFeature(reference.bodyId(), reference.featureId());
   const auto shape = feature ? feature->shape() : ShapeFeature::ShapePtr{};
   if (!shape) {
     QMessageBox::warning(
@@ -7118,36 +7128,36 @@ void MainWindow::configureSketchSceneReferences(SketchId excludedSketchId) {
                                    ? currentSketchFaceReference_->bodyId()
                                    : kInvalidBodyId;
   std::vector<ShapeFeature::ShapePtr> bodyShapes;
-  bodyShapes.reserve(document_.bodies().size());
-  for (const auto& body : document_.bodies()) {
+  bodyShapes.reserve(document().bodies().size());
+  for (const auto& body : document().bodies()) {
     if (!body.visible()) continue;
     if (body.id() == supportBodyId) continue;
     if (auto shape = body.resultShape()) bodyShapes.push_back(std::move(shape));
   }
 
   std::vector<SketchSceneReference> sketches;
-  sketches.reserve(document_.sketches().size());
-  for (const auto& documentSketch : document_.sketches()) {
+  sketches.reserve(document().sketches().size());
+  for (const auto& documentSketch : document().sketches()) {
     if (documentSketch.id == excludedSketchId) continue;
     // Consumed construction sketches remain upstream of Move and other body
     // features.  Drawing all of them in blue made the pre-transform contours
     // look like a second, stale solid.  Match the 3D tree: show only sketches
     // that are still independently visible construction geometry.
-    if (isSketchConsumedByPartDesign(document_, documentSketch.id)) continue;
+    if (isSketchConsumedByPartDesign(document(), documentSketch.id)) continue;
     sketches.push_back(
         {documentSketch.geometry, documentSketch.placement});
   }
   sketchCanvas_->setSceneReferences(currentSketchPlacement_, bodyShapes,
                                     std::move(sketches),
-                                    document_.referenceImages());
+                                    document().referenceImages());
 }
 
 void MainWindow::editSketchStep(std::size_t index) {
   if (index >= sketchViews_.size()) return;
   const SketchId sketchId = sketchViews_[index].documentSketchId;
-  if (!document_.findSketch(sketchId)) return;
+  if (!document().findSketch(sketchId)) return;
   resetTransientModelingUi();
-  const auto* modelSketch = document_.findSketch(sketchId);
+  const auto* modelSketch = document().findSketch(sketchId);
   if (!modelSketch) return;
   editingSketchIndex_ = index;
   currentSketchSupport_ = sketchPresentationLabel(*modelSketch);
@@ -7164,7 +7174,7 @@ void MainWindow::editSketchStep(std::size_t index) {
   }
   sketchCanvas_->loadSketch(modelSketch->geometry);
   configureSketchSceneReferences(sketchId);
-  sketchCanvas_->setReferenceBody(document_.box(), currentSketchPlacement_,
+  sketchCanvas_->setReferenceBody(document().box(), currentSketchPlacement_,
                                   hasDisplayableModernSolid() ||
                                       hasHistoricalLegacyExtrusion());
   workspaceStack_->setCurrentWidget(sketchCanvas_);
@@ -7185,9 +7195,9 @@ void MainWindow::editSketchById(SketchId sketchId) {
 }
 
 void MainWindow::editHistoryFeature(BodyId bodyId, FeatureId featureId) {
-  Body* body = document_.findBody(bodyId);
+  Body* body = document().findBody(bodyId);
   if (!body) return;
-  ShapeFeature* feature = findHistoryFeature(document_, bodyId, featureId);
+  ShapeFeature* feature = findHistoryFeature(document(), bodyId, featureId);
   if (!feature) return;
   const auto* descriptor = featureUiDescriptor(feature->kind());
   if (!descriptor || !descriptor->editable ||
@@ -7239,7 +7249,7 @@ void MainWindow::editHistoryFeature(BodyId bodyId, FeatureId featureId) {
   };
   const auto editorSuccessfullyActive = [this, featureId] {
     const auto state = partDesignCoordinator_.snapshot(
-        partDesignCoordinator_.activeTool(), document_);
+        partDesignCoordinator_.activeTool(), document());
     return state.lifecycle != ToolLifecycle::Inactive &&
            state.editingFeatureId == std::optional<FeatureId>{featureId};
   };
@@ -7304,7 +7314,7 @@ void MainWindow::editHistoryFeature(BodyId bodyId, FeatureId featureId) {
 }
 
 void MainWindow::editExtrusionStep(BodyId bodyId, FeatureId featureId) {
-  Body* body = document_.findBody(bodyId);
+  Body* body = document().findBody(bodyId);
   ExtrudeFeature* extrude = nullptr;
   std::size_t extrudeIndex = 0;
   if (body)
@@ -7354,16 +7364,16 @@ void MainWindow::editExtrusionStep(BodyId bodyId, FeatureId featureId) {
     return;
   }
   const double height = distance->value();
-  Document previousDocument = document_;
+  Document previousDocument = document();
   const HistorySelectionState previousSelection = captureHistorySelection();
   extrude->setLengthMm(std::abs(height));
   extrude->setReversed(height < 0.0);
   if (extrude->operation() != ExtrudeOperation::NewBody)
     extrude->setOperation(static_cast<ExtrudeOperation>(operation->currentIndex()));
   body->markDirtyFrom(extrudeIndex);
-  if (!document_.rebuild()) {
+  if (!document().rebuild()) {
     const QString error = QString::fromStdString(extrude->error());
-    document_ = previousDocument;
+    document() = previousDocument;
     refreshBodyViewFromDocument();
     QMessageBox::warning(this, QString::fromUtf8("Ошибка выдавливания"), error);
     return;
@@ -7381,7 +7391,7 @@ void MainWindow::editExtrusionStep(BodyId bodyId, FeatureId featureId) {
 }
 
 void MainWindow::editPocketStep(BodyId bodyId, FeatureId featureId) {
-  Body* body = document_.findBody(bodyId);
+  Body* body = document().findBody(bodyId);
   PocketFeature* pocket = nullptr;
   if (body)
     for (const auto& candidate : body->features())
@@ -7403,7 +7413,7 @@ void MainWindow::editPocketStep(BodyId bodyId, FeatureId featureId) {
 }
 
 void MainWindow::editFilletStep(BodyId bodyId, FeatureId featureId) {
-  Body* body = document_.findBody(bodyId);
+  Body* body = document().findBody(bodyId);
   FilletFeature* fillet = nullptr;
   if (body)
     for (const auto& candidate : body->features())
@@ -7442,7 +7452,7 @@ void MainWindow::editFilletStep(BodyId bodyId, FeatureId featureId) {
 }
 
 void MainWindow::editChamferStep(BodyId bodyId, FeatureId featureId) {
-  Body* body = document_.findBody(bodyId);
+  Body* body = document().findBody(bodyId);
   ChamferFeature* chamfer = nullptr;
   if (body)
     for (const auto& candidate : body->features())
@@ -7532,7 +7542,7 @@ void MainWindow::rebuildFeatureTree() {
             hasHistoricalLegacyExtrusion() &&
             historicalLegacyExtrusionSourceSketchId_ == sketchId;
         visible = !consumedByHistoricalLegacyExtrusion &&
-                  !isSketchConsumedByPartDesign(document_, sketchId);
+                  !isSketchConsumedByPartDesign(document(), sketchId);
       } else {
         // Keep the tree checkbox synchronized with applyHistoryPosition():
         // when inspecting an earlier history step, only the selected sketch
@@ -7549,10 +7559,10 @@ void MainWindow::rebuildFeatureTree() {
   auto* images =
       new QTreeWidgetItem(project, {QString::fromUtf8("Изображения")});
   QTreeWidgetItem* selectedImageItem = nullptr;
-  if (document_.referenceImages().empty()) {
+  if (document().referenceImages().empty()) {
     new QTreeWidgetItem(images, {QString::fromUtf8("Изображений нет")});
   } else {
-    for (const auto& image : document_.referenceImages()) {
+    for (const auto& image : document().referenceImages()) {
       auto* imageItem = new QTreeWidgetItem(
           images, {QString::fromUtf8("▧  ") + QString::fromStdString(image.name)});
       imageItem->setData(0, Qt::UserRole, 4);
@@ -7570,11 +7580,11 @@ void MainWindow::rebuildFeatureTree() {
     }
   }
   auto* models = new QTreeWidgetItem(project, {QString::fromUtf8("Модели")});
-  if (!activeSolid || document_.bodies().empty()) {
+  if (!activeSolid || document().bodies().empty()) {
     new QTreeWidgetItem(models, {QString::fromUtf8("Твёрдых тел нет")});
   } else {
-    for (std::size_t bodyIndex = 0; bodyIndex < document_.bodies().size(); ++bodyIndex) {
-      const Body& body = document_.bodies()[bodyIndex];
+    for (std::size_t bodyIndex = 0; bodyIndex < document().bodies().size(); ++bodyIndex) {
+      const Body& body = document().bodies()[bodyIndex];
       const QString bodyName = body.name().empty()
                                    ? QString::fromUtf8("Body%1").arg(
                                          bodyIndex + 1, 3, 10,

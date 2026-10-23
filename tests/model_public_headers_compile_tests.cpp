@@ -73,6 +73,7 @@
 
 #include <cstdlib>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 static_assert(static_cast<unsigned>(solidar::FeatureKind::ImportedShape) == 1);
@@ -102,5 +103,17 @@ static_assert(std::is_same_v<
               const solidar::PartDefinition*>);
 static_assert(!std::is_copy_constructible_v<solidar::ProductDocument>);
 static_assert(std::is_nothrow_move_constructible_v<solidar::ProductDocument>);
+static_assert(std::is_same_v<
+              decltype(std::declval<solidar::ProductDocument&>()
+                           .rootDocument()),
+              solidar::Document&>);
+static_assert(std::is_same_v<
+              decltype(std::declval<const solidar::ProductDocument&>()
+                           .rootDocument()),
+              const solidar::Document&>);
+static_assert(std::is_same_v<
+              decltype(std::declval<solidar::ProductDocument&>()
+                           .definitions()),
+              const solidar::DefinitionRegistry&>);
 
 int main() { return EXIT_SUCCESS; }
