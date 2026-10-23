@@ -87,6 +87,13 @@ enum class ProductV5OpenPolicy {
   Allow,
 };
 
+struct StandaloneProductConversionRequest {
+  ProjectId outputProjectId;
+  DefinitionId outputRootDefinitionId;
+  QString name;
+  QString createdAt;
+};
+
 // Non-QObject application boundary for project and geometry exchange I/O.
 // It deliberately owns neither project path/dirty state nor widgets/dialogs.
 class ProjectApplicationService final {
@@ -105,6 +112,9 @@ class ProjectApplicationService final {
   [[nodiscard]] ProjectApplicationStatus save(
       const QString& path,
       const ProductDocument& productDocument) const noexcept;
+  [[nodiscard]] ProjectApplicationStatus convertStandaloneToProduct(
+      const QString& targetPath, ProductDocument& source,
+      const StandaloneProductConversionRequest& request) const noexcept;
   [[nodiscard]] ProjectApplicationStatus upgradeProjectFormat(
       const QString& path, const Document& document,
       project::ProjectPersistenceState currentState) const noexcept;

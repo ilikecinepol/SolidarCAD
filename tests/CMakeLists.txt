@@ -193,6 +193,8 @@ solidar_add_test(project_lifecycle_tests
   LIBRARIES solidar_project Qt6::Core LABELS regression)
 solidar_add_test(project_application_service_tests
   LIBRARIES solidar_editor Qt6::Core LABELS regression)
+solidar_add_test(product_conversion_application_service_tests
+  LIBRARIES solidar_editor Qt6::Core LABELS unit regression topology)
 solidar_add_test(project_switch_ui_tests
   LIBRARIES solidar_editor solidar_project Qt6::Widgets
   LABELS regression ui-smoke)

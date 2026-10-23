@@ -14,10 +14,13 @@
 #include "io/StepExchange.h"
 #include "io/StlExporter.h"
 #include "model/IdGeneration.h"
+#include "project/ProductEnvelopeV5Conversion.h"
 #include "project/ProductEnvelopeV5Decoder.h"
 #include "project/ProductEnvelopeV5Materialization.h"
 #include "project/ProjectFile.h"
+#include "project/internal/ProjectAtomicWriting.h"
 #include "project/internal/ProductEnvelopeV5AtomicWriting.h"
+#include "ui/application/internal/ProductConversionApplicationService.h"
 
 namespace solidar {
 namespace {
@@ -104,6 +107,74 @@ ProjectApplicationStatus unknownFailure(const char* operation) {
   return failure(ProjectApplicationErrorCode::UnexpectedFailure,
                  QString::fromUtf8("%1: неизвестная ошибка.")
                      .arg(QString::fromUtf8(operation)));
+}
+
+template <typename Publisher>
+ProjectApplicationStatus convertStandaloneToProductImpl(
+    ProductDocument& source,
+    const StandaloneProductConversionRequest& request,
+    Publisher&& publisher) noexcept {
+  try {
+    const project::ProductEnvelopeV5Metadata metadata{request.name,
+                                                       request.createdAt};
+    auto prepared = project::prepareStandaloneProductEnvelopeV5Conversion(
+        source, request.outputProjectId, request.outputRootDefinitionId,
+        metadata);
+    if (!prepared.succeeded()) {
+      const auto code =
+          prepared.status ==
+                  project::ProductEnvelopeV5ConversionStatus::PayloadTooLarge
+              ? ProjectApplicationErrorCode::SaveFailed
+              : ProjectApplicationErrorCode::InvalidProject;
+      return failure(code, std::move(prepared.error));
+    }
+
+    auto scanned = project::scanProductEnvelopeV5(
+        QByteArrayView(prepared.prepared->payload.bytes));
+    if (scanned.status != project::ProductEnvelopeV5ScanStatus::Candidate ||
+        !scanned.candidate) {
+      const auto code =
+          scanned.status == project::ProductEnvelopeV5ScanStatus::Unsupported
+              ? ProjectApplicationErrorCode::UnsupportedProject
+              : ProjectApplicationErrorCode::InvalidProject;
+      return failure(code, std::move(scanned.error));
+    }
+
+    auto materialized =
+        project::materializeProductEnvelopeV5(*scanned.candidate);
+    if (!materialized.succeeded()) {
+      const auto code = materialized.status ==
+                                project::ProductEnvelopeV5MaterializationStatus::
+                                    Unsupported
+                            ? ProjectApplicationErrorCode::UnsupportedProject
+                            : ProjectApplicationErrorCode::InvalidProject;
+      return failure(code, std::move(materialized.error));
+    }
+
+    const auto published = publisher(
+        QByteArrayView(prepared.prepared->payload.bytes));
+    if (!published.succeeded()) {
+      return failure(
+          ProjectApplicationErrorCode::SaveFailed,
+          published.error.isEmpty()
+              ? QStringLiteral("Failed to publish prepared product payload.")
+              : std::move(published.error));
+    }
+
+    const auto committed = source.commitPreparedStandaloneConversion(
+        std::move(*materialized.product));
+    if (committed != ProductDocumentStandaloneConversionStatus::Committed) {
+      return failure(
+          ProjectApplicationErrorCode::UnexpectedFailure,
+          QStringLiteral(
+              "Prepared product was published but its model commit failed."));
+    }
+    return {};
+  } catch (const std::exception& exception) {
+    return unexpectedFailure("Ошибка преобразования продукта", exception);
+  } catch (...) {
+    return unknownFailure("Ошибка преобразования продукта");
+  }
 }
 
 SketchPlacement legacyV1SketchPlacement(const QString& support,
@@ -273,6 +344,16 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
 ProjectApplicationStatus ProjectApplicationService::save(
     const QString& path, const Document& document) const noexcept {
   return save(path, document, {project::ProjectPersistenceFormat::V3});
+}
+
+ProjectApplicationStatus ProjectApplicationService::convertStandaloneToProduct(
+    const QString& targetPath, ProductDocument& source,
+    const StandaloneProductConversionRequest& request) const noexcept {
+  return convertStandaloneToProductImpl(
+      source, request, [&targetPath](QByteArrayView bytes) {
+        return project::detail::publishProjectPayloadAtomically(targetPath,
+                                                                 bytes);
+      });
 }
 
 ProjectApplicationStatus ProjectApplicationService::save(
@@ -446,3 +527,18 @@ ProjectApplicationStatus ProjectApplicationService::exportStl(
 }
 
 }  // namespace solidar
+
+namespace solidar::application::detail {
+
+ProjectApplicationStatus convertStandaloneToProduct(
+    ProductDocument& source,
+    const StandaloneProductConversionRequest& request,
+    project::detail::ProjectAtomicWriteTransaction& transaction) noexcept {
+  return convertStandaloneToProductImpl(
+      source, request, [&transaction](QByteArrayView bytes) {
+        return project::detail::publishProjectPayloadAtomically(bytes,
+                                                                 transaction);
+      });
+}
+
+}  // namespace solidar::application::detail
