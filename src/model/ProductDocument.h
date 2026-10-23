@@ -119,6 +119,14 @@ enum class ProductDocumentStandaloneConversionStatus {
   PreparedNotSingleRoot,
 };
 
+enum class ProductDocumentForkIdentityStatus {
+  Committed,
+  SourceMissingIdentity,
+  InvalidReplacementProjectId,
+  SameProjectId,
+  StaleExpectedIdentity,
+};
+
 struct ProductDocumentMetadata {
   std::string nameUtf8;
   std::string createdAtUtf8;
@@ -169,6 +177,13 @@ class ProductDocument final {
   // without changing the authoritative bundle.
   [[nodiscard]] bool commitProductIdentity(
       ProductDocumentIdentity identity) noexcept;
+  // Re-identifies an already identified product after its clone has been
+  // published. The complete expected bundle is a stale-source guard. Every
+  // rejection is an exact no-op; success swaps only the identity bundle and
+  // never touches the definition registry or live Document graph.
+  [[nodiscard]] ProductDocumentForkIdentityStatus commitForkIdentity(
+      const ProductDocumentIdentity& expectedIdentity,
+      ProductDocumentIdentity replacementIdentity) noexcept;
   // Atomically adopts a fully prepared identity-bearing carrier while
   // retaining this standalone product's live root Document allocation. The
   // prepared reconstruction is destroyed as part of a successful commit;
@@ -176,6 +191,7 @@ class ProductDocument final {
   [[nodiscard]] ProductDocumentStandaloneConversionStatus
   commitPreparedStandaloneConversion(ProductDocument&& prepared) noexcept;
   [[nodiscard]] const PartDefinition& rootDefinition() const noexcept;
+  [[nodiscard]] bool hasSingleValidRootDefinition() const noexcept;
   [[nodiscard]] Document& rootDocument() noexcept;
   [[nodiscard]] const Document& rootDocument() const noexcept;
   [[nodiscard]] std::unique_ptr<Document> releaseRootDocument() && noexcept;

@@ -69,6 +69,7 @@ struct CarrierSnapshot {
   const solidar::Body* firstBody{};
   const solidar::Feature* firstFeature{};
   const TopoDS_Shape* firstShape{};
+  solidar::ShapeRevision firstShapeRevision{solidar::kInvalidShapeRevision};
 };
 
 CarrierSnapshot snapshot(const solidar::ProductDocument& product) {
@@ -83,7 +84,10 @@ CarrierSnapshot snapshot(const solidar::ProductDocument& product) {
   result.firstFeature = result.firstBody->features().front().get();
   const auto* shapeFeature =
       dynamic_cast<const solidar::ShapeFeature*>(result.firstFeature);
-  if (shapeFeature) result.firstShape = shapeFeature->lastValidShape().get();
+  if (shapeFeature) {
+    result.firstShape = shapeFeature->lastValidShape().get();
+    result.firstShapeRevision = shapeFeature->shapeRevision();
+  }
   return result;
 }
 
@@ -96,7 +100,8 @@ bool matchesSnapshot(const solidar::ProductDocument& product,
          actual.rootDocument == expected.rootDocument &&
          actual.firstBody == expected.firstBody &&
          actual.firstFeature == expected.firstFeature &&
-         actual.firstShape == expected.firstShape;
+         actual.firstShape == expected.firstShape &&
+         actual.firstShapeRevision == expected.firstShapeRevision;
 }
 
 template <typename T>
@@ -156,6 +161,18 @@ int main() {
       std::declval<solidar::ProductDocument&>()
           .commitPreparedStandaloneConversion(
               std::declval<solidar::ProductDocument&&>())));
+  static_assert(std::is_same_v<
+                decltype(std::declval<solidar::ProductDocument&>()
+                             .commitForkIdentity(
+                                 std::declval<const solidar::
+                                                  ProductDocumentIdentity&>(),
+                                 std::declval<solidar::
+                                                  ProductDocumentIdentity>())),
+                solidar::ProductDocumentForkIdentityStatus>);
+  static_assert(noexcept(
+      std::declval<solidar::ProductDocument&>().commitForkIdentity(
+          std::declval<const solidar::ProductDocumentIdentity&>(),
+          std::declval<solidar::ProductDocumentIdentity>())));
   static_assert(std::is_nothrow_move_constructible_v<
                 solidar::ProductDocumentIdentity>);
   static_assert(std::is_same_v<
@@ -570,6 +587,70 @@ int main() {
                           sourceForMovedPreparedBefore));
     CHECK(matchesSnapshot(*movedPrepared, movedPreparedBefore));
     CHECK(movedDestination.identity() == productIdentity(projectId(54)));
+  }
+
+  // Save-As cloning is an explicit identified-to-identified fork. It swaps
+  // only the complete identity bundle and uses the expected old bundle as a
+  // strong stale-source guard.
+  {
+    const std::string nameA =
+        "\xD0\x98\xD1\x81\xD1\x85\xD0\xBE\xD0\xB4\xD0\xBD\xD0\xBE\xD0\xB5"
+        " \xCE\xA9/\xE9\x9B\xAA";
+    const std::string createdA =
+        "2026-10-23T22:00:00+03:00/"
+        "\xD1\x82\xD0\xBE\xD1\x87\xD0\xBD\xD0\xBE";
+    const auto identityA = productIdentity(projectId(61), nameA, createdA);
+    const auto identityB = productIdentity(
+        projectId(62),
+        "\xD0\x9A\xD0\xBE\xD0\xBF\xD0\xB8\xD1\x8F \xCE\xB2/\xE6\x9D\xB1",
+        "2026-10-24T00:01:02Z/\xD0\xBD\xD0\xBE\xD0\xB2\xD1\x8B\xD0\xB9");
+    const auto identityC = productIdentity(
+        projectId(63), "fork C", "2026-10-25T00:00:00Z");
+    auto source = makeShapedProduct(kRootId, identityA, "fork-live");
+    const auto graphBefore = snapshot(*source);
+
+    CHECK(source->commitForkIdentity(identityA, identityB) ==
+          solidar::ProductDocumentForkIdentityStatus::Committed);
+    CHECK(source->identity() == identityB);
+    CHECK(source->identity()->metadata.nameUtf8 == identityB.metadata.nameUtf8);
+    CHECK(source->identity()->metadata.createdAtUtf8 ==
+          identityB.metadata.createdAtUtf8);
+    auto afterB = graphBefore;
+    afterB.identity = identityB;
+    CHECK(matchesSnapshot(*source, afterB));
+
+    const auto beforeStale = snapshot(*source);
+    CHECK(source->commitForkIdentity(identityA, identityC) ==
+          solidar::ProductDocumentForkIdentityStatus::StaleExpectedIdentity);
+    CHECK(matchesSnapshot(*source, beforeStale));
+    CHECK(source->commitForkIdentity(
+              identityB,
+              productIdentity(projectId(62), "same id different metadata",
+                              "same id")) ==
+          solidar::ProductDocumentForkIdentityStatus::SameProjectId);
+    CHECK(matchesSnapshot(*source, beforeStale));
+    CHECK(source->commitForkIdentity(
+              identityB,
+              productIdentity(solidar::ProjectId{}, "nil", "nil")) ==
+          solidar::ProductDocumentForkIdentityStatus::
+              InvalidReplacementProjectId);
+    CHECK(matchesSnapshot(*source, beforeStale));
+
+    CHECK(source->commitForkIdentity(identityB, identityC) ==
+          solidar::ProductDocumentForkIdentityStatus::Committed);
+    auto afterC = graphBefore;
+    afterC.identity = identityC;
+    CHECK(matchesSnapshot(*source, afterC));
+    CHECK(source->commitForkIdentity(identityB, identityA) ==
+          solidar::ProductDocumentForkIdentityStatus::StaleExpectedIdentity);
+    CHECK(matchesSnapshot(*source, afterC));
+
+    auto identityless =
+        makeShapedProduct(kRootId, std::nullopt, "identityless-fork");
+    const auto identitylessBefore = snapshot(*identityless);
+    CHECK(identityless->commitForkIdentity(identityA, identityB) ==
+          solidar::ProductDocumentForkIdentityStatus::SourceMissingIdentity);
+    CHECK(matchesSnapshot(*identityless, identitylessBefore));
   }
 
   return EXIT_SUCCESS;

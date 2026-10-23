@@ -306,6 +306,7 @@ add_library(solidar_editor
   ui/application/PartDesignCommitPolicy.h
   ui/application/ProjectApplicationService.cpp
   ui/application/ProjectApplicationService.h
+  ui/application/internal/ProductCloneApplicationService.h
   ui/application/internal/ProductConversionApplicationService.h
   ui/EditorFactory.cpp
   ui/EditorFactory.h

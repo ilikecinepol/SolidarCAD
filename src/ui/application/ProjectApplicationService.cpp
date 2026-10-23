@@ -20,6 +20,7 @@
 #include "project/ProjectFile.h"
 #include "project/internal/ProjectAtomicWriting.h"
 #include "project/internal/ProductEnvelopeV5AtomicWriting.h"
+#include "ui/application/internal/ProductCloneApplicationService.h"
 #include "ui/application/internal/ProductConversionApplicationService.h"
 
 namespace solidar {
@@ -87,6 +88,15 @@ std::optional<QString> exactQStringFromUtf8(const std::string& bytes) {
   const QString decoded = QString::fromUtf8(original);
   if (decoded.toUtf8() != original) return std::nullopt;
   return decoded;
+}
+
+std::optional<std::string> exactUtf8FromQString(const QString& text) {
+  if (text.size() > project::ProjectFile::kMaximumStringCharacters)
+    return std::nullopt;
+  const QByteArray encoded = text.toUtf8();
+  if (QString::fromUtf8(encoded) != text) return std::nullopt;
+  return std::string(encoded.constData(),
+                     static_cast<std::size_t>(encoded.size()));
 }
 
 ProjectApplicationStatus failure(ProjectApplicationErrorCode code,
@@ -174,6 +184,66 @@ ProjectApplicationStatus convertStandaloneToProductImpl(
     return unexpectedFailure("Ошибка преобразования продукта", exception);
   } catch (...) {
     return unknownFailure("Ошибка преобразования продукта");
+  }
+}
+
+template <typename Writer>
+ProjectApplicationStatus saveProductAsCloneImpl(
+    ProductDocument& source, const ProductCloneRequest& request,
+    Writer&& writer) noexcept {
+  try {
+    if (!source.identity() || !source.identity()->projectId.isValid() ||
+        !source.hasSingleValidRootDefinition() ||
+        source.rootDefinitionId().value() >
+            static_cast<std::uint64_t>(
+                project::ProjectFile::kMaximumPersistedId) ||
+        !request.outputProjectId.isValid() ||
+        request.outputProjectId == source.identity()->projectId) {
+      return failure(ProjectApplicationErrorCode::InvalidProject,
+                     QStringLiteral(
+                         "Product clone request or source is invalid."));
+    }
+
+    auto nameUtf8 = exactUtf8FromQString(request.name);
+    auto createdAtUtf8 = exactUtf8FromQString(request.createdAt);
+    if (!nameUtf8 || !createdAtUtf8) {
+      return failure(
+          ProjectApplicationErrorCode::InvalidProject,
+          QStringLiteral("Product clone metadata is not exactly representable."));
+    }
+
+    // Prepare both sides of the guarded identity transition before opening a
+    // transaction. Publication uses the same metadata values and existing v5
+    // writer; no second serialization path is introduced here.
+    const ProductDocumentIdentity expectedIdentity = *source.identity();
+    ProductDocumentIdentity replacementIdentity{
+        request.outputProjectId,
+        {std::move(*nameUtf8), std::move(*createdAtUtf8)}};
+    const project::ProductEnvelopeV5Metadata metadata{request.name,
+                                                       request.createdAt};
+
+    const auto written = writer(metadata);
+    if (!written.succeeded()) {
+      return failure(
+          ProjectApplicationErrorCode::SaveFailed,
+          written.error.isEmpty()
+              ? QStringLiteral("Failed to publish product clone.")
+              : std::move(written.error));
+    }
+
+    const auto committed = source.commitForkIdentity(
+        expectedIdentity, std::move(replacementIdentity));
+    if (committed != ProductDocumentForkIdentityStatus::Committed) {
+      return failure(
+          ProjectApplicationErrorCode::UnexpectedFailure,
+          QStringLiteral(
+              "Product clone was published but its identity commit failed."));
+    }
+    return {};
+  } catch (const std::exception& exception) {
+    return unexpectedFailure("Ошибка клонирования продукта", exception);
+  } catch (...) {
+    return unknownFailure("Ошибка клонирования продукта");
   }
 }
 
@@ -356,6 +426,18 @@ ProjectApplicationStatus ProjectApplicationService::convertStandaloneToProduct(
       });
 }
 
+ProjectApplicationStatus ProjectApplicationService::saveProductAsClone(
+    const QString& targetPath, ProductDocument& source,
+    const ProductCloneRequest& request) const noexcept {
+  return saveProductAsCloneImpl(
+      source, request,
+      [&targetPath, &source,
+       &request](const project::ProductEnvelopeV5Metadata& metadata) {
+        return project::detail::writeProductEnvelopeV5Atomically(
+            targetPath, source, request.outputProjectId, metadata);
+      });
+}
+
 ProjectApplicationStatus ProjectApplicationService::save(
     const QString& path, const Document& document,
     project::ProjectPersistenceState persistenceState) const noexcept {
@@ -529,6 +611,18 @@ ProjectApplicationStatus ProjectApplicationService::exportStl(
 }  // namespace solidar
 
 namespace solidar::application::detail {
+
+ProjectApplicationStatus saveProductAsClone(
+    ProductDocument& source, const ProductCloneRequest& request,
+    project::detail::ProjectAtomicWriteTransaction& transaction) noexcept {
+  return saveProductAsCloneImpl(
+      source, request,
+      [&source, &request, &transaction](
+          const project::ProductEnvelopeV5Metadata& metadata) {
+        return project::detail::writeProductEnvelopeV5Atomically(
+            source, request.outputProjectId, metadata, transaction);
+      });
+}
 
 ProjectApplicationStatus convertStandaloneToProduct(
     ProductDocument& source,

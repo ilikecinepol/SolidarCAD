@@ -1,6 +1,7 @@
 #include "model/ProductDocument.h"
 
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace solidar {
@@ -70,6 +71,28 @@ bool ProductDocument::commitProductIdentity(
   return true;
 }
 
+ProductDocumentForkIdentityStatus ProductDocument::commitForkIdentity(
+    const ProductDocumentIdentity& expectedIdentity,
+    ProductDocumentIdentity replacementIdentity) noexcept {
+  if (!identity_)
+    return ProductDocumentForkIdentityStatus::SourceMissingIdentity;
+  if (!replacementIdentity.projectId.isValid())
+    return ProductDocumentForkIdentityStatus::InvalidReplacementProjectId;
+  if (replacementIdentity.projectId == identity_->projectId)
+    return ProductDocumentForkIdentityStatus::SameProjectId;
+  if (*identity_ != expectedIdentity)
+    return ProductDocumentForkIdentityStatus::StaleExpectedIdentity;
+
+  static_assert(std::is_nothrow_move_constructible_v<
+                ProductDocumentIdentity>);
+  static_assert(std::is_nothrow_swappable_v<
+                std::optional<ProductDocumentIdentity>>);
+  std::optional<ProductDocumentIdentity> prepared(
+      std::in_place, std::move(replacementIdentity));
+  identity_.swap(prepared);
+  return ProductDocumentForkIdentityStatus::Committed;
+}
+
 ProductDocumentStandaloneConversionStatus
 ProductDocument::commitPreparedStandaloneConversion(
     ProductDocument&& prepared) noexcept {
@@ -78,23 +101,13 @@ ProductDocument::commitPreparedStandaloneConversion(
   if (identity_)
     return ProductDocumentStandaloneConversionStatus::SourceAlreadyIdentified;
 
-  const auto hasSingleValidRoot = [](const ProductDocument& product) noexcept {
-    if (!product.rootDefinitionId_.isValid() ||
-        product.definitions_.definitions_.size() != 1)
-      return false;
-    const auto root = product.definitions_.definitions_.begin();
-    return root->first == product.rootDefinitionId_ &&
-           root->second.id_ == product.rootDefinitionId_ &&
-           root->second.document_ != nullptr;
-  };
-
-  if (!hasSingleValidRoot(*this))
+  if (!hasSingleValidRootDefinition())
     return ProductDocumentStandaloneConversionStatus::SourceNotSingleRoot;
   if (!prepared.identity_)
     return ProductDocumentStandaloneConversionStatus::PreparedMissingIdentity;
   if (!prepared.identity_->projectId.isValid())
     return ProductDocumentStandaloneConversionStatus::PreparedInvalidIdentity;
-  if (!hasSingleValidRoot(prepared))
+  if (!prepared.hasSingleValidRootDefinition())
     return ProductDocumentStandaloneConversionStatus::PreparedNotSingleRoot;
 
   // Both registries contain exactly their root node. Swapping only the owned
@@ -110,6 +123,15 @@ ProductDocument::commitPreparedStandaloneConversion(
 
 const PartDefinition& ProductDocument::rootDefinition() const noexcept {
   return *definitions_.find(rootDefinitionId_);
+}
+
+bool ProductDocument::hasSingleValidRootDefinition() const noexcept {
+  if (!rootDefinitionId_.isValid() ||
+      definitions_.definitions_.size() != 1)
+    return false;
+  const auto& [storedId, root] = *definitions_.definitions_.begin();
+  return storedId == rootDefinitionId_ && root.id_ == rootDefinitionId_ &&
+         root.document_ != nullptr;
 }
 
 Document& ProductDocument::rootDocument() noexcept {
