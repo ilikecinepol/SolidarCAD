@@ -56,6 +56,7 @@
 #include "model/DraftFeature.h"
 #include "model/JoinBodiesFeature.h"
 #include "model/ImportedShapeFeature.h"
+#include "model/IdGeneration.h"
 #include "model/MirrorFeature.h"
 #include "model/LinearPatternFeature.h"
 #include "model/CircularPatternFeature.h"
@@ -63,6 +64,7 @@
 #include "model/MoveFeature.h"
 #include "model/TopologyReferenceResolver.h"
 #include "project/ProjectFile.h"
+#include "ui/EditorFactory.h"
 #include "ui/MainWindow.h"
 #include "ui/PartDesignHistory.h"
 #include "ui/SketchCanvas.h"
@@ -122,6 +124,10 @@ class MainWindowUndoTestAccess {
   static DefinitionId rootDefinitionId(const MainWindow& window) {
     return window.productDocument_.rootDefinitionId();
   }
+  static const std::optional<ProductDocumentIdentity>& identity(
+      const MainWindow& window) {
+    return window.productDocument_.identity();
+  }
   static const Document* rootDefinitionDocumentAddress(
       const MainWindow& window) {
     return &window.productDocument_.rootDefinition().document();
@@ -141,6 +147,10 @@ class MainWindowUndoTestAccess {
         path);
   }
   static void saveProject(MainWindow& window) { window.saveProject(); }
+  static bool saveProjectToPath(MainWindow& window, const QString& path,
+                                QString* error) {
+    return window.saveProjectToPath(path, error);
+  }
   static bool pushBodyMarker(MainWindow& window, const std::string& name) {
     Document previous = window.document();
     const auto previousSelection = window.captureHistorySelection();
@@ -1704,6 +1714,41 @@ class MainWindowUndoTestAccess {
 // Release CI build where NDEBUG is defined.
 namespace {
 
+constexpr solidar::ProjectId kUiV5ProjectId{
+    {0x8d, 0xe4, 0x33, 0x71, 0x26, 0x9a, 0x4f, 0x5c,
+     0xa1, 0x06, 0x52, 0x89, 0x34, 0x7b, 0xcd, 0xef}};
+constexpr solidar::DefinitionId kUiV5RootDefinition{424242};
+
+solidar::ProductDocumentIdentity uiV5Identity() {
+  return {kUiV5ProjectId,
+          {"UI product \xCE\xA9/\xE9\x9B\xAA",
+           "2026-10-23T18:45:00+03:00/\xD1\x82\xD0\xBE\xD1\x87\xD0\xBD\xD0\xBE"}};
+}
+
+std::unique_ptr<solidar::ProductDocument> uiV5Product(
+    solidar::Document document) {
+  solidar::DefinitionRegistry definitions;
+  CHECK(definitions.insert(solidar::PartDefinition(
+            kUiV5RootDefinition,
+            std::make_unique<solidar::Document>(std::move(document)))) ==
+        solidar::DefinitionInsertStatus::Inserted);
+  auto created = solidar::ProductDocument::create(
+      std::move(definitions), kUiV5RootDefinition, uiV5Identity());
+  CHECK(created);
+  return std::move(created.product);
+}
+
+bool writeTestBytes(const QString& path, const QByteArray& bytes) {
+  QFile file(path);
+  return file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+         file.write(bytes) == bytes.size() && file.flush();
+}
+
+solidar::BodyId consumeBodyId(const char* name) {
+  solidar::Document document;
+  return document.addBody(name).id();
+}
+
 solidar::Document makeHeavyImportedDocument(int bodyCount) {
   solidar::Document document;
   for (int bodyIndex = 0; bodyIndex < bodyCount; ++bodyIndex) {
@@ -2543,6 +2588,202 @@ int main(int argc, char** argv) {
     CHECK(Access::persistenceState(persistenceEditor) == v4);
     CHECK(persistenceEditor.loadProject(pathA, &error));
     CHECK(Access::persistenceState(persistenceEditor) == v3);
+  }
+
+  // Product v5 is activated only by the editor boundary. Service callers keep
+  // the conservative default, staging is allocation-neutral, and the single
+  // document-replacement commit reserves persisted IDs for later editing.
+  {
+    const auto cursorBefore = consumeBodyId("before-v5-ui-stage");
+    const auto persistedBodyId = cursorBefore + 1000;
+    const auto persistedFeatureId =
+        static_cast<solidar::FeatureId>(persistedBodyId + 1);
+
+    solidar::Document sourceDocument;
+    {
+      solidar::detail::ScopedExplicitIdReservationPause pause;
+      auto& body = sourceDocument.addBody(persistedBodyId, "v5 UI root");
+      body.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+          persistedFeatureId,
+          std::make_shared<const TopoDS_Shape>(
+              BRepPrimAPI_MakeBox(20.0, 10.0, 5.0).Shape()),
+          "v5 UI source"));
+    }
+    CHECK(sourceDocument.recompute());
+    auto sourceProduct = uiV5Product(std::move(sourceDocument));
+    const auto expectedIdentity = uiV5Identity();
+    const QString v5Path =
+        directory.filePath(QStringLiteral("editor-product-v5.solidar"));
+    solidar::ProjectApplicationService service;
+    CHECK(service.save(v5Path, *sourceProduct).succeeded());
+
+    const auto defaultStage = service.stageOpen(v5Path);
+    CHECK(!defaultStage.succeeded());
+    CHECK(defaultStage.status.code ==
+          solidar::ProjectApplicationErrorCode::UnsupportedProject);
+    CHECK(!defaultStage.staged);
+
+    auto staged = service.stageOpen(
+        v5Path, solidar::ProductV5OpenPolicy::Allow);
+    CHECK(staged.succeeded());
+    CHECK(staged.staged->productDocument().identity() == expectedIdentity);
+    CHECK(staged.staged->productDocument().rootDefinitionId() ==
+          kUiV5RootDefinition);
+    const auto* const stagedDocument = &staged.staged->rootDocument();
+    const auto cursorAfterStage = consumeBodyId("after-v5-ui-stage");
+    CHECK(cursorAfterStage == cursorBefore + 1);
+
+    solidar::MainWindow stagedCommitEditor(settings);
+    Access::commitStaged(stagedCommitEditor, std::move(*staged.staged),
+                         v5Path);
+    CHECK(Access::documentAddress(stagedCommitEditor) == stagedDocument);
+    CHECK(Access::identity(stagedCommitEditor) == expectedIdentity);
+    CHECK(Access::rootDefinitionId(stagedCommitEditor) ==
+          kUiV5RootDefinition);
+    const auto cursorAfterCommit = consumeBodyId("after-v5-ui-commit");
+    CHECK(cursorAfterCommit == persistedBodyId + 1);
+
+    // EditorFactory exercises the public Home-to-editor route: MainWindow is
+    // the component that explicitly opts into v5 and commits a clean product.
+    QString factoryError;
+    std::unique_ptr<QMainWindow> editorShell(
+        solidar::createEditorWindow(v5Path, settings, &factoryError));
+    CHECK(editorShell);
+    auto* productEditor = dynamic_cast<solidar::MainWindow*>(editorShell.get());
+    CHECK(productEditor);
+    CHECK(factoryError.isEmpty());
+    CHECK(productEditor->windowFilePath() == v5Path);
+    CHECK(Access::persistenceState(*productEditor) ==
+          solidar::project::ProjectPersistenceState{
+              solidar::project::ProjectPersistenceFormat::V5});
+    CHECK(Access::identity(*productEditor) == expectedIdentity);
+    CHECK(Access::rootDefinitionId(*productEditor) == kUiV5RootDefinition);
+    CHECK(Access::definitionCount(*productEditor) == 1);
+    CHECK(Access::bodyCount(*productEditor) == 1);
+    CHECK(Access::firstBodyId(*productEditor) == persistedBodyId);
+    CHECK(!Access::modified(*productEditor));
+
+    auto* upgradeAction = Access::upgradeProjectFormatAction(*productEditor);
+    CHECK(upgradeAction);
+    CHECK(!upgradeAction->isEnabled());
+    const auto upgradeIdentityBefore = *Access::identity(*productEditor);
+    const auto upgradePathBefore = productEditor->windowFilePath();
+    const auto upgradeUndoBefore = Access::undoCount(*productEditor);
+    const auto upgradeHistoryBefore = Access::historyStepCount(*productEditor);
+    const bool upgradeDirtyBefore = Access::modified(*productEditor);
+    Access::upgradeProjectFormat(*productEditor);
+    CHECK(Access::persistenceState(*productEditor) ==
+          solidar::project::ProjectPersistenceState{
+              solidar::project::ProjectPersistenceFormat::V5});
+    CHECK(Access::identity(*productEditor) == upgradeIdentityBefore);
+    CHECK(productEditor->windowFilePath() == upgradePathBefore);
+    CHECK(Access::undoCount(*productEditor) == upgradeUndoBefore);
+    CHECK(Access::historyStepCount(*productEditor) == upgradeHistoryBefore);
+    CHECK(Access::modified(*productEditor) == upgradeDirtyBefore);
+    CHECK(!upgradeAction->isEnabled());
+
+    QFile authored(v5Path);
+    CHECK(authored.open(QIODevice::ReadOnly));
+    const auto authoredBytes = authored.readAll();
+    authored.close();
+    auto invalidRoot = QJsonDocument::fromJson(authoredBytes).object();
+    invalidRoot.insert(QStringLiteral("rootDefinitionId"),
+                       static_cast<qint64>(kUiV5RootDefinition.value() + 1));
+    const QString invalidPath =
+        directory.filePath(QStringLiteral("editor-invalid-v5.solidar"));
+    CHECK(writeTestBytes(
+        invalidPath,
+        QJsonDocument(invalidRoot).toJson(QJsonDocument::Compact)));
+
+    auto unsupportedRoot = QJsonDocument::fromJson(authoredBytes).object();
+    unsupportedRoot.insert(
+        QStringLiteral("capabilities"),
+        QJsonArray{QStringLiteral("product-envelope-v1"),
+                   QStringLiteral("zzz-future-required-ui-capability")});
+    const QString unsupportedPath =
+        directory.filePath(QStringLiteral("editor-unsupported-v5.solidar"));
+    CHECK(writeTestBytes(
+        unsupportedPath,
+        QJsonDocument(unsupportedRoot).toJson(QJsonDocument::Compact)));
+
+    CHECK(Access::startTopFaceExtrude(*productEditor, 5.0));
+    productEditor->setWindowModified(true);
+    const auto* const failureDocument = Access::documentAddress(*productEditor);
+    const auto failureIdentity = *Access::identity(*productEditor);
+    const auto failurePath = productEditor->windowFilePath();
+    const auto failureUndo = Access::undoCount(*productEditor);
+    const auto failureHistory = Access::historyStepCount(*productEditor);
+    const auto failureSelection = Access::selectionState(*productEditor);
+    const auto failureTool = Access::activeTool(*productEditor);
+    const bool failurePreview = Access::viewportHasToolPreview(*productEditor);
+    CHECK(failureTool == solidar::PartDesignToolKind::Extrude);
+    CHECK(failurePreview);
+
+    QString invalidError;
+    CHECK(!productEditor->loadProject(invalidPath, &invalidError));
+    CHECK(invalidError.contains(QString::fromUtf8("повреждён")));
+    CHECK(Access::documentAddress(*productEditor) == failureDocument);
+    CHECK(Access::identity(*productEditor) == failureIdentity);
+    CHECK(productEditor->windowFilePath() == failurePath);
+    CHECK(Access::modified(*productEditor));
+    CHECK(Access::undoCount(*productEditor) == failureUndo);
+    CHECK(Access::historyStepCount(*productEditor) == failureHistory);
+    CHECK(Access::activeTool(*productEditor) == failureTool);
+    CHECK(Access::viewportHasToolPreview(*productEditor) == failurePreview);
+    CHECK(Access::exactSelectionState(Access::selectionState(*productEditor),
+                                      failureSelection));
+
+    QString unsupportedError;
+    CHECK(!productEditor->loadProject(unsupportedPath, &unsupportedError));
+    CHECK(unsupportedError.contains(QString::fromUtf8("не поддерж")));
+    CHECK(invalidError != unsupportedError);
+    CHECK(Access::documentAddress(*productEditor) == failureDocument);
+    CHECK(Access::identity(*productEditor) == failureIdentity);
+    CHECK(productEditor->windowFilePath() == failurePath);
+    CHECK(Access::modified(*productEditor));
+    CHECK(Access::undoCount(*productEditor) == failureUndo);
+    CHECK(Access::historyStepCount(*productEditor) == failureHistory);
+    CHECK(Access::activeTool(*productEditor) == failureTool);
+    CHECK(Access::viewportHasToolPreview(*productEditor) == failurePreview);
+    CHECK(Access::exactSelectionState(Access::selectionState(*productEditor),
+                                      failureSelection));
+    Access::cancelFaceExtrude(*productEditor);
+
+    // Save failure leaves the authoritative v5 carrier and editor state
+    // untouched; successful Save then round-trips an actual model change.
+    CHECK(Access::pushBodyMarker(*productEditor, "v5 UI saved edit"));
+    CHECK(Access::modified(*productEditor));
+    const auto saveIdentityBefore = *Access::identity(*productEditor);
+    const auto saveUndoBefore = Access::undoCount(*productEditor);
+    const auto saveHistoryBefore = Access::historyStepCount(*productEditor);
+    const auto saveBodiesBefore = Access::bodyCount(*productEditor);
+    const QString failedSavePath =
+        directory.filePath(QStringLiteral("missing/v5-ui-save.solidar"));
+    const QString savePathBefore = productEditor->windowFilePath();
+    QString saveError;
+    CHECK(!Access::saveProjectToPath(*productEditor, failedSavePath,
+                                     &saveError));
+    CHECK(!saveError.isEmpty());
+    CHECK(productEditor->windowFilePath() == savePathBefore);
+    CHECK(Access::identity(*productEditor) == saveIdentityBefore);
+    CHECK(Access::undoCount(*productEditor) == saveUndoBefore);
+    CHECK(Access::historyStepCount(*productEditor) == saveHistoryBefore);
+    CHECK(Access::bodyCount(*productEditor) == saveBodiesBefore);
+    CHECK(Access::modified(*productEditor));
+    CHECK(!QFile::exists(failedSavePath));
+
+    CHECK(Access::saveProjectToPath(*productEditor, v5Path, &saveError));
+    CHECK(saveError.isEmpty());
+    CHECK(!Access::modified(*productEditor));
+    CHECK(Access::identity(*productEditor) == expectedIdentity);
+    auto savedStage = service.stageOpen(
+        v5Path, solidar::ProductV5OpenPolicy::Allow);
+    CHECK(savedStage.succeeded());
+    CHECK(savedStage.staged->productDocument().identity() == expectedIdentity);
+    CHECK(savedStage.staged->productDocument().rootDefinitionId() ==
+          kUiV5RootDefinition);
+    CHECK(savedStage.staged->rootDocument().bodies().size() ==
+          saveBodiesBefore);
   }
 
   // Native topology picks are V2. A V3 project blocks every commit before

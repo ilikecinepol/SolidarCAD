@@ -77,6 +77,7 @@ class MainWindow final : public QMainWindow {
   void createProject();
   void openProject();
   void saveProject();
+  [[nodiscard]] bool saveProjectToPath(const QString& path, QString* error);
   void upgradeProjectFormat();
   void updateUpgradeProjectFormatAction() noexcept;
   [[nodiscard]] bool projectUpgradeIsQuiescent() const noexcept;

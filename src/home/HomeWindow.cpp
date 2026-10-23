@@ -224,11 +224,6 @@ void HomeWindow::openProject() {
       QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
       QString::fromUtf8("Проект СОЛИДАР3D (*.solidar)"));
   if (path.isEmpty()) return;
-  QString error;
-  if (!project::ProjectFile::validate(path, &error)) {
-    QMessageBox::critical(this, QString::fromUtf8("Не удалось открыть проект"), error);
-    return;
-  }
   emit projectRequested(path);
 }
 

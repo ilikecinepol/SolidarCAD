@@ -93,6 +93,26 @@ struct Overloaded : Ts... {
 template <class... Ts>
 Overloaded(Ts...) -> Overloaded<Ts...>;
 
+QString projectOpenErrorMessage(const ProjectApplicationStatus& status) {
+  QString message;
+  switch (status.code) {
+    case ProjectApplicationErrorCode::InvalidProject:
+      message = QString::fromUtf8(
+          "Файл проекта повреждён или имеет недопустимый формат.");
+      break;
+    case ProjectApplicationErrorCode::UnsupportedProject:
+      message = QString::fromUtf8(
+          "Версия или возможности этого проекта пока не поддерживаются.");
+      break;
+    default:
+      message = QString::fromUtf8("Не удалось открыть проект.");
+      break;
+  }
+  if (!status.detail.isEmpty())
+    message += QString::fromUtf8("\n\nТехнические сведения: ") + status.detail;
+  return message;
+}
+
 const ShapeFeature* presentationOwner(const Body& body,
                                       const ShapeFeature::ShapePtr& shape) {
   if (!shape) return nullptr;
@@ -961,9 +981,10 @@ void MainWindow::openProject() {
 }
 
 bool MainWindow::loadProject(const QString& path, QString* error) {
-  auto staged = projectApplicationService_.stageOpen(path);
+  auto staged = projectApplicationService_.stageOpen(
+      path, ProductV5OpenPolicy::Allow);
   if (!staged.succeeded()) {
-    if (error) *error = staged.status.detail;
+    if (error) *error = projectOpenErrorMessage(staged.status);
     return false;
   }
   commitDocumentReplacement(std::move(*staged.staged),
@@ -990,17 +1011,29 @@ void MainWindow::saveProject() {
     if (!path.endsWith(QStringLiteral(".solidar"), Qt::CaseInsensitive))
       path += QStringLiteral(".solidar");
   }
-  const auto saved = projectApplicationService_.save(
-      path, document(), projectPersistenceState_);
-  if (!saved.succeeded()) {
-    QMessageBox::critical(this, QString::fromUtf8("Ошибка сохранения"),
-                          saved.detail);
+  QString error;
+  if (!saveProjectToPath(path, &error)) {
+    QMessageBox::critical(this, QString::fromUtf8("Ошибка сохранения"), error);
     return;
+  }
+  statusBar()->showMessage(QString::fromUtf8("Проект сохранён"), 3000);
+}
+
+bool MainWindow::saveProjectToPath(const QString& path, QString* error) {
+  const auto saved =
+      projectPersistenceState_.format == project::ProjectPersistenceFormat::V5
+          ? projectApplicationService_.save(path, productDocument_)
+          : projectApplicationService_.save(path, document(),
+                                            projectPersistenceState_);
+  if (!saved.succeeded()) {
+    if (error) *error = saved.detail;
+    return false;
   }
   setProjectPath(path);
   modelHistory_.markSavepoint();
   setWindowModified(false);
-  statusBar()->showMessage(QString::fromUtf8("Проект сохранён"), 3000);
+  if (error) error->clear();
+  return true;
 }
 
 bool MainWindow::projectUpgradeIsQuiescent() const noexcept {
@@ -1031,7 +1064,9 @@ void MainWindow::updateUpgradeProjectFormatAction() noexcept {
 
 void MainWindow::upgradeProjectFormat() {
   if (projectPersistenceState_.format ==
-      project::ProjectPersistenceFormat::V4) {
+          project::ProjectPersistenceFormat::V4 ||
+      projectPersistenceState_.format ==
+          project::ProjectPersistenceFormat::V5) {
     updateUpgradeProjectFormatAction();
     return;
   }
@@ -1116,8 +1151,12 @@ void MainWindow::importStep() {
   if (fileName.isEmpty()) return;
 
   const QString importedName = QFileInfo(fileName).completeBaseName();
-  auto staged = projectApplicationService_.stageImportStep(
-      fileName, document(), importedName);
+  auto staged =
+      projectPersistenceState_.format == project::ProjectPersistenceFormat::V5
+          ? projectApplicationService_.stageImportStep(
+                fileName, productDocument_, importedName)
+          : projectApplicationService_.stageImportStep(
+                fileName, document(), importedName);
   if (!staged.succeeded()) {
     QMessageBox::critical(
         this, QString::fromUtf8("Не удалось импортировать STEP"),
