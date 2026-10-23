@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -26,6 +27,12 @@ constexpr solidar::ProjectId projectId(std::uint8_t lastByte) {
   auto bytes = solidar::ProjectId::Bytes{};
   bytes.back() = lastByte;
   return solidar::ProjectId{bytes};
+}
+
+solidar::ProductDocumentIdentity productIdentity(
+    solidar::ProjectId id, std::string name = "product",
+    std::string createdAt = "2026-10-23T00:00:00Z") {
+  return {id, {std::move(name), std::move(createdAt)}};
 }
 
 solidar::PartDefinition makePart(solidar::DefinitionId id) {
@@ -78,7 +85,18 @@ int main() {
   static_assert(noexcept(std::declval<solidar::ProductDocument&&>()
                              .releaseRootDocument()));
   static_assert(noexcept(std::declval<solidar::ProductDocument&>()
-                             .commitProjectId(solidar::ProjectId{})));
+                             .commitProductIdentity(std::declval<
+                                 solidar::ProductDocumentIdentity>())));
+  static_assert(std::is_nothrow_move_constructible_v<
+                solidar::ProductDocumentIdentity>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<const solidar::ProductDocument&>()
+                             .identity()),
+                const std::optional<solidar::ProductDocumentIdentity>&>);
+  static_assert(std::is_same_v<
+                decltype(std::declval<const solidar::ProductDocument&>()
+                             .projectId()),
+                std::optional<solidar::ProjectId>>);
 
   CHECK(!solidar::ProjectId{}.isValid());
   CHECK(solidar::kInvalidProjectId == solidar::ProjectId{});
@@ -175,8 +193,8 @@ int main() {
     CHECK(&registry.find(kRootId)->document() == document);
   }
 
-  // Optional product identity is authoritative in ProductDocument.  An
-  // invalid optional identity rejects atomically before moving the registry.
+  // The optional identity bundle is authoritative in ProductDocument. An
+  // invalid ID rejects the whole bundle before moving the registry.
   {
     solidar::DefinitionRegistry registry;
     auto root = makePart(kRootId);
@@ -184,7 +202,9 @@ int main() {
     CHECK(registry.insert(std::move(root)) ==
           solidar::DefinitionInsertStatus::Inserted);
     auto invalidIdentity = solidar::ProductDocument::create(
-        std::move(registry), kRootId, solidar::ProjectId{});
+        std::move(registry), kRootId,
+        productIdentity(solidar::ProjectId{}, "must stay outside",
+                        "invalid"));
     CHECK(invalidIdentity.status ==
           solidar::ProductDocumentStatus::InvalidProjectId);
     CHECK(!invalidIdentity.product);
@@ -194,26 +214,54 @@ int main() {
     auto standalone =
         solidar::ProductDocument::create(std::move(registry), kRootId);
     CHECK(standalone);
+    CHECK(!standalone.product->identity().has_value());
     CHECK(!standalone.product->projectId().has_value());
-    CHECK(!standalone.product->commitProjectId(solidar::ProjectId{}));
+    CHECK(!standalone.product->commitProductIdentity(
+        productIdentity(solidar::ProjectId{}, "invalid", "invalid")));
+    CHECK(!standalone.product->identity().has_value());
     CHECK(!standalone.product->projectId().has_value());
-    CHECK(standalone.product->commitProjectId(projectId(1)));
+
+    const std::string unicodeName =
+        "\xD0\x98\xD0\xB7\xD0\xB4\xD0\xB5\xD0\xBB\xD0\xB8\xD0\xB5"
+        " \xCE\xA9";
+    const std::string createdAt = "2026-10-23T12:34:56Z";
+    CHECK(standalone.product->commitProductIdentity(
+        productIdentity(projectId(1), unicodeName, createdAt)));
+    CHECK(standalone.product->identity().has_value());
     CHECK(standalone.product->projectId() == projectId(1));
-    CHECK(!standalone.product->commitProjectId(solidar::ProjectId{}));
+    CHECK(standalone.product->identity()->metadata.nameUtf8 == unicodeName);
+    CHECK(standalone.product->identity()->metadata.createdAtUtf8 == createdAt);
+
+    const auto committedIdentity = *standalone.product->identity();
+    CHECK(!standalone.product->commitProductIdentity(
+        productIdentity(solidar::ProjectId{}, "invalid overwrite",
+                        "invalid overwrite")));
+    CHECK(*standalone.product->identity() == committedIdentity);
     CHECK(standalone.product->projectId() == projectId(1));
-    CHECK(standalone.product->commitProjectId(projectId(2)));
-    CHECK(standalone.product->projectId() == projectId(2));
+    CHECK(!standalone.product->commitProductIdentity(
+        productIdentity(projectId(2), "valid overwrite",
+                        "2027-01-01T00:00:00Z")));
+    CHECK(*standalone.product->identity() == committedIdentity);
+    CHECK(standalone.product->projectId() == projectId(1));
   }
 
+  // Factory-created product identity and metadata move as one bundle.
   {
     solidar::DefinitionRegistry registry;
     auto root = makePart(kRootId);
     CHECK(registry.insert(std::move(root)) ==
           solidar::DefinitionInsertStatus::Inserted);
+    const auto expectedIdentity =
+        productIdentity(projectId(7), "assembly", "2026-10-23T01:02:03Z");
     auto identified = solidar::ProductDocument::create(
-        std::move(registry), kRootId, projectId(7));
+        std::move(registry), kRootId, expectedIdentity);
     CHECK(identified);
+    CHECK(identified.product->identity() == expectedIdentity);
     CHECK(identified.product->projectId() == projectId(7));
+
+    auto moved = std::move(*identified.product);
+    CHECK(moved.identity() == expectedIdentity);
+    CHECK(moved.projectId() == projectId(7));
   }
 
   // The successful ownership path moves the same Document allocation through

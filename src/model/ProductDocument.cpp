@@ -40,32 +40,33 @@ bool DefinitionRegistry::contains(DefinitionId id) const noexcept {
   return definitions_.contains(id);
 }
 
-ProductDocument::ProductDocument(DefinitionRegistry&& definitions,
-                                 DefinitionId rootDefinitionId,
-                                 std::optional<ProjectId> projectId) noexcept
+ProductDocument::ProductDocument(
+    DefinitionRegistry&& definitions, DefinitionId rootDefinitionId,
+    std::optional<ProductDocumentIdentity> identity) noexcept
     : definitions_(std::move(definitions)),
       rootDefinitionId_(rootDefinitionId),
-      projectId_(std::move(projectId)) {}
+      identity_(std::move(identity)) {}
 
 ProductDocumentCreateResult ProductDocument::create(
     DefinitionRegistry&& definitions, DefinitionId rootDefinitionId,
-    std::optional<ProjectId> projectId) {
+    std::optional<ProductDocumentIdentity> identity) {
   if (!rootDefinitionId.isValid())
     return {ProductDocumentStatus::InvalidRootId, nullptr};
   if (!definitions.contains(rootDefinitionId))
     return {ProductDocumentStatus::MissingRootDefinition, nullptr};
-  if (projectId.has_value() && !projectId->isValid())
+  if (identity.has_value() && !identity->projectId.isValid())
     return {ProductDocumentStatus::InvalidProjectId, nullptr};
 
   return {ProductDocumentStatus::Valid,
           std::unique_ptr<ProductDocument>(
               new ProductDocument(std::move(definitions), rootDefinitionId,
-                                  std::move(projectId)))};
+                                  std::move(identity)))};
 }
 
-bool ProductDocument::commitProjectId(ProjectId projectId) noexcept {
-  if (!projectId.isValid()) return false;
-  projectId_ = projectId;
+bool ProductDocument::commitProductIdentity(
+    ProductDocumentIdentity identity) noexcept {
+  if (identity_ || !identity.projectId.isValid()) return false;
+  identity_.emplace(std::move(identity));
   return true;
 }
 

@@ -54,7 +54,13 @@ std::unique_ptr<ProductDocument> product(
             PartDefinition(root,
                            std::make_unique<Document>(std::move(document)))) ==
         DefinitionInsertStatus::Inserted);
-  auto created = ProductDocument::create(std::move(registry), root, id);
+  std::optional<ProductDocumentIdentity> identity;
+  if (id) {
+    identity.emplace(ProductDocumentIdentity{
+        *id, {"source product", "2026-10-23T00:00:00Z"}});
+  }
+  auto created =
+      ProductDocument::create(std::move(registry), root, std::move(identity));
   CHECK(created);
   return std::move(created.product);
 }
@@ -220,9 +226,12 @@ int main() {
 
   {
     auto identified = product(Document{}, kProjectA);
+    CHECK(identified->identity());
+    const auto sourceIdentity = *identified->identity();
     const auto encoded =
         encodeProductEnvelopeV5Root(*identified, kProjectB, metadata());
     CHECK(encoded.succeeded());
+    CHECK(identified->identity() == sourceIdentity);
     CHECK(identified->projectId() == kProjectA);
     CHECK(encoded.payload->root.value("projectId") ==
           QStringLiteral("ffeeddcc-bbaa-4988-8766-554433221100"));

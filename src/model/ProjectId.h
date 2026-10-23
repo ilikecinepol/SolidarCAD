@@ -8,7 +8,7 @@ namespace solidar {
 
 // Stable identity of an identity-bearing product document.  The all-zero
 // value is reserved as an invalid sentinel; standalone documents carry no
-// ProjectId at all (std::nullopt in ProductDocument).
+// ProductDocument identity bundle at all.
 class ProjectId final {
  public:
   using Bytes = std::array<std::uint8_t, 16>;

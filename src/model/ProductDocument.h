@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "model/Document.h"
@@ -108,6 +109,22 @@ enum class ProductDocumentRemoveStatus {
   RootProtected,
 };
 
+struct ProductDocumentMetadata {
+  std::string nameUtf8;
+  std::string createdAtUtf8;
+
+  friend bool operator==(const ProductDocumentMetadata&,
+                         const ProductDocumentMetadata&) = default;
+};
+
+struct ProductDocumentIdentity {
+  ProjectId projectId;
+  ProductDocumentMetadata metadata;
+
+  friend bool operator==(const ProductDocumentIdentity&,
+                         const ProductDocumentIdentity&) = default;
+};
+
 struct ProductDocumentCreateResult;
 
 class ProductDocument final {
@@ -121,7 +138,7 @@ class ProductDocument final {
 
   [[nodiscard]] static ProductDocumentCreateResult create(
       DefinitionRegistry&& definitions, DefinitionId rootDefinitionId,
-      std::optional<ProjectId> projectId = std::nullopt);
+      std::optional<ProductDocumentIdentity> identity = std::nullopt);
 
   [[nodiscard]] const DefinitionRegistry& definitions() const noexcept {
     return definitions_;
@@ -129,12 +146,19 @@ class ProductDocument final {
   [[nodiscard]] DefinitionId rootDefinitionId() const noexcept {
     return rootDefinitionId_;
   }
-  [[nodiscard]] const std::optional<ProjectId>& projectId() const noexcept {
-    return projectId_;
+  [[nodiscard]] const std::optional<ProductDocumentIdentity>& identity()
+      const noexcept {
+    return identity_;
   }
-  // Commits an identity prepared by a successful persistence transaction.
-  // Invalid sentinels are rejected without changing the current identity.
-  [[nodiscard]] bool commitProjectId(ProjectId projectId) noexcept;
+  [[nodiscard]] std::optional<ProjectId> projectId() const noexcept {
+    if (!identity_) return std::nullopt;
+    return identity_->projectId;
+  }
+  // One-shot commit of an identity bundle prepared by a successful
+  // persistence transaction. Invalid IDs and subsequent commits are rejected
+  // without changing the authoritative bundle.
+  [[nodiscard]] bool commitProductIdentity(
+      ProductDocumentIdentity identity) noexcept;
   [[nodiscard]] const PartDefinition& rootDefinition() const noexcept;
   [[nodiscard]] Document& rootDocument() noexcept;
   [[nodiscard]] const Document& rootDocument() const noexcept;
@@ -146,11 +170,11 @@ class ProductDocument final {
  private:
   ProductDocument(DefinitionRegistry&& definitions,
                   DefinitionId rootDefinitionId,
-                  std::optional<ProjectId> projectId) noexcept;
+                  std::optional<ProductDocumentIdentity> identity) noexcept;
 
   DefinitionRegistry definitions_;
   DefinitionId rootDefinitionId_;
-  std::optional<ProjectId> projectId_;
+  std::optional<ProductDocumentIdentity> identity_;
 };
 
 struct ProductDocumentCreateResult {

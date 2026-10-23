@@ -71,11 +71,15 @@ metadata и использует его на обоих уровнях.
 
 ## Identity и следующие микрогейты
 
-`ProductDocument` является единственным владельцем опционального `ProjectId`:
-у standalone-документа identity отсутствует. Persistence state не дублирует
-identity. A2a не генерирует UUID; он только валидирует persisted identity и
-предоставляет узкий `noexcept` commit уже подготовленного валидного ID для
-будущего post-write commit.
+`ProductDocument` является единственным владельцем атомарного опционального
+identity bundle: `ProjectId` и envelope metadata (`name`, `createdAt`) либо
+присутствуют вместе, либо вместе отсутствуют у standalone-документа. Metadata
+хранятся в model как неизменяемые по смыслу UTF-8 байты без нормализации и
+локализации; persistence state identity не дублирует. Фабрика валидирует
+persisted ID до переноса registry. Узкий `noexcept` post-write commit принимает
+весь bundle только один раз: invalid/nil ID и любая повторная попытка ничего не
+меняют. Save As/clone кодирует явные output identity и metadata, не мутируя
+identity исходного `ProductDocument`.
 
 - A2b0 вынес общий format-neutral механизм атомарной публикации байтов; A2b1
   добавил disconnected v5 encoder/writer. Encoder принимает явный output
