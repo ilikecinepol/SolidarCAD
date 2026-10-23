@@ -94,6 +94,13 @@ struct StandaloneProductConversionRequest {
   QString createdAt;
 };
 
+// Application compatibility state that is intentionally not serialized in
+// the standalone Document graph. Conversion must fail closed while a legacy
+// v1 extrusion is still represented only by this source-sketch marker.
+struct StandaloneProductConversionPrecondition {
+  std::optional<SketchId> historicalLegacyExtrusionSourceSketchId;
+};
+
 struct ProductCloneRequest {
   ProjectId outputProjectId;
   QString name;
@@ -120,7 +127,9 @@ class ProjectApplicationService final {
       const ProductDocument& productDocument) const noexcept;
   [[nodiscard]] ProjectApplicationStatus convertStandaloneToProduct(
       const QString& targetPath, ProductDocument& source,
-      const StandaloneProductConversionRequest& request) const noexcept;
+      const StandaloneProductConversionRequest& request,
+      const StandaloneProductConversionPrecondition& precondition)
+      const noexcept;
   [[nodiscard]] ProjectApplicationStatus saveProductAsClone(
       const QString& targetPath, ProductDocument& source,
       const ProductCloneRequest& request) const noexcept;

@@ -4021,6 +4021,51 @@ int main(int argc, char** argv) {
     const auto stableLegacySource =
         Access::historicalLegacySourceSketchId(sketchEditor);
     CHECK(stableLegacySource);
+    auto* legacyConversionAction =
+        Access::convertToProductDocumentAction(sketchEditor);
+    CHECK(legacyConversionAction);
+    CHECK(!legacyConversionAction->isEnabled());
+    CHECK(!Access::productConversionIsEligible(sketchEditor));
+    const auto* const legacyDocumentBefore =
+        Access::documentAddress(sketchEditor);
+    const auto legacyIdentityBefore = Access::identity(sketchEditor);
+    const auto legacyPathBefore = sketchEditor.windowFilePath();
+    const auto legacyRevisionBefore =
+        Access::currentHistoryRevision(sketchEditor);
+    const auto legacyPreviewBefore =
+        Access::previewDocumentGeneration(sketchEditor);
+    const QString rejectedLegacyTarget = directory.filePath(
+        QStringLiteral("historical-v1-rejected-product.solidar"));
+    bool legacyChooserCalled = false;
+    bool legacyFactoryCalled = false;
+    bool legacyAttempted = true;
+    const auto legacyRejected = Access::runProductConversionCommand(
+        sketchEditor,
+        [&](const QString&) -> std::optional<QString> {
+          legacyChooserCalled = true;
+          return rejectedLegacyTarget;
+        },
+        [&](const QString&, solidar::DefinitionId root) {
+          legacyFactoryCalled = true;
+          return uiConversionRequest(root);
+        },
+        &legacyAttempted);
+    CHECK(!legacyRejected.succeeded());
+    CHECK(legacyRejected.code ==
+          solidar::ProjectApplicationErrorCode::InvalidProject);
+    CHECK(!legacyChooserCalled);
+    CHECK(!legacyFactoryCalled);
+    CHECK(!legacyAttempted);
+    CHECK(!QFile::exists(rejectedLegacyTarget));
+    CHECK(Access::documentAddress(sketchEditor) == legacyDocumentBefore);
+    CHECK(Access::identity(sketchEditor) == legacyIdentityBefore);
+    CHECK(sketchEditor.windowFilePath() == legacyPathBefore);
+    CHECK(Access::historicalLegacySourceSketchId(sketchEditor) ==
+          stableLegacySource);
+    CHECK(Access::currentHistoryRevision(sketchEditor) ==
+          legacyRevisionBefore);
+    CHECK(Access::previewDocumentGeneration(sketchEditor) ==
+          legacyPreviewBefore);
     CHECK(!Access::hasCommittedModernSolid(sketchEditor));
     CHECK(!Access::hasDisplayableModernSolid(sketchEditor));
     QString legacyExportError;
@@ -4111,6 +4156,8 @@ int main(int argc, char** argv) {
     // must leave an empty viewport, not resurrect the historical prism.
     CHECK(Access::commitLegacyExtrusionAsNewBody(extrusionEditor));
     CHECK(!Access::historicalLegacyExtrusionActive(extrusionEditor));
+    CHECK(Access::convertToProductDocumentAction(extrusionEditor)->isEnabled());
+    CHECK(Access::productConversionIsEligible(extrusionEditor));
     const auto modernBodyId = Access::firstBodyId(extrusionEditor);
     CHECK(modernBodyId != solidar::kInvalidBodyId);
 
@@ -4121,6 +4168,8 @@ int main(int argc, char** argv) {
     Access::undoAction(extrusionEditor)->trigger();
     CHECK(Access::bodyCount(extrusionEditor) == 0);
     CHECK(Access::historicalLegacyExtrusionActive(extrusionEditor));
+    CHECK(!Access::convertToProductDocumentAction(extrusionEditor)->isEnabled());
+    CHECK(!Access::productConversionIsEligible(extrusionEditor));
     CHECK(Access::viewportSolidVisible(extrusionEditor));
     CHECK(Access::legacySolidSketchEquals(extrusionEditor, profile));
     sourceEvents = 0;
@@ -4141,6 +4190,8 @@ int main(int argc, char** argv) {
     Access::redoAction(extrusionEditor)->trigger();
     CHECK(Access::bodyCount(extrusionEditor) == 1);
     CHECK(!Access::historicalLegacyExtrusionActive(extrusionEditor));
+    CHECK(Access::convertToProductDocumentAction(extrusionEditor)->isEnabled());
+    CHECK(Access::productConversionIsEligible(extrusionEditor));
     CHECK(Access::displayedBodyShape(extrusionEditor));
 
     QTimer::singleShot(0, [] {

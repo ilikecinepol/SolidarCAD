@@ -10,6 +10,7 @@ namespace solidar::application::detail {
 [[nodiscard]] ProjectApplicationStatus convertStandaloneToProduct(
     ProductDocument& source,
     const StandaloneProductConversionRequest& request,
+    const StandaloneProductConversionPrecondition& precondition,
     project::detail::ProjectAtomicWriteTransaction& transaction) noexcept;
 
 }  // namespace solidar::application::detail

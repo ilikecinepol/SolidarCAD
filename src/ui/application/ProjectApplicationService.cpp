@@ -123,8 +123,16 @@ template <typename Publisher>
 ProjectApplicationStatus convertStandaloneToProductImpl(
     ProductDocument& source,
     const StandaloneProductConversionRequest& request,
+    const StandaloneProductConversionPrecondition& precondition,
     Publisher&& publisher) noexcept {
   try {
+    if (precondition.historicalLegacyExtrusionSourceSketchId) {
+      return failure(
+          ProjectApplicationErrorCode::InvalidProject,
+          QStringLiteral(
+              "Historical v1 extrusion must be converted to a modern model "
+              "feature before product conversion."));
+    }
     const project::ProductEnvelopeV5Metadata metadata{request.name,
                                                        request.createdAt};
     auto prepared = project::prepareStandaloneProductEnvelopeV5Conversion(
@@ -418,9 +426,11 @@ ProjectApplicationStatus ProjectApplicationService::save(
 
 ProjectApplicationStatus ProjectApplicationService::convertStandaloneToProduct(
     const QString& targetPath, ProductDocument& source,
-    const StandaloneProductConversionRequest& request) const noexcept {
+    const StandaloneProductConversionRequest& request,
+    const StandaloneProductConversionPrecondition& precondition)
+    const noexcept {
   return convertStandaloneToProductImpl(
-      source, request, [&targetPath](QByteArrayView bytes) {
+      source, request, precondition, [&targetPath](QByteArrayView bytes) {
         return project::detail::publishProjectPayloadAtomically(targetPath,
                                                                  bytes);
       });
@@ -627,9 +637,10 @@ ProjectApplicationStatus saveProductAsClone(
 ProjectApplicationStatus convertStandaloneToProduct(
     ProductDocument& source,
     const StandaloneProductConversionRequest& request,
+    const StandaloneProductConversionPrecondition& precondition,
     project::detail::ProjectAtomicWriteTransaction& transaction) noexcept {
   return convertStandaloneToProductImpl(
-      source, request, [&transaction](QByteArrayView bytes) {
+      source, request, precondition, [&transaction](QByteArrayView bytes) {
         return project::detail::publishProjectPayloadAtomically(bytes,
                                                                  transaction);
       });

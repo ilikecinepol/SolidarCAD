@@ -274,7 +274,7 @@ void checkRejectedBeforePublisher(
   const auto before = snapshot(source);
   RecordingTransaction transaction;
   const auto result = application::detail::convertStandaloneToProduct(
-      source, value, transaction);
+      source, value, {}, transaction);
   CHECK(!result.succeeded());
   CHECK(result.code == expectedCode);
   CHECK(!result.detail.isEmpty());
@@ -292,16 +292,177 @@ int main(int argc, char** argv) {
                                  std::declval<const QString&>(),
                                  std::declval<ProductDocument&>(),
                                  std::declval<const
-                                     StandaloneProductConversionRequest&>())));
+                                     StandaloneProductConversionRequest&>(),
+                                 std::declval<const
+                                     StandaloneProductConversionPrecondition&>())));
   static_assert(noexcept(application::detail::convertStandaloneToProduct(
       std::declval<ProductDocument&>(),
       std::declval<const StandaloneProductConversionRequest&>(),
+      std::declval<const StandaloneProductConversionPrecondition&>(),
       std::declval<project::detail::ProjectAtomicWriteTransaction&>())));
 
   QTemporaryDir directory(QDir::current().filePath(
       QStringLiteral("product-conversion-service-XXXXXX")));
   CHECK(directory.isValid());
   ProjectApplicationService service;
+
+  // A historical v1 extrusion is not part of the Document graph: stageOpen
+  // maps its positional source to a stable SketchId and carries that marker
+  // separately. Both conversion boundaries must reject it before any writer
+  // activity, without changing the source file, destination, carrier or ID
+  // cursors.
+  {
+    ProjectData legacy;
+    legacy.box = {60.0, 40.0, 25.0};
+    sketch::Sketch decoy;
+    decoy.addCircle({100.0, 100.0}, 5.0);
+    sketch::Sketch profile;
+    profile.addRectangle({-15.0, -10.0}, {15.0, 10.0});
+    profile.addCircle({0.0, 0.0}, 3.0);
+    legacy.sketches.push_back({decoy, QStringLiteral("XY")});
+    legacy.sketches.push_back(
+        {profile, QStringLiteral("historical source")});
+    legacy.hasExtrusion = true;
+    legacy.extrusionSourceSketch = 1;
+
+    const QString sourcePath =
+        directory.filePath(QStringLiteral("historical-v1.solidar"));
+    QString error;
+    CHECK(ProjectFile::save(sourcePath, legacy, &error));
+    const QByteArray sourceBytes = readAll(sourcePath);
+    auto staged = service.stageOpen(sourcePath);
+    CHECK(staged.succeeded());
+    CHECK(staged.staged->historicalLegacyExtrusionSourceSketchId);
+    const auto legacySourceId =
+        staged.staged->historicalLegacyExtrusionSourceSketchId;
+    ProductDocument source =
+        std::move(*staged.staged).releaseProductDocument();
+    CHECK(source.rootDocument().bodies().empty());
+    CHECK(source.rootDocument().sketches().size() == 2);
+    CHECK(legacySourceId == source.rootDocument().sketches().at(1).id);
+
+    const auto identityBefore = source.identity();
+    const DefinitionId rootBefore = source.rootDefinitionId();
+    const Document* const documentBefore = &source.rootDocument();
+    const DocumentSketch* const decoyBefore =
+        &source.rootDocument().sketches().at(0);
+    const DocumentSketch* const sourceSketchBefore =
+        &source.rootDocument().sketches().at(1);
+    const QByteArray fingerprintBefore = modelFingerprint(source.rootDocument());
+    const StandaloneProductConversionPrecondition compatibility{
+        legacySourceId};
+
+    const AutoIds beforeInternalIds =
+        consumeAutoIds("before-v1-internal-rejection");
+    RecordingTransaction transaction;
+    const auto internalRejected =
+        application::detail::convertStandaloneToProduct(
+            source, request(), compatibility, transaction);
+    CHECK(!internalRejected.succeeded());
+    CHECK(internalRejected.code == ProjectApplicationErrorCode::InvalidProject);
+    CHECK(!internalRejected.detail.isEmpty());
+    CHECK(transaction.calls.isEmpty());
+    CHECK(transaction.destination == QByteArray("sentinel-destination"));
+    const AutoIds afterInternalIds =
+        consumeAutoIds("after-v1-internal-rejection");
+    checkOnlyOneAutoAdvance(beforeInternalIds, afterInternalIds);
+    CHECK(source.identity() == identityBefore);
+    CHECK(source.rootDefinitionId() == rootBefore);
+    CHECK(&source.rootDocument() == documentBefore);
+    CHECK(&source.rootDocument().sketches().at(0) == decoyBefore);
+    CHECK(&source.rootDocument().sketches().at(1) == sourceSketchBefore);
+    CHECK(source.rootDocument().bodies().empty());
+    CHECK(modelFingerprint(source.rootDocument()) == fingerprintBefore);
+
+    const QString destinationPath =
+        directory.filePath(QStringLiteral("historical-v1-destination.solidar"));
+    const QByteArray sentinel("historical-v1-destination-sentinel");
+    {
+      QFile destination(destinationPath);
+      CHECK(destination.open(QIODevice::WriteOnly | QIODevice::Truncate));
+      CHECK(destination.write(sentinel) == sentinel.size());
+      CHECK(destination.flush());
+    }
+    const AutoIds beforePublicIds =
+        consumeAutoIds("before-v1-public-rejection");
+    const auto publicRejected = service.convertStandaloneToProduct(
+        destinationPath, source, request(), compatibility);
+    CHECK(!publicRejected.succeeded());
+    CHECK(publicRejected.code == ProjectApplicationErrorCode::InvalidProject);
+    CHECK(readAll(destinationPath) == sentinel);
+    CHECK(readAll(sourcePath) == sourceBytes);
+    const AutoIds afterPublicIds =
+        consumeAutoIds("after-v1-public-rejection");
+    checkOnlyOneAutoAdvance(beforePublicIds, afterPublicIds);
+    CHECK(source.identity() == identityBefore);
+    CHECK(source.rootDefinitionId() == rootBefore);
+    CHECK(&source.rootDocument() == documentBefore);
+    CHECK(&source.rootDocument().sketches().at(0) == decoyBefore);
+    CHECK(&source.rootDocument().sketches().at(1) == sourceSketchBefore);
+    CHECK(source.rootDocument().bodies().empty());
+    CHECK(modelFingerprint(source.rootDocument()) == fingerprintBefore);
+  }
+
+  // A v1-like document without the compatibility marker remains convertible.
+  // Its zero-body sketch semantics survive scan/materialize exactly; the gate
+  // does not infer or synthesize an Extrude feature.
+  {
+    ProjectData legacyLike;
+    legacyLike.box = {42.0, 31.0, 17.0};
+    sketch::Sketch profile;
+    profile.addRectangle({-8.0, -6.0}, {8.0, 6.0});
+    legacyLike.sketches.push_back(
+        {profile, QStringLiteral("marker absent profile")});
+    legacyLike.hasExtrusion = true;
+    legacyLike.extrusionSourceSketch.reset();
+
+    const QString sourcePath =
+        directory.filePath(QStringLiteral("marker-absent-v1-like.solidar"));
+    QString error;
+    CHECK(ProjectFile::save(sourcePath, legacyLike, &error));
+    const QByteArray sourceBytes = readAll(sourcePath);
+    auto staged = service.stageOpen(sourcePath);
+    CHECK(staged.succeeded());
+    CHECK(!staged.staged->historicalLegacyExtrusionSourceSketchId);
+    ProductDocument source =
+        std::move(*staged.staged).releaseProductDocument();
+    CHECK(source.rootDocument().bodies().empty());
+    CHECK(source.rootDocument().sketches().size() == 1);
+    const Document* const documentBefore = &source.rootDocument();
+    const DocumentSketch* const sketchBefore =
+        &source.rootDocument().sketches().front();
+    const QByteArray fingerprintBefore = modelFingerprint(source.rootDocument());
+    const auto fixedRequest = request();
+    const auto expected = prepareStandaloneProductEnvelopeV5Conversion(
+        source, fixedRequest.outputProjectId,
+        fixedRequest.outputRootDefinitionId, metadata(fixedRequest));
+    CHECK(expected.succeeded());
+
+    const QString outputPath = directory.filePath(
+        QStringLiteral("marker-absent-v1-like-product.solidar"));
+    const auto converted = service.convertStandaloneToProduct(
+        outputPath, source, fixedRequest, {});
+    CHECK(converted.succeeded());
+    CHECK(readAll(outputPath) == expected.prepared->payload.bytes);
+    CHECK(readAll(sourcePath) == sourceBytes);
+    CHECK(&source.rootDocument() == documentBefore);
+    CHECK(&source.rootDocument().sketches().front() == sketchBefore);
+    CHECK(source.rootDocument().bodies().empty());
+    CHECK(modelFingerprint(source.rootDocument()) == fingerprintBefore);
+
+    const QByteArray outputBytes = readAll(outputPath);
+    const auto scanned = scanProductEnvelopeV5(QByteArrayView(outputBytes));
+    CHECK(scanned.status == ProductEnvelopeV5ScanStatus::Candidate);
+    CHECK(scanned.candidate);
+    auto restored = materializeProductEnvelopeV5(*scanned.candidate);
+    CHECK(restored.succeeded());
+    CHECK(restored.product->identity() == source.identity());
+    CHECK(restored.product->rootDefinitionId() == kPersistentRoot);
+    CHECK(restored.product->rootDocument().bodies().empty());
+    CHECK(restored.product->rootDocument().sketches().size() == 1);
+    CHECK(modelFingerprint(restored.product->rootDocument()) ==
+          fingerprintBefore);
+  }
 
   // The path API publishes the exact bytes prepared before the call, then
   // adopts identity/root while retaining the complete live model graph.
@@ -318,7 +479,7 @@ int main(int argc, char** argv) {
     const QString path =
         directory.filePath(QStringLiteral("converted.solidar"));
     const auto converted =
-        service.convertStandaloneToProduct(path, *source, fixedRequest);
+        service.convertStandaloneToProduct(path, *source, fixedRequest, {});
     CHECK(converted.succeeded());
     CHECK(readAll(path) == expectedBytes);
     CHECK(source->rootDefinitionId() == kPersistentRoot);
@@ -399,7 +560,7 @@ int main(int argc, char** argv) {
     const QString absent =
         directory.filePath(QStringLiteral("invalid-no-destination.solidar"));
     CHECK(!service.convertStandaloneToProduct(absent, *pathRejected,
-                                               pathInvalid)
+                                               pathInvalid, {})
                .succeeded());
     CHECK(!QFile::exists(absent));
   }
@@ -420,7 +581,7 @@ int main(int argc, char** argv) {
                              FailurePhase::Replace}) {
       RecordingTransaction transaction(phase);
       const auto failed = application::detail::convertStandaloneToProduct(
-          *source, fixedRequest, transaction);
+          *source, fixedRequest, {}, transaction);
       CHECK(!failed.succeeded());
       CHECK(failed.code == ProjectApplicationErrorCode::SaveFailed);
       CHECK(!failed.detail.isEmpty());
@@ -432,7 +593,7 @@ int main(int argc, char** argv) {
 
     RecordingTransaction successful;
     const auto converted = application::detail::convertStandaloneToProduct(
-        *source, fixedRequest, successful);
+        *source, fixedRequest, {}, successful);
     CHECK(converted.succeeded());
     CHECK(successful.destination == expected.prepared->payload.bytes);
     CHECK((successful.calls ==
@@ -444,7 +605,7 @@ int main(int argc, char** argv) {
     const auto convertedSnapshot = snapshot(*source);
     RecordingTransaction repeated;
     const auto repeat = application::detail::convertStandaloneToProduct(
-        *source, fixedRequest, repeated);
+        *source, fixedRequest, {}, repeated);
     CHECK(!repeat.succeeded());
     CHECK(repeat.code == ProjectApplicationErrorCode::InvalidProject);
     CHECK(repeated.calls.isEmpty());
@@ -460,7 +621,7 @@ int main(int argc, char** argv) {
     const QString missing = directory.filePath(
         QStringLiteral("missing-parent/converted.solidar"));
     const auto failed =
-        service.convertStandaloneToProduct(missing, *source, request());
+        service.convertStandaloneToProduct(missing, *source, request(), {});
     CHECK(!failed.succeeded());
     CHECK(failed.code == ProjectApplicationErrorCode::SaveFailed);
     CHECK(!failed.detail.isEmpty());

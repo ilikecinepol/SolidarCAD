@@ -1332,7 +1332,9 @@ bool MainWindow::standaloneProductConversionIsEligible() const noexcept {
   const DefinitionId root = productDocument_.rootDefinitionId();
   return (format == project::ProjectPersistenceFormat::V3 ||
           format == project::ProjectPersistenceFormat::V4) &&
-         !productDocument_.identity().has_value() && root.isValid() &&
+         !productDocument_.identity().has_value() &&
+         !historicalLegacyExtrusionSourceSketchId_.has_value() &&
+         root.isValid() &&
          productDocument_.definitions().size() == 1 &&
          productDocument_.definitions().contains(root);
 }
@@ -1423,7 +1425,8 @@ ProjectApplicationStatus MainWindow::convertProjectToPath(
     normalizedTarget += QStringLiteral(".solidar");
 
   const auto converted = projectApplicationService_.convertStandaloneToProduct(
-      normalizedTarget, productDocument_, request);
+      normalizedTarget, productDocument_, request,
+      {historicalLegacyExtrusionSourceSketchId_});
   if (!converted.succeeded()) return converted;
 
   // The service has already committed identity into the existing carrier and
@@ -4972,6 +4975,10 @@ void MainWindow::refreshBodyViewFromDocument(
   if (historicalLegacyExtrusionSourceSketchId_ &&
       !document().findSketch(*historicalLegacyExtrusionSourceSketchId_))
     historicalLegacyExtrusionSourceSketchId_.reset();
+  // The historical marker is part of committed Undo/Redo state and directly
+  // gates product conversion. Keep the action synchronized whenever model
+  // refresh consumes, restores or clears that compatibility state.
+  updateUpgradeProjectFormatAction();
   std::vector<BodyViewShape> shapes;
   for (const Body& body : document().bodies()) {
     // Rendering explicitly uses the last validated committed result. The
