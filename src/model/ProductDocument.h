@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <utility>
 
 #include "model/Document.h"
 
@@ -47,6 +48,12 @@ class PartDefinition final {
   [[nodiscard]] const Document& document() const noexcept { return *document_; }
 
  private:
+  friend class ProductDocument;
+
+  [[nodiscard]] std::unique_ptr<Document> releaseDocument() && noexcept {
+    return std::move(document_);
+  }
+
   DefinitionId id_;
   std::unique_ptr<Document> document_;
 };
@@ -81,6 +88,8 @@ class DefinitionRegistry final {
   [[nodiscard]] std::size_t size() const noexcept { return definitions_.size(); }
 
  private:
+  friend class ProductDocument;
+
   std::map<DefinitionId, PartDefinition> definitions_;
 };
 
@@ -117,6 +126,7 @@ class ProductDocument final {
     return rootDefinitionId_;
   }
   [[nodiscard]] const PartDefinition& rootDefinition() const noexcept;
+  [[nodiscard]] std::unique_ptr<Document> releaseRootDocument() && noexcept;
 
   [[nodiscard]] DefinitionInsertStatus insert(PartDefinition&& definition);
   [[nodiscard]] ProductDocumentRemoveStatus remove(DefinitionId id);

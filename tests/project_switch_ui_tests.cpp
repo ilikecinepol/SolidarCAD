@@ -93,6 +93,8 @@ class UnindexedPresentationFeature final : public ShapeFeature {
 
 class MainWindowUndoTestAccess {
  public:
+  static_assert(std::is_same_v<decltype(MainWindow::document_), Document>);
+
   inline static std::optional<MainWindow::HistorySelectionState>
       expectedEditUndoSelection_;
   static void reset(MainWindow& window) {
@@ -2452,7 +2454,7 @@ int main(int argc, char** argv) {
     const auto source = solidar::ProjectApplicationService{}.stageOpen(pathA);
     CHECK(source.succeeded());
     CHECK(solidar::project::ProjectFile::saveDocument(
-        gatePath, source.staged->document, &error));
+        gatePath, source.staged->rootDocument(), &error));
 
     solidar::MainWindow editor(settings);
     CHECK(editor.loadProject(gatePath, &error));

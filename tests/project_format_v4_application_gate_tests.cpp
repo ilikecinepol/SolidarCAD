@@ -276,11 +276,17 @@ int main(int argc, char* argv[]) {
   const QString highPath = directory.filePath(QStringLiteral("high-ids.solidar"));
   CHECK(ProjectFile::saveDocument(highPath, highIds, v4, &error));
   CHECK(ProjectFile::stageLoad(highPath).succeeded());
+  auto stagedHighThroughService = service.stageOpen(highPath);
+  CHECK(stagedHighThroughService.succeeded());
+  CHECK(stagedHighThroughService.staged->rootDocument().findBody(800000000));
   const QString rejectedHighPath =
       directory.filePath(QStringLiteral("rejected-high-ids.solidar"));
   CHECK(ProjectFile::saveDocument(rejectedHighPath, rejectedHighIds, v4,
                                   &error));
   CHECK(!ProjectFile::stageLoad(rejectedHighPath).succeeded());
+  const auto rejectedHighThroughService = service.stageOpen(rejectedHighPath);
+  CHECK(!rejectedHighThroughService.succeeded());
+  CHECK(!rejectedHighThroughService.staged);
   Document cursorAfter;
   CHECK(cursorAfter.addBody("cursor-after").id() == beforeId + 1);
 

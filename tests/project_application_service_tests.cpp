@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
@@ -39,6 +40,16 @@ bool writeBytes(const QString& path, const QByteArray& bytes) {
          file.write(bytes) == bytes.size() && file.flush();
 }
 
+template <typename T>
+concept HasLvalueRootRelease = requires(T& value) {
+  value.releaseRootDocument();
+};
+
+template <typename T>
+concept HasRvalueRootRelease = requires(T&& value) {
+  std::move(value).releaseRootDocument();
+};
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -48,9 +59,20 @@ int main(int argc, char* argv[]) {
   CHECK(directory.isValid());
 
   const solidar::ProjectApplicationService service;
-  static_assert(std::is_same_v<
-                decltype(solidar::StagedApplicationDocument::document),
-                solidar::Document>);
+  static_assert(!std::is_default_constructible_v<
+                solidar::StagedApplicationDocument>);
+  static_assert(!std::is_copy_constructible_v<
+                solidar::StagedApplicationDocument>);
+  static_assert(!std::is_copy_assignable_v<
+                solidar::StagedApplicationDocument>);
+  static_assert(std::is_nothrow_move_constructible_v<
+                solidar::StagedApplicationDocument>);
+  static_assert(std::is_nothrow_move_assignable_v<
+                solidar::StagedApplicationDocument>);
+  static_assert(!HasLvalueRootRelease<solidar::StagedApplicationDocument>);
+  static_assert(HasRvalueRootRelease<solidar::StagedApplicationDocument>);
+  static_assert(noexcept(std::declval<solidar::StagedApplicationDocument&&>()
+                             .releaseRootDocument()));
   static_assert(noexcept(service.stageOpen(QString{})));
   static_assert(noexcept(service.save(QString{},
                                       std::declval<const solidar::Document&>())));
@@ -86,6 +108,7 @@ int main(int argc, char* argv[]) {
   CHECK(!unsupported.succeeded());
   CHECK(unsupported.status.code ==
         solidar::ProjectApplicationErrorCode::UnsupportedProject);
+  CHECK(!unsupported.staged);
 
   const QString malformedV3Path =
       directory.filePath(QStringLiteral("malformed-v3.solidar"));
@@ -97,6 +120,7 @@ int main(int argc, char* argv[]) {
   CHECK(!malformedV3.succeeded());
   CHECK(malformedV3.status.code ==
         solidar::ProjectApplicationErrorCode::InvalidProject);
+  CHECK(!malformedV3.staged);
 
   const QString unknownSchemaV3Path =
       directory.filePath(QStringLiteral("unknown-schema-v3.solidar"));
@@ -108,6 +132,9 @@ int main(int argc, char* argv[]) {
   CHECK(!unknownSchemaV3.succeeded());
   CHECK(unknownSchemaV3.status.code ==
         solidar::ProjectApplicationErrorCode::UnsupportedProject);
+  CHECK(!unknownSchemaV3.staged);
+  CHECK(committed.bodies().size() == 1);
+  CHECK(committed.bodies().front().id() == committedBodyId);
 
   // Historical v1 becomes a complete staged Document and carries the legacy
   // extrusion presentation reference without exposing ProjectFile DTOs to UI.
@@ -124,12 +151,40 @@ int main(int argc, char* argv[]) {
   CHECK(solidar::project::ProjectFile::save(v1Path, legacy, &fixtureError));
   auto openedV1 = service.stageOpen(v1Path);
   CHECK(openedV1.succeeded());
-  CHECK(openedV1.staged->document.sketches().size() == 1);
+  CHECK(openedV1.staged->rootDocument().sketches().size() == 1);
   CHECK(openedV1.staged->historicalLegacyExtrusionSourceSketchId ==
-        openedV1.staged->document.sketches().front().id);
-  CHECK(openedV1.staged->document.sketches().front().placement.origin.z ==
-        20.0);
+        openedV1.staged->rootDocument().sketches().front().id);
+  CHECK(openedV1.staged->rootDocument()
+            .sketches()
+            .front()
+            .placement.origin.z == 20.0);
   CHECK(openedV1.staged->persistenceState ==
+        solidar::project::ProjectPersistenceState{
+            solidar::project::ProjectPersistenceFormat::V3});
+
+  // Historical v2 is still accepted through the service boundary and staged
+  // into the same transient root carrier as every other supported version.
+  const QString v2Path =
+      directory.filePath(QStringLiteral("hand-authored-v2.solidar"));
+  const QJsonObject v2Root{
+      {"format", QStringLiteral("solidar-project")},
+      {"version", 2},
+      {"name", QStringLiteral("hand-authored-v2")},
+      {"createdAt", QStringLiteral("2026-10-18T00:00:00Z")},
+      {"document", QJsonObject{{"widthMm", 60.0},
+                                {"heightMm", 40.0},
+                                {"extrusionMm", 25.0}}},
+      {"sketches", QJsonArray{}},
+      {"extrusion", QJsonObject{{"enabled", false}}},
+      {"model", QJsonObject{{"sketches", QJsonArray{}},
+                              {"bodies", QJsonArray{}},
+                              {"referenceImages", QJsonArray{}}}}};
+  CHECK(writeBytes(v2Path,
+                   QJsonDocument(v2Root).toJson(QJsonDocument::Compact)));
+  auto openedV2 = service.stageOpen(v2Path);
+  CHECK(openedV2.succeeded());
+  CHECK(openedV2.staged->rootDocument().bodies().empty());
+  CHECK(openedV2.staged->persistenceState ==
         solidar::project::ProjectPersistenceState{
             solidar::project::ProjectPersistenceFormat::V3});
 
@@ -140,12 +195,44 @@ int main(int argc, char* argv[]) {
   CHECK(saved.succeeded());
   auto openedV3 = service.stageOpen(v3Path);
   CHECK(openedV3.succeeded());
-  CHECK(openedV3.staged->document.bodies().size() == 1);
-  CHECK(openedV3.staged->document.bodies().front().features().size() == 1);
+  CHECK(openedV3.staged->rootDocument().bodies().size() == 1);
+  CHECK(openedV3.staged->rootDocument()
+            .bodies()
+            .front()
+            .features()
+            .size() == 1);
   CHECK(!openedV3.staged->historicalLegacyExtrusionSourceSketchId);
   CHECK(openedV3.staged->persistenceState ==
         solidar::project::ProjectPersistenceState{
             solidar::project::ProjectPersistenceFormat::V3});
+  const auto* const stagedDocument = &openedV3.staged->rootDocument();
+  const auto* const stagedBody = &stagedDocument->bodies().front();
+  const auto* const stagedFeature = stagedBody->features().front().get();
+  const auto* const stagedShapeFeature =
+      dynamic_cast<const solidar::ShapeFeature*>(stagedFeature);
+  CHECK(stagedShapeFeature);
+  const auto* const stagedShape = stagedShapeFeature->lastValidShape().get();
+  std::string topologyError;
+  const auto stagedTopology =
+      stagedShapeFeature->lastValidTopologyIndex(&topologyError);
+  CHECK(stagedTopology);
+  CHECK(topologyError.empty());
+  const auto* const stagedTopologyAddress = stagedTopology.get();
+  const auto stagedRevision = stagedShapeFeature->shapeRevision();
+
+  auto releasedV3 = std::move(*openedV3.staged).releaseRootDocument();
+  CHECK(releasedV3);
+  CHECK(releasedV3.get() == stagedDocument);
+  CHECK(&releasedV3->bodies().front() == stagedBody);
+  CHECK(releasedV3->bodies().front().features().front().get() ==
+        stagedFeature);
+  const auto* const releasedShapeFeature =
+      dynamic_cast<const solidar::ShapeFeature*>(stagedFeature);
+  CHECK(releasedShapeFeature);
+  CHECK(releasedShapeFeature->lastValidShape().get() == stagedShape);
+  CHECK(releasedShapeFeature->shapeRevision() == stagedRevision);
+  CHECK(releasedShapeFeature->lastValidTopologyIndex().get() ==
+        stagedTopologyAddress);
 
   const QString v4Path =
       directory.filePath(QStringLiteral("canonical-v4.solidar"));
@@ -198,7 +285,7 @@ int main(int argc, char* argv[]) {
   CHECK(imported.succeeded());
   CHECK(importBase.bodies().size() == 1);
   CHECK(importBase.bodies().front().id() == existingId);
-  CHECK(imported.staged->document.bodies().size() == 2);
+  CHECK(imported.staged->rootDocument().bodies().size() == 2);
   CHECK(!imported.staged->persistenceState);
 
   const auto failedImport = service.stageImportStep(

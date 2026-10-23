@@ -1,6 +1,7 @@
 #include "ui/application/ProjectApplicationService.h"
 
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 #include "io/DocumentExportShapes.h"
@@ -11,6 +12,23 @@
 
 namespace solidar {
 namespace {
+
+constexpr DefinitionId kTransientApplicationRootDefinitionId{1};
+
+ProductDocument makeTransientProductDocument(Document&& document) {
+  DefinitionRegistry definitions;
+  PartDefinition root(kTransientApplicationRootDefinitionId,
+                      std::make_unique<Document>(std::move(document)));
+  const auto inserted = definitions.insert(std::move(root));
+  if (inserted != DefinitionInsertStatus::Inserted)
+    throw std::logic_error("failed to stage transient root definition");
+
+  auto created = ProductDocument::create(
+      std::move(definitions), kTransientApplicationRootDefinitionId);
+  if (!created)
+    throw std::logic_error("failed to create staged product document");
+  return std::move(*created.product);
+}
 
 ProjectApplicationStatus failure(ProjectApplicationErrorCode code,
                                  QString detail) {
@@ -62,6 +80,15 @@ SketchPlacement legacyV1SketchPlacement(const QString& support,
 
 }  // namespace
 
+StagedApplicationDocument::StagedApplicationDocument(
+    Document&& document,
+    std::optional<SketchId> historicalLegacyExtrusionSourceSketchId,
+    std::optional<project::ProjectPersistenceState> persistenceState)
+    : historicalLegacyExtrusionSourceSketchId(
+          historicalLegacyExtrusionSourceSketchId),
+      persistenceState(persistenceState),
+      productDocument_(makeTransientProductDocument(std::move(document))) {}
+
 ProjectApplicationStatus ProjectApplicationService::createProject(
     const QString& path) const noexcept {
   try {
@@ -88,8 +115,8 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
       return {{code, std::move(loaded.error)}, std::nullopt};
     }
 
-    StagedApplicationDocument candidate;
-    candidate.persistenceState = loaded.persistenceState;
+    Document candidate;
+    std::optional<SketchId> historicalLegacyExtrusionSourceSketchId;
     switch (project::classifyPartPayload(loaded.payloadKind)) {
       case project::PartPayloadDisposition::Parametric:
         if (!loaded.document) {
@@ -98,10 +125,10 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
                        "Проект v2/v3/v4 не содержит восстановленного документа.")},
                   std::nullopt};
         }
-        candidate.document = std::move(*loaded.document);
+        candidate = std::move(*loaded.document);
         break;
       case project::PartPayloadDisposition::Legacy: {
-        candidate.document.setBox(loaded.legacy.box);
+        candidate.setBox(loaded.legacy.box);
         // v1 does not persist IDs. Use deterministic local IDs while explicit
         // reservation is paused so speculative staging cannot consume process-
         // global edit IDs. The commit boundary reserves them atomically later.
@@ -109,7 +136,7 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
         for (std::size_t index = 0; index < loaded.legacy.sketches.size();
              ++index) {
           const auto& saved = loaded.legacy.sketches[index];
-          auto& modelSketch = candidate.document.addSketch(
+          auto& modelSketch = candidate.addSketch(
               static_cast<SketchId>(index + 1), "Loaded sketch", {});
           modelSketch.geometry = saved.geometry;
           modelSketch.placement =
@@ -117,11 +144,9 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
         }
         if (loaded.legacy.hasExtrusion &&
             loaded.legacy.extrusionSourceSketch &&
-            *loaded.legacy.extrusionSourceSketch <
-                candidate.document.sketches().size()) {
-          candidate.historicalLegacyExtrusionSourceSketchId =
-              candidate.document
-                  .sketches()[*loaded.legacy.extrusionSourceSketch]
+            *loaded.legacy.extrusionSourceSketch < candidate.sketches().size()) {
+          historicalLegacyExtrusionSourceSketchId =
+              candidate.sketches()[*loaded.legacy.extrusionSourceSketch]
                   .id;
         }
         break;
@@ -133,7 +158,10 @@ StagedApplicationDocumentResult ProjectApplicationService::stageOpen(
                      "Проект не содержит поддерживаемых данных детали.")},
                 std::nullopt};
     }
-    return {{}, std::move(candidate)};
+    return {{}, StagedApplicationDocument(
+                    std::move(candidate),
+                    historicalLegacyExtrusionSourceSketchId,
+                    loaded.persistenceState)};
   } catch (const std::exception& exception) {
     return {unexpectedFailure("Ошибка подготовки проекта", exception),
             std::nullopt};
@@ -175,16 +203,15 @@ StagedApplicationDocumentResult ProjectApplicationService::stageImportStep(
     const QString& path, const Document& currentDocument,
     const QString& featureName) const noexcept {
   try {
-    StagedApplicationDocument candidate{currentDocument, std::nullopt,
-                                        std::nullopt};
+    Document candidate = currentDocument;
     QString detail;
-    if (!io::importDocumentStep(path, &candidate.document, featureName,
-                                &detail)) {
+    if (!io::importDocumentStep(path, &candidate, featureName, &detail)) {
       return {{ProjectApplicationErrorCode::StepImportFailed,
                std::move(detail)},
               std::nullopt};
     }
-    return {{}, std::move(candidate)};
+    return {{}, StagedApplicationDocument(
+                    std::move(candidate), std::nullopt, std::nullopt)};
   } catch (const std::exception& exception) {
     return {unexpectedFailure("Ошибка импорта STEP", exception),
             std::nullopt};

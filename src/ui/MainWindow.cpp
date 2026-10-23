@@ -1312,7 +1312,8 @@ void MainWindow::removeReferenceImage(ReferenceImageId id) {
 
 void MainWindow::applyImportedDocument(Document staged,
                                        const QString& importedName) {
-  commitDocumentReplacement({std::move(staged), std::nullopt, std::nullopt},
+  commitDocumentReplacement(StagedApplicationDocument(
+                                std::move(staged), std::nullopt, std::nullopt),
                             DocumentReplacementOrigin::ImportedStep,
                             importedName);
 }
@@ -1320,6 +1321,10 @@ void MainWindow::applyImportedDocument(Document staged,
 void MainWindow::commitDocumentReplacement(
     StagedApplicationDocument staged, DocumentReplacementOrigin origin,
     const QString& pathOrLabel) {
+  const auto persistenceState = staged.persistenceState;
+  const auto historicalLegacyExtrusionSourceSketchId =
+      staged.historicalLegacyExtrusionSourceSketchId;
+
   // This is the sole commit protocol for a completely staged replacement.
   // Invalidate queued work and cancel every topology-owning session while the
   // old Document is alive. Failed staging never enters this method.
@@ -1346,12 +1351,13 @@ void MainWindow::commitDocumentReplacement(
   editingSketchIndex_.reset();
   viewport_->resetScene();
 
-  document_ = std::move(staged.document);
-  if (staged.persistenceState)
-    projectPersistenceState_ = *staged.persistenceState;
+  auto replacementDocument = std::move(staged).releaseRootDocument();
+  document_ = std::move(*replacementDocument);
+  if (persistenceState)
+    projectPersistenceState_ = *persistenceState;
   document_.reserveIdsForEditing();
   historicalLegacyExtrusionSourceSketchId_ =
-      staged.historicalLegacyExtrusionSourceSketchId;
+      historicalLegacyExtrusionSourceSketchId;
   currentSketchSupport_ = QStringLiteral("XY");
   currentSketchPlacement_ = SketchPlacement::xy();
   viewport_->setBox(document_.box());

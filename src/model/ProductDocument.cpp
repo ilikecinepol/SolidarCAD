@@ -61,6 +61,12 @@ const PartDefinition& ProductDocument::rootDefinition() const noexcept {
   return *definitions_.find(rootDefinitionId_);
 }
 
+std::unique_ptr<Document> ProductDocument::releaseRootDocument() && noexcept {
+  auto root = definitions_.definitions_.find(rootDefinitionId_);
+  if (root == definitions_.definitions_.end()) return {};
+  return std::move(root->second).releaseDocument();
+}
+
 DefinitionInsertStatus ProductDocument::insert(PartDefinition&& definition) {
   return definitions_.insert(std::move(definition));
 }

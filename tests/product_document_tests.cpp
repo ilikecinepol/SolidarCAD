@@ -2,12 +2,17 @@
 
 #include "TestAssertions.h"
 
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <TopoDS_Shape.hxx>
+
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+
+#include "model/ImportedShapeFeature.h"
 
 namespace {
 
@@ -18,6 +23,16 @@ constexpr solidar::DefinitionId kMissingId{999};
 solidar::PartDefinition makePart(solidar::DefinitionId id) {
   return solidar::PartDefinition(id, std::make_unique<solidar::Document>());
 }
+
+template <typename T>
+concept HasLvalueRootRelease = requires(T& value) {
+  value.releaseRootDocument();
+};
+
+template <typename T>
+concept HasRvalueRootRelease = requires(T&& value) {
+  std::move(value).releaseRootDocument();
+};
 
 }  // namespace
 
@@ -30,6 +45,10 @@ int main() {
   static_assert(!std::is_copy_constructible_v<solidar::PartDefinition>);
   static_assert(!std::is_copy_constructible_v<solidar::DefinitionRegistry>);
   static_assert(!std::is_copy_constructible_v<solidar::ProductDocument>);
+  static_assert(!HasLvalueRootRelease<solidar::ProductDocument>);
+  static_assert(HasRvalueRootRelease<solidar::ProductDocument>);
+  static_assert(noexcept(std::declval<solidar::ProductDocument&&>()
+                             .releaseRootDocument()));
 
   CHECK(!solidar::DefinitionId{}.isValid());
   CHECK(solidar::kInvalidDefinitionId == solidar::DefinitionId{});
@@ -127,6 +146,17 @@ int main() {
     auto* const documentAddress = document.get();
     auto& body = document->addBody("root body");
     auto* const bodyAddress = &body;
+    body.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+        std::make_shared<const TopoDS_Shape>(
+            BRepPrimAPI_MakeBox(20.0, 10.0, 5.0).Shape()),
+        "root feature"));
+    CHECK(document->recompute());
+    auto* const featureAddress = body.features().front().get();
+    const auto* const shapeFeature =
+        dynamic_cast<const solidar::ShapeFeature*>(featureAddress);
+    CHECK(shapeFeature);
+    const auto shapeAddress = shapeFeature->lastValidShape().get();
+    const auto shapeRevision = shapeFeature->shapeRevision();
 
     solidar::PartDefinition root(kRootId, std::move(document));
     CHECK(&root.document() == documentAddress);
@@ -165,6 +195,18 @@ int main() {
     auto moved = std::move(created.product);
     CHECK(moved);
     CHECK(&moved->rootDefinition().document() == documentAddress);
+
+    auto released = std::move(*moved).releaseRootDocument();
+    CHECK(released);
+    CHECK(released.get() == documentAddress);
+    CHECK(&released->bodies().front() == bodyAddress);
+    CHECK(released->bodies().front().features().front().get() ==
+          featureAddress);
+    const auto* const releasedShapeFeature =
+        dynamic_cast<const solidar::ShapeFeature*>(featureAddress);
+    CHECK(releasedShapeFeature);
+    CHECK(releasedShapeFeature->lastValidShape().get() == shapeAddress);
+    CHECK(releasedShapeFeature->shapeRevision() == shapeRevision);
   }
 
   return EXIT_SUCCESS;
