@@ -54,6 +54,8 @@ add_library(solidar_model
   model/JoinBodiesToolSession.cpp
   model/JoinBodiesToolSession.h
   model/PatternTypes.h
+  model/ProductDocument.cpp
+  model/ProductDocument.h
   model/MirrorFeature.cpp
   model/MirrorFeature.h
   model/MirrorToolSession.cpp

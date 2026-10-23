@@ -76,6 +76,8 @@ endfunction()
 
 solidar_add_test(document_tests
   LIBRARIES solidar_model LABELS unit)
+solidar_add_test(product_document_tests
+  LIBRARIES solidar_model LABELS unit regression)
 solidar_add_test(runtime_topology_diagnostics_tests
   LIBRARIES solidar_model LABELS unit regression topology)
 solidar_add_test(model_command_history_tests

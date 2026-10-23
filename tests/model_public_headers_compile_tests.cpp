@@ -42,6 +42,7 @@
 #include "model/PartDesignToolFramework.h"
 #include "model/PatternTypes.h"
 #include "model/PocketFeature.h"
+#include "model/ProductDocument.h"
 #include "model/RevolveFeature.h"
 #include "model/RevolveToolSession.h"
 #include "model/ShapeContainerUtils.h"
@@ -89,5 +90,17 @@ static_assert(std::is_same_v<decltype(
                              const std::size_t&>);
 static_assert(!std::is_convertible_v<solidar::EdgeReference,
                                      solidar::TopologyReference>);
+static_assert(!std::is_convertible_v<std::uint64_t, solidar::DefinitionId>);
+static_assert(!std::is_convertible_v<solidar::DefinitionId, std::uint64_t>);
+static_assert(!std::is_copy_constructible_v<solidar::PartDefinition>);
+static_assert(std::is_nothrow_move_constructible_v<solidar::PartDefinition>);
+static_assert(!std::is_copy_constructible_v<solidar::DefinitionRegistry>);
+static_assert(std::is_nothrow_move_constructible_v<solidar::DefinitionRegistry>);
+static_assert(std::is_same_v<
+              decltype(std::declval<solidar::DefinitionRegistry&>().find(
+                  solidar::DefinitionId{1})),
+              const solidar::PartDefinition*>);
+static_assert(!std::is_copy_constructible_v<solidar::ProductDocument>);
+static_assert(std::is_nothrow_move_constructible_v<solidar::ProductDocument>);
 
 int main() { return EXIT_SUCCESS; }
