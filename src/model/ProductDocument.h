@@ -109,6 +109,16 @@ enum class ProductDocumentRemoveStatus {
   RootProtected,
 };
 
+enum class ProductDocumentStandaloneConversionStatus {
+  Committed,
+  SelfTransition,
+  SourceAlreadyIdentified,
+  SourceNotSingleRoot,
+  PreparedMissingIdentity,
+  PreparedInvalidIdentity,
+  PreparedNotSingleRoot,
+};
+
 struct ProductDocumentMetadata {
   std::string nameUtf8;
   std::string createdAtUtf8;
@@ -159,6 +169,12 @@ class ProductDocument final {
   // without changing the authoritative bundle.
   [[nodiscard]] bool commitProductIdentity(
       ProductDocumentIdentity identity) noexcept;
+  // Atomically adopts a fully prepared identity-bearing carrier while
+  // retaining this standalone product's live root Document allocation. The
+  // prepared reconstruction is destroyed as part of a successful commit;
+  // every rejection leaves both operands unchanged.
+  [[nodiscard]] ProductDocumentStandaloneConversionStatus
+  commitPreparedStandaloneConversion(ProductDocument&& prepared) noexcept;
   [[nodiscard]] const PartDefinition& rootDefinition() const noexcept;
   [[nodiscard]] Document& rootDocument() noexcept;
   [[nodiscard]] const Document& rootDocument() const noexcept;

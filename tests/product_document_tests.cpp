@@ -21,6 +21,7 @@ namespace {
 
 constexpr solidar::DefinitionId kRootId{1};
 constexpr solidar::DefinitionId kSecondId{2};
+constexpr solidar::DefinitionId kPreparedRootId{4242};
 constexpr solidar::DefinitionId kMissingId{999};
 
 constexpr solidar::ProjectId projectId(std::uint8_t lastByte) {
@@ -37,6 +38,65 @@ solidar::ProductDocumentIdentity productIdentity(
 
 solidar::PartDefinition makePart(solidar::DefinitionId id) {
   return solidar::PartDefinition(id, std::make_unique<solidar::Document>());
+}
+
+std::unique_ptr<solidar::ProductDocument> makeShapedProduct(
+    solidar::DefinitionId rootId,
+    std::optional<solidar::ProductDocumentIdentity> identity,
+    const char* label) {
+  auto document = std::make_unique<solidar::Document>();
+  auto& body = document->addBody(std::string(label) + " body");
+  body.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+      std::make_shared<const TopoDS_Shape>(
+          BRepPrimAPI_MakeBox(20.0, 10.0, 5.0).Shape()),
+      std::string(label) + " feature"));
+  CHECK(document->recompute());
+  solidar::DefinitionRegistry definitions;
+  CHECK(definitions.insert(
+            solidar::PartDefinition(rootId, std::move(document))) ==
+        solidar::DefinitionInsertStatus::Inserted);
+  auto created = solidar::ProductDocument::create(
+      std::move(definitions), rootId, std::move(identity));
+  CHECK(created);
+  return std::move(created.product);
+}
+
+struct CarrierSnapshot {
+  solidar::DefinitionId rootId;
+  std::optional<solidar::ProductDocumentIdentity> identity;
+  std::size_t definitionCount{};
+  const solidar::Document* rootDocument{};
+  const solidar::Body* firstBody{};
+  const solidar::Feature* firstFeature{};
+  const TopoDS_Shape* firstShape{};
+};
+
+CarrierSnapshot snapshot(const solidar::ProductDocument& product) {
+  CarrierSnapshot result{product.rootDefinitionId(), product.identity(),
+                         product.definitions().size()};
+  const auto* root = product.definitions().find(product.rootDefinitionId());
+  if (!root) return result;
+  result.rootDocument = &root->document();
+  if (root->document().bodies().empty()) return result;
+  result.firstBody = &root->document().bodies().front();
+  if (result.firstBody->features().empty()) return result;
+  result.firstFeature = result.firstBody->features().front().get();
+  const auto* shapeFeature =
+      dynamic_cast<const solidar::ShapeFeature*>(result.firstFeature);
+  if (shapeFeature) result.firstShape = shapeFeature->lastValidShape().get();
+  return result;
+}
+
+bool matchesSnapshot(const solidar::ProductDocument& product,
+                     const CarrierSnapshot& expected) {
+  const auto actual = snapshot(product);
+  return actual.rootId == expected.rootId &&
+         actual.identity == expected.identity &&
+         actual.definitionCount == expected.definitionCount &&
+         actual.rootDocument == expected.rootDocument &&
+         actual.firstBody == expected.firstBody &&
+         actual.firstFeature == expected.firstFeature &&
+         actual.firstShape == expected.firstShape;
 }
 
 template <typename T>
@@ -87,6 +147,15 @@ int main() {
   static_assert(noexcept(std::declval<solidar::ProductDocument&>()
                              .commitProductIdentity(std::declval<
                                  solidar::ProductDocumentIdentity>())));
+  static_assert(std::is_same_v<
+                decltype(std::declval<solidar::ProductDocument&>()
+                             .commitPreparedStandaloneConversion(
+                                 std::declval<solidar::ProductDocument&&>())),
+                solidar::ProductDocumentStandaloneConversionStatus>);
+  static_assert(noexcept(
+      std::declval<solidar::ProductDocument&>()
+          .commitPreparedStandaloneConversion(
+              std::declval<solidar::ProductDocument&&>())));
   static_assert(std::is_nothrow_move_constructible_v<
                 solidar::ProductDocumentIdentity>);
   static_assert(std::is_same_v<
@@ -334,6 +403,173 @@ int main() {
     CHECK(releasedShapeFeature);
     CHECK(releasedShapeFeature->lastValidShape().get() == shapeAddress);
     CHECK(releasedShapeFeature->shapeRevision() == shapeRevision);
+  }
+
+  // A prepared standalone conversion adopts the persistent carrier while the
+  // live source Document graph remains at exactly the same addresses. The
+  // reconstructed candidate graph is destroyed during the atomic commit.
+  {
+    const std::string unicodeName =
+        "\xD0\x98\xD0\xB7\xD0\xB4\xD0\xB5\xD0\xBB\xD0\xB8\xD0\xB5"
+        " \xCE\xA9/\xE9\x9B\xAA";
+    const std::string unicodeCreatedAt =
+        "2026-10-23T20:15:00+03:00/"
+        "\xD1\x82\xD0\xBE\xD1\x87\xD0\xBD\xD0\xBE";
+    const auto expectedIdentity =
+        productIdentity(projectId(31), unicodeName, unicodeCreatedAt);
+    auto source = makeShapedProduct(kRootId, std::nullopt, "live");
+    auto prepared =
+        makeShapedProduct(kPreparedRootId, expectedIdentity, "candidate");
+    const auto liveBefore = snapshot(*source);
+    const auto candidateBefore = snapshot(*prepared);
+    std::weak_ptr<const TopoDS_Shape> candidateShape;
+    {
+      const auto* feature = dynamic_cast<const solidar::ShapeFeature*>(
+          prepared->rootDocument().bodies().front().features().front().get());
+      CHECK(feature);
+      candidateShape = feature->lastValidShape();
+    }
+    CHECK(!candidateShape.expired());
+
+    CHECK(source->commitPreparedStandaloneConversion(std::move(*prepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::Committed);
+    CHECK(source->rootDefinitionId() == kPreparedRootId);
+    CHECK(source->identity() == expectedIdentity);
+    CHECK(source->identity()->metadata.nameUtf8 == unicodeName);
+    CHECK(source->identity()->metadata.createdAtUtf8 == unicodeCreatedAt);
+    CHECK(source->definitions().size() == 1);
+    CHECK(&source->rootDocument() == liveBefore.rootDocument);
+    CHECK(&source->rootDocument().bodies().front() == liveBefore.firstBody);
+    CHECK(source->rootDocument().bodies().front().features().front().get() ==
+          liveBefore.firstFeature);
+    const auto* committedFeature =
+        dynamic_cast<const solidar::ShapeFeature*>(liveBefore.firstFeature);
+    CHECK(committedFeature);
+    CHECK(committedFeature->lastValidShape().get() == liveBefore.firstShape);
+    CHECK(candidateBefore.rootDocument != liveBefore.rootDocument);
+    CHECK(candidateShape.expired());
+
+    // Conversion is one-shot. A repeat leaves the active and newly prepared
+    // carrier graphs byte/value/address-equivalent to their snapshots.
+    auto repeatPrepared = makeShapedProduct(
+        solidar::DefinitionId{5000},
+        productIdentity(projectId(32), "repeat", "repeat"), "repeat");
+    const auto committedSnapshot = snapshot(*source);
+    const auto repeatSnapshot = snapshot(*repeatPrepared);
+    CHECK(source->commitPreparedStandaloneConversion(
+              std::move(*repeatPrepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::
+              SourceAlreadyIdentified);
+    CHECK(matchesSnapshot(*source, committedSnapshot));
+    CHECK(matchesSnapshot(*repeatPrepared, repeatSnapshot));
+  }
+
+  // Equal transient and persistent root IDs are valid: identity changes, but
+  // the live Document allocation is still retained and the reconstruction is
+  // still destroyed.
+  {
+    auto source = makeShapedProduct(kRootId, std::nullopt, "same-live");
+    const auto expectedIdentity =
+        productIdentity(projectId(40), "same root", "same root time");
+    auto prepared = makeShapedProduct(kRootId, expectedIdentity,
+                                      "same-candidate");
+    const auto liveBefore = snapshot(*source);
+    std::weak_ptr<const TopoDS_Shape> candidateShape;
+    const auto* candidateFeature =
+        dynamic_cast<const solidar::ShapeFeature*>(
+            prepared->rootDocument().bodies().front().features().front().get());
+    CHECK(candidateFeature);
+    candidateShape = candidateFeature->lastValidShape();
+    CHECK(source->commitPreparedStandaloneConversion(std::move(*prepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::Committed);
+    CHECK(source->rootDefinitionId() == kRootId);
+    CHECK(source->identity() == expectedIdentity);
+    CHECK(&source->rootDocument() == liveBefore.rootDocument);
+    CHECK(candidateShape.expired());
+  }
+
+  // Every invalid transition is a strict no-op for both operands.
+  {
+    auto self = makeShapedProduct(kRootId, std::nullopt, "self");
+    const auto selfBefore = snapshot(*self);
+    CHECK(self->commitPreparedStandaloneConversion(std::move(*self)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::SelfTransition);
+    CHECK(matchesSnapshot(*self, selfBefore));
+
+    auto identifiedSource = makeShapedProduct(
+        kRootId, productIdentity(projectId(50)), "identified-source");
+    auto prepared = makeShapedProduct(
+        kPreparedRootId, productIdentity(projectId(51)), "prepared-a");
+    const auto identifiedBefore = snapshot(*identifiedSource);
+    const auto preparedBefore = snapshot(*prepared);
+    CHECK(identifiedSource->commitPreparedStandaloneConversion(
+              std::move(*prepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::
+              SourceAlreadyIdentified);
+    CHECK(matchesSnapshot(*identifiedSource, identifiedBefore));
+    CHECK(matchesSnapshot(*prepared, preparedBefore));
+
+    auto multiSource = makeShapedProduct(kRootId, std::nullopt, "multi-source");
+    CHECK(multiSource->insert(makePart(kSecondId)) ==
+          solidar::DefinitionInsertStatus::Inserted);
+    auto preparedForMultiSource = makeShapedProduct(
+        kPreparedRootId, productIdentity(projectId(52)), "prepared-b");
+    const auto multiSourceBefore = snapshot(*multiSource);
+    const auto preparedForMultiSourceBefore =
+        snapshot(*preparedForMultiSource);
+    CHECK(multiSource->commitPreparedStandaloneConversion(
+              std::move(*preparedForMultiSource)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::
+              SourceNotSingleRoot);
+    CHECK(matchesSnapshot(*multiSource, multiSourceBefore));
+    CHECK(matchesSnapshot(*preparedForMultiSource,
+                          preparedForMultiSourceBefore));
+
+    auto sourceForIdentityless =
+        makeShapedProduct(kRootId, std::nullopt, "identityless-source");
+    auto identitylessPrepared = makeShapedProduct(
+        kPreparedRootId, std::nullopt, "identityless-prepared");
+    const auto sourceForIdentitylessBefore = snapshot(*sourceForIdentityless);
+    const auto identitylessPreparedBefore = snapshot(*identitylessPrepared);
+    CHECK(sourceForIdentityless->commitPreparedStandaloneConversion(
+              std::move(*identitylessPrepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::
+              PreparedMissingIdentity);
+    CHECK(matchesSnapshot(*sourceForIdentityless,
+                          sourceForIdentitylessBefore));
+    CHECK(matchesSnapshot(*identitylessPrepared, identitylessPreparedBefore));
+
+    auto sourceForMultiPrepared =
+        makeShapedProduct(kRootId, std::nullopt, "multi-prepared-source");
+    auto multiPrepared = makeShapedProduct(
+        kPreparedRootId, productIdentity(projectId(53)), "multi-prepared");
+    CHECK(multiPrepared->insert(makePart(kSecondId)) ==
+          solidar::DefinitionInsertStatus::Inserted);
+    const auto sourceForMultiPreparedBefore = snapshot(*sourceForMultiPrepared);
+    const auto multiPreparedBefore = snapshot(*multiPrepared);
+    CHECK(sourceForMultiPrepared->commitPreparedStandaloneConversion(
+              std::move(*multiPrepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::
+              PreparedNotSingleRoot);
+    CHECK(matchesSnapshot(*sourceForMultiPrepared,
+                          sourceForMultiPreparedBefore));
+    CHECK(matchesSnapshot(*multiPrepared, multiPreparedBefore));
+
+    auto sourceForMovedPrepared =
+        makeShapedProduct(kRootId, std::nullopt, "moved-prepared-source");
+    auto movedPrepared = makeShapedProduct(
+        kPreparedRootId, productIdentity(projectId(54)), "moved-prepared");
+    solidar::ProductDocument movedDestination(std::move(*movedPrepared));
+    const auto sourceForMovedPreparedBefore = snapshot(*sourceForMovedPrepared);
+    const auto movedPreparedBefore = snapshot(*movedPrepared);
+    CHECK(sourceForMovedPrepared->commitPreparedStandaloneConversion(
+              std::move(*movedPrepared)) ==
+          solidar::ProductDocumentStandaloneConversionStatus::
+              PreparedNotSingleRoot);
+    CHECK(matchesSnapshot(*sourceForMovedPrepared,
+                          sourceForMovedPreparedBefore));
+    CHECK(matchesSnapshot(*movedPrepared, movedPreparedBefore));
+    CHECK(movedDestination.identity() == productIdentity(projectId(54)));
   }
 
   return EXIT_SUCCESS;

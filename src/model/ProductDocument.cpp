@@ -70,6 +70,44 @@ bool ProductDocument::commitProductIdentity(
   return true;
 }
 
+ProductDocumentStandaloneConversionStatus
+ProductDocument::commitPreparedStandaloneConversion(
+    ProductDocument&& prepared) noexcept {
+  if (this == &prepared)
+    return ProductDocumentStandaloneConversionStatus::SelfTransition;
+  if (identity_)
+    return ProductDocumentStandaloneConversionStatus::SourceAlreadyIdentified;
+
+  const auto hasSingleValidRoot = [](const ProductDocument& product) noexcept {
+    if (!product.rootDefinitionId_.isValid() ||
+        product.definitions_.definitions_.size() != 1)
+      return false;
+    const auto root = product.definitions_.definitions_.begin();
+    return root->first == product.rootDefinitionId_ &&
+           root->second.id_ == product.rootDefinitionId_ &&
+           root->second.document_ != nullptr;
+  };
+
+  if (!hasSingleValidRoot(*this))
+    return ProductDocumentStandaloneConversionStatus::SourceNotSingleRoot;
+  if (!prepared.identity_)
+    return ProductDocumentStandaloneConversionStatus::PreparedMissingIdentity;
+  if (!prepared.identity_->projectId.isValid())
+    return ProductDocumentStandaloneConversionStatus::PreparedInvalidIdentity;
+  if (!hasSingleValidRoot(prepared))
+    return ProductDocumentStandaloneConversionStatus::PreparedNotSingleRoot;
+
+  // Both registries contain exactly their root node. Swapping only the owned
+  // Document pointers is allocation-free and preserves the active graph's
+  // address. Moving the prepared carrier then adopts its root ID and identity
+  // while destroying the reconstructed candidate now held by this carrier.
+  auto& sourceRoot = definitions_.definitions_.begin()->second;
+  auto& preparedRoot = prepared.definitions_.definitions_.begin()->second;
+  sourceRoot.document_.swap(preparedRoot.document_);
+  *this = std::move(prepared);
+  return ProductDocumentStandaloneConversionStatus::Committed;
+}
+
 const PartDefinition& ProductDocument::rootDefinition() const noexcept {
   return *definitions_.find(rootDefinitionId_);
 }

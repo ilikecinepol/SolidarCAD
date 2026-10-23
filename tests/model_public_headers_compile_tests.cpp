@@ -110,6 +110,15 @@ static_assert(std::is_same_v<
 static_assert(!std::is_copy_constructible_v<solidar::ProductDocument>);
 static_assert(std::is_nothrow_move_constructible_v<solidar::ProductDocument>);
 static_assert(std::is_same_v<
+              decltype(std::declval<solidar::ProductDocument&>()
+                           .commitPreparedStandaloneConversion(
+                               std::declval<solidar::ProductDocument&&>())),
+              solidar::ProductDocumentStandaloneConversionStatus>);
+static_assert(noexcept(
+    std::declval<solidar::ProductDocument&>()
+        .commitPreparedStandaloneConversion(
+            std::declval<solidar::ProductDocument&&>())));
+static_assert(std::is_same_v<
               decltype(std::declval<const solidar::ProductDocument&>()
                            .identity()),
               const std::optional<solidar::ProductDocumentIdentity>&>);
