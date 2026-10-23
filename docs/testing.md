@@ -69,11 +69,13 @@ cmake --build --preset fuzz --clean-first --target project_decoder_fuzz
 bash fuzz/run_project_decoder_fuzz.sh build/fuzz/fuzz/project_decoder_fuzz 60
 ```
 
-The runner creates its mutable corpus and crash artifacts under a fresh system
-temporary directory and prints that path. The harness uses a fixed filename
-inside its own `QTemporaryDir`; fuzz bytes cannot select an output path. The
-MSVC compiler profile is intentionally rejected because it does not provide
-the libFuzzer driver used by this target.
+The runner copies the checked-in minimal v1 and v5 seeds into a fresh mutable
+corpus, creates crash artifacts under the same fresh system temporary root and
+prints that path. Each input is scanned directly by the disconnected v5
+scanner before the existing legacy `ProjectFile::stageLoad` file path runs.
+The harness uses a fixed filename inside its own `QTemporaryDir`; fuzz bytes
+cannot select an output path. The MSVC compiler profile is intentionally
+rejected because it does not provide the libFuzzer driver used by this target.
 
 ## Performance profiles
 

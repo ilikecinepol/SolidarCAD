@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "project/ProductEnvelopeV5Decoder.h"
 #include "project/ProjectFile.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
@@ -12,6 +13,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
                  solidar::project::ProjectFile::kMaximumFileBytes) +
                  1U)
     return 0;
+
+  const QByteArrayView bytes(reinterpret_cast<const char*>(data),
+                             static_cast<qsizetype>(size));
+  (void)solidar::project::scanProductEnvelopeV5(bytes);
 
   // The harness owns exactly one process-local temporary directory. No fuzz
   // input can influence the path, and all decoder I/O stays inside it.

@@ -8,10 +8,12 @@ corpus_dir="${temporary_root}/corpus"
 artifact_dir="${temporary_root}/artifacts"
 mkdir -p "${corpus_dir}" "${artifact_dir}"
 cp fuzz/corpus/project_decoder/minimal-v1.solidar "${corpus_dir}/"
+cp fuzz/corpus/project_decoder/minimal-v5.solidar "${corpus_dir}/"
 
 echo "Fuzz corpus and artifacts: ${temporary_root}"
 exec "${executable}" "${corpus_dir}" \
   "-artifact_prefix=${artifact_dir}/" \
   "-max_total_time=${seconds}" \
+  -timeout=30 \
   -max_len=1048576 \
   -rss_limit_mb=4096

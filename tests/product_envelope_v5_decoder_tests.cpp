@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFile>
 
 #include <array>
 #include <cstdint>
@@ -107,6 +108,27 @@ int main() {
   constexpr solidar::ProjectId kExpectedProjectId{
       {0x12, 0x3e, 0x45, 0x67, 0xe8, 0x9b, 0x42, 0xd3,
        0xa4, 0x56, 0x42, 0x66, 0x14, 0x17, 0x40, 0x00}};
+
+  // This is the exact checked-in seed copied by the fuzz runner, not a second
+  // test-only reconstruction of it.
+  QFile seed(QString::fromUtf8(SOLIDAR_MINIMAL_V5_FUZZ_SEED_PATH));
+  CHECK(seed.open(QIODevice::ReadOnly));
+  const QByteArray seedBytes = seed.readAll();
+  const auto seeded = solidar::project::scanProductEnvelopeV5(
+      QByteArrayView(seedBytes));
+  CHECK(seeded.status == ProductEnvelopeV5ScanStatus::Candidate);
+  CHECK(seeded.hasCandidate());
+  CHECK(seeded.candidate.has_value());
+  CHECK(seeded.error.isEmpty());
+  CHECK(seeded.candidate->projectId == kExpectedProjectId);
+  CHECK(seeded.candidate->rootDefinitionId == solidar::DefinitionId{17});
+  CHECK(seeded.candidate->definitionId == solidar::DefinitionId{17});
+  CHECK(seeded.candidate->metadata.name == QStringLiteral("product"));
+  CHECK(seeded.candidate->metadata.createdAt ==
+        QStringLiteral("2026-10-23T00:00:00Z"));
+  CHECK(seeded.candidate->embeddedPart.has_value());
+  CHECK(seeded.candidate->deferredUnknowns.empty());
+
   const auto valid = scan(validRoot());
   CHECK(valid.status == ProductEnvelopeV5ScanStatus::Candidate);
   CHECK(valid.hasCandidate());

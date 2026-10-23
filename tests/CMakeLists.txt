@@ -147,6 +147,8 @@ solidar_add_test(project_file_tests
   LIBRARIES solidar_project Qt6::Core LABELS regression)
 solidar_add_test(product_envelope_v5_decoder_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression)
+target_compile_definitions(product_envelope_v5_decoder_tests PRIVATE
+  "SOLIDAR_MINIMAL_V5_FUZZ_SEED_PATH=\"${CMAKE_SOURCE_DIR}/fuzz/corpus/project_decoder/minimal-v5.solidar\"")
 solidar_add_test(product_envelope_v5_encoder_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
 solidar_add_test(product_envelope_v5_conversion_tests
