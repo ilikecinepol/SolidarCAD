@@ -159,6 +159,8 @@ solidar_add_test(project_format_v4_document_materializer_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
 solidar_add_test(project_format_v4_application_gate_tests
   LIBRARIES solidar_editor Qt6::Core LABELS unit regression topology)
+solidar_add_test(project_atomic_writer_tests
+  LIBRARIES solidar_project Qt6::Core LABELS unit regression)
 solidar_add_test(project_format_v4_atomic_writer_tests
   LIBRARIES solidar_project Qt6::Core LABELS unit regression topology)
 solidar_add_test(project_format_v4_envelope_decoder_tests

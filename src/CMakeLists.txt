@@ -157,12 +157,14 @@ add_library(solidar_project
   project/ProductEnvelopeV5Decoder.cpp
   project/ProductEnvelopeV5Decoder.h
   project/ProjectPersistenceState.h
+  project/internal/ProjectAtomicWriting.h
   project/internal/ProjectFormatV3ModelSemanticValidation.h
   project/internal/ProjectFormatV3TypedSketchValidation.h
   project/internal/ProjectFormatV4AtomicWriting.h
   project/internal/ProjectFormatV4ApplicationGate.h
   project/internal/ProjectFormatV4DocumentEncoding.h
   project/internal/ProjectFormatV4DocumentMaterialization.h
+  project/ProjectAtomicWriting.cpp
   project/ProjectFormatV4AtomicWriting.cpp
   project/ProjectFormatV4ReferenceDecoder.cpp
   project/ProjectFormatV4ReferenceDecoder.h
