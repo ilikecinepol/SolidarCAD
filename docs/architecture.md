@@ -9,10 +9,14 @@ Qt Widgets UI
   ├── feature tree and property editor
   └── viewport and selection
              │ commands / immutable IDs
-Document model
-  ├── parameters and feature dependency graph
-  ├── undo/redo transaction log
-  └── regeneration scheduler and diagnostics
+ProductDocument (editor owner)
+  ├── optional ProjectId + envelope metadata
+  ├── DefinitionRegistry + root DefinitionId
+  └── PartDefinition
+        └── Document model
+              ├── parameters and feature dependency graph
+              ├── undo/redo transaction log
+              └── regeneration scheduler and diagnostics
              │ feature inputs
 Geometry adapters
   ├── sketch constraint solver
@@ -37,6 +41,29 @@ The current model rebuilds Open CASCADE `TopoDS_Shape` results for Extrude,
 Pocket, Revolve, Fillet, Chamfer, Shell, Draft, Mirror and pattern features.
 Sketch edits propagate through the feature history, while save/load persists
 only the definitions needed to reproduce those shapes.
+
+## Product document ownership
+
+`MainWindow` owns one authoritative `ProductDocument`. In the implemented
+single-part slice its registry contains exactly one root `PartDefinition`, and
+that definition exclusively owns the existing `Document`; UI subsystems borrow
+that nested document and do not keep a parallel authoritative model. Replacing
+a project replaces the carrier only after staged load succeeds.
+
+The carrier's identity bundle is atomic and optional. Standalone V3/V4 has no
+`ProjectId` or envelope metadata, while product V5 has both. The same nested
+`Document`, root `DefinitionId`, model IDs and topology survive explicit
+standalone-to-V5 conversion and V5 Save As clone; successful persistence changes
+only the carrier identity/path state required by the command. Generated B-Rep,
+selection, viewport presentation and undo/redo history are not re-created for
+those identity transitions.
+
+This ownership is not an assembly model. `AssemblyDefinition`, occurrences,
+linked definitions and mates are absent. Relocate with preserved identity is
+also deferred until its filesystem/replica transaction boundary specifies
+canonical file aliases (symlink/junction/reparse/hardlink), same- and
+cross-volume algorithms, overwrite, dirty/savepoint/external-change handling,
+source-delete failure, rollback/crash recovery and two-replica state.
 # Revolve feature
 
 `RevolveFeature` is a history-based `ShapeFeature`. It stores only its profile

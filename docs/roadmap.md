@@ -8,14 +8,16 @@
 
 ## Текущая позиция
 
-SolidarCAD находится на этапе release candidate для Windows x64 0.1.0 MVP
-Preview. Функциональный состав MVP реализован. Предрелизная автоматическая
-проверка 4 октября 2026 года завершилась успешно: `ci` дал 68/68 тестов,
-release-профиль создал и валидировал переносимый ZIP, SHA-256 и SPDX, а последний
-GitHub Actions для базового commit `859eefb` прошёл на Windows и Ubuntu.
-Публичный выпуск ещё не состоялся: changelog остаётся `Unreleased`, тега
-`v0.1.0` нет, обязательные ручные GPU/DPI и clean-machine проверки не закрыты.
-Подробности проверки записаны в
+После автоматического RC gate 4 октября пользователь 18 октября явно
+авторизовал components/product program как сознательное расширение scope до
+публикации 0.1.0. Поэтому прежний RC больше не является финальным evidence для
+расширенного `main`. Проверка 4 октября (`ci` 68/68, release ZIP/SHA/SPDX и
+Windows/Ubuntu Actions для `859eefb`) остаётся историческим снимком, а не
+текущим release approval. Публичный выпуск ещё не состоялся: changelog остаётся
+`Unreleased`, тега `v0.1.0` нет. После закрытия авторизованного scope необходимо
+повторить полный release checklist, clean CI/release packaging, полевой,
+GPU/DPI, clean-machine и tag gates на новом финальном RC. Подробности прежней
+проверки записаны в
 `docs/reports/2026-10-04-mvp-release-readiness.md`.
 
 | Этап | Статус | Критерий выхода |
@@ -23,7 +25,7 @@ GitHub Actions для базового commit `859eefb` прошёл на Window
 | Контур зависимостей и лицензирования | Завершён | Реестр, notices, лицензии, SBOM и compliance-тесты находятся в репозитории. |
 | Параметрическое 3D и история | Завершён для MVP | Однодетальная история перестраивается, сохраняется и восстанавливается с устойчивыми ID и диагностикой. |
 | Интерактивный Part Design и viewport | Завершён для MVP | Инструменты, preview, manipulators, picking, ruler и headless UI-smoke покрыты тестами. |
-| Автоматическая готовность 0.1.0 | Предрелизная проверка пройдена; повторить на финальном RC | Чистые `ci`/`release` сборки, 100% CTest и валидированный комплект ZIP/SHA/SPDX. |
+| Автоматическая готовность 0.1.0 | Scope расширен после прежнего RC; gate требуется повторить | Чистые `ci`/`release` сборки, 100% CTest и валидированный комплект ZIP/SHA/SPDX на финальном expanded-scope RC. |
 | Полевое тестирование 0.1.0 | Текущий gate | Основной учебный сценарий проходится без падений, потери данных, неверной геометрии и вмешательства разработчика в файл проекта. |
 | Ручная и публикационная готовность 0.1.0 | Текущий блокер | Пройдены полевой, GPU/DPI и clean-machine gates, зелёный CI тега, опубликован комплект 0.1.0. |
 
@@ -47,7 +49,11 @@ Pattern, редактируемая история, `.solidar`, STEP и STL.
 7. поставить дату в changelog, создать `v0.1.0` и опубликовать ZIP, SHA-256,
    SPDX и release notes одним комплектом.
 
-До завершения этого этапа новые пользовательские функции в 0.1.0 не добавляются.
+Правило scope freeze действовало для RC от 4 октября. Пользовательская
+авторизация 18 октября была явным исключением и reset этого gate для
+components/product program. Другие новые пользовательские функции в 0.1.0 не
+добавляются без столь же явного пересмотра scope; весь release gate после
+расширения выполняется заново.
 
 ## 0.1.x — полевая стабилизация
 
@@ -162,34 +168,43 @@ writer до завершения P2/P3 снят только для явно в�
 ссылаться на устойчивые ID и не сериализовать B-Rep как источник истины.
 
 18 октября 2026 года для D1 принята ветвь B: единый identity-bearing
-product/component envelope. 23 октября D1 завершён, а A1a разблокирован и
-авторизован. Решение и границы миграции зафиксированы в
+product/component envelope. 23 октября D1 завершён; после него реализованы A1
+foundation и ограниченный single-part persistence/UI срез A2. Решение и
+границы миграции зафиксированы в
 [`docs/decisions/2026-10-18-product-document-envelope.md`](decisions/2026-10-18-product-document-envelope.md).
-Gate подтверждён на `HEAD bdba8c9`: commits `8043f70` и `bdba8c9`, clean build
-579/579, CTest 108/108 по labels `unit`, `regression`, `topology`, `ui-smoke` и
-`compliance`, локальный verifier 203/203 + 108/108 + GUI smoke 8 секунд.
-Standalone v4 не является product envelope.
-Первая envelope schema получит отдельный номер выше 4 и явную атомарную
-conversion из v1-v4 с сохранением stable IDs и V2 provenance. A7 не активирован,
-поэтому mates остаются запрещены.
+Production editor теперь владеет одним `ProductDocument` с одним корневым
+`PartDefinition` и вложенным существующим `Document`. Standalone V3/V4 остаются
+identityless. Строгий V5 envelope имеет `ProjectId` и metadata; Open/Save
+активны, явная «Преобразовать в документ изделия…» атомарно создаёт V5, а Save
+As для V5 создаёт clone с новым `ProjectId`. Standalone Save As сохраняет V3/V4
+без implicit identity. Stable model/topology IDs и корневой `DefinitionId`
+сохраняются.
 
-После прохождения gate этапы A1 идут до A2 в заданном порядке: следующим
-разрешён только A1a, который добавляет
-Qt-free in-memory non-production/non-persisted foundation (`DefinitionId`,
-registry, root, `PartDefinition`), A1b1 проводит тот же единственный carrier
-через staged service boundary, A1b2 переводит editor ownership на него. Carrier
-A1 не является product envelope: обычный Open по-прежнему открывает standalone
-document и не активирует envelope schema. До A2 запрещены только persisted
-product envelope, `ProjectId`, envelope schema metadata, conversion workflow,
-persistence codec и application-open activation envelope schema. A2 и A7 не
-активированы; завершение D1 не закрывает остальные пункты Parametric Core 2.0.
+Historical v1 prism с legacy-extrusion marker в committed application state
+безусловно fail-closed блокируется до chooser/prepare/writer/I/O (`89d3184`),
+потому что текущая модель не может потерять его семантику. Service доверяет
+переданному typed precondition, а production UI передаёт фактический marker.
+Marker-absent v1-like carrier и авторитетные V2-V4 остаются допустимыми для
+conversion. Прямой V5 fuzz scan и checked-in v1/v5 corpus seeds добавлены в
+`022f97e`.
 
-Обычные Save/Save As standalone документа никогда не создают envelope: новый и
-открытый v1-v3 сохраняют V3, открытый v4 сохраняет V4. Отдельный атомарный
-`Upgrade to v4` переводит standalone V3 в V4 и не создаёт identity. Будущая
-команда `Convert to Product Document` создаст product envelope схемы выше 4.
-Это уточнение ADR имеет приоритет над ранней формулировкой A2 в неизменяемом
-файле исходной задачи.
+Следующие зависимости этого направления названы явно:
+
+- **A2f:** Relocate/Move с сохранением `ProjectId`; до реализации нужна
+  filesystem/replica transaction policy для canonical same-target/file-identity
+  aliases (symlink, junction/reparse, hardlink), same-/cross-volume algorithms,
+  overwrite, dirty/savepoint и external-modification, source-delete failure,
+  rollback/crash recovery и two-replica state;
+- **A2g:** semantics-preserving автоматическая миграция historical v1 prism;
+- **A6a:** runtime enforcement конфликта одинакового `ExternalSourceKey` с
+  различной revision/content hash.
+
+Bounded single-part V5 slice реализован и покрыт CI regressions, но итоговый A2
+evidence gate остаётся открытым до записанного Linux Clang non-MSVC fuzz run.
+Umbrella A2 также открыт: multiple definitions, assemblies, occurrences, linked
+resolver и mates не реализованы. A7 не активирован. Исходная датированная задача
+остаётся неизменяемым историческим evidence и не заменяет актуальные ADR/format
+docs.
 
 ## 0.6 — макросы и автоматизация
 

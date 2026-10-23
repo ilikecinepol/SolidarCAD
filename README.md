@@ -29,6 +29,8 @@ files with the desktop environment.
 - standalone Home screen with create/open project actions
 - versioned `.solidar` project files with editable Sketch, Extrude, Pocket,
   Revolve, Fillet, Chamfer, Shell, Draft, Mirror, Move and pattern history
+- single-part product-envelope v5 Open/Save, explicit standalone conversion and
+  identity-changing Save As clone while preserving nested model/topology IDs
 - independently linkable Home, Sketch and 3D View modules
 - Qt 6 desktop shell with model tree and parameter editor
 - 2D sketch workspace with lines, rectangles, circles, arcs, projection and
@@ -126,7 +128,8 @@ deployed Qt modules.
 
 ## Known MVP limitations
 
-- single-part modelling only; assemblies are not implemented;
+- single-part modelling only; product-envelope v5 does not implement
+  assemblies, occurrences, linked definitions or mates;
 - Polygon, Slot, Text and sketch mirroring are not exposed as commands;
 - the drawing workbench is not a complete production ESKD workflow;
 - the Windows package is portable and unsigned;
@@ -135,13 +138,21 @@ deployed Qt modules.
 
 ## Roadmap
 
-The project is currently at the Windows x64 0.1.0 MVP release-candidate gate.
-The implemented MVP is intentionally limited to single-part parametric
-modelling: Sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Shell, Draft,
-Mirror, Move, Linear Pattern, Circular Pattern, project save/load and STEP/STL
-exchange. Polygon, Slot, Text, sketch mirroring, assemblies and the complete
-drawing workbench remain post-MVP work and are not exposed as available
-commands.
+The October 18 components/product program was a user-authorized, deliberate
+pre-release expansion of the 0.1.0 scope after the October 4 RC evidence. That
+earlier RC remains historical and is no longer final evidence for expanded
+`main`; the complete release checklist, automated packaging/CI, field,
+GPU/DPI, clean-machine and tag gates must be repeated on the new final RC.
+
+The editor remains intentionally limited to single-part parametric modelling:
+Sketch, Extrude, Pocket, Revolve, Fillet, Chamfer, Shell, Draft, Mirror, Move,
+Linear Pattern, Circular Pattern, project save/load and STEP/STL exchange. It
+now owns the part through `ProductDocument` and supports the bounded v5 workflow:
+Open/Save, explicit conversion from eligible standalone projects and Save As
+clone with a new project identity. This is infrastructure for future products,
+not an assembly implementation. Polygon, Slot, Text, sketch mirroring,
+assemblies and the complete drawing workbench remain post-MVP work and are not
+exposed as available commands.
 
 Post-MVP development starts with field stabilization and a complete Sketcher
 2.0, followed by Parametric Core 2.0 with a single authoritative sketch state

@@ -375,15 +375,30 @@ state, а не автоматически вследствие наличия V2
 destination. Ошибка encode/write/flush/replace сохраняет прежний файл и прежнее
 persistence format state; частичный v4 не публикуется.
 
-## Будущий product envelope
+## Активный product envelope v5
 
 Product/component envelope из ADR
 `docs/decisions/2026-10-18-product-document-envelope.md` не является v4. Его
-первая схема получает номер выше `4` и отдельный capability/reader/writer gate.
-Будущая `Convert to Product Document` — отдельная операция, не `Upgrade to v4`.
-Она переводит standalone v1-v4 в envelope схемы выше 4 и обязана сохранить все
-существующие Body/Feature/Sketch/Geometry и прочие stable IDs, variant каждой
-topology reference и полную V2 provenance; файловый путь не становится
-identity. Ошибка оставляет исходный standalone-файл неизменным и не публикует
-частичный envelope. Политики Save/Save As/Relocate, replica и identity conflict
-для envelope этим standalone gate не изменены и остаются будущей работой A2+.
+первая production-схема — v5 с capability `product-envelope-v1` и ровно одним
+embedded standalone v4 `PartDefinition`.
+
+Активная команда «Преобразовать в документ изделия…» является отдельной
+операцией, не `Upgrade to v4`. Она атомарно пишет выбранную цель V5, сохраняет
+Body/Feature/Sketch/Geometry и прочие stable IDs, variant каждой topology
+reference и полную V2 provenance; файловый путь не становится identity. Ошибка
+оставляет исходный standalone-файл, destination и активный carrier без
+изменений. Standalone Save/Save As по-прежнему сохраняют явный V3/V4 state без
+identity; V5 Save сохраняет `ProjectId`, а V5 Save As создаёт clone с новым
+`ProjectId`.
+
+Исключение: historical v1 prism с legacy-extrusion marker в committed
+application state безусловно fail-closed не допускается к conversion до
+chooser/prepare/writer/I/O, чтобы не потерять семантику. Service доверяет
+переданному precondition, а production UI передаёт фактический marker. Его
+автоматическая migration отложена в A2g; marker-absent v1-like и авторитетные
+V2-V4 допустимы. Relocate с сохранением identity отложен в A2f до утверждения
+filesystem/replica transaction policy, включая file-identity aliases,
+same-/cross-volume move, overwrite, dirty/external-change, source-delete,
+rollback/crash recovery и two-replica state. Runtime enforcement same-key/
+different-revision конфликта отложен в A6a. Multiple definitions, occurrences
+и assemblies не входят в текущий single-part v5 slice.
