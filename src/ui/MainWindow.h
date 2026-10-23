@@ -79,8 +79,22 @@ class MainWindow final : public QMainWindow {
   void saveProject();
   [[nodiscard]] bool saveProjectToPath(const QString& path, QString* error);
   void upgradeProjectFormat();
+  void convertToProductDocument();
   void updateUpgradeProjectFormatAction() noexcept;
-  [[nodiscard]] bool projectUpgradeIsQuiescent() const noexcept;
+  [[nodiscard]] bool projectPersistenceTransitionIsQuiescent() const noexcept;
+  [[nodiscard]] bool standaloneProductConversionIsEligible() const noexcept;
+  using ProductConversionTargetChooser =
+      std::function<std::optional<QString>(const QString& suggestedPath)>;
+  using ProductConversionRequestFactory = std::function<
+      StandaloneProductConversionRequest(const QString& targetPath,
+                                         DefinitionId rootDefinitionId)>;
+  [[nodiscard]] ProjectApplicationStatus runProductConversionCommand(
+      const ProductConversionTargetChooser& chooseTarget,
+      const ProductConversionRequestFactory& makeRequest,
+      bool* conversionAttempted = nullptr);
+  [[nodiscard]] ProjectApplicationStatus convertProjectToPath(
+      const QString& targetPath,
+      const StandaloneProductConversionRequest& request);
   [[nodiscard]] PartDesignCommitGuard startPartDesignCommit();
   [[nodiscard]] bool confirmProjectReplacement();
   void importStep();
@@ -241,6 +255,7 @@ class MainWindow final : public QMainWindow {
   QAction* undoAction_{nullptr};
   QAction* redoAction_{nullptr};
   QAction* upgradeProjectFormatAction_{nullptr};
+  QAction* convertToProductDocumentAction_{nullptr};
   QWidget* historyContent_{nullptr};
   QHBoxLayout* historyLayout_{nullptr};
   QScrollArea* historyScroll_{nullptr};

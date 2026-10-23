@@ -32,6 +32,7 @@
 #include <QDockWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDateTime>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -73,6 +74,7 @@
 #include <QToolButton>
 #include <QTimer>
 #include <QVariant>
+#include <QUuid>
 #include <limits>
 
 #include "drawing/EskdRenderer.h"
@@ -387,6 +389,10 @@ void MainWindow::buildMenus() {
       QString::fromUtf8("Обновить формат проекта до v4…"));
   upgradeProjectFormatAction_->setObjectName(
       QStringLiteral("upgradeProjectFormatAction"));
+  convertToProductDocumentAction_ = fileMenu->addAction(
+      QString::fromUtf8("Преобразовать в документ изделия…"));
+  convertToProductDocumentAction_->setObjectName(
+      QStringLiteral("convertToProductDocumentAction"));
   updateUpgradeProjectFormatAction();
   auto* importMenu = fileMenu->addMenu(QString::fromUtf8("Импорт"));
   auto* importStepAction =
@@ -476,6 +482,8 @@ void MainWindow::buildMenus() {
   connect(saveAction, &QAction::triggered, this, &MainWindow::saveProject);
   connect(upgradeProjectFormatAction_, &QAction::triggered, this,
           &MainWindow::upgradeProjectFormat);
+  connect(convertToProductDocumentAction_, &QAction::triggered, this,
+          &MainWindow::convertToProductDocument);
   connect(importStepAction, &QAction::triggered, this, &MainWindow::importStep);
   connect(exportStepAction, &QAction::triggered, this, &MainWindow::exportStep);
   connect(exportStlAction, &QAction::triggered, this, &MainWindow::exportStl);
@@ -1036,7 +1044,7 @@ bool MainWindow::saveProjectToPath(const QString& path, QString* error) {
   return true;
 }
 
-bool MainWindow::projectUpgradeIsQuiescent() const noexcept {
+bool MainWindow::projectPersistenceTransitionIsQuiescent() const noexcept {
   const bool sketchWorkingCopy =
       workspaceStack_ && workspaceStack_->currentWidget() == sketchCanvas_;
   const bool legacyPartDesignActive =
@@ -1055,11 +1063,24 @@ bool MainWindow::projectUpgradeIsQuiescent() const noexcept {
 }
 
 void MainWindow::updateUpgradeProjectFormatAction() noexcept {
-  if (!upgradeProjectFormatAction_) return;
-  upgradeProjectFormatAction_->setEnabled(
-      projectPersistenceState_.format ==
-          project::ProjectPersistenceFormat::V3 &&
-      !windowFilePath().isEmpty());
+  if (upgradeProjectFormatAction_)
+    upgradeProjectFormatAction_->setEnabled(
+        projectPersistenceState_.format ==
+            project::ProjectPersistenceFormat::V3 &&
+        !windowFilePath().isEmpty());
+  if (convertToProductDocumentAction_)
+    convertToProductDocumentAction_->setEnabled(
+        standaloneProductConversionIsEligible());
+}
+
+bool MainWindow::standaloneProductConversionIsEligible() const noexcept {
+  const auto format = projectPersistenceState_.format;
+  const DefinitionId root = productDocument_.rootDefinitionId();
+  return (format == project::ProjectPersistenceFormat::V3 ||
+          format == project::ProjectPersistenceFormat::V4) &&
+         !productDocument_.identity().has_value() && root.isValid() &&
+         productDocument_.definitions().size() == 1 &&
+         productDocument_.definitions().contains(root);
 }
 
 void MainWindow::upgradeProjectFormat() {
@@ -1074,7 +1095,7 @@ void MainWindow::upgradeProjectFormat() {
     updateUpgradeProjectFormatAction();
     return;
   }
-  if (!projectUpgradeIsQuiescent()) {
+  if (!projectPersistenceTransitionIsQuiescent()) {
     statusBar()->showMessage(
         QString::fromUtf8(
             "Завершите или отмените текущую операцию перед обновлением формата."),
@@ -1102,7 +1123,7 @@ void MainWindow::upgradeProjectFormat() {
       windowFilePath() != expectedPath ||
       previewDocumentGeneration_ != expectedDocumentGeneration ||
       modelHistory_.currentRevision() != expectedHistoryRevision ||
-      !projectUpgradeIsQuiescent()) {
+      !projectPersistenceTransitionIsQuiescent()) {
     statusBar()->showMessage(
         QString::fromUtf8(
             "Состояние проекта изменилось — обновление формата отменено."),
@@ -1126,6 +1147,190 @@ void MainWindow::upgradeProjectFormat() {
   updateUpgradeProjectFormatAction();
   statusBar()->showMessage(
       QString::fromUtf8("Формат проекта обновлён до v4"), 4000);
+}
+
+ProjectApplicationStatus MainWindow::convertProjectToPath(
+    const QString& targetPath,
+    const StandaloneProductConversionRequest& request) {
+  if (!standaloneProductConversionIsEligible() ||
+      !projectPersistenceTransitionIsQuiescent()) {
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Проект больше не готов к преобразованию в документ изделия.")};
+  }
+
+  QString normalizedTarget = targetPath;
+  if (normalizedTarget.isEmpty()) {
+    return {ProjectApplicationErrorCode::SaveFailed,
+            QString::fromUtf8("Не указан путь документа изделия.")};
+  }
+  if (!normalizedTarget.endsWith(QStringLiteral(".solidar"),
+                                 Qt::CaseInsensitive))
+    normalizedTarget += QStringLiteral(".solidar");
+
+  const auto converted = projectApplicationService_.convertStandaloneToProduct(
+      normalizedTarget, productDocument_, request);
+  if (!converted.succeeded()) return converted;
+
+  // The service has already committed identity into the existing carrier and
+  // retained the live root allocation. This is deliberately not a document
+  // replacement boundary: history, selection, presentations and previews
+  // continue to refer to the same model objects.
+  projectPersistenceState_.format = project::ProjectPersistenceFormat::V5;
+  setProjectPath(normalizedTarget);
+  modelHistory_.markSavepoint();
+  setWindowModified(false);
+  updateUpgradeProjectFormatAction();
+  statusBar()->showMessage(
+      QString::fromUtf8("Проект преобразован в документ изделия"), 4000);
+  return converted;
+}
+
+ProjectApplicationStatus MainWindow::runProductConversionCommand(
+    const ProductConversionTargetChooser& chooseTarget,
+    const ProductConversionRequestFactory& makeRequest,
+    bool* conversionAttempted) {
+  if (conversionAttempted) *conversionAttempted = false;
+  if (!standaloneProductConversionIsEligible()) {
+    updateUpgradeProjectFormatAction();
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Текущий проект нельзя преобразовать в документ изделия.")};
+  }
+  if (!projectPersistenceTransitionIsQuiescent()) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Завершите или отмените текущую операцию перед преобразованием."),
+        5000);
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8("Есть незавершённая операция.")};
+  }
+
+  // QFileDialog is modal and therefore re-entrant. Snapshot only stable
+  // values; no model or presentation pointer survives the callback.
+  const auto expectedState = projectPersistenceState_;
+  const bool expectedIdentityAbsent = !productDocument_.identity().has_value();
+  const QString expectedPath = windowFilePath();
+  const DefinitionId expectedRoot = productDocument_.rootDefinitionId();
+  const std::size_t expectedDefinitionCount =
+      productDocument_.definitions().size();
+  const std::uint64_t expectedDocumentGeneration = previewDocumentGeneration_;
+  const std::uint64_t expectedHistoryRevision = modelHistory_.currentRevision();
+
+  const QString suggestedPath = expectedPath.isEmpty()
+      ? QString::fromUtf8("Документ изделия.solidar")
+      : QFileInfo(expectedPath).absolutePath() + QLatin1Char('/') +
+            QFileInfo(expectedPath).completeBaseName() +
+            QString::fromUtf8("-изделие.solidar");
+
+  // The chooser can enter a nested event loop. It may close and delete this
+  // window, so the callback boundary must not rely on the member-function
+  // receiver still being alive when control returns.
+  QPointer<MainWindow> receiver(this);
+  std::optional<QString> selectedTarget;
+  try {
+    selectedTarget = chooseTarget(suggestedPath);
+  } catch (const std::exception& exception) {
+    if (!receiver)
+      return {ProjectApplicationErrorCode::InvalidProject,
+              QString::fromUtf8(
+                  "Окно проекта было закрыто во время выбора пути.")};
+    if (conversionAttempted) *conversionAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8(exception.what())};
+  } catch (...) {
+    if (!receiver)
+      return {ProjectApplicationErrorCode::InvalidProject,
+              QString::fromUtf8(
+                  "Окно проекта было закрыто во время выбора пути.")};
+    if (conversionAttempted) *conversionAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8("Неизвестная ошибка выбора пути.")};
+  }
+  if (!receiver)
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Окно проекта было закрыто во время выбора пути.")};
+  if (!selectedTarget || selectedTarget->isEmpty()) return {};
+
+  QString normalizedTarget = *selectedTarget;
+  if (!normalizedTarget.endsWith(QStringLiteral(".solidar"),
+                                 Qt::CaseInsensitive))
+    normalizedTarget += QStringLiteral(".solidar");
+
+  if (projectPersistenceState_ != expectedState ||
+      (!productDocument_.identity().has_value()) != expectedIdentityAbsent ||
+      windowFilePath() != expectedPath ||
+      productDocument_.rootDefinitionId() != expectedRoot ||
+      productDocument_.definitions().size() != expectedDefinitionCount ||
+      previewDocumentGeneration_ != expectedDocumentGeneration ||
+      modelHistory_.currentRevision() != expectedHistoryRevision ||
+      !standaloneProductConversionIsEligible() ||
+      !projectPersistenceTransitionIsQuiescent()) {
+    statusBar()->showMessage(
+        QString::fromUtf8(
+            "Состояние проекта изменилось — преобразование отменено."),
+        5000);
+    updateUpgradeProjectFormatAction();
+    return {ProjectApplicationErrorCode::InvalidProject,
+            QString::fromUtf8(
+                "Состояние проекта изменилось во время выбора пути.")};
+  }
+
+  StandaloneProductConversionRequest request;
+  try {
+    request = makeRequest(normalizedTarget, expectedRoot);
+  } catch (const std::exception& exception) {
+    if (conversionAttempted) *conversionAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8(exception.what())};
+  } catch (...) {
+    if (conversionAttempted) *conversionAttempted = true;
+    return {ProjectApplicationErrorCode::UnexpectedFailure,
+            QString::fromUtf8("Неизвестная ошибка подготовки преобразования.")};
+  }
+  if (conversionAttempted) *conversionAttempted = true;
+  return convertProjectToPath(normalizedTarget, request);
+}
+
+void MainWindow::convertToProductDocument() {
+  QPointer<MainWindow> receiver(this);
+  const ProductConversionTargetChooser chooseTarget =
+      [this](const QString& suggestedPath) -> std::optional<QString> {
+    const QString selected = QFileDialog::getSaveFileName(
+        this, QString::fromUtf8("Преобразовать в документ изделия"),
+        suggestedPath, QString::fromUtf8("Проекты СОЛИДАР3D (*.solidar)"));
+    if (selected.isEmpty()) return std::nullopt;
+    return selected;
+  };
+  const ProductConversionRequestFactory makeRequest =
+      [](const QString& targetPath, DefinitionId rootDefinitionId) {
+    const QByteArray uuid = QUuid::createUuid().toRfc4122();
+    ProjectId::Bytes bytes{};
+    for (qsizetype index = 0;
+         index < uuid.size() && index < static_cast<qsizetype>(bytes.size());
+         ++index)
+      bytes[static_cast<std::size_t>(index)] =
+          static_cast<std::uint8_t>(uuid.at(index));
+    return StandaloneProductConversionRequest{
+        ProjectId{bytes}, rootDefinitionId,
+        QFileInfo(targetPath).completeBaseName(),
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate)};
+  };
+
+  bool conversionAttempted = false;
+  const auto result = runProductConversionCommand(
+      chooseTarget, makeRequest, &conversionAttempted);
+  if (!receiver) return;
+  if (conversionAttempted && !result.succeeded()) {
+    QString message = QString::fromUtf8(
+        "Не удалось преобразовать проект в документ изделия.");
+    if (!result.detail.isEmpty())
+      message += QString::fromUtf8("\n\nТехнические сведения: ") +
+                 result.detail;
+    QMessageBox::critical(this, QString::fromUtf8("Ошибка преобразования"),
+                          message);
+  }
 }
 
 PartDesignCommitGuard MainWindow::startPartDesignCommit() {

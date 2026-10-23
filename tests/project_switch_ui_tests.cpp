@@ -1558,11 +1558,66 @@ class MainWindowUndoTestAccess {
   static QAction* upgradeProjectFormatAction(MainWindow& window) {
     return window.upgradeProjectFormatAction_;
   }
+  static QAction* convertToProductDocumentAction(MainWindow& window) {
+    return window.convertToProductDocumentAction_;
+  }
   static void upgradeProjectFormat(MainWindow& window) {
     window.upgradeProjectFormat();
   }
   static bool projectUpgradeIsQuiescent(const MainWindow& window) {
-    return window.projectUpgradeIsQuiescent();
+    return window.projectPersistenceTransitionIsQuiescent();
+  }
+  static bool productConversionIsEligible(const MainWindow& window) {
+    return window.standaloneProductConversionIsEligible();
+  }
+  static ProjectApplicationStatus convertProjectToPath(
+      MainWindow& window, const QString& targetPath,
+      const StandaloneProductConversionRequest& request) {
+    return window.convertProjectToPath(targetPath, request);
+  }
+  static ProjectApplicationStatus runProductConversionCommand(
+      MainWindow& window,
+      const MainWindow::ProductConversionTargetChooser& chooser,
+      const MainWindow::ProductConversionRequestFactory& factory,
+      bool* attempted = nullptr) {
+    return window.runProductConversionCommand(chooser, factory, attempted);
+  }
+  static std::uint64_t previewDocumentGeneration(const MainWindow& window) {
+    return window.previewDocumentGeneration_;
+  }
+  static std::uint64_t currentHistoryRevision(const MainWindow& window) {
+    return window.modelHistory_.currentRevision();
+  }
+  static bool historyAtSavepoint(const MainWindow& window) {
+    return window.modelHistory_.isAtSavepoint();
+  }
+  static const Body* firstBodyAddress(const MainWindow& window) {
+    return window.document().bodies().empty()
+               ? nullptr
+               : &window.document().bodies().front();
+  }
+  static const Feature* firstFeatureAddress(const MainWindow& window) {
+    const Body* body = firstBodyAddress(window);
+    return !body || body->features().empty()
+               ? nullptr
+               : body->features().front().get();
+  }
+  static const TopoDS_Shape* firstShapeAddress(const MainWindow& window) {
+    const auto* feature =
+        dynamic_cast<const ShapeFeature*>(firstFeatureAddress(window));
+    return feature ? feature->lastValidShape().get() : nullptr;
+  }
+  static ShapeRevision firstShapeRevision(const MainWindow& window) {
+    const auto* feature =
+        dynamic_cast<const ShapeFeature*>(firstFeatureAddress(window));
+    return feature ? feature->shapeRevision() : kInvalidShapeRevision;
+  }
+  static bool insertAdditionalDefinition(MainWindow& window,
+                                         DefinitionId id) {
+    const auto result = window.productDocument_.insert(
+        PartDefinition(id, std::make_unique<Document>()));
+    window.updateUpgradeProjectFormatAction();
+    return result == DefinitionInsertStatus::Inserted;
   }
   static bool startV2FaceExtrude(MainWindow& window) {
     Body* body = window.document().activeBody();
@@ -1717,7 +1772,18 @@ namespace {
 constexpr solidar::ProjectId kUiV5ProjectId{
     {0x8d, 0xe4, 0x33, 0x71, 0x26, 0x9a, 0x4f, 0x5c,
      0xa1, 0x06, 0x52, 0x89, 0x34, 0x7b, 0xcd, 0xef}};
+constexpr solidar::ProjectId kUiConversionProjectId{
+    {0x10, 0x27, 0x34, 0x49, 0x58, 0x6a, 0x4b, 0x7c,
+     0x8d, 0x9e, 0xa0, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5}};
 constexpr solidar::DefinitionId kUiV5RootDefinition{424242};
+
+solidar::StandaloneProductConversionRequest uiConversionRequest(
+    solidar::DefinitionId root,
+    QString name = QString::fromUtf8("Изделие Ω/雪"),
+    QString createdAt = QStringLiteral("2026-10-23T20:15:30Z")) {
+  return {kUiConversionProjectId, root, std::move(name),
+          std::move(createdAt)};
+}
 
 solidar::ProductDocumentIdentity uiV5Identity() {
   return {kUiV5ProjectId,
@@ -1747,6 +1813,25 @@ bool writeTestBytes(const QString& path, const QByteArray& bytes) {
 solidar::BodyId consumeBodyId(const char* name) {
   solidar::Document document;
   return document.addBody(name).id();
+}
+
+struct ModelIdCursorSample {
+  solidar::BodyId body{};
+  solidar::SketchId sketch{};
+  solidar::FeatureId feature{};
+};
+
+ModelIdCursorSample consumeModelIdCursors(const char* name) {
+  solidar::Document document;
+  const auto sketch = document.addSketch(std::string(name) + " sketch").id;
+  auto& body = document.addBody(std::string(name) + " body");
+  auto feature = std::make_unique<solidar::ImportedShapeFeature>(
+      std::make_shared<const TopoDS_Shape>(
+          BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Shape()),
+      std::string(name) + " feature");
+  const auto featureId = feature->id();
+  body.addFeature(std::move(feature));
+  return {body.id(), sketch, featureId};
 }
 
 solidar::Document makeHeavyImportedDocument(int bodyCount) {
@@ -2590,6 +2675,386 @@ int main(int argc, char** argv) {
     CHECK(Access::persistenceState(persistenceEditor) == v3);
   }
 
+  // Standalone V3/V4 projects expose an explicit product conversion. The
+  // application transaction retains the live model graph and every editor
+  // surface while switching only persistence identity/path/savepoint state.
+  {
+    const solidar::project::ProjectPersistenceState v3{
+        solidar::project::ProjectPersistenceFormat::V3};
+    const solidar::project::ProjectPersistenceState v4{
+        solidar::project::ProjectPersistenceFormat::V4};
+    const solidar::project::ProjectPersistenceState v5{
+        solidar::project::ProjectPersistenceFormat::V5};
+
+    // A pathless standalone root is eligible, and the action is placed
+    // immediately after Upgrade with its stable automation identity.
+    solidar::MainWindow pathless(settings);
+    auto* pathlessUpgrade = Access::upgradeProjectFormatAction(pathless);
+    auto* pathlessConvert = Access::convertToProductDocumentAction(pathless);
+    CHECK(pathlessUpgrade);
+    CHECK(pathlessConvert);
+    CHECK(pathlessConvert->objectName() ==
+          QStringLiteral("convertToProductDocumentAction"));
+    CHECK(pathlessConvert->text() ==
+          QString::fromUtf8("Преобразовать в документ изделия…"));
+    CHECK(pathlessConvert->isEnabled());
+    CHECK(Access::productConversionIsEligible(pathless));
+    auto* fileMenu = qobject_cast<QMenu*>(pathlessUpgrade->parent());
+    CHECK(fileMenu);
+    const auto fileActions = fileMenu->actions();
+    CHECK(fileActions.indexOf(pathlessConvert) ==
+          fileActions.indexOf(pathlessUpgrade) + 1);
+
+    bool cancelledFactoryCalled = false;
+    bool cancelledAttempted = true;
+    QString cancelledSuggestion;
+    const auto cancelled = Access::runProductConversionCommand(
+        pathless,
+        [&](const QString& suggestion) -> std::optional<QString> {
+          cancelledSuggestion = suggestion;
+          return std::nullopt;
+        },
+        [&](const QString&, solidar::DefinitionId) {
+          cancelledFactoryCalled = true;
+          return uiConversionRequest(Access::rootDefinitionId(pathless));
+        },
+        &cancelledAttempted);
+    CHECK(cancelled.succeeded());
+    CHECK(!cancelledAttempted);
+    CHECK(!cancelledFactoryCalled);
+    CHECK(cancelledSuggestion ==
+          QString::fromUtf8("Документ изделия.solidar"));
+    CHECK(Access::identity(pathless) == std::nullopt);
+    CHECK(pathless.windowFilePath().isEmpty());
+
+    // A modal chooser may synchronously close and delete its editor. The
+    // command must return without touching the dead receiver or invoking the
+    // request factory.
+    auto* closingEditor = new solidar::MainWindow(settings);
+    CHECK(closingEditor->loadProject(pathA, &error));
+    QPointer<solidar::MainWindow> closingGuard(closingEditor);
+    const QString closedWindowTarget =
+        directory.filePath(QStringLiteral("closed-window-product.solidar"));
+    bool closedWindowFactoryCalled = false;
+    const auto closedWindowResult = Access::runProductConversionCommand(
+        *closingEditor,
+        [&](const QString&) -> std::optional<QString> {
+          delete closingEditor;
+          closingEditor = nullptr;
+          CHECK(closingGuard.isNull());
+          return closedWindowTarget;
+        },
+        [&](const QString&, solidar::DefinitionId root) {
+          closedWindowFactoryCalled = true;
+          return uiConversionRequest(root);
+        });
+    CHECK(closingGuard.isNull());
+    CHECK(!closedWindowResult.succeeded());
+    CHECK(closedWindowResult.code ==
+          solidar::ProjectApplicationErrorCode::InvalidProject);
+    CHECK(!closedWindowFactoryCalled);
+    CHECK(!QFile::exists(closedWindowTarget));
+
+    solidar::MainWindow multiRoot(settings);
+    CHECK(Access::insertAdditionalDefinition(
+        multiRoot,
+        solidar::DefinitionId{
+            Access::rootDefinitionId(multiRoot).value() + 1000}));
+    CHECK(Access::definitionCount(multiRoot) == 2);
+    CHECK(!Access::productConversionIsEligible(multiRoot));
+    CHECK(!Access::convertToProductDocumentAction(multiRoot)->isEnabled());
+
+    QFile sourceFile(pathA);
+    CHECK(sourceFile.open(QIODevice::ReadOnly));
+    const QByteArray sourceBytesBefore = sourceFile.readAll();
+    sourceFile.close();
+
+    solidar::MainWindow editor(settings);
+    CHECK(editor.loadProject(pathA, &error));
+    auto* convertAction = Access::convertToProductDocumentAction(editor);
+    CHECK(convertAction);
+    CHECK(convertAction->isEnabled());
+    CHECK(Access::persistenceState(editor) == v3);
+    CHECK(Access::pushBodyMarker(editor, "conversion history one"));
+    CHECK(Access::pushBodyMarker(editor, "conversion history two"));
+    Access::undoAction(editor)->trigger();
+    CHECK(Access::undoCount(editor) > 0);
+    CHECK(Access::redoCount(editor) > 0);
+    Access::selectBody(editor, Access::firstBodyId(editor));
+
+    const auto* const documentBefore = Access::documentAddress(editor);
+    const auto* const bodyBefore = Access::firstBodyAddress(editor);
+    const auto* const featureBefore = Access::firstFeatureAddress(editor);
+    const auto* const shapeBefore = Access::firstShapeAddress(editor);
+    const auto shapeRevisionBefore = Access::firstShapeRevision(editor);
+    const auto selectionBefore = Access::selectionState(editor);
+    const auto undoBefore = Access::undoCount(editor);
+    const auto redoBefore = Access::redoCount(editor);
+    const auto revisionBefore = Access::currentHistoryRevision(editor);
+    const auto previewGenerationBefore =
+        Access::previewDocumentGeneration(editor);
+    const bool dirtyBefore = Access::modified(editor);
+    const auto cursorBefore = consumeModelIdCursors("before UI conversion");
+    CHECK(documentBefore);
+    CHECK(bodyBefore);
+    CHECK(featureBefore);
+    CHECK(shapeBefore);
+    CHECK(shapeRevisionBefore != solidar::kInvalidShapeRevision);
+    CHECK(dirtyBefore);
+
+    const QString distinctWithoutExtension =
+        directory.filePath(QString::fromUtf8("богатое-изделие-Ω"));
+    const QString distinctTarget =
+        distinctWithoutExtension + QStringLiteral(".solidar");
+    QString suggestionSeen;
+    bool factoryCalled = false;
+    bool attempted = false;
+    const auto converted = Access::runProductConversionCommand(
+        editor,
+        [&](const QString& suggestion) -> std::optional<QString> {
+          suggestionSeen = suggestion;
+          return distinctWithoutExtension;
+        },
+        [&](const QString& target, solidar::DefinitionId root) {
+          factoryCalled = true;
+          CHECK(target == distinctTarget);
+          CHECK(root == Access::rootDefinitionId(editor));
+          return uiConversionRequest(root);
+        },
+        &attempted);
+    CHECK(converted.succeeded());
+    CHECK(attempted);
+    CHECK(factoryCalled);
+    CHECK(suggestionSeen ==
+          directory.filePath(QString::fromUtf8("a-изделие.solidar")));
+    CHECK(QFile::exists(distinctTarget));
+
+    const auto cursorAfter = consumeModelIdCursors("after UI conversion");
+    CHECK(cursorAfter.body == cursorBefore.body + 1);
+    CHECK(cursorAfter.sketch == cursorBefore.sketch + 1);
+    CHECK(cursorAfter.feature == cursorBefore.feature + 1);
+    CHECK(Access::documentAddress(editor) == documentBefore);
+    CHECK(Access::rootDefinitionDocumentAddress(editor) == documentBefore);
+    CHECK(Access::firstBodyAddress(editor) == bodyBefore);
+    CHECK(Access::firstFeatureAddress(editor) == featureBefore);
+    CHECK(Access::firstShapeAddress(editor) == shapeBefore);
+    CHECK(Access::firstShapeRevision(editor) == shapeRevisionBefore);
+    CHECK(Access::exactSelectionState(Access::selectionState(editor),
+                                      selectionBefore));
+    CHECK(Access::undoCount(editor) == undoBefore);
+    CHECK(Access::redoCount(editor) == redoBefore);
+    CHECK(Access::currentHistoryRevision(editor) == revisionBefore);
+    CHECK(Access::previewDocumentGeneration(editor) ==
+          previewGenerationBefore);
+    CHECK(Access::persistenceState(editor) == v5);
+    CHECK(editor.windowFilePath() == distinctTarget);
+    CHECK(!Access::modified(editor));
+    CHECK(Access::historyAtSavepoint(editor));
+    CHECK(!convertAction->isEnabled());
+    CHECK(!Access::upgradeProjectFormatAction(editor)->isEnabled());
+    CHECK(Access::identity(editor).has_value());
+    CHECK(Access::identity(editor)->projectId == kUiConversionProjectId);
+    CHECK(Access::identity(editor)->metadata.nameUtf8 ==
+          std::string("Изделие \xCE\xA9/\xE9\x9B\xAA"));
+    CHECK(Access::identity(editor)->metadata.createdAtUtf8 ==
+          "2026-10-23T20:15:30Z");
+
+    CHECK(sourceFile.open(QIODevice::ReadOnly));
+    CHECK(sourceFile.readAll() == sourceBytesBefore);
+    sourceFile.close();
+    auto convertedStage = solidar::ProjectApplicationService{}.stageOpen(
+        distinctTarget, solidar::ProductV5OpenPolicy::Allow);
+    CHECK(convertedStage.succeeded());
+    CHECK(convertedStage.staged->productDocument().identity() ==
+          Access::identity(editor));
+    CHECK(convertedStage.staged->productDocument().rootDefinitionId() ==
+          Access::rootDefinitionId(editor));
+
+    // Repeating through the dialog-free seam is a strict no-op once the
+    // product identity has been committed.
+    const auto repeatIdentity = *Access::identity(editor);
+    const auto repeatPath = editor.windowFilePath();
+    const auto repeatRevision = Access::currentHistoryRevision(editor);
+    const auto repeat = Access::convertProjectToPath(
+        editor, directory.filePath(QStringLiteral("repeat-product.solidar")),
+        uiConversionRequest(Access::rootDefinitionId(editor)));
+    CHECK(!repeat.succeeded());
+    CHECK(repeat.code == solidar::ProjectApplicationErrorCode::InvalidProject);
+    CHECK(Access::identity(editor) == repeatIdentity);
+    CHECK(editor.windowFilePath() == repeatPath);
+    CHECK(Access::currentHistoryRevision(editor) == repeatRevision);
+    CHECK(!QFile::exists(
+        directory.filePath(QStringLiteral("repeat-product.solidar"))));
+
+    // An actual V4 carrier is eligible too. Returning its current path from
+    // the injected chooser models an explicit same-target confirmation.
+    const QString sameTargetV4 =
+        directory.filePath(QStringLiteral("same-target-v4.solidar"));
+    auto v4Source = solidar::ProjectApplicationService{}.stageOpen(pathA);
+    CHECK(v4Source.succeeded());
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        sameTargetV4, v4Source.staged->rootDocument(), v4, &error));
+    solidar::MainWindow v4Editor(settings);
+    CHECK(v4Editor.loadProject(sameTargetV4, &error));
+    CHECK(Access::persistenceState(v4Editor) == v4);
+    CHECK(Access::convertToProductDocumentAction(v4Editor)->isEnabled());
+    bool sameFactoryCalled = false;
+    const auto sameTargetConverted = Access::runProductConversionCommand(
+        v4Editor,
+        [&](const QString&) -> std::optional<QString> {
+          return sameTargetV4;
+        },
+        [&](const QString& target, solidar::DefinitionId root) {
+          CHECK(target == sameTargetV4);
+          sameFactoryCalled = true;
+          return uiConversionRequest(
+              root, QFileInfo(target).completeBaseName(),
+              QStringLiteral("2026-10-23T21:00:00Z"));
+        });
+    CHECK(sameTargetConverted.succeeded());
+    CHECK(sameFactoryCalled);
+    CHECK(Access::persistenceState(v4Editor) == v5);
+    CHECK(v4Editor.windowFilePath() == sameTargetV4);
+    auto sameTargetStage = solidar::ProjectApplicationService{}.stageOpen(
+        sameTargetV4, solidar::ProductV5OpenPolicy::Allow);
+    CHECK(sameTargetStage.succeeded());
+    CHECK(sameTargetStage.staged->productDocument()
+              .identity()
+              ->metadata.nameUtf8 == "same-target-v4");
+
+    // A failed publish is state-exact and retryable.
+    solidar::MainWindow retryEditor(settings);
+    CHECK(retryEditor.loadProject(pathA, &error));
+    retryEditor.setWindowModified(true);
+    Access::selectBody(retryEditor, Access::firstBodyId(retryEditor));
+    const auto* const retryDocument = Access::documentAddress(retryEditor);
+    const auto* const retryShape = Access::firstShapeAddress(retryEditor);
+    const auto retrySelection = Access::selectionState(retryEditor);
+    const auto retryRevision = Access::currentHistoryRevision(retryEditor);
+    const auto retryPreview = Access::previewDocumentGeneration(retryEditor);
+    const auto retryUndo = Access::undoCount(retryEditor);
+    const auto retryRedo = Access::redoCount(retryEditor);
+    const QString missingTarget =
+        directory.filePath(QStringLiteral("missing/product.solidar"));
+    const auto failed = Access::convertProjectToPath(
+        retryEditor, missingTarget,
+        uiConversionRequest(Access::rootDefinitionId(retryEditor)));
+    CHECK(!failed.succeeded());
+    CHECK(failed.code == solidar::ProjectApplicationErrorCode::SaveFailed);
+    CHECK(!QFile::exists(missingTarget));
+    CHECK(Access::documentAddress(retryEditor) == retryDocument);
+    CHECK(Access::firstShapeAddress(retryEditor) == retryShape);
+    CHECK(Access::identity(retryEditor) == std::nullopt);
+    CHECK(Access::persistenceState(retryEditor) == v3);
+    CHECK(retryEditor.windowFilePath() == pathA);
+    CHECK(Access::modified(retryEditor));
+    CHECK(Access::undoCount(retryEditor) == retryUndo);
+    CHECK(Access::redoCount(retryEditor) == retryRedo);
+    CHECK(Access::currentHistoryRevision(retryEditor) == retryRevision);
+    CHECK(Access::previewDocumentGeneration(retryEditor) == retryPreview);
+    CHECK(Access::exactSelectionState(Access::selectionState(retryEditor),
+                                      retrySelection));
+    const QString retryTarget =
+        directory.filePath(QStringLiteral("retry-product.solidar"));
+    CHECK(Access::convertProjectToPath(
+              retryEditor, retryTarget,
+              uiConversionRequest(Access::rootDefinitionId(retryEditor)))
+              .succeeded());
+    CHECK(Access::persistenceState(retryEditor) == v5);
+    CHECK(QFile::exists(retryTarget));
+
+    // Mutating the model from the chooser invalidates the outer snapshot and
+    // prevents request generation and writes.
+    solidar::MainWindow reentrantEditor(settings);
+    CHECK(reentrantEditor.loadProject(pathA, &error));
+    const QString staleTarget =
+        directory.filePath(QStringLiteral("stale-outer-product.solidar"));
+    bool staleFactoryCalled = false;
+    const auto staleResult = Access::runProductConversionCommand(
+        reentrantEditor,
+        [&](const QString&) -> std::optional<QString> {
+          CHECK(Access::pushBodyMarker(reentrantEditor,
+                                       "reentrant chooser mutation"));
+          return staleTarget;
+        },
+        [&](const QString&, solidar::DefinitionId root) {
+          staleFactoryCalled = true;
+          return uiConversionRequest(root);
+        });
+    CHECK(!staleResult.succeeded());
+    CHECK(staleResult.code ==
+          solidar::ProjectApplicationErrorCode::InvalidProject);
+    CHECK(!staleFactoryCalled);
+    CHECK(!QFile::exists(staleTarget));
+    CHECK(Access::identity(reentrantEditor) == std::nullopt);
+    CHECK(Access::persistenceState(reentrantEditor) == v3);
+    CHECK(Access::statusMessage(reentrantEditor).contains(
+        QString::fromUtf8("изменилось")));
+
+    // A nested successful conversion wins. The stale outer command neither
+    // allocates a request nor publishes its selected target.
+    solidar::MainWindow nestedEditor(settings);
+    CHECK(nestedEditor.loadProject(pathA, &error));
+    const QString nestedTarget =
+        directory.filePath(QStringLiteral("nested-product.solidar"));
+    const QString outerTarget =
+        directory.filePath(QStringLiteral("outer-product.solidar"));
+    bool outerFactoryCalled = false;
+    const auto outerResult = Access::runProductConversionCommand(
+        nestedEditor,
+        [&](const QString&) -> std::optional<QString> {
+          CHECK(Access::convertProjectToPath(
+                    nestedEditor, nestedTarget,
+                    uiConversionRequest(
+                        Access::rootDefinitionId(nestedEditor),
+                        QStringLiteral("nested winner")))
+                    .succeeded());
+          return outerTarget;
+        },
+        [&](const QString&, solidar::DefinitionId root) {
+          outerFactoryCalled = true;
+          return uiConversionRequest(root, QStringLiteral("outer loser"));
+        });
+    CHECK(!outerResult.succeeded());
+    CHECK(!outerFactoryCalled);
+    CHECK(QFile::exists(nestedTarget));
+    CHECK(!QFile::exists(outerTarget));
+    CHECK(nestedEditor.windowFilePath() == nestedTarget);
+    CHECK(Access::persistenceState(nestedEditor) == v5);
+    CHECK(Access::identity(nestedEditor)->metadata.nameUtf8 ==
+          "nested winner");
+
+    // Active transient work is rejected before the chooser and remains
+    // active; conversion never auto-applies or cancels it.
+    solidar::MainWindow activeToolEditor(settings);
+    CHECK(activeToolEditor.loadProject(pathA, &error));
+    CHECK(Access::startTopFaceExtrude(activeToolEditor, 15.0));
+    bool activeChooserCalled = false;
+    bool activeFactoryCalled = false;
+    const QString activeTarget =
+        directory.filePath(QStringLiteral("active-tool-product.solidar"));
+    const auto activeRejected = Access::runProductConversionCommand(
+        activeToolEditor,
+        [&](const QString&) -> std::optional<QString> {
+          activeChooserCalled = true;
+          return activeTarget;
+        },
+        [&](const QString&, solidar::DefinitionId root) {
+          activeFactoryCalled = true;
+          return uiConversionRequest(root);
+        });
+    CHECK(!activeRejected.succeeded());
+    CHECK(!activeChooserCalled);
+    CHECK(!activeFactoryCalled);
+    CHECK(!QFile::exists(activeTarget));
+    CHECK(Access::activeTool(activeToolEditor) ==
+          solidar::PartDesignToolKind::Extrude);
+    CHECK(Access::viewportHasToolPreview(activeToolEditor));
+    CHECK(Access::convertToProductDocumentAction(activeToolEditor)
+              ->isEnabled());
+    Access::cancelFaceExtrude(activeToolEditor);
+  }
+
   // Product v5 is activated only by the editor boundary. Service callers keep
   // the conservative default, staging is allocation-neutral, and the single
   // document-replacement commit reserves persisted IDs for later editing.
@@ -2664,8 +3129,12 @@ int main(int argc, char** argv) {
     CHECK(!Access::modified(*productEditor));
 
     auto* upgradeAction = Access::upgradeProjectFormatAction(*productEditor);
+    auto* loadedProductConvertAction =
+        Access::convertToProductDocumentAction(*productEditor);
     CHECK(upgradeAction);
+    CHECK(loadedProductConvertAction);
     CHECK(!upgradeAction->isEnabled());
+    CHECK(!loadedProductConvertAction->isEnabled());
     const auto upgradeIdentityBefore = *Access::identity(*productEditor);
     const auto upgradePathBefore = productEditor->windowFilePath();
     const auto upgradeUndoBefore = Access::undoCount(*productEditor);
@@ -2804,12 +3273,15 @@ int main(int argc, char** argv) {
     solidar::MainWindow editor(settings);
     CHECK(editor.loadProject(gatePath, &error));
     auto* upgradeAction = Access::upgradeProjectFormatAction(editor);
+    auto* conversionAction = Access::convertToProductDocumentAction(editor);
     CHECK(upgradeAction);
+    CHECK(conversionAction);
     CHECK(upgradeAction->objectName() ==
           QStringLiteral("upgradeProjectFormatAction"));
     CHECK(upgradeAction->text() ==
           QString::fromUtf8("Обновить формат проекта до v4…"));
     CHECK(upgradeAction->isEnabled());
+    CHECK(conversionAction->isEnabled());
 
     const auto beforeFaceFeatures = Access::bodyFeatureCount(editor);
     const auto beforeFaceUndo = Access::undoCount(editor);
@@ -2909,6 +3381,7 @@ int main(int argc, char** argv) {
     Access::upgradeProjectFormat(editor);
     CHECK(Access::persistenceState(editor) == v4);
     CHECK(!upgradeAction->isEnabled());
+    CHECK(conversionAction->isEnabled());
     CHECK(!Access::modified(editor));
     QFile upgraded(gatePath);
     CHECK(upgraded.open(QIODevice::ReadOnly));
