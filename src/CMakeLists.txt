@@ -158,6 +158,8 @@ add_library(solidar_project
   project/ProductEnvelopeV5Decoder.h
   project/ProductEnvelopeV5Encoder.cpp
   project/ProductEnvelopeV5Encoder.h
+  project/ProductEnvelopeV5Materialization.cpp
+  project/ProductEnvelopeV5Materialization.h
   project/ProjectPersistenceState.h
   project/internal/ProjectAtomicWriting.h
   project/internal/ProjectIdCodec.h
