@@ -5,11 +5,12 @@ namespace solidar::project {
 enum class ProjectPersistenceFormat {
   V3,
   V4,
+  V5,
 };
 
-// Plain project-layer value committed alongside application Document
-// ownership. New and legacy projects default to v3; opening v4 selects v4 for
-// subsequent saves without changing the serialized Document model itself.
+// Format-only routing value committed alongside application document
+// ownership. Product identity and metadata remain authoritative exclusively
+// in ProductDocument; V5 deliberately carries no shadow identity state here.
 struct ProjectPersistenceState {
   ProjectPersistenceFormat format{ProjectPersistenceFormat::V3};
 

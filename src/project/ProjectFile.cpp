@@ -4088,6 +4088,11 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
       }
       return true;
     }
+    case ProjectPersistenceFormat::V5:
+      setError(error,
+               QString::fromUtf8(
+                   "Формат v5 требует ProductDocument с identity."));
+      return false;
   }
   setError(error, QString::fromUtf8("Неизвестный формат сохранения проекта."));
   return false;

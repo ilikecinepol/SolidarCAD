@@ -40,6 +40,10 @@ struct ProjectApplicationStatus {
 class StagedApplicationDocument final {
  public:
   StagedApplicationDocument(
+      ProductDocument&& productDocument,
+      std::optional<SketchId> historicalLegacyExtrusionSourceSketchId,
+      std::optional<project::ProjectPersistenceState> persistenceState);
+  StagedApplicationDocument(
       Document&& document,
       std::optional<SketchId> historicalLegacyExtrusionSourceSketchId,
       std::optional<project::ProjectPersistenceState> persistenceState);
@@ -78,6 +82,11 @@ struct StagedApplicationDocumentResult {
   }
 };
 
+enum class ProductV5OpenPolicy {
+  Disallow,
+  Allow,
+};
+
 // Non-QObject application boundary for project and geometry exchange I/O.
 // It deliberately owns neither project path/dirty state nor widgets/dialogs.
 class ProjectApplicationService final {
@@ -85,18 +94,26 @@ class ProjectApplicationService final {
   [[nodiscard]] ProjectApplicationStatus createProject(
       const QString& path) const noexcept;
   [[nodiscard]] StagedApplicationDocumentResult stageOpen(
-      const QString& path) const noexcept;
+      const QString& path,
+      ProductV5OpenPolicy productV5Policy =
+          ProductV5OpenPolicy::Disallow) const noexcept;
   [[nodiscard]] ProjectApplicationStatus save(
       const QString& path, const Document& document) const noexcept;
   [[nodiscard]] ProjectApplicationStatus save(
       const QString& path, const Document& document,
       project::ProjectPersistenceState persistenceState) const noexcept;
+  [[nodiscard]] ProjectApplicationStatus save(
+      const QString& path,
+      const ProductDocument& productDocument) const noexcept;
   [[nodiscard]] ProjectApplicationStatus upgradeProjectFormat(
       const QString& path, const Document& document,
       project::ProjectPersistenceState currentState) const noexcept;
 
   [[nodiscard]] StagedApplicationDocumentResult stageImportStep(
       const QString& path, const Document& currentDocument,
+      const QString& featureName = {}) const noexcept;
+  [[nodiscard]] StagedApplicationDocumentResult stageImportStep(
+      const QString& path, const ProductDocument& currentProductDocument,
       const QString& featureName = {}) const noexcept;
   [[nodiscard]] ProjectApplicationStatus exportStep(
       const QString& path, const Document& document) const noexcept;
