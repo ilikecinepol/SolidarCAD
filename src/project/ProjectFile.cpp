@@ -3696,7 +3696,10 @@ static bool checkedEncodingAdd(std::size_t delta, std::size_t limit,
 static bool encodeCurrentPartRoot(
     const QString& name, const QString& createdAt, const Document& document,
     ProjectDocumentEncodingDialect dialect, QJsonObject* result,
-    ProjectDocumentEncodingStats* resultStats, QString* error) {
+    ProjectDocumentEncodingStats* resultStats, QString* error,
+    detail::ProjectFormatV4DocumentEncodeStatus* encodeStatus = nullptr) {
+  if (encodeStatus)
+    *encodeStatus = detail::ProjectFormatV4DocumentEncodeStatus::Invalid;
   if (!result) {
     setError(error, QString::fromUtf8("Не задано хранилище для проекта."));
     return false;
@@ -3886,6 +3889,10 @@ static bool encodeCurrentPartRoot(
   } else {
     const QByteArray compact = QJsonDocument(root).toJson(QJsonDocument::Compact);
     if (compact.size() > ProjectFile::kMaximumFileBytes) {
+      if (encodeStatus) {
+        *encodeStatus =
+            detail::ProjectFormatV4DocumentEncodeStatus::PayloadTooLarge;
+      }
       setError(error,
                QString::fromUtf8("Проект превышает допустимый размер файла."));
       return false;
@@ -3925,6 +3932,8 @@ static bool encodeCurrentPartRoot(
   }
   *result = std::move(root);
   if (resultStats) *resultStats = stats;
+  if (encodeStatus)
+    *encodeStatus = detail::ProjectFormatV4DocumentEncodeStatus::Valid;
   return true;
 }
 
@@ -3947,13 +3956,12 @@ detail::encodeProjectFormatV4DocumentRoot(
   QString error;
   if (!encodeCurrentPartRoot(metadata.name, metadata.createdAt, document,
                              ProjectDocumentEncodingDialect::V4, &root,
-                             &stats, &error)) {
+                             &stats, &error, &encoded.status)) {
     encoded.error = error.isEmpty()
                         ? QStringLiteral("v4 document encoding failed")
                         : std::move(error);
     return encoded;
   }
-  encoded.status = ProjectFormatV4DocumentEncodeStatus::Valid;
   encoded.root = std::move(root);
   encoded.topologyReferenceCount = stats.topologyReferenceCount;
   encoded.provenanceRecordCount = stats.provenanceRecordCount;

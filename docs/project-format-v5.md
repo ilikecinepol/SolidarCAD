@@ -1,9 +1,9 @@
 # Product Envelope `.solidar` v5
 
-Статус: контракт и отключённый scanner реализованы в микрогейте A2a.
-Production-dispatch, materialization, writer и UI в A2a намеренно не
-подключены. Обычные Open/Save/Save As продолжают работать только с уже
-поддерживаемыми standalone-форматами.
+Статус: контракт и отключённый scanner реализованы в микрогейте A2a;
+детерминированный encoder и атомарный writer — в A2b1. Production-dispatch,
+materialization и UI по-прежнему намеренно не подключены. Обычные Open/Save/
+Save As продолжают работать только с уже поддерживаемыми standalone-форматами.
 
 Версия 5 — первый identity-bearing product envelope. В A2a она содержит ровно
 одно корневое определение. Количество `definitions`, отличное от одного,
@@ -51,6 +51,11 @@ standalone v4 со всеми десятью полями. Он проходит
 derived B-Rep. Единственное уже существующее исключение — авторитетный `brep`
 у `ImportedShape` внутри standalone v4.
 
+Поля `name` и `createdAt` внешнего `metadata` обязаны побайтно совпадать с
+одноимёнными полями вложенного v4. В single-part схеме v5 у них нет двух разных
+семантик: расхождение считается `Invalid`, а encoder получает один явный набор
+metadata и использует его на обоих уровнях.
+
 `ProjectId` — 128 бит, представленные канонической UUID-строкой: только
 строчные hex-цифры, группы `8-4-4-4-12`, без скобок. Nil UUID запрещён.
 `DefinitionId` и `rootDefinitionId` — положительные точные JSON integers в
@@ -72,7 +77,10 @@ identity. A2a не генерирует UUID; он только валидиру
 предоставляет узкий `noexcept` commit уже подготовленного валидного ID для
 будущего post-write commit.
 
-- A2b добавит disconnected encoder/writer и атомарную публикацию байтов.
+- A2b0 вынес общий format-neutral механизм атомарной публикации байтов; A2b1
+  добавил disconnected v5 encoder/writer. Encoder принимает явный output
+  `ProjectId`, поэтому standalone source и clone product A → output B не
+  требуют мутации source.
 - A2c добавит materialization и явную конвертацию standalone → product с
   инъецируемой генерацией identity.
 - A2d подключит product-aware Open/Save/Save As и lifecycle/UI только после

@@ -31,7 +31,11 @@ ProjectFormatV4PayloadPreparationResult prepareProjectFormatV4DocumentPayload(
   try {
     auto encoded = encodeProjectFormatV4DocumentRoot(document, metadata);
     if (!encoded.succeeded()) {
-      result.failure = ProjectFormatV4AtomicWriteFailure::Encode;
+      result.failure =
+          encoded.status ==
+                  ProjectFormatV4DocumentEncodeStatus::PayloadTooLarge
+              ? ProjectFormatV4AtomicWriteFailure::PayloadTooLarge
+              : ProjectFormatV4AtomicWriteFailure::Encode;
       result.error = fallbackError(std::move(encoded.error),
                                    "v4 document encoding failed");
       return result;

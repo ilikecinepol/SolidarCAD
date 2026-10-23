@@ -18,6 +18,7 @@ struct ProjectFormatV4DocumentMetadata {
 enum class ProjectFormatV4DocumentEncodeStatus {
   Valid,
   Invalid,
+  PayloadTooLarge,
 };
 
 struct ProjectFormatV4DocumentEncodeResult {

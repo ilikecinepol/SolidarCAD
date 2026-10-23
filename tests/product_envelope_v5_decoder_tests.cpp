@@ -27,7 +27,7 @@ QJsonObject embeddedPartV4() {
       {"version", 4},
       {"capabilities", QJsonArray{"persistent-topology-v2"}},
       {"constraintTypeEncoding", "stable-name-v1"},
-      {"name", "embedded"},
+      {"name", "product"},
       {"createdAt", "2026-10-23T00:00:00Z"},
       {"document", QJsonObject{{"widthMm", 60},
                                  {"heightMm", 40},
@@ -136,6 +136,19 @@ int main() {
   {
     QJsonObject root = validRoot();
     root["extra"] = true;
+    checkInvalid(root);
+  }
+  {
+    QJsonObject root = validRoot();
+    QJsonObject embedded = embeddedPartV4();
+    embedded["name"] = "different shadow metadata";
+    setEmbeddedPart(&root, embedded);
+    checkInvalid(root);
+
+    root = validRoot();
+    embedded = embeddedPartV4();
+    embedded["createdAt"] = "2026-10-24T00:00:00Z";
+    setEmbeddedPart(&root, embedded);
     checkInvalid(root);
   }
   for (const auto& replacement : {QJsonValue{}, QJsonValue{true},

@@ -7,7 +7,6 @@
 #include <QJsonValue>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <utility>
@@ -15,6 +14,7 @@
 #include "project/ProjectFile.h"
 #include "project/ProjectFormatV4EnvelopeDecoder.h"
 #include "project/ProjectFormatV4PayloadScanner.h"
+#include "project/internal/ProjectIdCodec.h"
 
 namespace solidar::project {
 namespace {
@@ -136,39 +136,6 @@ bool unsignedUtf8Less(const QByteArray& left, const QByteArray& right) {
       });
 }
 
-std::optional<ProjectId> parseCanonicalProjectId(const QString& text) {
-  if (text.size() != 36) return std::nullopt;
-  constexpr std::array<int, 4> kHyphens{8, 13, 18, 23};
-  for (const int position : kHyphens) {
-    if (text.at(position) != QLatin1Char('-')) return std::nullopt;
-  }
-
-  ProjectId::Bytes bytes{};
-  std::size_t nibble = 0;
-  auto decodeHex = [](QChar character) -> int {
-    const ushort value = character.unicode();
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'a' && value <= 'f') return 10 + value - 'a';
-    return -1;
-  };
-  for (qsizetype index = 0; index < text.size(); ++index) {
-    if (std::find(kHyphens.begin(), kHyphens.end(), index) !=
-        kHyphens.end())
-      continue;
-    const int value = decodeHex(text.at(index));
-    if (value < 0) return std::nullopt;
-    const std::size_t byteIndex = nibble / 2;
-    if ((nibble % 2) == 0)
-      bytes[byteIndex] = static_cast<std::uint8_t>(value << 4);
-    else
-      bytes[byteIndex] |= static_cast<std::uint8_t>(value);
-    ++nibble;
-  }
-  if (nibble != 32) return std::nullopt;
-  ProjectId id{bytes};
-  return id.isValid() ? std::optional<ProjectId>{id} : std::nullopt;
-}
-
 }  // namespace
 
 ProductEnvelopeV5ScanResult scanProductEnvelopeV5(QByteArrayView bytes) {
@@ -214,7 +181,10 @@ ProductEnvelopeV5ScanResult scanProductEnvelopeV5(QByteArrayView bytes) {
   if (!boundedString(root.value(QStringLiteral("projectId")), false,
                      &projectIdText, &error, QStringLiteral("$.projectId")))
     return invalid(std::move(error));
-  const auto projectId = parseCanonicalProjectId(projectIdText);
+  const QByteArray projectIdUtf8 = projectIdText.toUtf8();
+  const auto projectId = detail::parseCanonicalProjectId(
+      std::string_view(projectIdUtf8.constData(),
+                       static_cast<std::size_t>(projectIdUtf8.size())));
   if (!projectId.has_value())
     return invalid(QStringLiteral(
         "$.projectId must be a canonical lowercase non-nil UUID"));
@@ -336,8 +306,15 @@ ProductEnvelopeV5ScanResult scanProductEnvelopeV5(QByteArrayView bytes) {
 
   std::optional<ProjectFormatV4ModelCandidate> embeddedPart;
   if (payloadKind == QStringLiteral("embedded-part-v4")) {
+    const QJsonObject embeddedRoot = dataValue.toObject();
+    if (embeddedRoot.value(QStringLiteral("name")) != decodedMetadata.name ||
+        embeddedRoot.value(QStringLiteral("createdAt")) !=
+            decodedMetadata.createdAt) {
+      return invalid(QStringLiteral(
+          "$.metadata must match embedded part v4 metadata"));
+    }
     auto envelope =
-        detail::validateProjectFormatV4EnvelopeRoot(dataValue.toObject());
+        detail::validateProjectFormatV4EnvelopeRoot(embeddedRoot);
     if (envelope.status != ProjectFormatV4EnvelopeScanStatus::Candidate ||
         !envelope.candidate.has_value()) {
       return invalid(QStringLiteral("invalid embedded part v4: %1")
