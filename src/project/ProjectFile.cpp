@@ -931,7 +931,7 @@ bool validateLegacySketch(
       }
     }
     qint64 kind = 0;
-    if (!integerNumber(dimension.value("kind"), QStringLiteral("kind"), 0, 6,
+    if (!integerNumber(dimension.value("kind"), QStringLiteral("kind"), 0, 7,
                        &kind, error) ||
         !finiteNumber(dimension.value("value"), QStringLiteral("value"), 0.0,
                       kMaximumModelLengthMm, error) ||
@@ -941,7 +941,7 @@ bool validateLegacySketch(
         !finiteNumber(dimension.value("angle"), QStringLiteral("angle"),
                       -1.0e6, 1.0e6, error))
       return false;
-    if ((kind == 0 || kind == 2) &&
+    if ((kind == 0 || kind == 2 || kind == 7) &&
         !requiredIndex(dimension, "geometryIndex",
                        kind == 0 ? lines.size() : circles.size(), error))
       return false;
@@ -1010,7 +1010,8 @@ bool validateLegacySketch(
                 "размер содержит неиспользуемую точечную ссылку."));
     }
     if ((kind == static_cast<qint64>(sketch::DimensionKind::LineLength) ||
-         kind == static_cast<qint64>(sketch::DimensionKind::CircleDiameter)) &&
+         (kind == static_cast<qint64>(sketch::DimensionKind::CircleDiameter) ||
+          kind == static_cast<qint64>(sketch::DimensionKind::CircleRadius))) &&
         dimension.value("secondGeometryIndex").toInteger(-1) >= 0)
       return invalid(
           error,
@@ -3308,7 +3309,8 @@ static bool serializedProjectRootWithMetadata(
         const auto index = saved.geometry.lineIndex(dimension.geometryId);
         if (!index) return failDimension();
         geometryIndex = static_cast<qint64>(*index);
-      } else if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
+      } else if (dimension.kind == sketch::DimensionKind::CircleDiameter ||
+                 dimension.kind == sketch::DimensionKind::CircleRadius) {
         const auto index = saved.geometry.circleIndex(dimension.geometryId);
         if (!index) return failDimension();
         geometryIndex = static_cast<qint64>(*index);
@@ -4382,6 +4384,9 @@ static bool constraintMatchesLegacyDimension(
     case sketch::DimensionKind::CircleDiameter:
       return constraint.type == sketch::ConstraintType::Diameter &&
              constraint.firstGeometry == dimension.geometryId;
+    case sketch::DimensionKind::CircleRadius:
+      return constraint.type == sketch::ConstraintType::Radius &&
+             constraint.firstGeometry == dimension.geometryId;
     case sketch::DimensionKind::PointDistance:
       return constraint.type == sketch::ConstraintType::Distance &&
              samePoints(dimension.firstPoint, dimension.secondPoint);
@@ -4415,6 +4420,10 @@ static sketch::Constraint referenceConstraintForLegacyDimension(
       break;
     case sketch::DimensionKind::CircleDiameter:
       constraint.type = sketch::ConstraintType::Diameter;
+      constraint.firstGeometry = dimension.geometryId;
+      break;
+    case sketch::DimensionKind::CircleRadius:
+      constraint.type = sketch::ConstraintType::Radius;
       constraint.firstGeometry = dimension.geometryId;
       break;
     case sketch::DimensionKind::PointDistance:
@@ -5027,6 +5036,10 @@ static std::optional<sketch::Dimension> dimensionFromConstraintV3(
       dimension.kind = sketch::DimensionKind::CircleDiameter;
       dimension.geometryId = constraint.firstGeometry;
       break;
+    case sketch::ConstraintType::Radius:
+      dimension.kind = sketch::DimensionKind::CircleRadius;
+      dimension.geometryId = constraint.firstGeometry;
+      break;
     case sketch::ConstraintType::Distance:
       dimension.kind = sketch::DimensionKind::PointDistance;
       dimension.firstPoint = constraint.firstPoint;
@@ -5457,6 +5470,7 @@ bool typedSketchConstraintReferencesValid(
 
 bool typedSketchConstraintIsAnnotatable(sketch::ConstraintType type) {
   return type == sketch::ConstraintType::Length ||
+         type == sketch::ConstraintType::Radius ||
          type == sketch::ConstraintType::Diameter ||
          type == sketch::ConstraintType::Distance ||
          type == sketch::ConstraintType::DistanceX ||
@@ -5819,14 +5833,15 @@ static bool loadLegacyRoot(const QJsonObject& root,
                        "Размер длины ссылается на неизвестную линию."));
           return false;
         }
-      } else if (kind == sketch::DimensionKind::CircleDiameter) {
+      } else if (kind == sketch::DimensionKind::CircleDiameter ||
+                 kind == sketch::DimensionKind::CircleRadius) {
         const auto index =
             static_cast<std::size_t>(object.value("geometryIndex").toInteger());
         dimension.geometryId = saved.geometry.circleId(index);
         if (dimension.geometryId == sketch::kInvalidGeometryId) {
           setError(error,
                    QString::fromUtf8(
-                       "Размер диаметра ссылается на неизвестную окружность."));
+                       "Радиальный размер ссылается на неизвестную окружность."));
           return false;
         }
       } else if (kind == sketch::DimensionKind::LineAngle ||

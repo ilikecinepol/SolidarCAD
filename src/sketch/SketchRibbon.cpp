@@ -154,8 +154,14 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
   auto* constraintsLayout = new QHBoxLayout;
   auto* dimension = toolButton(ToolIconKind::AutoDimension,
                                QString::fromUtf8("Авторазмер"), this);
+  auto* radiusDimension = toolButton(ToolIconKind::AutoDimension,
+                                     QString::fromUtf8("Радиус"), this);
+  radiusDimension->setObjectName(QStringLiteral("radiusDimensionCommand"));
+  radiusDimension->setToolTip(QString::fromUtf8("Размер радиуса окружности"));
   toolGroup->addButton(dimension);
+  toolGroup->addButton(radiusDimension);
   constraintsLayout->addWidget(dimension);
+  constraintsLayout->addWidget(radiusDimension);
   auto* orthogonalTool = toolButton(
       ToolIconKind::OrthogonalConstraint,
       QString::fromUtf8("Горизонтально/вертикально"), this);
@@ -228,6 +234,9 @@ SketchRibbon::SketchRibbon(SketchCanvas* canvas, QWidget* parent)
           [canvas] { canvas->setTool(SketchCanvas::Tool::Trim); });
   connect(dimension, &QPushButton::clicked, canvas,
           [canvas] { canvas->setTool(SketchCanvas::Tool::AutoDimension); });
+  connect(radiusDimension, &QPushButton::clicked, canvas, [canvas] {
+    canvas->setTool(SketchCanvas::Tool::RadiusDimension);
+  });
   connect(orthogonalTool, &QPushButton::clicked, canvas,
           [canvas] {
             canvas->setTool(SketchCanvas::Tool::OrthogonalConstraint);

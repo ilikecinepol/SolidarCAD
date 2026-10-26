@@ -54,6 +54,8 @@ SketchInteractionTool interactionTool(SketchCanvas::Tool tool) noexcept {
     case CanvasTool::Projection: return SketchInteractionTool::Projection;
     case CanvasTool::AutoDimension:
       return SketchInteractionTool::AutoDimension;
+    case CanvasTool::RadiusDimension:
+      return SketchInteractionTool::RadiusDimension;
     case CanvasTool::LockConstraint:
       return SketchInteractionTool::LockConstraint;
     case CanvasTool::OrthogonalConstraint:
@@ -85,6 +87,8 @@ SketchCanvas::Tool canvasTool(SketchInteractionTool tool) noexcept {
     case SketchInteractionTool::Bezier: return CanvasTool::Bezier;
     case SketchInteractionTool::Projection: return CanvasTool::Projection;
     case SketchInteractionTool::AutoDimension: return CanvasTool::AutoDimension;
+    case SketchInteractionTool::RadiusDimension:
+      return CanvasTool::RadiusDimension;
     case SketchInteractionTool::LockConstraint: return CanvasTool::LockConstraint;
     case SketchInteractionTool::OrthogonalConstraint:
       return CanvasTool::OrthogonalConstraint;
@@ -101,6 +105,11 @@ SketchCanvas::Tool canvasTool(SketchInteractionTool tool) noexcept {
     case SketchInteractionTool::Trim: return CanvasTool::Trim;
   }
   return CanvasTool::Select;
+}
+
+bool isDimensionTool(SketchCanvas::Tool tool) noexcept {
+  return tool == SketchCanvas::Tool::AutoDimension ||
+         tool == SketchCanvas::Tool::RadiusDimension;
 }
 
 QString pointDimensionModeName(SketchPointDimensionMode mode) {
@@ -126,6 +135,10 @@ QString commandFailureText(const SketchCommandResult& result) {
       break;
     case SketchCommandError::Conflict:
       text = QString::fromUtf8("Операция отклонена: конфликт ограничений");
+      break;
+    case SketchCommandError::Locked:
+      text = QString::fromUtf8(
+          "Удаление отклонено: геометрия заблокирована ограничением «Замок»");
       break;
     case SketchCommandError::StaleReference:
       text = QString::fromUtf8("Операция отклонена: некорректная ссылка");
@@ -1483,7 +1496,8 @@ SketchCanvas::selectedConstraintPanelEntries() const {
   const auto dimensionReferencesSelected =
       [selectedId](const sketch::Dimension& dimension) {
         if (dimension.kind == sketch::DimensionKind::LineLength ||
-            dimension.kind == sketch::DimensionKind::CircleDiameter)
+            dimension.kind == sketch::DimensionKind::CircleDiameter ||
+            dimension.kind == sketch::DimensionKind::CircleRadius)
           return dimension.geometryId == selectedId;
         if (dimension.kind == sketch::DimensionKind::LineAngle ||
             dimension.kind == sketch::DimensionKind::LineDistance)
@@ -1502,10 +1516,14 @@ SketchCanvas::selectedConstraintPanelEntries() const {
 
   const auto currentDimensionValue =
       [this](const sketch::Dimension& dimension) -> std::optional<double> {
-        if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
+        if (dimension.kind == sketch::DimensionKind::CircleDiameter ||
+            dimension.kind == sketch::DimensionKind::CircleRadius) {
           const auto index = sketch_.circleIndex(dimension.geometryId);
           if (!index) return std::nullopt;
-          return sketch_.circles()[*index].radiusMm * 2.0;
+          return sketch_.circles()[*index].radiusMm *
+                 (dimension.kind == sketch::DimensionKind::CircleDiameter
+                      ? 2.0
+                      : 1.0);
         }
 
         if (dimension.kind == sketch::DimensionKind::LineAngle) {
@@ -1573,6 +1591,9 @@ SketchCanvas::selectedConstraintPanelEntries() const {
         break;
       case sketch::DimensionKind::CircleDiameter:
         name = typeName(sketch::ConstraintType::Diameter);
+        break;
+      case sketch::DimensionKind::CircleRadius:
+        name = typeName(sketch::ConstraintType::Radius);
         break;
       case sketch::DimensionKind::PointDistance:
         name = typeName(sketch::ConstraintType::Distance);
@@ -2125,6 +2146,10 @@ void SketchCanvas::redo() {
 }
 
 void SketchCanvas::deleteSelection() {
+  static_cast<void>(tryDeleteSelection());
+}
+
+bool SketchCanvas::tryDeleteSelection() {
   DeleteSelectionCommand command;
   command.geometryIds = selectedLineIds_;
   command.geometryIds.insert(command.geometryIds.end(),
@@ -2144,19 +2169,21 @@ void SketchCanvas::deleteSelection() {
     else if (selectionKind_ == SelectionKind::Bezier)
       command.geometryIds.push_back(selectionBezierId_);
   }
-  if (command.geometryIds.empty() && command.elementIds.empty()) return;
+  if (command.geometryIds.empty() && command.elementIds.empty()) return false;
 
   pushUndoState();
   const auto result = executeCommand(command);
   if (!result.accepted) {
     cancelPendingUndo();
-    return;
+    return false;
   }
   clearGeometrySelection();
   emit lineStyleSelectionChanged(false, false);
   emit selectionChanged(QString::fromUtf8("Ничего не выбрано"));
   notifyGeometryChanged();
+  return true;
 }
+
 sketch::Point SketchCanvas::rotateForView(
     sketch::Point point) const noexcept {
   const double angle = viewRotationDeg_ * std::numbers::pi / 180.0;
@@ -3396,7 +3423,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  if (tool() == Tool::AutoDimension && primaryDimension_->isVisible() &&
+  if (isDimensionTool(tool()) && primaryDimension_->isVisible() &&
       interactionState().autoDimension.target !=
           SketchAutoDimensionTarget::None) {
     const auto directLineId = static_cast<sketch::GeometryId>(
@@ -3495,7 +3522,7 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     return;
   }
   interaction_.selectDimension(std::nullopt);
-  if (tool() == Tool::AutoDimension) {
+  if (isDimensionTool(tool())) {
     handleAutoDimensionClick(event->position());
   } else if (tool() == Tool::LockConstraint) {
     handleLockConstraintClick(event->position());
@@ -3851,12 +3878,15 @@ void SketchCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
     autoDimension.geometryId = dimension.geometryId;
     primaryDimension_->setPrefix(QString());
 
-  } else if (dimension.kind ==
-             sketch::DimensionKind::CircleDiameter) {
+  } else if (dimension.kind == sketch::DimensionKind::CircleDiameter ||
+             dimension.kind == sketch::DimensionKind::CircleRadius) {
     autoDimension.target = SketchAutoDimensionTarget::Circle;
     autoDimension.geometryId = dimension.geometryId;
-    primaryDimension_->setPrefix(
-        QString::fromUtf8("Г: "));
+    autoDimension.circleRadius =
+        dimension.kind == sketch::DimensionKind::CircleRadius;
+    primaryDimension_->setPrefix(autoDimension.circleRadius
+                                     ? QStringLiteral("R: ")
+                                     : QString::fromUtf8("Ø: "));
 
   } else if (dimension.kind ==
              sketch::DimensionKind::LineAngle) {
@@ -4025,7 +4055,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
   }
 
   const bool constraintTool =
-      (tool() == Tool::AutoDimension &&
+      (isDimensionTool(tool()) &&
        interactionState().autoDimension.target ==
            SketchAutoDimensionTarget::None) ||
       tool() == Tool::LockConstraint ||
@@ -4044,7 +4074,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
 
     const bool lineAllowed = true;
     const bool circleAllowed =
-        tool() == Tool::AutoDimension ||
+        isDimensionTool(tool()) ||
         tool() == Tool::LockConstraint ||
         tool() == Tool::CoincidentConstraint ||
         tool() == Tool::EqualConstraint ||
@@ -4059,7 +4089,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     tolerance.pointPx = hitTolerance;
     tolerance.endpointPx = hitTolerance;
     auto scene = hitScene(
-        tolerance, tool() == Tool::AutoDimension ||
+        tolerance, isDimensionTool(tool()) ||
                        tool() == Tool::CoincidentConstraint ||
                        tool() == Tool::OrthogonalConstraint ||
                        tool() == Tool::ParallelConstraint ||
@@ -4087,9 +4117,9 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     filter.arcs = arcAllowed;
     filter.beziers = tool() == Tool::TangentConstraint;
     filter.points = tool() == Tool::CoincidentConstraint ||
-                    tool() == Tool::AutoDimension;
+                    isDimensionTool(tool());
     filter.lineMidpoints = false;
-    filter.datums = tool() == Tool::AutoDimension ||
+    filter.datums = isDimensionTool(tool()) ||
                     tool() == Tool::CoincidentConstraint ||
                     tool() == Tool::OrthogonalConstraint ||
                     tool() == Tool::ParallelConstraint ||
@@ -4469,7 +4499,8 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
             }
           }
         }
-      } else if (dimension.kind == sketch::DimensionKind::CircleDiameter) {
+      } else if (dimension.kind == sketch::DimensionKind::CircleDiameter ||
+                 dimension.kind == sketch::DimensionKind::CircleRadius) {
         const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
         if (circleIndex) {
           const QPointF center =
@@ -4512,7 +4543,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  if (tool() == Tool::AutoDimension && primaryDimension_->isVisible() &&
+  if (isDimensionTool(tool()) && primaryDimension_->isVisible() &&
       interactionState().autoDimension.target != SketchAutoDimensionTarget::None) {
     // CRASH-FREE 13: EXISTING DIMENSION EDIT LOCK
     //
@@ -5263,8 +5294,7 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
   }
 
   if (event->matches(QKeySequence::Cut)) {
-    if (copyCurrentSelection()) {
-      deleteSelection();
+    if (copyCurrentSelection() && tryDeleteSelection()) {
       emit selectionChanged(QString::fromUtf8("Объекты вырезаны"));
     }
 
@@ -5409,7 +5439,7 @@ bool SketchCanvas::eventFilter(QObject* watched, QEvent* event) {
         return true;
       }
 
-      if (tool() == Tool::AutoDimension)
+      if (isDimensionTool(tool()))
         commitAutoDimension();
       else
         commitDimensionEditor();
@@ -5430,8 +5460,9 @@ bool SketchCanvas::dimensionSegment(std::size_t index, QPointF& first,
   const auto& dimension = sketch_.dimensions()[index];
   const bool diameter =
       dimension.kind == sketch::DimensionKind::CircleDiameter;
+  const bool radius = dimension.kind == sketch::DimensionKind::CircleRadius;
 
-  if (diameter) {
+  if (diameter || radius) {
     const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
     if (!circleIndex) return false;
 
@@ -5439,10 +5470,22 @@ bool SketchCanvas::dimensionSegment(std::size_t index, QPointF& first,
     const double dx = std::cos(dimension.angleRad) * circle.radiusMm;
     const double dy = std::sin(dimension.angleRad) * circle.radiusMm;
 
-    first = mapPoint(
-        {circle.center.xMm - dx, circle.center.yMm - dy});
+    first = radius
+                ? mapPoint(circle.center)
+                : mapPoint(
+                      {circle.center.xMm - dx, circle.center.yMm - dy});
     second = mapPoint(
         {circle.center.xMm + dx, circle.center.yMm + dy});
+    if (radius) {
+      QPointF direction = second - first;
+      const double length = std::hypot(direction.x(), direction.y());
+      if (length < 1.0) return false;
+      direction /= length;
+      const QPointF normal(-direction.y(), direction.x());
+      const QPointF offset = normal * dimension.offsetMm * pixelsPerMm_;
+      first += offset;
+      second += offset;
+    }
     return true;
   }
 
@@ -5765,7 +5808,9 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
     const bool duplicate = std::any_of(
         sketch_.constraints().begin(), sketch_.constraints().end(),
         [type, point](const sketch::Constraint& item) {
-          return item.type == type && item.secondPoint.lineId == point.lineId &&
+          return sketch::participatesInConstraintSystem(item) &&
+                 item.type == type &&
+                 item.secondPoint.lineId == point.lineId &&
                  item.secondPoint.circleId == point.circleId &&
                  item.secondPoint.arcId == point.arcId &&
                  item.secondPoint.bezierId == point.bezierId &&
@@ -5882,7 +5927,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 
         // Do not create the same relation twice.
         for (const auto& existing : sketch_.constraints()) {
-          if (existing.type !=
+          if (!sketch::participatesInConstraintSystem(existing) ||
+              existing.type !=
               sketch::ConstraintType::PointOnCircle)
             continue;
 
@@ -6015,7 +6061,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 
     for (const auto& constraint :
          sketch_.constraints()) {
-      if (constraint.type !=
+      if (!sketch::participatesInConstraintSystem(constraint) ||
+          constraint.type !=
           sketch::ConstraintType::PointOnCircle)
         continue;
 
@@ -6084,7 +6131,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
     }
 
     for (const auto& constraint : sketch_.constraints()) {
-      if (constraint.type != sketch::ConstraintType::PointOnLine)
+      if (!sketch::participatesInConstraintSystem(constraint) ||
+          constraint.type != sketch::ConstraintType::PointOnLine)
         continue;
 
       if (constraint.firstGeometry == carrierId &&
@@ -6141,7 +6189,9 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
       }
       bool duplicate = false;
       for (const auto& constraint : sketch_.constraints()) {
-        if (constraint.type != sketch::ConstraintType::Coincident) continue;
+        if (!sketch::participatesInConstraintSystem(constraint) ||
+            constraint.type != sketch::ConstraintType::Coincident)
+          continue;
         duplicate =
             (samePointReference(constraint.firstPoint, firstPoint) &&
              samePointReference(constraint.secondPoint, *secondPoint)) ||
@@ -6202,7 +6252,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
         bool duplicate = false;
 
         for (const auto& constraint : sketch_.constraints()) {
-          if (constraint.type != sketch::ConstraintType::PointOnLine)
+          if (!sketch::participatesInConstraintSystem(constraint) ||
+              constraint.type != sketch::ConstraintType::PointOnLine)
             continue;
 
           if (constraint.firstGeometry == carrierId &&
@@ -6265,7 +6316,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 
       bool duplicate = false;
       for (const auto& constraint : sketch_.constraints()) {
-        if (constraint.type == sketch::ConstraintType::PointOnArc &&
+        if (sketch::participatesInConstraintSystem(constraint) &&
+            constraint.type == sketch::ConstraintType::PointOnArc &&
             constraint.firstGeometry == carrierArcId &&
             samePointReference(constraint.secondPoint, pointReference)) {
           duplicate = true;
@@ -6329,7 +6381,8 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 
       for (const auto& constraint :
            sketch_.constraints()) {
-        if (constraint.type !=
+        if (!sketch::participatesInConstraintSystem(constraint) ||
+            constraint.type !=
             sketch::ConstraintType::PointOnCircle)
           continue;
 
@@ -6519,7 +6572,9 @@ void SketchCanvas::handleCoincidentConstraintClick(QPointF position) {
 
   // Avoid duplicate Coincident constraints in either order.
   for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.type != sketch::ConstraintType::Coincident) continue;
+    if (!sketch::participatesInConstraintSystem(constraint) ||
+        constraint.type != sketch::ConstraintType::Coincident)
+      continue;
 
     const bool sameOrder =
         samePointReference(constraint.firstPoint, first) &&
@@ -6594,7 +6649,9 @@ void SketchCanvas::handleTangentConstraintClick(QPointF position) {
   };
 
   for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.type != sketch::ConstraintType::Tangent) continue;
+    if (!sketch::participatesInConstraintSystem(constraint) ||
+        constraint.type != sketch::ConstraintType::Tangent)
+      continue;
     const bool sameOrder =
         constraint.firstGeometry == firstOperand->geometryId &&
         constraint.secondGeometry == selected.geometryId;
@@ -6774,7 +6831,8 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     }
 
     for (const auto& constraint : sketch_.constraints()) {
-      if (constraint.type != sketch::ConstraintType::Equal)
+      if (!sketch::participatesInConstraintSystem(constraint) ||
+          constraint.type != sketch::ConstraintType::Equal)
         continue;
 
       const bool sameOrder =
@@ -6836,7 +6894,8 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     }
 
     for (const auto& constraint : sketch_.constraints()) {
-      if (constraint.type !=
+      if (!sketch::participatesInConstraintSystem(constraint) ||
+          constraint.type !=
           sketch::ConstraintType::Equal)
         continue;
 
@@ -6915,7 +6974,8 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
     }
 
     for (const auto& constraint : sketch_.constraints()) {
-      if (constraint.type != sketch::ConstraintType::Equal)
+      if (!sketch::participatesInConstraintSystem(constraint) ||
+          constraint.type != sketch::ConstraintType::Equal)
         continue;
 
       const bool sameOrder =
@@ -7108,7 +7168,8 @@ void SketchCanvas::handleEqualConstraintClick(QPointF position) {
             sketch_.constraints().begin(),
             sketch_.constraints().end(),
             [first, second](const sketch::Constraint& constraint) {
-              if (constraint.type !=
+              if (!sketch::participatesInConstraintSystem(constraint) ||
+                  constraint.type !=
                   sketch::ConstraintType::Equal)
                 return false;
 
@@ -7305,7 +7366,9 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
   }
 
   for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.type != sketch::ConstraintType::Parallel) continue;
+    if (!sketch::participatesInConstraintSystem(constraint) ||
+        constraint.type != sketch::ConstraintType::Parallel)
+      continue;
 
     const bool sameOrder =
         constraint.firstGeometry == firstId &&
@@ -7327,7 +7390,9 @@ void SketchCanvas::handleParallelConstraintClick(QPointF position) {
       [this](sketch::GeometryId id)
           -> std::optional<sketch::ConstraintType> {
         for (const auto& constraint : sketch_.constraints()) {
-          if (constraint.firstGeometry != id) continue;
+          if (!sketch::participatesInConstraintSystem(constraint) ||
+              constraint.firstGeometry != id)
+            continue;
 
           if (constraint.type == sketch::ConstraintType::Horizontal ||
               constraint.type == sketch::ConstraintType::Vertical)
@@ -7517,7 +7582,9 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
 
   // Do not create a duplicate in either order.
   for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.type != sketch::ConstraintType::Perpendicular) continue;
+    if (!sketch::participatesInConstraintSystem(constraint) ||
+        constraint.type != sketch::ConstraintType::Perpendicular)
+      continue;
 
     const bool sameOrder =
         constraint.firstGeometry == firstId &&
@@ -7539,7 +7606,9 @@ void SketchCanvas::handlePerpendicularConstraintClick(QPointF position) {
       [this](sketch::GeometryId id)
           -> std::optional<sketch::ConstraintType> {
         for (const auto& constraint : sketch_.constraints()) {
-          if (constraint.firstGeometry != id) continue;
+          if (!sketch::participatesInConstraintSystem(constraint) ||
+              constraint.firstGeometry != id)
+            continue;
           if (constraint.type == sketch::ConstraintType::Horizontal ||
               constraint.type == sketch::ConstraintType::Vertical)
             return constraint.type;
@@ -7628,7 +7697,8 @@ void SketchCanvas::handleOrthogonalConstraintClick(QPointF position) {
 
   // Avoid stacking duplicate H/V constraints on the same primitive.
   for (const auto& constraint : sketch_.constraints()) {
-    if (constraint.firstGeometry == id && constraint.type == type) {
+    if (sketch::participatesInConstraintSystem(constraint) &&
+        constraint.firstGeometry == id && constraint.type == type) {
       emit selectionChanged(
           type == sketch::ConstraintType::Vertical
               ? QString::fromUtf8("Линия уже вертикальна")
@@ -7869,6 +7939,7 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
                                ? sketch_.circleIndex(geometry->geometryId)
                                : std::nullopt;
   if (!lineIndex && !circleIndex) return;
+  if (tool() == Tool::RadiusDimension && !circleIndex) return;
   auto automatic = interactionState().autoDimension;
   automatic.firstPoint.reset();
   secondaryDimension_->hide();
@@ -7895,11 +7966,16 @@ void SketchCanvas::handleAutoDimensionClick(QPointF position) {
   } else {
     automatic.target = SketchAutoDimensionTarget::Circle;
     automatic.geometryId = sketch_.circleId(*circleIndex);
-    primaryDimension_->setPrefix(QString::fromUtf8("Ø: "));
+    automatic.circleRadius = tool() == Tool::RadiusDimension;
+    primaryDimension_->setPrefix(automatic.circleRadius
+                                     ? QStringLiteral("R: ")
+                                     : QString::fromUtf8("Ø: "));
     const QPointF center = mapPoint(sketch_.circles()[*circleIndex].center);
     const QPointF delta = position - center;
     automatic.angleRad = std::atan2(-delta.y(), delta.x());
-    primaryDimension_->setValue(sketch_.circles()[*circleIndex].radiusMm * 2.0);
+    primaryDimension_->setValue(
+        sketch_.circles()[*circleIndex].radiusMm *
+        (automatic.circleRadius ? 1.0 : 2.0));
   }
   interaction_.updateAutoDimension(std::move(automatic));
   primaryDimension_->setSuffix(QString::fromUtf8(" мм"));
@@ -7979,9 +8055,12 @@ void SketchCanvas::commitAutoDimension() {
     constraint.value = value;
   } else if (target == SketchAutoDimensionTarget::Circle) {
     const auto id = automatic.geometryId.value_or(sketch::kInvalidGeometryId);
-    dimension.kind = sketch::DimensionKind::CircleDiameter;
+    dimension.kind = automatic.circleRadius
+                         ? sketch::DimensionKind::CircleRadius
+                         : sketch::DimensionKind::CircleDiameter;
     dimension.geometryId = id;
-    constraint.type = sketch::ConstraintType::Diameter;
+    constraint.type = automatic.circleRadius ? sketch::ConstraintType::Radius
+                                             : sketch::ConstraintType::Diameter;
     constraint.firstGeometry = id;
     constraint.value = value;
   } else if (target == SketchAutoDimensionTarget::Points) {
@@ -9209,7 +9288,8 @@ void SketchCanvas::commitPoint(sketch::Point point) {
         const bool duplicate = std::any_of(
             sketch_.constraints().begin(), sketch_.constraints().end(),
             [carrierId, newEnd](const sketch::Constraint& item) {
-              return item.type == sketch::ConstraintType::PointOnLine &&
+              return sketch::participatesInConstraintSystem(item) &&
+                     item.type == sketch::ConstraintType::PointOnLine &&
                      item.firstGeometry == carrierId &&
                      item.secondPoint.lineId == newEnd.lineId &&
                      item.secondPoint.start == newEnd.start;
@@ -9270,7 +9350,8 @@ void SketchCanvas::commitPoint(sketch::Point point) {
               sketch_.constraints().begin(),
               sketch_.constraints().end(),
               [carrierId, endpoint](const sketch::Constraint& item) {
-                return item.type ==
+                return sketch::participatesInConstraintSystem(item) &&
+                       item.type ==
                            sketch::ConstraintType::PointOnArc &&
                        item.firstGeometry == carrierId &&
                        item.secondPoint.lineId == endpoint.lineId &&
@@ -9377,7 +9458,8 @@ void SketchCanvas::commitPoint(sketch::Point point) {
                   sketch_.constraints().end(),
                   [newLineId, inferredType](
                       const sketch::Constraint& item) {
-                    return item.type == inferredType &&
+                    return sketch::participatesInConstraintSystem(item) &&
+                           item.type == inferredType &&
                            item.firstGeometry == newLineId;
                   });
 
@@ -9685,7 +9767,8 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
 
             for (const auto& existing :
                  sketch_.constraints()) {
-              if (existing.type !=
+              if (!sketch::participatesInConstraintSystem(existing) ||
+                  existing.type !=
                   sketch::ConstraintType::PointOnCircle)
                 continue;
 
@@ -9728,7 +9811,8 @@ void SketchCanvas::commitCirclePoint(sketch::Point point) {
             bool duplicate = false;
 
             for (const auto& existing : sketch_.constraints()) {
-              if (existing.type != sketch::ConstraintType::Tangent)
+              if (!sketch::participatesInConstraintSystem(existing) ||
+                  existing.type != sketch::ConstraintType::Tangent)
                 continue;
 
               if (existing.firstGeometry == lineId &&

@@ -19,6 +19,7 @@ enum class SketchSchemaErrorCode {
   InvalidPointReference,
   InvalidParameterRange,
   SelfReference,
+  UnsupportedConstraintType,
   UnsupportedConstraintMode,
   StaleConstraintReference,
 };

@@ -99,6 +99,9 @@ SketchSchemaValidation validatePointReferenceSchema(
 SketchSchemaValidation validateConstraintSchema(
     const Sketch& sketch, const Constraint& constraint) {
   const auto type = static_cast<ConstraintType>(constraint.type);
+  if (!isProductionConstraintType(type))
+    return geometryError(SketchSchemaErrorCode::UnsupportedConstraintType,
+                         constraint.id, {});
   const int mode = static_cast<int>(constraint.mode);
   if (mode < static_cast<int>(ConstraintMode::Driving) ||
       mode > static_cast<int>(ConstraintMode::Disabled))
@@ -322,6 +325,7 @@ SketchSchemaValidation validateSketchSchema(const Sketch& sketch) {
     const auto type = static_cast<ConstraintType>(
         sketch.constraints()[*linked].type);
     if (type != ConstraintType::Length &&
+        type != ConstraintType::Radius &&
         type != ConstraintType::Diameter &&
         type != ConstraintType::Distance &&
         type != ConstraintType::DistanceX &&

@@ -591,12 +591,11 @@ int main() {
   sketch.translateCircle(0, 15.0, -10.0);
   CHECK(sketch.circles().front().center.xMm == 15.0);
   CHECK(sketch.circles().front().center.yMm == -10.0);
-  bool sketchRejected = false;
-  try {
-    sketch.setRectangle(-1.0, 35.0);
-  } catch (const std::invalid_argument&) {
-    sketchRejected = true;
-  }
-  CHECK(sketchRejected);
+  const auto beforeRejectedRectangle = sketch.semanticFingerprint();
+  const auto sketchRejected = sketch.setRectangle(-1.0, 35.0);
+  CHECK(!sketchRejected.committed());
+  CHECK(sketchRejected.diagnosticCode ==
+        solidar::sketch::SketchMutationDiagnosticCode::DegenerateGeometry);
+  CHECK(sketch.semanticFingerprint() == beforeRejectedRectangle);
   return 0;
 }

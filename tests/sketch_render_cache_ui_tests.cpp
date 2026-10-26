@@ -330,7 +330,23 @@ int main(int argc, char** argv) {
   CHECK(modeCanvas.sketch().constraints()[
             *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
         solidar::sketch::ConstraintMode::Disabled);
+  modeCanvas.undo();
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Reference);
+  modeCanvas.redo();
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Disabled);
   CHECK(modeCanvas.setDimensionDriving(0, true));
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Driving);
+  modeCanvas.undo();
+  CHECK(modeCanvas.sketch().constraints()[
+            *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
+        solidar::sketch::ConstraintMode::Disabled);
+  modeCanvas.redo();
   CHECK(modeCanvas.sketch().constraints()[
             *modeCanvas.sketch().constraintIndex(modeConstraint)].mode ==
         solidar::sketch::ConstraintMode::Driving);

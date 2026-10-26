@@ -796,6 +796,43 @@ void moveArcEndReshapesKeepingCenterAndStart() {
   CHECK(std::abs(end.yMm) <= 1e-7);
 }
 
+void typedBatchDeletionPreflightsWholeSelection() {
+  Sketch sketch;
+  CHECK(sketch.addLine({0.0, 0.0}, {10.0, 0.0}).committed());
+  CHECK(sketch.addLine({0.0, 5.0}, {10.0, 5.0}).committed());
+  const auto locked = sketch.lineId(0);
+  const auto unlocked = sketch.lineId(1);
+  CHECK(lockGeometry(sketch, locked) != kInvalidConstraintId);
+  const auto fingerprint = sketch.semanticFingerprint();
+
+  const auto lockedOnly = sketch.removeSelection({locked}, {});
+  CHECK(lockedOnly.status == SketchDeletionStatus::Locked);
+  CHECK(lockedOnly.removedGeometryIds.empty());
+  CHECK(sketch.semanticFingerprint() == fingerprint);
+
+  const auto mixed = sketch.removeSelection({unlocked, locked}, {});
+  CHECK(mixed.status == SketchDeletionStatus::Locked);
+  CHECK(mixed.removedGeometryIds.empty());
+  CHECK(sketch.semanticFingerprint() == fingerprint);
+
+  const auto stale =
+      sketch.removeSelection({GeometryId{999999}, unlocked}, {});
+  CHECK(stale.status == SketchDeletionStatus::Stale);
+  CHECK(stale.removedGeometryIds.empty());
+  CHECK(sketch.semanticFingerprint() == fingerprint);
+
+  const auto noChange = sketch.removeSelection({}, {});
+  CHECK(noChange.status == SketchDeletionStatus::NoChange);
+  CHECK(noChange.removedGeometryIds.empty());
+  CHECK(sketch.semanticFingerprint() == fingerprint);
+
+  const auto removed = sketch.removeSelection({unlocked}, {});
+  CHECK(removed.status == SketchDeletionStatus::Removed);
+  CHECK(removed.removedGeometryIds == std::vector<GeometryId>{unlocked});
+  CHECK(!sketch.geometryLocation(unlocked));
+  CHECK(sketch.geometryLocation(locked).has_value());
+}
+
 }  // namespace
 
 int main() {
@@ -823,5 +860,6 @@ int main() {
   midpointConstraintPinsPointToLineCenter();
   moveArcStartReshapesKeepingCenterAndEnd();
   moveArcEndReshapesKeepingCenterAndStart();
+  typedBatchDeletionPreflightsWholeSelection();
   return EXIT_SUCCESS;
 }

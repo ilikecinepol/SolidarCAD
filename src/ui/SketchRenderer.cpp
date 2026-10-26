@@ -2310,6 +2310,8 @@ class SketchFrameRecorder final {
     QString label;
     const bool diameterDimension =
         dimension.kind == sketch::DimensionKind::CircleDiameter;
+    const bool radiusDimension =
+        dimension.kind == sketch::DimensionKind::CircleRadius;
     const bool lineDistanceDimension =
         dimension.kind == sketch::DimensionKind::LineDistance;
 
@@ -2330,17 +2332,23 @@ class SketchFrameRecorder final {
           parallelLineDistanceMm(sketch_.lines()[*firstIndex],
                                  sketch_.lines()[*secondIndex]),
           0, 'f', 2);
-    } else if (diameterDimension) {
+    } else if (diameterDimension || radiusDimension) {
       const auto circleIndex = sketch_.circleIndex(dimension.geometryId);
       if (!circleIndex) continue;
       const auto& circle = sketch_.circles()[*circleIndex];
       const double dx = std::cos(dimension.angleRad) * circle.radiusMm;
       const double dy = std::sin(dimension.angleRad) * circle.radiusMm;
-      first = mapPoint({circle.center.xMm - dx, circle.center.yMm - dy});
+      first = radiusDimension
+                  ? mapPoint(circle.center)
+                  : mapPoint(
+                        {circle.center.xMm - dx, circle.center.yMm - dy});
       second = mapPoint({circle.center.xMm + dx, circle.center.yMm + dy});
       geometryFirst = first;
       geometrySecond = second;
-      label = QString::fromUtf8("Ø %1 мм").arg(circle.radiusMm * 2.0, 0, 'f', 2);
+      label = radiusDimension
+                  ? QString::fromUtf8("R %1 мм").arg(circle.radiusMm, 0, 'f', 2)
+                  : QString::fromUtf8("Ø %1 мм")
+                        .arg(circle.radiusMm * 2.0, 0, 'f', 2);
     } else {
       if (dimension.kind == sketch::DimensionKind::LineLength) {
         const auto lineIndex = sketch_.lineIndex(dimension.geometryId);
@@ -2455,7 +2463,7 @@ class SketchFrameRecorder final {
   // above. Drawing the transient AutoDimension preview at the same time
   // produces a second dimension line. Preview remains enabled for NEW
   // dimensions only.
-  if (tool() == Tool::AutoDimension &&
+  if ((tool() == Tool::AutoDimension || tool() == Tool::RadiusDimension) &&
       snapshot.primaryDimensionVisible &&
       !interactionState().dimension.editing.has_value()) {
     const auto target = interactionState().autoDimension.target;
@@ -2546,7 +2554,9 @@ class SketchFrameRecorder final {
       }
     }
 
-    const bool diameterDimension = target == SketchAutoDimensionTarget::Circle;
+    const bool circleRadius = interactionState().autoDimension.circleRadius;
+    const bool diameterDimension =
+        target == SketchAutoDimensionTarget::Circle && !circleRadius;
 
     std::optional<QPointF> first;
     std::optional<QPointF> second;
@@ -2573,8 +2583,10 @@ class SketchFrameRecorder final {
             interactionState().autoDimension.angleRad.value_or(0.0);
         const double dx = std::cos(angle) * circle.radiusMm;
         const double dy = std::sin(angle) * circle.radiusMm;
-        first =
-            mapPoint({circle.center.xMm - dx, circle.center.yMm - dy});
+        first = circleRadius
+                    ? mapPoint(circle.center)
+                    : mapPoint({circle.center.xMm - dx,
+                                circle.center.yMm - dy});
         second =
             mapPoint({circle.center.xMm + dx, circle.center.yMm + dy});
       }

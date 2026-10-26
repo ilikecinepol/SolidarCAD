@@ -38,6 +38,7 @@ constexpr std::array kTools{
     SketchInteractionTool::Arc,
     SketchInteractionTool::Projection,
     SketchInteractionTool::AutoDimension,
+    SketchInteractionTool::RadiusDimension,
     SketchInteractionTool::LockConstraint,
     SketchInteractionTool::OrthogonalConstraint,
     SketchInteractionTool::CoincidentConstraint,
@@ -63,7 +64,8 @@ void populatePartialGesture(SketchInteractionController& controller,
       controller.appendArcPoint({2.0, 3.0});
       controller.updateArcCreation({0.5, 1.0, false});
       break;
-    case SketchInteractionTool::AutoDimension: {
+    case SketchInteractionTool::AutoDimension:
+    case SketchInteractionTool::RadiusDimension: {
       SketchAutoDimensionState automatic;
       automatic.target = SketchAutoDimensionTarget::Points;
       automatic.firstPoint = sketch::PointReference{42, true};

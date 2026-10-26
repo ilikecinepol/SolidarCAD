@@ -195,7 +195,7 @@ class ConstraintEquationRegistry final {
       const Sketch& sketch, const ConstraintGraphComponent& component,
       std::span<const double> candidate,
       std::span<const ConstraintId> ignoredConstraintIds);
-  [[nodiscard]] static const ConstraintEquationRule& rule(
+  [[nodiscard]] static const ConstraintEquationRule* rule(
       ConstraintType type) noexcept;
   [[nodiscard]] static std::span<const ConstraintEquationRule> rules()
       noexcept;

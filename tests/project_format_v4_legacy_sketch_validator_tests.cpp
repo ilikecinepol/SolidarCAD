@@ -418,6 +418,28 @@ int main() {
     checkCandidate(validate(root));
   }
 
+  // Radius is dimensional in the typed sketch schema and may own a v4
+  // annotation exactly like Diameter. Keep this hand-authored so the writer
+  // cannot accidentally serve as the validator oracle.
+  {
+    QJsonObject root = baseRoot();
+    QJsonObject sketch = emptyLegacySketch(1);
+    sketch["circles"] = QJsonArray{circle(3, 0.0)};
+    sketch["constraints"] =
+        QJsonArray{typedConstraint(1, 6, "Radius")};
+    sketch["dimensions"] =
+        QJsonArray{QJsonObject{{"id", 1},
+                               {"constraintId", 1},
+                               {"offset", 6.0},
+                               {"angle", 0.75}}};
+    sketch["idAllocators"] = QJsonObject{{"nextElementId", 1},
+                                           {"nextGeometryId", 4},
+                                           {"nextConstraintId", 2},
+                                           {"nextDimensionId", 2}};
+    setSketches(&root, QJsonArray{sketch}, QJsonArray{modelSketch(1)});
+    checkCandidate(validate(root));
+  }
+
   // Geometry JSON types, numeric bounds and degeneracy are validated before
   // any scratch sketch is accepted.
   {

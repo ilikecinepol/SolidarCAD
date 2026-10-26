@@ -3,6 +3,7 @@
 #include "ui/SketchCommandController.h"
 #include "sketch/SketchConstraintDiagnostics.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -229,6 +230,157 @@ void constraintCommandsExposeTypedTransactionalFailures() {
   CHECK(unsupportedResult.constraintApplyResult->status ==
         sketch::ConstraintApplyStatus::Unsupported);
   CHECK(model.semanticFingerprint() == beforeConflict);
+}
+
+void nonDrivingConstraintsDoNotShortCircuitControllerPreflight() {
+  {
+    sketch::Sketch model;
+    SketchCommandController controller;
+    model.addLine({0.0, 0.0}, {5.0, 0.0});
+    model.addLine({20.0, 3.0}, {25.0, 3.0});
+    const auto first = model.lineId(0);
+    const auto second = model.lineId(1);
+    constexpr sketch::ConstraintId disabledId = 8101;
+    CHECK(model.restoreConstraints({sketch::Constraint{
+        sketch::CoincidentConstraint{sketch::PointReference{first, false},
+                                     sketch::PointReference{second, true}},
+        sketch::ConstraintMode::Disabled, disabledId}}));
+    const auto result = controller.execute(
+        model, BindPointCommand{sketch::PointReference{second, true},
+                                SketchPointBindingKind::Coincident,
+                                sketch::PointReference{first, false}, {}});
+    CHECK(result.accepted);
+    CHECK(result.changedConstraintIds.size() == 1);
+    CHECK(result.changedConstraintIds.front() != disabledId);
+    CHECK(model.constraints().size() == 2);
+    CHECK(model.constraints().back().mode == sketch::ConstraintMode::Driving);
+  }
+
+  {
+    sketch::Sketch model;
+    SketchCommandController controller;
+    model.addLine({0.0, 0.0}, {10.0, 0.0});
+    model.addLine({0.0, 5.0}, {10.0, 5.0});
+    const auto first = model.lineId(0);
+    const auto second = model.lineId(1);
+    CHECK(model.restoreConstraints({sketch::Constraint{
+        sketch::ParallelConstraint{first, second},
+        sketch::ConstraintMode::Disabled, 8102}}));
+
+    sketch::Dimension dimension;
+    dimension.kind = sketch::DimensionKind::LineDistance;
+    dimension.geometryId = first;
+    dimension.secondPoint.lineId = second;
+    dimension.valueMm = 5.0;
+    sketch::Constraint lineDistance;
+    lineDistance.type = sketch::ConstraintType::LineDistance;
+    lineDistance.firstGeometry = first;
+    lineDistance.secondGeometry = second;
+    lineDistance.value = 5.0;
+    const auto result = controller.execute(
+        model, UpsertDrivingDimensionCommand{dimension, lineDistance,
+                                             std::nullopt, true});
+    CHECK(result.accepted);
+    CHECK(std::count_if(
+              model.constraints().begin(), model.constraints().end(),
+              [](const sketch::Constraint& constraint) {
+                return sketch::participatesInConstraintSystem(constraint) &&
+                       constraint.type == sketch::ConstraintType::Parallel;
+              }) == 1);
+  }
+
+  {
+    sketch::Sketch model;
+    SketchCommandController controller;
+    model.addLine({0.0, 0.0}, {10.0, 0.0});
+    model.addLine({2.0, 3.0}, {2.0, 8.0});
+    const auto carrier = model.lineId(0);
+    const auto moving = model.lineId(1);
+    constexpr sketch::ConstraintId disabledId = 8103;
+    CHECK(model.restoreConstraints({sketch::Constraint{
+        sketch::PointOnLineConstraint{
+            carrier, sketch::PointReference{moving, true}},
+        sketch::ConstraintMode::Disabled, disabledId}}));
+    const auto result = controller.execute(
+        model, BindPointCommand{sketch::PointReference{moving, true},
+                                SketchPointBindingKind::PointOnLine, {},
+                                carrier});
+    CHECK(result.accepted);
+    CHECK(result.changedConstraintIds.size() == 1);
+    CHECK(result.changedConstraintIds.front() != disabledId);
+    CHECK(model.constraints().size() == 2);
+  }
+}
+
+void nonRepresentableCreationDoesNotPublishEffects() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  model.addLine({0.0, 0.0}, {5.0, 0.0});
+  const auto fingerprint = model.semanticFingerprint();
+  const auto nextElement = model.nextElementId();
+  const auto nextGeometry = model.nextGeometryId();
+  const auto result = controller.execute(
+      model, SetSketchRectangleCommand{
+                 std::numeric_limits<double>::denorm_min(), 10.0});
+  CHECK(!result.accepted);
+  CHECK(!result.effects.geometryChanged);
+  CHECK(!result.effects.constraintsChanged);
+  CHECK(model.semanticFingerprint() == fingerprint);
+  CHECK(model.nextElementId() == nextElement);
+  CHECK(model.nextGeometryId() == nextGeometry);
+  CHECK(model.deltaJournalDepth() == 0);
+}
+
+void compoundCreationPreservesTypedNonFiniteDiagnostics() {
+  const double maximum = std::numeric_limits<double>::max();
+  const auto checkRejected = [](const SketchCommandResult& result,
+                                const sketch::Sketch& model,
+                                std::uint64_t fingerprint) {
+    CHECK(!result.accepted);
+    CHECK(result.error == SketchCommandError::InternalFailure);
+    CHECK(result.mutationResult.has_value());
+    CHECK(result.mutationResult->diagnosticCode ==
+          sketch::SketchMutationDiagnosticCode::NonFiniteGeometry);
+    CHECK(result.delta.empty());
+    CHECK(!result.effects.geometryChanged);
+    CHECK(model.semanticFingerprint() == fingerprint);
+    CHECK(model.deltaJournalDepth() == 0);
+  };
+
+  {
+    sketch::Sketch model;
+    SketchCommandController controller;
+    ProjectLineChain chain;
+    chain.segments.push_back({{-maximum, 0.0}, {maximum, 0.0}});
+    const auto fingerprint = model.semanticFingerprint();
+    const auto result =
+        controller.execute(model, ProjectGeometryCommand{std::move(chain)});
+    checkRejected(result, model, fingerprint);
+  }
+
+  {
+    sketch::Sketch model;
+    SketchCommandController controller;
+    AddPrimitiveBatchCommand batch;
+    batch.primitives.push_back(
+        AddCircleCommand{{maximum, 0.0}, maximum, false});
+    const auto fingerprint = model.semanticFingerprint();
+    const auto result = controller.execute(model, batch);
+    checkRejected(result, model, fingerprint);
+  }
+
+  {
+    sketch::Sketch model;
+    SketchCommandController controller;
+    const auto axis = addLine(controller, model, {maximum / 4.0, 0.0},
+                              {maximum / 2.0, 0.0});
+    const auto source = addLine(controller, model, {maximum / 8.0, 1.0},
+                                {maximum / 8.0, 2.0});
+    const auto fingerprint = model.semanticFingerprint();
+    const auto result =
+        controller.execute(model, MirrorGeometryCommand{axis, {source}});
+    checkRejected(result, model, fingerprint);
+  }
 }
 
 void drivingDimensionMayCommitRankRedundantConstraint() {
@@ -564,6 +716,136 @@ void representativeCompoundCommandsPublishTypedEffects() {
   CHECK(trimmed.effects.dimensionsChanged);
 }
 
+void lockedBatchDeletionIsAtomicAndTruthful() {
+  sketch::Sketch model;
+  SketchCommandController controller;
+  const auto locked = addLine(controller, model, {0.0, 0.0}, {5.0, 0.0});
+  const auto unlocked = addLine(controller, model, {0.0, 5.0}, {5.0, 5.0});
+  sketch::Constraint lock;
+  lock.type = sketch::ConstraintType::Lock;
+  lock.firstGeometry = locked;
+  CHECK(model.addConstraint(lock) != sketch::kInvalidConstraintId);
+
+  const auto fingerprint = model.semanticFingerprint();
+  const auto lockedOnly =
+      controller.execute(model, DeleteSelectionCommand{{locked}, {}});
+  CHECK(!lockedOnly.accepted);
+  CHECK(lockedOnly.error == SketchCommandError::Locked);
+  CHECK(lockedOnly.deletionResult.has_value());
+  CHECK(lockedOnly.deletionResult->status ==
+        sketch::SketchDeletionStatus::Locked);
+  CHECK(lockedOnly.delta.empty());
+  CHECK(lockedOnly.changedGeometryIds.empty());
+  CHECK(!lockedOnly.effects.geometryChanged);
+  CHECK(model.semanticFingerprint() == fingerprint);
+
+  const auto lockedSingle =
+      controller.execute(model, RemoveGeometryCommand{locked});
+  CHECK(!lockedSingle.accepted);
+  CHECK(lockedSingle.error == SketchCommandError::Locked);
+  CHECK(lockedSingle.deletionResult.has_value());
+  CHECK(lockedSingle.deletionResult->status ==
+        sketch::SketchDeletionStatus::Locked);
+  CHECK(model.semanticFingerprint() == fingerprint);
+
+  const auto lockedElement = controller.execute(
+      model, RemoveElementCommand{model.lines()[0].elementId});
+  CHECK(!lockedElement.accepted);
+  CHECK(lockedElement.error == SketchCommandError::Locked);
+  CHECK(lockedElement.deletionResult.has_value());
+  CHECK(lockedElement.deletionResult->status ==
+        sketch::SketchDeletionStatus::Locked);
+  CHECK(model.semanticFingerprint() == fingerprint);
+
+  const auto mixed = controller.execute(
+      model, DeleteSelectionCommand{{locked, unlocked}, {}});
+  CHECK(!mixed.accepted);
+  CHECK(mixed.error == SketchCommandError::Locked);
+  CHECK(mixed.deletionResult.has_value());
+  CHECK(mixed.deletionResult->status == sketch::SketchDeletionStatus::Locked);
+  CHECK(mixed.delta.empty());
+  CHECK(mixed.changedGeometryIds.empty());
+  CHECK(!mixed.effects.geometryChanged);
+  CHECK(model.semanticFingerprint() == fingerprint);
+  CHECK(model.geometryLocation(locked).has_value());
+  CHECK(model.geometryLocation(unlocked).has_value());
+
+  const auto stale = controller.execute(
+      model, DeleteSelectionCommand{{sketch::GeometryId{999999}}, {}});
+  CHECK(!stale.accepted);
+  CHECK(stale.error == SketchCommandError::StaleReference);
+  CHECK(stale.deletionResult.has_value());
+  CHECK(stale.deletionResult->status == sketch::SketchDeletionStatus::Stale);
+  CHECK(stale.delta.empty());
+  CHECK(model.semanticFingerprint() == fingerprint);
+
+  const auto removed =
+      controller.execute(model, DeleteSelectionCommand{{unlocked}, {}});
+  CHECK(removed.accepted);
+  CHECK(removed.deletionResult.has_value());
+  CHECK(removed.deletionResult->status ==
+        sketch::SketchDeletionStatus::Removed);
+  CHECK(removed.changedGeometryIds == std::vector<sketch::GeometryId>{unlocked});
+  CHECK(!removed.delta.empty());
+  const auto afterDelete = model.semanticFingerprint();
+  CHECK(!model.geometryLocation(unlocked));
+  CHECK(model.applyDelta(removed.delta, false));
+  CHECK(model.semanticFingerprint() == fingerprint);
+  CHECK(model.applyDelta(removed.delta, true));
+  CHECK(model.semanticFingerprint() == afterDelete);
+}
+
+void trimRejectsEveryLockedGeometryKindAtomically() {
+  const auto check = [](sketch::Sketch model, sketch::GeometryId id) {
+    sketch::Constraint lock;
+    lock.type = sketch::ConstraintType::Lock;
+    lock.firstGeometry = id;
+    CHECK(model.addConstraint(lock) != sketch::kInvalidConstraintId);
+    const auto fingerprint = model.semanticFingerprint();
+    const auto lineCount = model.lines().size();
+    const auto circleCount = model.circles().size();
+    const auto arcCount = model.arcs().size();
+    const auto bezierCount = model.beziers().size();
+    SketchCommandController controller;
+    const auto result = controller.execute(
+        model, TrimGeometryCommand{id, 0.25, 0.75, false});
+    CHECK(!result.accepted);
+    CHECK(result.error == SketchCommandError::Locked);
+    CHECK(result.deletionResult.has_value());
+    CHECK(result.deletionResult->status == sketch::SketchDeletionStatus::Locked);
+    CHECK(result.delta.empty());
+    CHECK(result.changedGeometryIds.empty());
+    CHECK(!result.effects.geometryChanged);
+    CHECK(model.semanticFingerprint() == fingerprint);
+    CHECK(model.lines().size() == lineCount);
+    CHECK(model.circles().size() == circleCount);
+    CHECK(model.arcs().size() == arcCount);
+    CHECK(model.beziers().size() == bezierCount);
+  };
+  {
+    sketch::Sketch model;
+    CHECK(model.addLine({0.0, 0.0}, {10.0, 0.0}).committed());
+    check(model, model.lineId(0));
+  }
+  {
+    sketch::Sketch model;
+    CHECK(model.addCircle({0.0, 0.0}, 5.0).committed());
+    check(model, model.circleId(0));
+  }
+  {
+    sketch::Sketch model;
+    model.addArc({0.0, 0.0}, 5.0, 0.0, 1.5);
+    CHECK(model.arcs().size() == 1);
+    check(model, model.arcId(0));
+  }
+  {
+    sketch::Sketch model;
+    model.addBezier({0.0, 0.0}, {2.0, 3.0}, {8.0, 3.0}, {10.0, 0.0});
+    CHECK(model.beziers().size() == 1);
+    check(model, model.bezierId(0));
+  }
+}
+
 void rejectedAutoSnapRollsBackPrimitiveAndJournal() {
   sketch::Sketch model;
   SketchCommandController controller;
@@ -608,6 +890,9 @@ int main() {
   creationJournalWorkHasDeterministicBounds();
   constraintsUseStrictSchemas();
   constraintCommandsExposeTypedTransactionalFailures();
+  nonDrivingConstraintsDoNotShortCircuitControllerPreflight();
+  nonRepresentableCreationDoesNotPublishEffects();
+  compoundCreationPreservesTypedNonFiniteDiagnostics();
   drivingDimensionMayCommitRankRedundantConstraint();
   rejectedDrivingDimensionPreservesSolverDiagnostics();
   similarDimensionsUseOnlyTheirExactConstraintLink();
@@ -616,6 +901,8 @@ int main() {
   arcStyleAndStaleDeltaAreSafe();
   lockedAndNoOpMutationsReportTruthfully();
   representativeCompoundCommandsPublishTypedEffects();
+  lockedBatchDeletionIsAtomicAndTruthful();
+  trimRejectsEveryLockedGeometryKindAtomically();
   rejectedAutoSnapRollsBackPrimitiveAndJournal();
   std::cout << "Sketch command controller tests passed\n";
   return EXIT_SUCCESS;

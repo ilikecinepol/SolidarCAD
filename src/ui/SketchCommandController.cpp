@@ -59,6 +59,7 @@ SketchCommandResult accepted(SketchCommandEffects effects = {}) {
 }
 
 SketchCommandEffects constraintEffects();
+SketchCommandEffects geometryEffects();
 
 SketchCommandResult fromConstraintApply(
     sketch::ConstraintApplyResult applied, bool redundantIsSuccess = false) {
@@ -135,6 +136,30 @@ SketchCommandResult fromMutation(sketch::SketchMutationResult mutation,
   return result;
 }
 
+SketchCommandResult fromDeletion(sketch::SketchDeletionResult deletion) {
+  SketchCommandResult result;
+  switch (deletion.status) {
+    case sketch::SketchDeletionStatus::Removed:
+      result = accepted(geometryEffects());
+      result.effects.constraintsChanged = true;
+      result.effects.dimensionsChanged = true;
+      result.effects.selectionMayBeStale = true;
+      result.changedGeometryIds = deletion.removedGeometryIds;
+      break;
+    case sketch::SketchDeletionStatus::NoChange:
+      result = accepted();
+      break;
+    case sketch::SketchDeletionStatus::Locked:
+      result = rejected(SketchCommandError::Locked);
+      break;
+    case sketch::SketchDeletionStatus::Stale:
+      result = rejected(SketchCommandError::StaleReference);
+      break;
+  }
+  result.deletionResult = std::move(deletion);
+  return result;
+}
+
 sketch::ConstraintId tryApplyConstraintId(sketch::Sketch& model,
                                           sketch::Constraint constraint,
                                           bool commitRedundant = false) {
@@ -193,6 +218,7 @@ bool validDimensionReferences(const sketch::Sketch& model,
     case sketch::DimensionKind::LineLength:
       return model.lineIndex(dimension.geometryId).has_value();
     case sketch::DimensionKind::CircleDiameter:
+    case sketch::DimensionKind::CircleRadius:
       return model.circleIndex(dimension.geometryId).has_value();
     case sketch::DimensionKind::PointDistance:
     case sketch::DimensionKind::PointDistanceX:
@@ -505,7 +531,8 @@ std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
             sketch.constraints().end(),
             [first, second, &sameReference](
                 const sketch::Constraint& constraint) {
-              if (constraint.type !=
+              if (!sketch::participatesInConstraintSystem(constraint) ||
+                  constraint.type !=
                   sketch::ConstraintType::Coincident)
                 return false;
 
@@ -591,7 +618,8 @@ std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
       [&sketch, &sameReference, &oldReference](
           sketch::PointReference r) {
         for (const auto& c : sketch.constraints()) {
-          if (c.type != sketch::ConstraintType::Coincident)
+          if (!sketch::participatesInConstraintSystem(c) ||
+              c.type != sketch::ConstraintType::Coincident)
             continue;
           if (sameReference(c.firstPoint, r) &&
               oldReference(c.secondPoint))
@@ -725,7 +753,8 @@ std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
           sketch.constraints().end(),
           [bestLine, &candidate, &sameReference](
               const sketch::Constraint& c) {
-            return c.type ==
+            return sketch::participatesInConstraintSystem(c) &&
+                   c.type ==
                        sketch::ConstraintType::PointOnLine &&
                    c.firstGeometry == bestLine &&
                    sameReference(
@@ -751,7 +780,8 @@ std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
           sketch.constraints().end(),
           [bestCircle, &candidate, &sameReference](
               const sketch::Constraint& c) {
-            return c.type ==
+            return sketch::participatesInConstraintSystem(c) &&
+                   c.type ==
                        sketch::ConstraintType::PointOnCircle &&
                    c.firstGeometry == bestCircle &&
                    sameReference(
@@ -776,7 +806,8 @@ std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
           sketch.constraints().begin(), sketch.constraints().end(),
           [bestArc, &candidate, &sameReference](
               const sketch::Constraint& c) {
-            return c.type == sketch::ConstraintType::PointOnArc &&
+            return sketch::participatesInConstraintSystem(c) &&
+                   c.type == sketch::ConstraintType::PointOnArc &&
                    c.firstGeometry == bestArc &&
                    sameReference(c.secondPoint, candidate.reference);
           });
@@ -806,7 +837,8 @@ std::optional<sketch::ConstraintApplyResult> autoCoincidentNewGeometry(
               sketch.constraints().begin(), sketch.constraints().end(),
               [type, &candidate, &sameReference](
                   const sketch::Constraint& constraint) {
-                return constraint.type == type &&
+                return sketch::participatesInConstraintSystem(constraint) &&
+                       constraint.type == type &&
                        sameReference(constraint.secondPoint,
                                      candidate.reference);
               });
@@ -849,8 +881,9 @@ SketchCommandResult SketchCommandController::execute(
             if (!finite(typed.widthMm) || !finite(typed.heightMm) ||
                 typed.widthMm <= 0.0 || typed.heightMm <= 0.0)
               return rejected(SketchCommandError::InvalidInput);
-            model.setRectangle(typed.widthMm, typed.heightMm);
-            return accepted(geometryEffects());
+            return fromMutation(
+                model.setRectangle(typed.widthMm, typed.heightMm),
+                geometryEffects());
           } else if constexpr (std::is_same_v<T, ClearSketchCommand>) {
             model.clear();
             auto value = accepted(geometryEffects());
@@ -860,13 +893,13 @@ SketchCommandResult SketchCommandController::execute(
             if (!finite(typed.start) || !finite(typed.end))
               return rejected(SketchCommandError::InvalidInput);
             const auto before = model.lines().size();
-            if (typed.elementId)
-              model.addLine(typed.start, typed.end, *typed.elementId);
-            else
-              model.addLine(typed.start, typed.end);
+            const auto mutation = typed.elementId
+                ? model.addLine(typed.start, typed.end, *typed.elementId)
+                : model.addLine(typed.start, typed.end);
+            auto value = fromMutation(mutation, geometryEffects());
+            if (!value.accepted) return value;
             if (model.lines().size() != before + 1)
               return rejected(SketchCommandError::MutationRejected);
-            auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(model.lineId(before));
             return value;
           } else if constexpr (std::is_same_v<T, AddRectangleCommand>) {
@@ -876,16 +909,16 @@ SketchCommandResult SketchCommandController::execute(
                 typed.third.has_value() != typed.fourth.has_value())
               return rejected(SketchCommandError::InvalidInput);
             const auto before = model.lines().size();
-            if (typed.third)
-              model.addRectangle(typed.first, typed.second, *typed.third,
-                                 *typed.fourth);
-            else
-              model.addRectangle(typed.first, typed.second);
+            const auto mutation = typed.third
+                ? model.addRectangle(typed.first, typed.second, *typed.third,
+                                     *typed.fourth)
+                : model.addRectangle(typed.first, typed.second);
+            auto value = fromMutation(mutation, geometryEffects());
+            if (!value.accepted) return value;
             if (model.lines().size() != before + 4)
               return rejected(SketchCommandError::MutationRejected);
             if (typed.markCenter)
               model.markElementCenterNode(model.lines()[before].elementId);
-            auto value = accepted(geometryEffects());
             for (std::size_t index = before; index < before + 4; ++index)
               value.changedGeometryIds.push_back(model.lineId(index));
             return value;
@@ -894,12 +927,14 @@ SketchCommandResult SketchCommandController::execute(
                 typed.radiusMm <= 0.0)
               return rejected(SketchCommandError::InvalidInput);
             const auto before = model.circles().size();
-            model.addCircle(typed.center, typed.radiusMm);
+            auto value = fromMutation(
+                model.addCircle(typed.center, typed.radiusMm),
+                geometryEffects());
+            if (!value.accepted) return value;
             if (model.circles().size() != before + 1)
               return rejected(SketchCommandError::MutationRejected);
             const auto id = model.circleId(before);
             if (typed.dashed) model.setCircleDashedById(id, true);
-            auto value = accepted(geometryEffects());
             value.changedGeometryIds.push_back(id);
             return value;
           } else if constexpr (std::is_same_v<T, AddArcCommand>) {
@@ -929,8 +964,9 @@ SketchCommandResult SketchCommandController::execute(
             return value;
           } else if constexpr (std::is_same_v<T, ProjectGeometryCommand>) {
             auto value = accepted(constraintEffects());
+            std::optional<SketchCommandResult> mutationFailure;
             const bool created = std::visit(
-                [&model, &value](const auto& projected) {
+                [&model, &value, &mutationFailure](const auto& projected) {
                   using P = std::decay_t<decltype(projected)>;
                   if constexpr (std::is_same_v<P, ProjectLineChain>) {
                     std::vector<ProjectedLineSegment> unique;
@@ -961,12 +997,24 @@ SketchCommandResult SketchCommandController::execute(
                     }
                     if (unique.empty()) return false;
                     const auto firstIndex = model.lines().size();
-                    model.addLine(unique.front().first, unique.front().second);
+                    auto mutation = model.addLine(unique.front().first,
+                                                  unique.front().second);
+                    if (!mutation.committed()) {
+                      mutationFailure =
+                          fromMutation(std::move(mutation), geometryEffects());
+                      return false;
+                    }
                     if (model.lines().size() != firstIndex + 1) return false;
                     const auto elementId = model.lines()[firstIndex].elementId;
-                    for (std::size_t index = 1; index < unique.size(); ++index)
-                      model.addLine(unique[index].first, unique[index].second,
-                                    elementId);
+                    for (std::size_t index = 1; index < unique.size(); ++index) {
+                      mutation = model.addLine(unique[index].first,
+                                               unique[index].second, elementId);
+                      if (!mutation.committed()) {
+                        mutationFailure = fromMutation(std::move(mutation),
+                                                       geometryEffects());
+                        return false;
+                      }
+                    }
                     if (model.lines().size() != firstIndex + unique.size())
                       return false;
                     model.setElementDashed(elementId, true);
@@ -989,7 +1037,13 @@ SketchCommandResult SketchCommandController::execute(
                                     }))
                       return false;
                     const auto index = model.circles().size();
-                    model.addCircle(projected.center, projected.radiusMm);
+                    auto mutation =
+                        model.addCircle(projected.center, projected.radiusMm);
+                    if (!mutation.committed()) {
+                      mutationFailure =
+                          fromMutation(std::move(mutation), geometryEffects());
+                      return false;
+                    }
                     if (model.circles().size() != index + 1) return false;
                     const auto id = model.circleId(index);
                     model.setCircleDashedById(id, true);
@@ -1044,6 +1098,7 @@ SketchCommandResult SketchCommandController::execute(
                   return true;
                 },
                 typed.geometry);
+            if (!created && mutationFailure) return std::move(*mutationFailure);
             if (!created)
               return rejected(SketchCommandError::Duplicate);
             return value;
@@ -1052,16 +1107,23 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::InvalidInput);
             auto value = accepted(geometryEffects());
             for (const auto& primitive : typed.primitives) {
+              std::optional<SketchCommandResult> mutationFailure;
               const bool created = std::visit(
-                  [&model, &value](const auto& item) {
+                  [&model, &value, &mutationFailure](const auto& item) {
                     using P = std::decay_t<decltype(item)>;
                     if constexpr (std::is_same_v<P, AddLineCommand>) {
                       if (!finite(item.start) || !finite(item.end)) return false;
                       const auto index = model.lines().size();
-                      if (item.elementId)
-                        model.addLine(item.start, item.end, *item.elementId);
-                      else
-                        model.addLine(item.start, item.end);
+                      auto mutation =
+                          item.elementId
+                              ? model.addLine(item.start, item.end,
+                                              *item.elementId)
+                              : model.addLine(item.start, item.end);
+                      if (!mutation.committed()) {
+                        mutationFailure = fromMutation(std::move(mutation),
+                                                       geometryEffects());
+                        return false;
+                      }
                       if (model.lines().size() != index + 1) return false;
                       value.changedGeometryIds.push_back(model.lineId(index));
                     } else if constexpr (std::is_same_v<P,
@@ -1072,11 +1134,16 @@ SketchCommandResult SketchCommandController::execute(
                           (item.fourth && !finite(*item.fourth)))
                         return false;
                       const auto index = model.lines().size();
-                      if (item.third)
-                        model.addRectangle(item.first, item.second, *item.third,
-                                           *item.fourth);
-                      else
-                        model.addRectangle(item.first, item.second);
+                      auto mutation =
+                          item.third
+                              ? model.addRectangle(item.first, item.second,
+                                                   *item.third, *item.fourth)
+                              : model.addRectangle(item.first, item.second);
+                      if (!mutation.committed()) {
+                        mutationFailure = fromMutation(std::move(mutation),
+                                                       geometryEffects());
+                        return false;
+                      }
                       if (model.lines().size() != index + 4) return false;
                       if (item.markCenter)
                         model.markElementCenterNode(
@@ -1088,7 +1155,12 @@ SketchCommandResult SketchCommandController::execute(
                           item.radiusMm <= 0.0)
                         return false;
                       const auto index = model.circles().size();
-                      model.addCircle(item.center, item.radiusMm);
+                      auto mutation = model.addCircle(item.center, item.radiusMm);
+                      if (!mutation.committed()) {
+                        mutationFailure = fromMutation(std::move(mutation),
+                                                       geometryEffects());
+                        return false;
+                      }
                       if (model.circles().size() != index + 1) return false;
                       const auto id = model.circleId(index);
                       if (item.dashed) model.setCircleDashedById(id, true);
@@ -1118,91 +1190,23 @@ SketchCommandResult SketchCommandController::execute(
                     return true;
                   },
                   primitive);
+              if (!created && mutationFailure)
+                return std::move(*mutationFailure);
               if (!created)
                 return rejected(SketchCommandError::MutationRejected);
             }
             return value;
           } else if constexpr (std::is_same_v<T, RemoveGeometryCommand>) {
-            const auto location = model.geometryLocation(typed.id);
-            if (!location)
-              return rejected(SketchCommandError::StaleReference);
-            switch (location->kind) {
-              case sketch::GeometryKind::Line:
-                model.removeLine(location->index);
-                break;
-              case sketch::GeometryKind::Circle:
-                model.removeCircle(location->index);
-                break;
-              case sketch::GeometryKind::Arc:
-                model.removeArc(location->index);
-                break;
-              case sketch::GeometryKind::Bezier:
-                model.removeBezier(location->index);
-                break;
-            }
-            auto value = accepted(geometryEffects());
-            value.effects.constraintsChanged = true;
-            value.effects.dimensionsChanged = true;
-            value.effects.selectionMayBeStale = true;
-            value.changedGeometryIds.push_back(typed.id);
-            return value;
+            return fromDeletion(model.removeSelection({typed.id}, {}));
           } else if constexpr (std::is_same_v<T, RemoveElementCommand>) {
             if (typed.elementId == 0)
               return rejected(SketchCommandError::InvalidInput);
-            const bool exists = std::any_of(
-                model.lines().begin(), model.lines().end(),
-                [&typed](const sketch::Line& line) {
-                  return line.elementId == typed.elementId;
-                });
-            if (!exists) return rejected(SketchCommandError::StaleReference);
-            model.removeElement(typed.elementId);
-            auto value = accepted(geometryEffects());
-            value.effects.constraintsChanged = true;
-            value.effects.dimensionsChanged = true;
-            value.effects.selectionMayBeStale = true;
-            return value;
+            return fromDeletion(model.removeSelection({}, {typed.elementId}));
           } else if constexpr (std::is_same_v<T, DeleteSelectionCommand>) {
             if (typed.geometryIds.empty() && typed.elementIds.empty())
               return rejected(SketchCommandError::InvalidInput);
-            if (std::any_of(typed.geometryIds.begin(), typed.geometryIds.end(),
-                            [&model](sketch::GeometryId id) {
-                              return !model.geometryLocation(id);
-                            }))
-              return rejected(SketchCommandError::StaleReference);
-            for (const auto elementId : typed.elementIds) {
-              if (elementId == 0 ||
-                  std::none_of(model.lines().begin(), model.lines().end(),
-                               [elementId](const sketch::Line& line) {
-                                 return line.elementId == elementId;
-                               }))
-                return rejected(SketchCommandError::StaleReference);
-            }
-            for (const auto id : typed.geometryIds) {
-              const auto location = model.geometryLocation(id);
-              if (!location) return rejected(SketchCommandError::StaleReference);
-              switch (location->kind) {
-                case sketch::GeometryKind::Line:
-                  model.removeLine(location->index);
-                  break;
-                case sketch::GeometryKind::Circle:
-                  model.removeCircle(location->index);
-                  break;
-                case sketch::GeometryKind::Arc:
-                  model.removeArc(location->index);
-                  break;
-                case sketch::GeometryKind::Bezier:
-                  model.removeBezier(location->index);
-                  break;
-              }
-            }
-            for (const auto elementId : typed.elementIds)
-              model.removeElement(elementId);
-            auto value = accepted(geometryEffects());
-            value.effects.constraintsChanged = true;
-            value.effects.dimensionsChanged = true;
-            value.effects.selectionMayBeStale = true;
-            value.changedGeometryIds = typed.geometryIds;
-            return value;
+            return fromDeletion(
+                model.removeSelection(typed.geometryIds, typed.elementIds));
           } else if constexpr (std::is_same_v<T, AddConstraintCommand>) {
             return fromConstraintApply(
                 model.tryApplyConstraint(typed.constraint, true),
@@ -1212,6 +1216,8 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::StaleReference);
             const auto addUnique = [&model](sketch::Constraint constraint) {
               for (const auto& existing : model.constraints()) {
+                if (!sketch::participatesInConstraintSystem(existing))
+                  continue;
                 if (existing.type != constraint.type) continue;
                 if (constraint.type == sketch::ConstraintType::Coincident) {
                   if ((samePointReference(existing.firstPoint,
@@ -1367,11 +1373,14 @@ SketchCommandResult SketchCommandController::execute(
                   !model.constraintIndex(constraintId))
                 return rejected(SketchCommandError::StaleReference);
               if (!model.setConstraintValue(constraintId,
-                                            typed.constraint.value) ||
-                  !model.setDimensionPlacement(*dimensionIndex,
-                                               typed.dimension.offsetMm,
-                                               typed.dimension.angleRad))
+                                            typed.constraint.value))
                 return rejected(SketchCommandError::Conflict);
+              auto placement = fromMutation(
+                  model.setDimensionPlacement(*dimensionIndex,
+                                              typed.dimension.offsetMm,
+                                              typed.dimension.angleRad),
+                  dimensionEffects());
+              if (!placement.accepted) return placement;
               result.changedConstraintIds.push_back(constraintId);
               result.changedDimensionIds.push_back(*typed.existingDimensionId);
               return result;
@@ -1382,7 +1391,8 @@ SketchCommandResult SketchCommandController::execute(
               const bool parallelExists = std::any_of(
                   model.constraints().begin(), model.constraints().end(),
                   [first, second](const sketch::Constraint& value) {
-                    return value.type == sketch::ConstraintType::Parallel &&
+                    return sketch::participatesInConstraintSystem(value) &&
+                           value.type == sketch::ConstraintType::Parallel &&
                            ((value.firstGeometry == first &&
                              value.secondGeometry == second) ||
                             (value.firstGeometry == second &&
@@ -1450,10 +1460,11 @@ SketchCommandResult SketchCommandController::execute(
               return rejected(SketchCommandError::InvalidInput);
             const auto index = model.dimensionIndex(typed.id);
             if (!index) return rejected(SketchCommandError::StaleReference);
-            if (!model.setDimensionPlacement(*index, typed.offsetMm,
-                                             typed.angleRad))
-              return rejected(SketchCommandError::MutationRejected);
-            auto value = accepted(dimensionEffects());
+            auto value = fromMutation(
+                model.setDimensionPlacement(*index, typed.offsetMm,
+                                            typed.angleRad),
+                dimensionEffects());
+            if (!value.accepted) return value;
             value.changedDimensionIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, SetDimensionDrivingCommand>) {
@@ -1500,6 +1511,14 @@ SketchCommandResult SketchCommandController::execute(
                 if (!index) return rejected(SketchCommandError::StaleReference);
                 visibleValue = model.circles()[*index].radiusMm * 2.0;
                 constraint.type = sketch::ConstraintType::Diameter;
+                constraint.firstGeometry = dimension.geometryId;
+                break;
+              }
+              case sketch::DimensionKind::CircleRadius: {
+                const auto index = model.circleIndex(dimension.geometryId);
+                if (!index) return rejected(SketchCommandError::StaleReference);
+                visibleValue = model.circles()[*index].radiusMm;
+                constraint.type = sketch::ConstraintType::Radius;
                 constraint.firstGeometry = dimension.geometryId;
                 break;
               }
@@ -1907,7 +1926,10 @@ SketchCommandResult SketchCommandController::execute(
                 case sketch::GeometryKind::Line: {
                   const auto source = model.lines()[location->index];
                   const auto index = model.lines().size();
-                  model.addLine(mirrored(source.start), mirrored(source.end));
+                  auto mutation =
+                      model.addLine(mirrored(source.start), mirrored(source.end));
+                  if (!mutation.committed())
+                    return fromMutation(std::move(mutation), geometryEffects());
                   if (model.lines().size() != index + 1)
                     return rejected(SketchCommandError::MutationRejected);
                   const auto id = model.lineId(index);
@@ -1918,7 +1940,10 @@ SketchCommandResult SketchCommandController::execute(
                 case sketch::GeometryKind::Circle: {
                   const auto source = model.circles()[location->index];
                   const auto index = model.circles().size();
-                  model.addCircle(mirrored(source.center), source.radiusMm);
+                  auto mutation =
+                      model.addCircle(mirrored(source.center), source.radiusMm);
+                  if (!mutation.committed())
+                    return fromMutation(std::move(mutation), geometryEffects());
                   if (model.circles().size() != index + 1)
                     return rejected(SketchCommandError::MutationRejected);
                   const auto id = model.circleId(index);
@@ -2054,14 +2079,19 @@ SketchCommandResult SketchCommandController::execute(
                     source.start.yMm +
                         (source.end.yMm - source.start.yMm) * parameter};
               };
-              model.removeLine(location->index);
+              auto deletion = model.removeSelection({typed.geometryId}, {});
+              if (!deletion.removed())
+                return fromDeletion(std::move(deletion));
               for (const auto interval :
                    {std::pair{0.0, typed.firstParameter},
                     std::pair{typed.secondParameter, 1.0}}) {
                 if (interval.second - interval.first <= minimumInterval)
                   continue;
                 const auto index = model.lines().size();
-                model.addLine(pointAt(interval.first), pointAt(interval.second));
+                auto mutation =
+                    model.addLine(pointAt(interval.first), pointAt(interval.second));
+                if (!mutation.committed())
+                  return fromMutation(std::move(mutation), geometryEffects());
                 if (model.lines().size() != index + 1)
                   return rejected(SketchCommandError::MutationRejected);
                 const auto id = model.lineId(index);
@@ -2070,7 +2100,9 @@ SketchCommandResult SketchCommandController::execute(
               }
             } else if (location->kind == sketch::GeometryKind::Circle) {
               const auto source = model.circles()[location->index];
-              model.removeCircle(location->index);
+              auto deletion = model.removeSelection({typed.geometryId}, {});
+              if (!deletion.removed())
+                return fromDeletion(std::move(deletion));
               if (!typed.fullGeometry) {
                 const double sweep =
                     (1.0 - (typed.secondParameter - typed.firstParameter)) *
@@ -2086,7 +2118,9 @@ SketchCommandResult SketchCommandController::execute(
               }
             } else if (location->kind == sketch::GeometryKind::Arc) {
               const auto source = model.arcs()[location->index];
-              model.removeArc(location->index);
+              auto deletion = model.removeSelection({typed.geometryId}, {});
+              if (!deletion.removed())
+                return fromDeletion(std::move(deletion));
               for (const auto interval :
                    {std::pair{0.0, typed.firstParameter},
                     std::pair{typed.secondParameter, 1.0}}) {
@@ -2128,7 +2162,9 @@ SketchCommandResult SketchCommandController::execute(
                             (1.0 - typed.firstParameter);
               const auto secondSplit = split(firstSplit.second,
                                              rightParameter);
-              model.removeBezier(location->index);
+              auto deletion = model.removeSelection({typed.geometryId}, {});
+              if (!deletion.removed())
+                return fromDeletion(std::move(deletion));
               if (typed.firstParameter > minimumInterval) {
                 const auto index = model.beziers().size();
                 model.addBezier(firstSplit.first[0], firstSplit.first[1],
@@ -2203,10 +2239,11 @@ SketchCommandResult SketchCommandController::executeInTransaction(
               return rejected(SketchCommandError::InvalidInput);
             const auto index = model.dimensionIndex(typed.id);
             if (!index) return rejected(SketchCommandError::StaleReference);
-            if (!model.setDimensionPlacement(*index, typed.offsetMm,
-                                             typed.angleRad))
-              return rejected(SketchCommandError::MutationRejected);
-            auto value = accepted(dimensionEffects());
+            auto value = fromMutation(
+                model.setDimensionPlacement(*index, typed.offsetMm,
+                                            typed.angleRad),
+                dimensionEffects());
+            if (!value.accepted) return value;
             value.changedDimensionIds.push_back(typed.id);
             return value;
           } else if constexpr (std::is_same_v<T, TranslatePointCommand>) {

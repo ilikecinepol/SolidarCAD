@@ -34,6 +34,20 @@ class SketchTestAccess {
     sketch.invalidateStructureIndexes();
   }
 
+  static void collapseLine(Sketch& sketch, GeometryId id) {
+    const auto location = sketch.geometryLocation(id);
+    CHECK(location.has_value());
+    sketch.lines_[location->index].end = sketch.lines_[location->index].start;
+    sketch.invalidateStructureIndexes();
+  }
+
+  static void setCircleRadius(Sketch& sketch, GeometryId id, double radius) {
+    const auto location = sketch.geometryLocation(id);
+    CHECK(location.has_value());
+    sketch.circles_[location->index].radiusMm = radius;
+    sketch.invalidateStructureIndexes();
+  }
+
   static void setParameter(Sketch& sketch, const ParameterProvenance& parameter,
                            double value) {
     const auto location = sketch.geometryLocation(parameter.geometryId);
@@ -154,14 +168,23 @@ Sketch completeFixture() {
 }
 
 void registryCoversEveryProductionType() {
+  static_assert(static_cast<std::size_t>(ConstraintType::Count) == 22);
   const auto rules = ConstraintEquationRegistry::rules();
-  CHECK(rules.size() == 22);
+  CHECK(rules.size() == static_cast<std::size_t>(ConstraintType::Count));
   std::set<ConstraintType> types;
   for (const auto& rule : rules) types.insert(rule.type);
   CHECK(types.size() == rules.size());
   for (int value = static_cast<int>(ConstraintType::Horizontal);
-       value <= static_cast<int>(ConstraintType::PointOnYAxis); ++value)
-    CHECK(types.contains(static_cast<ConstraintType>(value)));
+       value < static_cast<int>(ConstraintType::Count); ++value) {
+    const auto type = static_cast<ConstraintType>(value);
+    CHECK(types.contains(type));
+    const auto* rule = ConstraintEquationRegistry::rule(type);
+    CHECK(rule != nullptr);
+    CHECK(rule->type == type);
+  }
+  CHECK(ConstraintEquationRegistry::rule(ConstraintType::Count) == nullptr);
+  CHECK(ConstraintEquationRegistry::rule(
+            static_cast<ConstraintType>(999)) == nullptr);
 }
 
 void exactZeroFixturesHaveFiniteRows() {
@@ -811,6 +834,24 @@ void singularCandidatesAreTyped() {
                         return std::isfinite(value);
                       }));
   };
+  const auto requireFiniteStart = [](const Sketch& sketch) {
+    const auto systems = assembleAll(sketch);
+    CHECK(systems.size() == 1);
+    CHECK(systems.front().status() == EquationStatus::Valid);
+    CHECK(!systems.front().rows().empty());
+    CHECK(std::all_of(systems.front().rows().begin(),
+                      systems.front().rows().end(), [](const auto& row) {
+                        return std::isfinite(row.residual);
+                      }));
+    CHECK(std::all_of(systems.front().jacobian().begin(),
+                      systems.front().jacobian().end(), [](double value) {
+                        return std::isfinite(value);
+                      }));
+    CHECK(std::any_of(systems.front().jacobian().begin(),
+                      systems.front().jacobian().end(), [](double value) {
+                        return std::abs(value) > 1e-12;
+                      }));
+  };
 
   for (const auto type : {ConstraintType::Distance,
                           ConstraintType::DistanceX,
@@ -838,6 +879,30 @@ void singularCandidatesAreTyped() {
     SketchTestAccess::installConstraints(
         sketch, {identified(Constraint{AngleConstraint{
                                 sketch.lineId(0), sketch.lineId(1), 45.0}},
+                            1)});
+    requireFiniteStart(sketch);
+  }
+
+  {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {1.0, 0.0});
+    sketch.addCircle({0.0, 0.0}, 1.0);
+    SketchTestAccess::collapseLine(sketch, sketch.lineId(0));
+    SketchTestAccess::installConstraints(
+        sketch, {identified(Constraint{TangentConstraint{
+                                sketch.lineId(0), sketch.circleId(0)}},
+                            1)});
+    requireDegenerate(sketch);
+  }
+
+  {
+    Sketch sketch;
+    sketch.addLine({-2.0, 0.0}, {2.0, 0.0});
+    sketch.addCircle({0.0, 0.0}, 1.0);
+    SketchTestAccess::setCircleRadius(sketch, sketch.circleId(0), 0.0);
+    SketchTestAccess::installConstraints(
+        sketch, {identified(Constraint{TangentConstraint{
+                                sketch.lineId(0), sketch.circleId(0)}},
                             1)});
     requireDegenerate(sketch);
   }
@@ -869,7 +934,7 @@ void singularCandidatesAreTyped() {
         sketch, {identified(Constraint{TangentConstraint{
                                 sketch.lineId(0), sketch.circleId(0)}},
                             1)});
-    requireDegenerate(sketch);
+    requireFiniteStart(sketch);
   }
 
   {
@@ -882,6 +947,30 @@ void singularCandidatesAreTyped() {
                             1)});
     requireDegenerate(sketch);
   }
+}
+
+void nearAntiparallelAnglePreservesAcosResidual() {
+  const auto residual = [](double endpointY) {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 0.0});
+    sketch.addLine({0.0, 5.0}, {-10.0, endpointY});
+    SketchTestAccess::installConstraints(
+        sketch, {identified(Constraint{AngleConstraint{
+                                sketch.lineId(0), sketch.lineId(1), 30.0}},
+                            1)});
+    const auto systems = assembleAll(sketch);
+    CHECK(systems.size() == 1);
+    CHECK(systems.front().status() == EquationStatus::Valid);
+    CHECK(systems.front().rows().size() == 1);
+    return systems.front().rows().front().residual;
+  };
+
+  constexpr double expected = 150.0 * 3.14159265358979323846 / 180.0;
+  const double above = residual(5.0 + 1e-7);
+  const double below = residual(5.0 - 1e-7);
+  CHECK(std::abs(above - expected) <= 1e-7);
+  CHECK(std::abs(below - expected) <= 1e-7);
+  CHECK(std::abs(above - below) <= 1e-7);
 }
 
 void operationCountsAndHashesAreDeterministic() {
@@ -930,6 +1019,7 @@ int main() {
   candidateVectorEvaluationDoesNotMutateSketch();
   rigidAndScaleInvarianceIsSeeded();
   malformedAndLockedInputsAreTyped();
+  nearAntiparallelAnglePreservesAcosResidual();
   singularCandidatesAreTyped();
   operationCountsAndHashesAreDeterministic();
   std::cout << "sketch equation kernel tests passed\n";

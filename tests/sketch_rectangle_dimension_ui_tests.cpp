@@ -2230,6 +2230,38 @@ int main(int argc, char** argv) {
     CHECK(geometryChangedCount == 1);
   }
   {
+    // A disabled PointOnCircle remains visible but must not short-circuit the
+    // real two-click Canvas command that creates a new driving relation.
+    solidar::sketch::Sketch geometry;
+    geometry.addCircle({0.0, 0.0}, 5.0);
+    geometry.addLine({20.0, 0.0}, {30.0, 0.0});
+    const auto circle = geometry.circleId(0);
+    const auto line = geometry.lineId(0);
+    CHECK(geometry.restoreConstraints({solidar::sketch::Constraint{
+        solidar::sketch::PointOnCircleConstraint{
+            circle, solidar::sketch::PointReference{line, true}},
+        solidar::sketch::ConstraintMode::Disabled, 8201}}));
+    solidar::SketchCanvas canvas;
+    canvas.resize(900, 650);
+    canvas.loadSketch(geometry);
+    canvas.show();
+    canvas.setTool(solidar::SketchCanvas::Tool::CoincidentConstraint);
+    QApplication::processEvents();
+    click(canvas, screenPoint(canvas, {5.0, 0.0}));
+    click(canvas, screenPoint(canvas, {20.0, 0.0}));
+    CHECK(canvas.sketch().constraints().size() == 2);
+    CHECK(std::count_if(
+              canvas.sketch().constraints().begin(),
+              canvas.sketch().constraints().end(),
+              [](const solidar::sketch::Constraint& constraint) {
+                return solidar::sketch::participatesInConstraintSystem(
+                           constraint) &&
+                       constraint.type ==
+                           solidar::sketch::ConstraintType::PointOnCircle;
+              }) == 1);
+    CHECK(canvas.undoHistorySize() == 1);
+  }
+  {
     // A conflicting PointOnCircle command is an atomic UI rejection: no
     // success text, modified signal, history item, or partial constraint.
     solidar::sketch::Sketch geometry;
@@ -2263,6 +2295,232 @@ int main(int argc, char** argv) {
     CHECK(conflictCanvas.undoHistorySize() == 0);
     CHECK(geometryChangedCount == 0);
     CHECK(status.contains(QString::fromUtf8("отклонено")));
+  }
+  {
+    // Locked deletion is a truthful UI rejection: selection, model and undo
+    // history remain intact, and the same preserved selection can be deleted
+    // after the Lock constraint is explicitly removed.
+    solidar::sketch::Sketch geometry;
+    CHECK(geometry.addLine({0.0, 0.0}, {10.0, 0.0}).committed());
+    const auto lineId = geometry.lineId(0);
+    solidar::sketch::Constraint lock;
+    lock.type = solidar::sketch::ConstraintType::Lock;
+    lock.firstGeometry = lineId;
+    const auto lockId = geometry.addConstraint(lock);
+    CHECK(lockId != solidar::sketch::kInvalidConstraintId);
+
+    solidar::SketchCanvas lockedDeleteCanvas;
+    lockedDeleteCanvas.resize(900, 650);
+    lockedDeleteCanvas.loadSketch(geometry);
+    lockedDeleteCanvas.show();
+    QApplication::processEvents();
+    QString status;
+    int geometryChangedCount = 0;
+    QObject::connect(&lockedDeleteCanvas,
+                     &solidar::SketchCanvas::selectionChanged,
+                     [&status](const QString& value) { status = value; });
+    QObject::connect(&lockedDeleteCanvas,
+                     &solidar::SketchCanvas::geometryChanged,
+                     [&geometryChangedCount] { ++geometryChangedCount; });
+    QKeyEvent selectAll(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier);
+    QApplication::sendEvent(&lockedDeleteCanvas, &selectAll);
+    status.clear();
+    const auto fingerprint =
+        lockedDeleteCanvas.sketch().semanticFingerprint();
+    QKeyEvent removeLocked(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&lockedDeleteCanvas, &removeLocked);
+    QApplication::processEvents();
+    CHECK(lockedDeleteCanvas.sketch().semanticFingerprint() == fingerprint);
+    CHECK(lockedDeleteCanvas.sketch().lines().size() == 1);
+    CHECK(lockedDeleteCanvas.undoHistorySize() == 0);
+    CHECK(geometryChangedCount == 0);
+    CHECK(status == QString::fromUtf8(
+                        "Удаление отклонено: геометрия заблокирована "
+                        "ограничением «Замок»"));
+
+    status.clear();
+    QKeyEvent cutLocked(QEvent::KeyPress, Qt::Key_X, Qt::ControlModifier);
+    QApplication::sendEvent(&lockedDeleteCanvas, &cutLocked);
+    QApplication::processEvents();
+    CHECK(lockedDeleteCanvas.sketch().semanticFingerprint() == fingerprint);
+    CHECK(lockedDeleteCanvas.sketch().lines().size() == 1);
+    CHECK(lockedDeleteCanvas.undoHistorySize() == 0);
+    CHECK(geometryChangedCount == 0);
+    CHECK(status == QString::fromUtf8(
+                        "Удаление отклонено: геометрия заблокирована "
+                        "ограничением «Замок»"));
+
+    CHECK(lockedDeleteCanvas.removeConstraintById(lockId));
+    CHECK(lockedDeleteCanvas.sketch().constraints().empty());
+    QKeyEvent removeUnlocked(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&lockedDeleteCanvas, &removeUnlocked);
+    QApplication::processEvents();
+    CHECK(lockedDeleteCanvas.sketch().lines().empty());
+    CHECK(lockedDeleteCanvas.undoHistorySize() == 2);
+    lockedDeleteCanvas.undo();
+    CHECK(lockedDeleteCanvas.sketch().lines().size() == 1);
+    lockedDeleteCanvas.redo();
+    CHECK(lockedDeleteCanvas.sketch().lines().empty());
+  }
+  {
+    // Radius is an explicit dimension tool. AutoDimension on the same circle
+    // remains Diameter so existing sketches keep their established default.
+    solidar::sketch::Sketch geometry;
+    CHECK(geometry.addCircle({0.0, 0.0}, 10.0).committed());
+    solidar::SketchCanvas radiusCanvas;
+    radiusCanvas.resize(900, 650);
+    radiusCanvas.loadSketch(geometry);
+    radiusCanvas.show();
+    radiusCanvas.setTool(solidar::SketchCanvas::Tool::RadiusDimension);
+    CHECK(radiusCanvas.tool() ==
+          solidar::SketchCanvas::Tool::RadiusDimension);
+    QApplication::processEvents();
+    std::optional<QPointF> circlePoint;
+    for (int y = 20; y < radiusCanvas.height() - 20 && !circlePoint; y += 6)
+      for (int x = 20; x < radiusCanvas.width() - 20 && !circlePoint; x += 6) {
+        const QPointF candidate{static_cast<double>(x),
+                                static_cast<double>(y)};
+        moveMouse(radiusCanvas, candidate);
+        const auto& hover =
+            radiusCanvas.interactionState().constraint.hoverOperand;
+        if (hover && hover->kind == solidar::SketchGeometryOperandKind::Circle)
+          circlePoint = candidate;
+      }
+    CHECK(circlePoint.has_value());
+    click(radiusCanvas, *circlePoint);
+    QApplication::processEvents();
+    auto* editor =
+        radiusCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(editor && editor->isVisible());
+    CHECK(editor->prefix() == QStringLiteral("R: "));
+    CHECK(radiusCanvas.interactionState().autoDimension.circleRadius);
+    CHECK(std::abs(editor->value() - 10.0) < 1e-6);
+    editor->setValue(7.0);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(editor, &enter);
+    QApplication::processEvents();
+    CHECK(radiusCanvas.sketch().dimensions().size() == 1);
+    CHECK(radiusCanvas.sketch().dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleRadius);
+    CHECK(radiusCanvas.sketch().constraints().size() == 1);
+    CHECK(radiusCanvas.sketch().constraints()[0].type ==
+          solidar::sketch::ConstraintType::Radius);
+    CHECK(std::abs(radiusCanvas.sketch().circles()[0].radiusMm - 7.0) < 1e-6);
+
+    const auto created = radiusCanvas.sketch().semanticFingerprint();
+    radiusCanvas.undo();
+    CHECK(radiusCanvas.sketch().dimensions().empty());
+    CHECK(std::abs(radiusCanvas.sketch().circles()[0].radiusMm - 10.0) < 1e-6);
+    radiusCanvas.redo();
+    CHECK(radiusCanvas.sketch().semanticFingerprint() == created);
+    CHECK(editDimension(radiusCanvas, 7.0, 9.0));
+    CHECK(std::abs(radiusCanvas.sketch().circles()[0].radiusMm - 9.0) < 1e-6);
+    CHECK(radiusCanvas.sketch().dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleRadius);
+
+    QTemporaryDir radiusDirectory(
+        QDir::current().filePath("radius-dimension-ui-XXXXXX"));
+    CHECK(radiusDirectory.isValid());
+    solidar::Document radiusDocument;
+    auto& radiusRecord = radiusDocument.addSketch("Radius dimension");
+    const auto radiusSketchId = radiusRecord.id;
+    radiusRecord.geometry = radiusCanvas.sketch();
+    CHECK(radiusRecord.geometry
+              .setDimensionPlacement(0, 6.0, 0.75)
+              .committed());
+    const QString radiusPath =
+        radiusDirectory.filePath("radius-dimension.solidar");
+    QString radiusError;
+    const bool radiusSaved = solidar::project::ProjectFile::saveDocument(
+        radiusPath, radiusDocument, &radiusError);
+    if (!radiusSaved)
+      std::cerr << "radius save failed: " << radiusError.toStdString() << '\n';
+    CHECK(radiusSaved);
+    solidar::Document reloadedRadiusDocument;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        radiusPath, &reloadedRadiusDocument, &radiusError));
+    const auto* reloadedRadius =
+        reloadedRadiusDocument.findSketch(radiusSketchId);
+    CHECK(reloadedRadius);
+    CHECK(reloadedRadius->geometry.dimensions().size() == 1);
+    CHECK(reloadedRadius->geometry.dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleRadius);
+    CHECK(std::abs(reloadedRadius->geometry.dimensions()[0].offsetMm - 6.0) <
+          1e-9);
+    CHECK(std::abs(reloadedRadius->geometry.dimensions()[0].angleRad - 0.75) <
+          1e-9);
+    CHECK(reloadedRadius->geometry.constraints()[0].type ==
+          solidar::sketch::ConstraintType::Radius);
+    CHECK(std::abs(reloadedRadius->geometry.circles()[0].radiusMm - 9.0) <
+          1e-6);
+    solidar::SketchCanvas projectSwitchCanvas;
+    solidar::sketch::Sketch otherProject;
+    CHECK(otherProject.addLine({0.0, 0.0}, {1.0, 0.0}).committed());
+    projectSwitchCanvas.loadSketch(otherProject);
+    projectSwitchCanvas.loadSketch(reloadedRadius->geometry);
+    CHECK(projectSwitchCanvas.sketch().dimensions().size() == 1);
+    CHECK(projectSwitchCanvas.sketch().dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleRadius);
+    projectSwitchCanvas.resize(900, 650);
+    projectSwitchCanvas.show();
+    QApplication::processEvents();
+    const double pixelsPerMm =
+        projectSwitchCanvas.viewPixelsPerMillimeter();
+    const double placedAngle =
+        projectSwitchCanvas.sketch().dimensions()[0].angleRad;
+    const double placedOffset =
+        projectSwitchCanvas.sketch().dimensions()[0].offsetMm;
+    const double placedRadius =
+        projectSwitchCanvas.sketch().circles()[0].radiusMm;
+    const QPointF radialDirection{std::cos(placedAngle),
+                                  -std::sin(placedAngle)};
+    const QPointF radialNormal{-radialDirection.y(), radialDirection.x()};
+    const QPointF visibleRadiusMidpoint =
+        projectSwitchCanvas.viewOriginScreenPosition() +
+        radialDirection * (placedRadius * pixelsPerMm * 0.5) +
+        radialNormal * (placedOffset * pixelsPerMm);
+    QMouseEvent editPlacedRadius(QEvent::MouseButtonDblClick,
+                                 visibleRadiusMidpoint, Qt::LeftButton,
+                                 Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&projectSwitchCanvas, &editPlacedRadius);
+    QApplication::processEvents();
+    auto* placedRadiusEditor =
+        projectSwitchCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(placedRadiusEditor && placedRadiusEditor->isVisible());
+    CHECK(placedRadiusEditor->prefix() == QStringLiteral("R: "));
+    CHECK(std::abs(placedRadiusEditor->value() - 9.0) < 1e-6);
+    pressEscape(projectSwitchCanvas);
+
+    radiusCanvas.selectDimension(0);
+    QKeyEvent remove(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QApplication::sendEvent(&radiusCanvas, &remove);
+    QApplication::processEvents();
+    CHECK(radiusCanvas.sketch().dimensions().empty());
+    CHECK(radiusCanvas.sketch().constraints().empty());
+    radiusCanvas.undo();
+    CHECK(radiusCanvas.sketch().dimensions().size() == 1);
+    CHECK(radiusCanvas.sketch().dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleRadius);
+
+    solidar::SketchCanvas automaticCanvas;
+    automaticCanvas.resize(900, 650);
+    automaticCanvas.loadSketch(geometry);
+    automaticCanvas.show();
+    automaticCanvas.setTool(solidar::SketchCanvas::Tool::AutoDimension);
+    QApplication::processEvents();
+    click(automaticCanvas, *circlePoint);
+    QApplication::processEvents();
+    auto* automaticEditor =
+        automaticCanvas.findChild<QDoubleSpinBox*>("primaryDimension");
+    CHECK(automaticEditor && automaticEditor->isVisible());
+    automaticEditor->setValue(12.0);
+    QApplication::sendEvent(automaticEditor, &enter);
+    QApplication::processEvents();
+    CHECK(automaticCanvas.sketch().dimensions().size() == 1);
+    CHECK(automaticCanvas.sketch().dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleDiameter);
+    CHECK(automaticCanvas.sketch().constraints()[0].type ==
+          solidar::sketch::ConstraintType::Diameter);
   }
   return EXIT_SUCCESS;
 }

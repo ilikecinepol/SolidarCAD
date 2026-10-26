@@ -172,11 +172,14 @@ ConstraintPayload defaultPayload(ConstraintType type) {
     case ConstraintType::Midpoint: return MidpointConstraint{};
     case ConstraintType::PointOnXAxis: return PointOnXAxisConstraint{};
     case ConstraintType::PointOnYAxis: return PointOnYAxisConstraint{};
+    case ConstraintType::Count: break;
   }
-  return HorizontalConstraint{};
+  return UnsupportedConstraint{type};
 }
 
 ConstraintType payloadType(const ConstraintPayload& payload) noexcept {
+  if (const auto* unsupported = std::get_if<UnsupportedConstraint>(&payload))
+    return unsupported->rawType;
   return static_cast<ConstraintType>(payload.index());
 }
 
@@ -237,7 +240,8 @@ std::optional<double> drivingValueOf(
                   std::is_same_v<T, DistanceYConstraint> ||
                   std::is_same_v<T, LineDistanceConstraint>)
       return payload.drivingValue;
-    return std::nullopt;
+    else
+      return std::nullopt;
   }, value);
 }
 
@@ -388,9 +392,11 @@ Constraint::PointView::operator PointReference() const noexcept {
                          std::is_same_v<T, MidpointConstraint> ||
                          std::is_same_v<T, PointOnXAxisConstraint> ||
                          std::is_same_v<T, PointOnYAxisConstraint>) {
-      if (!first) return payload.point;
+      return !first ? payload.point
+                    : PointReference{DatumOriginReference{}};
+    } else {
+      return PointReference{DatumOriginReference{}};
     }
-    return PointReference{DatumOriginReference{}};
   }, owner_->payload_);
 }
 
@@ -488,7 +494,8 @@ Constraint::ValueView::operator double() const noexcept {
                   std::is_same_v<T, DistanceYConstraint> ||
                   std::is_same_v<T, LineDistanceConstraint>)
       return optionalValue(payload);
-    return 0.0;
+    else
+      return 0.0;
   }, owner_->payload_);
 }
 
@@ -558,6 +565,196 @@ SketchMutationResult rejectedMutation(
   return mutationResult(sketch, seeds, status, code);
 }
 
+bool finitePoint(Point point) noexcept {
+  return std::isfinite(point.xMm) && std::isfinite(point.yMm);
+}
+
+struct FiniteBoundsAccumulator {
+  double minX{std::numeric_limits<double>::max()};
+  double minY{std::numeric_limits<double>::max()};
+  double maxX{std::numeric_limits<double>::lowest()};
+  double maxY{std::numeric_limits<double>::lowest()};
+  bool hasPoint{};
+
+  bool include(Point point) noexcept {
+    if (!finitePoint(point)) return false;
+    minX = std::min(minX, point.xMm);
+    minY = std::min(minY, point.yMm);
+    maxX = std::max(maxX, point.xMm);
+    maxY = std::max(maxY, point.yMm);
+    hasPoint = true;
+    return true;
+  }
+
+  [[nodiscard]] bool finiteSpan() const noexcept {
+    return !hasPoint ||
+           (std::isfinite(maxX - minX) && std::isfinite(maxY - minY));
+  }
+};
+
+bool includeCircleBounds(FiniteBoundsAccumulator& bounds,
+                         const Circle& circle) {
+  return std::isfinite(circle.radiusMm) && circle.radiusMm > 0.0 &&
+         bounds.include({circle.center.xMm - circle.radiusMm,
+                         circle.center.yMm - circle.radiusMm}) &&
+         bounds.include({circle.center.xMm + circle.radiusMm,
+                         circle.center.yMm + circle.radiusMm});
+}
+
+bool includeArcBounds(FiniteBoundsAccumulator& bounds, const Arc& arc) {
+  if (!bounds.include(arcStartPoint(arc)) ||
+      !bounds.include(arcEndPoint(arc)))
+    return false;
+  constexpr double kPi = 3.14159265358979323846;
+  const auto normalizedAngle = [](double angle) {
+    constexpr double kTwoPi = 6.28318530717958647692;
+    angle = std::fmod(angle, kTwoPi);
+    return angle < 0.0 ? angle + kTwoPi : angle;
+  };
+  const double start = normalizedAngle(arc.startAngleRad);
+  for (const double angle : {0.0, 0.5 * kPi, kPi, 1.5 * kPi}) {
+    const double delta = normalizedAngle(normalizedAngle(angle) - start);
+    if (delta > arc.sweepAngleRad + 1e-12) continue;
+    if (!bounds.include({arc.center.xMm + arc.radiusMm * std::cos(angle),
+                         arc.center.yMm + arc.radiusMm * std::sin(angle)}))
+      return false;
+  }
+  return true;
+}
+
+bool prospectiveBoundsFinite(const Sketch& sketch,
+                             std::initializer_list<Point> extraPoints,
+                             std::optional<Circle> extraCircle = std::nullopt,
+                             std::optional<Arc> extraArc = std::nullopt,
+                             std::optional<Bezier> extraBezier = std::nullopt) {
+  FiniteBoundsAccumulator bounds;
+  for (const auto& line : sketch.lines())
+    if (!bounds.include(line.start) || !bounds.include(line.end)) return false;
+  for (const auto& circle : sketch.circles())
+    if (!includeCircleBounds(bounds, circle)) return false;
+  for (const auto& arc : sketch.arcs())
+    if (!includeArcBounds(bounds, arc)) return false;
+  for (const auto& bezier : sketch.beziers())
+    for (const auto point : bezier.points)
+      if (!bounds.include(point)) return false;
+  for (const auto point : extraPoints)
+    if (!bounds.include(point)) return false;
+  if (extraCircle && !includeCircleBounds(bounds, *extraCircle)) return false;
+  if (extraArc && !includeArcBounds(bounds, *extraArc)) return false;
+  if (extraBezier)
+    for (const auto point : extraBezier->points)
+      if (!bounds.include(point)) return false;
+  return bounds.finiteSpan();
+}
+
+bool translatedGeometryBoundsFinite(const Sketch& sketch,
+                                    const std::vector<GeometryId>& movedIds,
+                                    double dxMm, double dyMm) {
+  const auto moved = [&movedIds](GeometryId id) {
+    return std::find(movedIds.begin(), movedIds.end(), id) != movedIds.end();
+  };
+  const auto translated = [dxMm, dyMm](Point point) {
+    point.xMm += dxMm;
+    point.yMm += dyMm;
+    return point;
+  };
+  FiniteBoundsAccumulator bounds;
+  for (std::size_t index = 0; index < sketch.lines().size(); ++index) {
+    const bool move = moved(sketch.lineId(index));
+    const auto& line = sketch.lines()[index];
+    if (!bounds.include(move ? translated(line.start) : line.start) ||
+        !bounds.include(move ? translated(line.end) : line.end))
+      return false;
+  }
+  for (std::size_t index = 0; index < sketch.circles().size(); ++index) {
+    Circle circle = sketch.circles()[index];
+    if (moved(sketch.circleId(index))) circle.center = translated(circle.center);
+    if (!includeCircleBounds(bounds, circle)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.arcs().size(); ++index) {
+    Arc arc = sketch.arcs()[index];
+    if (moved(sketch.arcId(index))) arc.center = translated(arc.center);
+    if (!includeArcBounds(bounds, arc)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.beziers().size(); ++index) {
+    const bool move = moved(sketch.bezierId(index));
+    for (auto point : sketch.beziers()[index].points) {
+      if (move) point = translated(point);
+      if (!bounds.include(point)) return false;
+    }
+  }
+  return bounds.finiteSpan();
+}
+
+bool translatedPointReferencesBoundsFinite(
+    const Sketch& sketch, const std::vector<PointReference>& references,
+    double dxMm, double dyMm) {
+  const auto translated = [dxMm, dyMm](Point point, std::size_t count = 1) {
+    for (std::size_t index = 0; index < count; ++index) {
+      point.xMm += dxMm;
+      point.yMm += dyMm;
+    }
+    return point;
+  };
+  const auto movesElement = [&references](std::size_t elementId) {
+    return std::any_of(references.begin(), references.end(),
+                       [elementId](PointReference reference) {
+                         return reference.elementCenterId == elementId;
+                       });
+  };
+  FiniteBoundsAccumulator bounds;
+  for (std::size_t index = 0; index < sketch.lines().size(); ++index) {
+    auto start = sketch.lines()[index].start;
+    auto end = sketch.lines()[index].end;
+    if (movesElement(sketch.lines()[index].elementId)) {
+      start = translated(start);
+      end = translated(end);
+    } else {
+      const auto id = sketch.lineId(index);
+      for (const auto reference : references) {
+        if (reference.lineId != id) continue;
+        if (reference.start)
+          start = translated(start);
+        else
+          end = translated(end);
+      }
+    }
+    if (!bounds.include(start) || !bounds.include(end)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.circles().size(); ++index) {
+    Circle circle = sketch.circles()[index];
+    const auto id = sketch.circleId(index);
+    if (std::any_of(references.begin(), references.end(),
+                    [id](PointReference reference) {
+                      return reference.circleId == id;
+                    }))
+      circle.center = translated(circle.center);
+    if (!includeCircleBounds(bounds, circle)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.arcs().size(); ++index) {
+    Arc arc = sketch.arcs()[index];
+    const auto id = sketch.arcId(index);
+    const auto count = static_cast<std::size_t>(std::count_if(
+        references.begin(), references.end(), [id](PointReference reference) {
+          return reference.arcId == id;
+        }));
+    if (count != 0) arc.center = translated(arc.center, count);
+    if (!includeArcBounds(bounds, arc)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.beziers().size(); ++index) {
+    const auto id = sketch.bezierId(index);
+    for (std::size_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      auto point = sketch.beziers()[index].points[pointIndex];
+      for (const auto reference : references)
+        if (reference.bezierId == id &&
+            reference.bezierPoint == pointIndex)
+          point = translated(point);
+      if (!bounds.include(point)) return false;
+    }
+  }
+  return bounds.finiteSpan();
+}
+
 int pointReferenceSourceCount(PointReference reference) noexcept {
   return (reference.origin ? 1 : 0) +
          (reference.elementCenterId != 0 ? 1 : 0) +
@@ -608,6 +805,7 @@ bool equivalentConstraint(const Constraint& first,
     case ConstraintType::Perpendicular:
     case ConstraintType::Equal:
     case ConstraintType::Angle:
+    case ConstraintType::Tangent:
     case ConstraintType::LineDistance:
       return (sameGeometryOrder || reverseGeometryOrder) && samePointOrder;
     case ConstraintType::Coincident:
@@ -620,6 +818,15 @@ bool equivalentConstraint(const Constraint& first,
   }
 }
 
+void canonicalizeConstraint(Constraint& constraint) noexcept {
+  if (auto* tangent = std::get_if<TangentConstraint>(&constraint.payload());
+      tangent && tangent->secondGeometryId < tangent->firstGeometryId)
+    std::swap(tangent->firstGeometryId, tangent->secondGeometryId);
+  if (auto* angle = std::get_if<AngleConstraint>(&constraint.payload());
+      angle && angle->secondLineId < angle->firstLineId)
+    std::swap(angle->firstLineId, angle->secondLineId);
+}
+
 bool supportedConstraintSchema(const Sketch& sketch,
                                const Constraint& constraint) {
   return validateConstraintSchema(sketch, constraint).valid();
@@ -628,6 +835,7 @@ bool supportedConstraintSchema(const Sketch& sketch,
 bool annotatableConstraintType(ConstraintType type) noexcept {
   return type == ConstraintType::Distance ||
          type == ConstraintType::Length ||
+         type == ConstraintType::Radius ||
          type == ConstraintType::Diameter ||
          type == ConstraintType::Angle ||
          type == ConstraintType::DistanceX ||
@@ -772,6 +980,130 @@ bool moveArcEndpointReshape(Arc& arc, bool start, Point target) {
     arc.sweepAngleRad = normalizeSweep(targetAngle - arc.startAngleRad);
   }
   return true;
+}
+
+bool translatedSelectionBoundsFinite(
+    const Sketch& sketch, const std::vector<std::size_t>& elementIds,
+    const std::vector<GeometryId>& circleIds,
+    const std::vector<GeometryId>& arcIds,
+    const std::vector<GeometryId>& bezierIds,
+    const std::vector<PointReference>& movedReferences, double dxMm,
+    double dyMm) {
+  const auto selectedElement = [&elementIds](std::size_t id) {
+    return std::find(elementIds.begin(), elementIds.end(), id) !=
+           elementIds.end();
+  };
+  const auto selectedGeometry = [](const auto& ids, GeometryId id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+  };
+  const auto movedElementCenter = [&movedReferences](std::size_t id) {
+    return std::any_of(movedReferences.begin(), movedReferences.end(),
+                       [id](PointReference reference) {
+                         return reference.elementCenterId == id;
+                       });
+  };
+  const auto movedLinePoint = [&movedReferences](GeometryId id, bool start) {
+    return std::any_of(movedReferences.begin(), movedReferences.end(),
+                       [id, start](PointReference reference) {
+                         return reference.lineId == id &&
+                                reference.start == start;
+                       });
+  };
+  const auto movedCircleCenter = [&movedReferences](GeometryId id) {
+    return std::any_of(movedReferences.begin(), movedReferences.end(),
+                       [id](PointReference reference) {
+                         return reference.circleId == id;
+                       });
+  };
+  const auto movedArcPoint = [&movedReferences](GeometryId id, bool start) {
+    return std::any_of(movedReferences.begin(), movedReferences.end(),
+                       [id, start](PointReference reference) {
+                         return reference.arcId == id &&
+                                reference.start == start;
+                       });
+  };
+  const auto movedBezierPoint = [&movedReferences](GeometryId id,
+                                                    std::uint8_t point) {
+    return std::any_of(movedReferences.begin(), movedReferences.end(),
+                       [id, point](PointReference reference) {
+                         return reference.bezierId == id &&
+                                reference.bezierPoint == point;
+                       });
+  };
+  const auto translate = [dxMm, dyMm](Point point) {
+    point.xMm += dxMm;
+    point.yMm += dyMm;
+    return point;
+  };
+
+  FiniteBoundsAccumulator bounds;
+  for (std::size_t index = 0; index < sketch.lines().size(); ++index) {
+    const auto& source = sketch.lines()[index];
+    auto start = source.start;
+    auto end = source.end;
+    if (selectedElement(source.elementId) ||
+        movedElementCenter(source.elementId)) {
+      start = translate(start);
+      end = translate(end);
+    } else {
+      const auto id = sketch.lineId(index);
+      if (movedLinePoint(id, true)) start = translate(start);
+      if (movedLinePoint(id, false)) end = translate(end);
+    }
+    if (!bounds.include(start) || !bounds.include(end)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.circles().size(); ++index) {
+    Circle circle = sketch.circles()[index];
+    const auto id = sketch.circleId(index);
+    if (selectedGeometry(circleIds, id) || movedCircleCenter(id))
+      circle.center = translate(circle.center);
+    if (!includeCircleBounds(bounds, circle)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.arcs().size(); ++index) {
+    Arc arc = sketch.arcs()[index];
+    const auto id = sketch.arcId(index);
+    const bool moveStart = movedArcPoint(id, true);
+    const bool moveEnd = movedArcPoint(id, false);
+    if (selectedGeometry(arcIds, id) || (moveStart && moveEnd)) {
+      arc.center = translate(arc.center);
+    } else if (moveStart || moveEnd) {
+      const bool start = moveStart;
+      const auto current = start ? arcStartPoint(arc) : arcEndPoint(arc);
+      const auto target = translate(current);
+      if (!finitePoint(target)) return false;
+      static_cast<void>(moveArcEndpointReshape(arc, start, target));
+    }
+    if (!includeArcBounds(bounds, arc)) return false;
+  }
+  for (std::size_t index = 0; index < sketch.beziers().size(); ++index) {
+    const auto id = sketch.bezierId(index);
+    const bool selected = selectedGeometry(bezierIds, id);
+    for (std::uint8_t pointIndex = 0; pointIndex < 4; ++pointIndex) {
+      auto point = sketch.beziers()[index].points[pointIndex];
+      if (selected || movedBezierPoint(id, pointIndex))
+        point = translate(point);
+      if (!bounds.include(point)) return false;
+    }
+  }
+  return bounds.finiteSpan();
+}
+
+bool replacementArcBoundsFinite(const Sketch& sketch, std::size_t arcIndex,
+                                const Arc& replacement) {
+  FiniteBoundsAccumulator bounds;
+  for (const auto& line : sketch.lines())
+    if (!bounds.include(line.start) || !bounds.include(line.end)) return false;
+  for (const auto& circle : sketch.circles())
+    if (!includeCircleBounds(bounds, circle)) return false;
+  for (std::size_t index = 0; index < sketch.arcs().size(); ++index)
+    if (!includeArcBounds(bounds,
+                          index == arcIndex ? replacement
+                                            : sketch.arcs()[index]))
+      return false;
+  for (const auto& bezier : sketch.beziers())
+    for (const auto point : bezier.points)
+      if (!bounds.include(point)) return false;
+  return bounds.finiteSpan();
 }
 
 // Move one Arc endpoint exactly onto a constraint target while leaving the
@@ -1034,17 +1366,27 @@ void Sketch::clear() {
   heightMm_ = 0.0;
 }
 
-void Sketch::setRectangle(double widthMm, double heightMm) {
+SketchMutationResult Sketch::setRectangle(double widthMm, double heightMm) {
+  if (!std::isfinite(widthMm) || !std::isfinite(heightMm))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   if (widthMm <= 0.0 || heightMm <= 0.0)
-    throw std::invalid_argument("Sketch dimensions must be positive");
-
-  clear();
+    return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::DegenerateGeometry);
   const double halfWidth = widthMm * 0.5;
   const double halfHeight = heightMm * 0.5;
+  if (!std::isfinite(halfWidth) || !std::isfinite(halfHeight))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  if (halfWidth <= 0.0 || halfHeight <= 0.0)
+    return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::DegenerateGeometry);
+
   const Point bottomLeft{-halfWidth, -halfHeight};
   const Point bottomRight{halfWidth, -halfHeight};
   const Point topRight{halfWidth, halfHeight};
   const Point topLeft{-halfWidth, halfHeight};
+  clear();
   const auto elementId = nextElementId_++;
   lines_ = {{bottomLeft, bottomRight, elementId},
             {bottomRight, topRight, elementId},
@@ -1058,27 +1400,46 @@ void Sketch::setRectangle(double widthMm, double heightMm) {
     journalRecordAddedGeometry(lineIds_[index], GeometryKind::Line, index);
   invalidateStructureIndexes();
   updateBounds();
+  return mutationResult(*this, lineIds_, SketchMutationStatus::Applied,
+                        SketchMutationDiagnosticCode::None);
 }
 
-void Sketch::addLine(Point start, Point end) {
-  if (start.xMm == end.xMm && start.yMm == end.yMm) return;
+SketchMutationResult Sketch::addLine(Point start, Point end) {
+  if (!finitePoint(start) || !finitePoint(end))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  if (start.xMm == end.xMm && start.yMm == end.yMm)
+    return noMutation(*this);
+  if (!prospectiveBoundsFinite(*this, {start, end}))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   lines_.push_back({start, end, nextElementId_++});
   lineIds_.push_back(nextGeometryId_++);
   journalRecordAddedGeometry(lineIds_.back(), GeometryKind::Line,
                              lines_.size() - 1);
   invalidateStructureIndexes();
   updateBounds();
+  return mutationResult(*this, {lineIds_.back()},
+                        SketchMutationStatus::Applied,
+                        SketchMutationDiagnosticCode::None);
 }
 
-void Sketch::addLine(Point start, Point end, std::size_t elementId) {
-  if (start.xMm == end.xMm && start.yMm == end.yMm) return;
+SketchMutationResult Sketch::addLine(Point start, Point end,
+                                     std::size_t elementId) {
+  if (!finitePoint(start) || !finitePoint(end))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  if (start.xMm == end.xMm && start.yMm == end.yMm)
+    return noMutation(*this);
+  if (!prospectiveBoundsFinite(*this, {start, end}))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
 
   // elementId is a group/composite identifier, not a GeometryId.
   // Serialized rectangles intentionally reuse the same elementId on
   // multiple line primitives.
   if (elementId == 0) {
-    addLine(start, end);
-    return;
+    return addLine(start, end);
   }
 
   lines_.push_back({start, end, elementId});
@@ -1090,15 +1451,26 @@ void Sketch::addLine(Point start, Point end, std::size_t elementId) {
   // Prevent subsequently created elements from reusing a restored ID.
   nextElementId_ = std::max(nextElementId_, elementId + 1);
   updateBounds();
+  return mutationResult(*this, {lineIds_.back()},
+                        SketchMutationStatus::Applied,
+                        SketchMutationDiagnosticCode::None);
 }
 
-void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
+SketchMutationResult Sketch::addRectangle(Point firstCorner,
+                                          Point oppositeCorner) {
+  if (!finitePoint(firstCorner) || !finitePoint(oppositeCorner))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   if (std::abs(firstCorner.xMm - oppositeCorner.xMm) < 1e-9 ||
       std::abs(firstCorner.yMm - oppositeCorner.yMm) < 1e-9)
-    return;
+    return noMutation(*this);
 
   const Point second{oppositeCorner.xMm, firstCorner.yMm};
   const Point fourth{firstCorner.xMm, oppositeCorner.yMm};
+  if (!prospectiveBoundsFinite(
+          *this, {firstCorner, second, oppositeCorner, fourth}))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto elementId = nextElementId_++;
 
   const GeometryId firstLineId = nextGeometryId_++;
@@ -1190,8 +1562,29 @@ void Sketch::addRectangle(Point firstCorner, Point oppositeCorner) {
   addConstraint(vertical);
 
   updateBounds();
+  return mutationResult(
+      *this, {firstLineId, secondLineId, thirdLineId, fourthLineId},
+      SketchMutationStatus::Applied, SketchMutationDiagnosticCode::None);
 }
-void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) {
+SketchMutationResult Sketch::addRectangle(Point first, Point second,
+                                          Point third, Point fourth) {
+  if (!finitePoint(first) || !finitePoint(second) || !finitePoint(third) ||
+      !finitePoint(fourth))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  const auto validEdge = [](Point start, Point end) {
+    const double dx = end.xMm - start.xMm;
+    const double dy = end.yMm - start.yMm;
+    return std::isfinite(dx) && std::isfinite(dy) &&
+           (dx != 0.0 || dy != 0.0);
+  };
+  if (!validEdge(first, second) || !validEdge(second, third) ||
+      !validEdge(third, fourth) || !validEdge(fourth, first))
+    return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::DegenerateGeometry);
+  if (!prospectiveBoundsFinite(*this, {first, second, third, fourth}))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto elementId = nextElementId_++;
 
   const GeometryId firstLineId = nextGeometryId_++;
@@ -1269,15 +1662,29 @@ void Sketch::addRectangle(Point first, Point second, Point third, Point fourth) 
   addConstraint(perpendicular);
 
   updateBounds();
+  return mutationResult(
+      *this, {firstLineId, secondLineId, thirdLineId, fourthLineId},
+      SketchMutationStatus::Applied, SketchMutationDiagnosticCode::None);
 }
-void Sketch::addCircle(Point center, double radiusMm) {
-  if (radiusMm <= 0.0) return;
+SketchMutationResult Sketch::addCircle(Point center, double radiusMm) {
+  if (!finitePoint(center) || !std::isfinite(radiusMm))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  if (radiusMm <= 0.0)
+    return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::DegenerateGeometry);
+  if (!prospectiveBoundsFinite(*this, {}, Circle{center, radiusMm}))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   circles_.push_back({center, radiusMm});
   circleIds_.push_back(nextGeometryId_++);
   journalRecordAddedGeometry(circleIds_.back(), GeometryKind::Circle,
                              circles_.size() - 1);
   invalidateStructureIndexes();
   updateBounds();
+  return mutationResult(*this, {circleIds_.back()},
+                        SketchMutationStatus::Applied,
+                        SketchMutationDiagnosticCode::None);
 }
 
 void Sketch::addArc(Point center, double radiusMm, double startAngleRad,
@@ -1289,7 +1696,9 @@ void Sketch::addArc(Point center, double radiusMm, double startAngleRad,
       sweepAngleRad <= 1e-9 || sweepAngleRad >= kTwoPi - 1e-9)
     return;
 
-  arcs_.push_back({center, radiusMm, startAngleRad, sweepAngleRad, dashed});
+  const Arc candidate{center, radiusMm, startAngleRad, sweepAngleRad, dashed};
+  if (!prospectiveBoundsFinite(*this, {}, std::nullopt, candidate)) return;
+  arcs_.push_back(candidate);
   arcIds_.push_back(nextGeometryId_++);
   journalRecordAddedGeometry(arcIds_.back(), GeometryKind::Arc,
                              arcs_.size() - 1);
@@ -1310,7 +1719,11 @@ void Sketch::addBezier(Point start, Point control1, Point control2, Point end,
        std::hypot(control2.xMm - start.xMm,
                   control2.yMm - start.yMm) <= 1e-12))
     return;
-  beziers_.push_back({{start, control1, control2, end}, dashed});
+  const Bezier candidate{{start, control1, control2, end}, dashed};
+  if (!prospectiveBoundsFinite(*this, {}, std::nullopt, std::nullopt,
+                               candidate))
+    return;
+  beziers_.push_back(candidate);
   bezierIds_.push_back(nextGeometryId_++);
   journalRecordAddedGeometry(bezierIds_.back(), GeometryKind::Bezier,
                              beziers_.size() - 1);
@@ -1404,7 +1817,8 @@ void Sketch::removeCircle(std::size_t index) {
        dimensionIndex < dimensions_.size(); ++dimensionIndex) {
     const auto& dimension = dimensions_[dimensionIndex];
     const bool remove = [removedId](const Dimension& dimension) {
-    if (dimension.kind == DimensionKind::CircleDiameter)
+    if (dimension.kind == DimensionKind::CircleDiameter ||
+        dimension.kind == DimensionKind::CircleRadius)
       return dimension.geometryId == removedId;
 
     // Point-to-point dimensions may reference a circle center through
@@ -1579,6 +1993,59 @@ void Sketch::removeElement(std::size_t elementId) {
   updateBounds();
 }
 
+SketchDeletionResult Sketch::removeSelection(
+    const std::vector<GeometryId>& geometryIds,
+    const std::vector<std::size_t>& elementIds) {
+  if (geometryIds.empty() && elementIds.empty())
+    return {SketchDeletionStatus::NoChange, {}};
+
+  std::vector<GeometryId> targets;
+  targets.reserve(geometryIds.size() + elementIds.size() * 4);
+  const auto addTarget = [&targets](GeometryId id) {
+    if (std::find(targets.begin(), targets.end(), id) == targets.end())
+      targets.push_back(id);
+  };
+  for (const auto id : geometryIds) {
+    if (!geometryLocation(id)) return {SketchDeletionStatus::Stale, {}};
+    addTarget(id);
+  }
+  for (const auto elementId : elementIds) {
+    if (elementId == 0) return {SketchDeletionStatus::Stale, {}};
+    bool found = false;
+    for (std::size_t index = 0; index < lines_.size(); ++index) {
+      if (lines_[index].elementId != elementId) continue;
+      found = true;
+      addTarget(lineIds_[index]);
+    }
+    if (!found) return {SketchDeletionStatus::Stale, {}};
+  }
+
+  if (targets.empty()) return {SketchDeletionStatus::NoChange, {}};
+  if (std::any_of(targets.begin(), targets.end(),
+                  [this](GeometryId id) { return isGeometryLocked(id); }))
+    return {SketchDeletionStatus::Locked, {}};
+
+  for (const auto id : targets) {
+    const auto location = geometryLocation(id);
+    if (!location) return {SketchDeletionStatus::Stale, {}};
+    switch (location->kind) {
+      case GeometryKind::Line:
+        removeLine(location->index);
+        break;
+      case GeometryKind::Circle:
+        removeCircle(location->index);
+        break;
+      case GeometryKind::Arc:
+        removeArc(location->index);
+        break;
+      case GeometryKind::Bezier:
+        removeBezier(location->index);
+        break;
+    }
+  }
+  return {SketchDeletionStatus::Removed, std::move(targets)};
+}
+
 void Sketch::markElementCenterNode(std::size_t elementId) {
   if (elementId == 0 || hasElementCenterNode(elementId))
     return;
@@ -1639,6 +2106,9 @@ Sketch::centerNodeElementIds() const noexcept {
 }
 SketchMutationResult Sketch::translateElement(std::size_t elementId,
                                               double dxMm, double dyMm) {
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   // LOCK CONSTRAINT: direct drag may never move a locked element.
   if (isElementLocked(elementId))
     return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
@@ -1654,11 +2124,6 @@ SketchMutationResult Sketch::translateElement(std::size_t elementId,
     return rejectedMutation(
         *this, {}, SketchMutationStatus::InvalidReference,
         SketchMutationDiagnosticCode::InvalidGeometryReference);
-  const auto journalDepthBefore = deltaJournalDepth();
-  const bool ownsJournal = journalDepthBefore == 0;
-  if (ownsJournal) beginDeltaJournal();
-  journalCaptureComponents(movedIds);
-
   const auto isMoved = [&movedIds](GeometryId id) {
     return std::find(movedIds.begin(), movedIds.end(), id) != movedIds.end();
   };
@@ -1668,7 +2133,9 @@ SketchMutationResult Sketch::translateElement(std::size_t elementId,
   // the drag instead of being left behind.
   std::vector<PointReference> connectedExternalPoints;
   for (const auto& constraint : constraints_) {
-    if (constraint.type != ConstraintType::Coincident) continue;
+    if (!participatesInConstraintSystem(constraint) ||
+        constraint.type != ConstraintType::Coincident)
+      continue;
 
     const bool firstMoved = isMoved(constraint.firstPoint.lineId);
     const bool secondMoved = isMoved(constraint.secondPoint.lineId);
@@ -1723,7 +2190,8 @@ SketchMutationResult Sketch::translateElement(std::size_t elementId,
       };
 
   for (const auto& constraint : constraints_) {
-    if (constraint.type != ConstraintType::PointOnLine ||
+    if (!participatesInConstraintSystem(constraint) ||
+        constraint.type != ConstraintType::PointOnLine ||
         !isMoved(constraint.firstGeometry))
       continue;
 
@@ -1737,6 +2205,31 @@ SketchMutationResult Sketch::translateElement(std::size_t elementId,
     if (!duplicate)
       pointOnLineFollowers.push_back(constraint.secondPoint);
   }
+
+  std::vector<PointReference> movedReferences;
+  movedReferences.reserve(connectedExternalPoints.size() +
+                          pointOnLineFollowers.size());
+  const auto addActuallyMovedReference = [&movedReferences](
+                                           PointReference reference) {
+    if (reference.circleId == kInvalidGeometryId &&
+        reference.lineId == kInvalidGeometryId)
+      return;
+    movedReferences.push_back(reference);
+  };
+  for (const auto reference : connectedExternalPoints)
+    addActuallyMovedReference(reference);
+  for (const auto reference : pointOnLineFollowers)
+    addActuallyMovedReference(reference);
+  if (!translatedSelectionBoundsFinite(
+          *this, {elementId}, {}, {}, {}, movedReferences, dxMm, dyMm))
+    return rejectedMutation(*this, movedIds,
+                            SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
+  journalCaptureComponents(movedIds);
 
   for (auto& line : lines_) {
     if (line.elementId != elementId) continue;
@@ -1802,6 +2295,9 @@ SketchMutationResult Sketch::translateSelection(
     const std::vector<GeometryId>& arcIds,
     const std::vector<GeometryId>& bezierIds,
     double dxMm, double dyMm) {
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   // LOCK CONSTRAINT: mixed selections do not partially move.
   for (std::size_t index = 0; index < lines_.size(); ++index) {
     if (std::find(elementIds.begin(), elementIds.end(),
@@ -1858,11 +2354,6 @@ SketchMutationResult Sketch::translateSelection(
     if (std::find(elementIds.begin(), elementIds.end(),
                   lines_[index].elementId) != elementIds.end())
       journalSeeds.push_back(lineIds_[index]);
-  const auto journalDepthBefore = deltaJournalDepth();
-  const bool ownsJournal = journalDepthBefore == 0;
-  if (ownsJournal) beginDeltaJournal();
-  journalCaptureComponents(journalSeeds);
-
   const auto elementSelected =
       [&elementIds](std::size_t elementId) {
         return std::find(
@@ -2021,7 +2512,8 @@ SketchMutationResult Sketch::translateSelection(
 
     for (const auto& constraint :
          constraints_) {
-      if (constraint.type !=
+      if (!participatesInConstraintSystem(constraint) ||
+          constraint.type !=
           ConstraintType::Coincident)
         continue;
 
@@ -2076,13 +2568,22 @@ SketchMutationResult Sketch::translateSelection(
           [this](PointReference reference) {
             return isPointReferenceLocked(reference);
           })) {
-    const auto rejected = rejectedMutation(
-        *this, journalSeeds, SketchMutationStatus::Conflicting,
-        SketchMutationDiagnosticCode::LockedGeometry);
-    if (ownsJournal)
-      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
-    return rejected;
+    return rejectedMutation(*this, journalSeeds,
+                            SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::LockedGeometry);
   }
+
+  if (!translatedSelectionBoundsFinite(*this, elementIds, circleIds, arcIds,
+                                       bezierIds, movedReferences, dxMm,
+                                       dyMm))
+    return rejectedMutation(*this, journalSeeds,
+                            SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
+  journalCaptureComponents(journalSeeds);
 
   const auto referenceMoves =
       [&movedReferences,
@@ -2240,6 +2741,10 @@ SketchMutationResult Sketch::translateSelection(
 
 SketchMutationResult Sketch::translateLinesByIds(
     const std::vector<GeometryId>& lineIds, double dxMm, double dyMm) {
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm))
+    return rejectedMutation(*this, lineIds,
+                            SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   if (lineIds.empty())
     return rejectedMutation(
         *this, {}, SketchMutationStatus::InvalidReference,
@@ -2254,6 +2759,10 @@ SketchMutationResult Sketch::translateLinesByIds(
       return rejectedMutation(*this, lineIds,
                               SketchMutationStatus::Conflicting,
                               SketchMutationDiagnosticCode::LockedGeometry);
+  if (!translatedGeometryBoundsFinite(*this, lineIds, dxMm, dyMm))
+    return rejectedMutation(*this, lineIds,
+                            SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto journalDepthBefore = deltaJournalDepth();
   const bool ownsJournal = journalDepthBefore == 0;
   if (ownsJournal) beginDeltaJournal();
@@ -2352,6 +2861,10 @@ SketchMutationResult Sketch::translateCircleById(GeometryId id, double dxMm,
     return rejectedMutation(
         *this, {id}, SketchMutationStatus::InvalidReference,
         SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm) ||
+      !translatedGeometryBoundsFinite(*this, {id}, dxMm, dyMm))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
 
   PointReference centerReference;
   centerReference.circleId = id;
@@ -2363,6 +2876,9 @@ SketchMutationResult Sketch::translateCircleById(GeometryId id, double dxMm,
 
 SketchMutationResult Sketch::translateArcById(GeometryId id, double dxMm,
                                               double dyMm) {
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto index = arcIndex(id);
   if (!index)
     return rejectedMutation(
@@ -2372,6 +2888,9 @@ SketchMutationResult Sketch::translateArcById(GeometryId id, double dxMm,
     return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
                             SketchMutationDiagnosticCode::LockedGeometry);
   if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this, {id});
+  if (!translatedGeometryBoundsFinite(*this, {id}, dxMm, dyMm))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto journalDepthBefore = deltaJournalDepth();
   const bool ownsJournal = journalDepthBefore == 0;
   if (ownsJournal) beginDeltaJournal();
@@ -2393,6 +2912,9 @@ SketchMutationResult Sketch::translateArcById(GeometryId id, double dxMm,
 
 SketchMutationResult Sketch::translateBezierById(GeometryId id, double dxMm,
                                                  double dyMm) {
+  if (!std::isfinite(dxMm) || !std::isfinite(dyMm))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto index = bezierIndex(id);
   if (!index)
     return rejectedMutation(
@@ -2402,6 +2924,9 @@ SketchMutationResult Sketch::translateBezierById(GeometryId id, double dxMm,
     return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
                             SketchMutationDiagnosticCode::LockedGeometry);
   if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this, {id});
+  if (!translatedGeometryBoundsFinite(*this, {id}, dxMm, dyMm))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto journalDepthBefore = deltaJournalDepth();
   const bool ownsJournal = journalDepthBefore == 0;
   if (ownsJournal) beginDeltaJournal();
@@ -2436,16 +2961,18 @@ SketchMutationResult Sketch::moveArcEndpointReshapeById(
   if (!std::isfinite(target.xMm) || !std::isfinite(target.yMm))
     return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
                             SketchMutationDiagnosticCode::NonFiniteGeometry);
+  Arc candidate = arcs_[*index];
+  if (!moveArcEndpointReshape(candidate, start, target))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::DegenerateGeometry);
+  if (!replacementArcBoundsFinite(*this, *index, candidate))
+    return rejectedMutation(*this, {id}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
   const auto journalDepthBefore = deltaJournalDepth();
   const bool ownsJournal = journalDepthBefore == 0;
   if (ownsJournal) beginDeltaJournal();
   journalCaptureComponents({id});
-  if (!moveArcEndpointReshape(arcs_[*index], start, target)) {
-    if (ownsJournal)
-      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
-    return rejectedMutation(*this, {id}, SketchMutationStatus::Conflicting,
-                            SketchMutationDiagnosticCode::DegenerateGeometry);
-  }
+  arcs_[*index] = candidate;
   const auto mutation = mutationFromSolve(
       *this, {id}, SketchSolver::solveStableComponent(
                        *this, {id}, 16, kInvalidConstraintId, true));
@@ -2675,7 +3202,9 @@ void Sketch::rebuildStructureIndexes() const {
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     for (const auto id : ids)
       geometryConstraints_[id].push_back(constraint.id);
-    for (std::size_t i = 1; i < ids.size(); ++i) connect(ids.front(), ids[i]);
+    if (participatesInConstraintSystem(constraint))
+      for (std::size_t i = 1; i < ids.size(); ++i)
+        connect(ids.front(), ids[i]);
   }
 
   for (auto& [id, adjacent] : connectivity_) {
@@ -3060,6 +3589,7 @@ SketchDelta Sketch::finishDeltaJournal() {
              a.bezierPoint == b.bezierPoint;
     };
     if (item.before && after && item.before->id == after->id &&
+        item.before->mode == after->mode &&
         item.before->type == after->type &&
         item.before->firstGeometry == after->firstGeometry &&
         item.before->secondGeometry == after->secondGeometry &&
@@ -3658,7 +4188,7 @@ bool Sketch::applyDelta(const SketchDelta& delta, bool forward) {
     dimensionIds.reserve(finalDimensions.size());
     for (const auto& item : finalDimensions) {
       if (static_cast<unsigned>(item.kind) >
-              static_cast<unsigned>(DimensionKind::LineDistance) ||
+              static_cast<unsigned>(DimensionKind::CircleRadius) ||
           item.id == kInvalidDimensionId ||
           !std::isfinite(item.valueMm) || !std::isfinite(item.offsetMm) ||
           !std::isfinite(item.angleRad) || item.valueMm <= 0.0 ||
@@ -4048,7 +4578,8 @@ bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
   if (const auto line = lineIndex(id)) {
     const std::size_t elementId = lines_[*line].elementId;
     for (const auto& constraint : constraints_) {
-      if (constraint.type != ConstraintType::Lock ||
+      if (!participatesInConstraintSystem(constraint) ||
+          constraint.type != ConstraintType::Lock ||
           constraint.firstGeometry == kInvalidGeometryId)
         continue;
 
@@ -4064,7 +4595,8 @@ bool Sketch::isGeometryLocked(GeometryId id) const noexcept {
     return std::any_of(
         constraints_.begin(), constraints_.end(),
         [id](const Constraint& constraint) {
-          return constraint.type == ConstraintType::Lock &&
+          return participatesInConstraintSystem(constraint) &&
+                 constraint.type == ConstraintType::Lock &&
                  constraint.firstGeometry == id;
         });
   }
@@ -4097,7 +4629,8 @@ bool Sketch::isPointReferenceLocked(
 
 void Sketch::restoreLockedGeometryFrom(const Sketch& baseline) {
   for (const auto& constraint : constraints_) {
-    if (constraint.type != ConstraintType::Lock ||
+    if (!participatesInConstraintSystem(constraint) ||
+        constraint.type != ConstraintType::Lock ||
         constraint.firstGeometry == kInvalidGeometryId)
       continue;
 
@@ -4193,10 +4726,6 @@ SketchMutationResult Sketch::translatePoint(PointReference reference,
                      *this, {}, SketchMutationStatus::Conflicting,
                      SketchMutationDiagnosticCode::LockedGeometry);
   if (dxMm == 0.0 && dyMm == 0.0) return noMutation(*this);
-  const auto journalDepthBefore = deltaJournalDepth();
-  const bool ownsJournal = journalDepthBefore == 0;
-  if (ownsJournal) beginDeltaJournal();
-  journalCapturePoint(reference);
 
   // CRASH-FREE 04: COMPLETE POINTREFERENCE IDENTITY
   //
@@ -4253,7 +4782,8 @@ SketchMutationResult Sketch::translatePoint(PointReference reference,
     changed = false;
 
     for (const auto& constraint : constraints_) {
-      if (constraint.type != ConstraintType::Coincident)
+      if (!participatesInConstraintSystem(constraint) ||
+          constraint.type != ConstraintType::Coincident)
         continue;
 
       const auto first = constraint.firstPoint;
@@ -4298,13 +4828,19 @@ SketchMutationResult Sketch::translatePoint(PointReference reference,
           [this](PointReference item) {
             return isPointReferenceLocked(item);
           })) {
-    auto rejected = rejectedMutation(
-        *this, {}, SketchMutationStatus::Conflicting,
-        SketchMutationDiagnosticCode::LockedGeometry);
-    if (ownsJournal)
-      static_cast<void>(rollbackDeltaJournalsToDepth(journalDepthBefore));
-    return rejected;
+    return rejectedMutation(*this, {}, SketchMutationStatus::Conflicting,
+                            SketchMutationDiagnosticCode::LockedGeometry);
   }
+
+  if (!translatedPointReferencesBoundsFinite(*this, connectedPoints, dxMm,
+                                             dyMm))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+
+  const auto journalDepthBefore = deltaJournalDepth();
+  const bool ownsJournal = journalDepthBefore == 0;
+  if (ownsJournal) beginDeltaJournal();
+  journalCapturePoint(reference);
 
   // CRASH-FREE 04: VIRTUAL CENTER MOVEMENT
   //
@@ -4529,14 +5065,25 @@ bool Sketch::removeDimension(std::size_t index) {
   return true;
 }
 
-bool Sketch::setDimensionPlacement(std::size_t index, double offsetMm,
-                                   double angleRad) {
+SketchMutationResult Sketch::setDimensionPlacement(std::size_t index,
+                                                   double offsetMm,
+                                                   double angleRad) {
   auto& dimensions = dimensions_;
-  if (index >= dimensions.size()) return false;
+  if (!std::isfinite(offsetMm) || !std::isfinite(angleRad))
+    return rejectedMutation(*this, {}, SketchMutationStatus::InternalError,
+                            SketchMutationDiagnosticCode::NonFiniteGeometry);
+  if (index >= dimensions.size())
+    return rejectedMutation(
+        *this, {}, SketchMutationStatus::InvalidReference,
+        SketchMutationDiagnosticCode::InvalidGeometryReference);
+  if (dimensions[index].offsetMm == offsetMm &&
+      dimensions[index].angleRad == angleRad)
+    return noMutation(*this);
   journalCaptureDimension(index);
   dimensions[index].offsetMm = offsetMm;
   dimensions[index].angleRad = angleRad;
-  return true;
+  return mutationResult(*this, {}, SketchMutationStatus::Applied,
+                        SketchMutationDiagnosticCode::None);
 }
 
 bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
@@ -4545,7 +5092,8 @@ bool Sketch::setDimensionValue(std::size_t index, double valueMm) {
     return false;
   const auto constraintId = dimensions_[index].constraintId;
   const auto constraint = constraintIndex(constraintId);
-  if (!constraint || constraints_[*constraint].mode != ConstraintMode::Driving)
+  if (!constraint ||
+      !participatesInConstraintSystem(constraints_[*constraint]))
     return false;
   return setConstraintValue(constraintId, valueMm).committed();
 }
@@ -4658,21 +5206,28 @@ bool Sketch::restoreIdAllocators(std::size_t nextElementId,
 
 ConstraintId Sketch::addConstraint(
     Constraint constraint) {
-  // TRANSACTIONAL CONSTRAINT ADD
-  //
-  // A new user constraint may move geometry, but it may NOT make an older
-  // previously-satisfied constraint false. If the complete system cannot be
-  // solved, restore both geometry and the old constraint set.
-  //
-  // Explicit identities belong exclusively to restoreConstraints().  Keeping
-  // that persistence path separate prevents a caller-selected ID from
-  // bypassing schema validation or transactional rollback.
+  // Legacy structural builders retain the cheaper transactional solve, while
+  // the public interactive boundary below owns full rank classification.
+  // Narrow this path fail-closed: unsupported types, malformed schemas and
+  // exact semantic duplicates never allocate an ID or enter the solver.
+  const auto type = static_cast<ConstraintType>(constraint.type);
+  if (!isProductionConstraintType(type)) return kInvalidConstraintId;
+  canonicalizeConstraint(constraint);
   if (constraint.id != kInvalidConstraintId ||
       !validateConstraintSchema(*this, constraint) ||
       nextConstraintId_ == kInvalidConstraintId ||
       nextConstraintId_ == std::numeric_limits<ConstraintId>::max() ||
       constraintIndex(nextConstraintId_))
     return kInvalidConstraintId;
+
+  const auto duplicate = std::find_if(
+      constraints_.begin(), constraints_.end(),
+      [&constraint](const Constraint& old) {
+        return participatesInConstraintSystem(old) &&
+               participatesInConstraintSystem(constraint) &&
+               equivalentConstraint(old, constraint);
+      });
+  if (duplicate != constraints_.end()) return kInvalidConstraintId;
 
   ConstraintDiagnostics before;
   std::vector<ConstraintId> previouslySatisfied;
@@ -4691,9 +5246,7 @@ ConstraintId Sketch::addConstraint(
   journalCapturePoint(constraint.secondPoint);
 
   constraint.id = nextConstraintId_++;
-
-  const ConstraintId addedId =
-      constraint.id;
+  const ConstraintId addedId = constraint.id;
 
   constraints_.push_back(constraint);
   journalRecordAddedConstraint(addedId, constraints_.size() - 1);
@@ -4701,11 +5254,8 @@ ConstraintId Sketch::addConstraint(
   static_cast<void>(SketchSolver::solveStableComponent(
       *this, referencedGeometryIds(*this, constraint), 16, addedId));
 
-  const auto after =
-      analyzeConstraintSystem(*this, false);
-
+  const auto after = analyzeConstraintSystem(*this, false);
   bool oldConstraintBroken = false;
-
   for (const auto oldId : previouslySatisfied) {
     if (hasConstraintViolation(after, oldId)) {
       oldConstraintBroken = true;
@@ -4718,7 +5268,6 @@ ConstraintId Sketch::addConstraint(
     return kInvalidConstraintId;
   }
   static_cast<void>(finishDeltaJournal());
-
   return addedId;
 }
 
@@ -4734,14 +5283,13 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
     return result;
   };
 
-  const int type =
-      static_cast<int>(static_cast<ConstraintType>(constraint.type));
-  if (type < static_cast<int>(ConstraintType::Horizontal) ||
-      type > static_cast<int>(ConstraintType::PointOnYAxis) ||
-      !std::isfinite(constraint.value))
+  const auto type = static_cast<ConstraintType>(constraint.type);
+  if (!isProductionConstraintType(type) || !std::isfinite(constraint.value))
     return reject(ConstraintApplyStatus::Unsupported,
                   SketchMutationDiagnosticCode::UnsupportedConstraint,
                   "Unsupported constraint type or value");
+
+  canonicalizeConstraint(constraint);
 
   if ((constraint.firstGeometry != kInvalidGeometryId &&
        !geometryLocation(constraint.firstGeometry)) ||
@@ -4775,7 +5323,9 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
   const auto duplicate = std::find_if(
       constraints_.begin(), constraints_.end(),
       [&constraint](const Constraint& old) {
-        return equivalentConstraint(old, constraint);
+        return participatesInConstraintSystem(old) &&
+               participatesInConstraintSystem(constraint) &&
+               equivalentConstraint(old, constraint);
       });
   if (duplicate != constraints_.end()) {
     result.status = ConstraintApplyStatus::Redundant;
@@ -4792,6 +5342,9 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
             old.secondGeometry == constraint.firstGeometry);
   };
   for (const auto& old : constraints_) {
+    if (!participatesInConstraintSystem(old) ||
+        !participatesInConstraintSystem(constraint))
+      continue;
     bool conflicts = false;
     if (old.firstGeometry == constraint.firstGeometry) {
       conflicts =
@@ -4922,18 +5475,16 @@ ConstraintApplyResult Sketch::tryApplyConstraint(Constraint constraint,
 bool Sketch::restoreConstraints(std::vector<Constraint> constraints) {
   std::unordered_set<ConstraintId> ids;
   std::unordered_map<ConstraintId, ConstraintType> candidateTypes;
-  for (const auto& constraint : constraints) {
-    const int type =
-        static_cast<int>(static_cast<ConstraintType>(constraint.type));
-    if (type < static_cast<int>(ConstraintType::Horizontal) ||
-        type > static_cast<int>(ConstraintType::PointOnYAxis))
+  for (auto& constraint : constraints) {
+    const auto type = static_cast<ConstraintType>(constraint.type);
+    if (!isProductionConstraintType(type))
       return false;
+    canonicalizeConstraint(constraint);
     if (constraint.id == kInvalidConstraintId ||
         !ids.insert(constraint.id).second ||
         !validateConstraintSchema(*this, constraint))
       return false;
-    candidateTypes.emplace(constraint.id,
-                           static_cast<ConstraintType>(constraint.type));
+    candidateTypes.emplace(constraint.id, type);
   }
   for (const auto& dimension : dimensions_) {
     if (dimension.constraintId == kInvalidConstraintId) return false;
@@ -4981,7 +5532,7 @@ SketchMutationResult Sketch::setConstraintValue(ConstraintId id,
     return rejectedMutation(
         *this, {}, SketchMutationStatus::InvalidReference,
         SketchMutationDiagnosticCode::InvalidGeometryReference);
-  if (found->mode != ConstraintMode::Driving)
+  if (!participatesInConstraintSystem(*found))
     return rejectedMutation(*this, {}, SketchMutationStatus::Unsupported,
                             SketchMutationDiagnosticCode::UnsupportedConstraint);
   const auto seeds = referencedGeometryIds(*this, *found);
@@ -5074,12 +5625,13 @@ SketchMutationResult Sketch::setConstraintMode(
   journalCaptureComponents(seeds);
   journalCaptureConstraint(id);
   *found = candidate;
+  invalidateStructureIndexes();
   hasLastSolvedFingerprint_ = false;
 
   SketchMutationResult mutation =
       mutationResult(*this, seeds, SketchMutationStatus::Applied,
                      SketchMutationDiagnosticCode::None);
-  if (mode == ConstraintMode::Driving) {
+  if (participatesInConstraintSystem(candidate)) {
     const auto solved = SketchSolver::solveStable(*this);
     mutation = mutationFromSolve(*this, seeds, solved);
     const auto diagnostics = analyzeConstraintSystem(*this, false);
@@ -5163,6 +5715,13 @@ const std::vector<Dimension>& Sketch::dimensions() const {
         if (index) measured = circles_[*index].radiusMm * 2.0;
         break;
       }
+      case ConstraintType::Radius: {
+        dimension.kind = DimensionKind::CircleRadius;
+        dimension.geometryId = constraint.firstGeometry;
+        const auto index = circleIndex(constraint.firstGeometry);
+        if (index) measured = circles_[*index].radiusMm;
+        break;
+      }
       case ConstraintType::Distance:
       case ConstraintType::DistanceX:
       case ConstraintType::DistanceY: {
@@ -5222,7 +5781,7 @@ const std::vector<Dimension>& Sketch::dimensions() const {
       default:
         continue;
     }
-    if (constraint.mode == ConstraintMode::Driving)
+    if (participatesInConstraintSystem(constraint))
       dimension.valueMm = static_cast<double>(constraint.value);
     else if (measured)
       dimension.valueMm = *measured;

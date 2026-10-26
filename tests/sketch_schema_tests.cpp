@@ -18,7 +18,8 @@ static_assert(std::is_constructible_v<PointReference,
 static_assert(!std::is_constructible_v<PointReference, GeometryId, bool,
                                        GeometryId>);
 static_assert(std::variant_size_v<PointReference::Payload> == 6);
-static_assert(std::variant_size_v<ConstraintPayload> == 22);
+static_assert(std::variant_size_v<ConstraintPayload> ==
+              static_cast<std::size_t>(ConstraintType::Count) + 1);
 
 namespace {
 
@@ -70,7 +71,7 @@ void completeConstraintSchemaMatrix() {
       Constraint{PointOnXAxisConstraint{p0}},
       Constraint{PointOnYAxisConstraint{p1}},
   };
-  CHECK(valid.size() == std::variant_size_v<ConstraintPayload>);
+  CHECK(valid.size() == static_cast<std::size_t>(ConstraintType::Count));
   for (std::size_t index = 0; index < valid.size(); ++index) {
     valid[index].id = static_cast<ConstraintId>(index + 1);
     CHECK(validateConstraintSchema(sketch, valid[index]).valid());
@@ -99,6 +100,12 @@ void completeConstraintSchemaMatrix() {
   Constraint invalidMode{HorizontalConstraint{l0},
                          static_cast<ConstraintMode>(99), 55};
   CHECK(!validateConstraintSchema(sketch, invalidMode).valid());
+  Constraint unknown{HorizontalConstraint{l0}};
+  unknown.type = static_cast<ConstraintType>(999);
+  const auto unknownResult = validateConstraintSchema(sketch, unknown);
+  CHECK(!unknownResult.valid());
+  CHECK(unknownResult.error->code ==
+        SketchSchemaErrorCode::UnsupportedConstraintType);
   Constraint lineLineTangent{TangentConstraint{l0, l1},
                              ConstraintMode::Driving, 56};
   CHECK(!validateConstraintSchema(sketch, lineLineTangent).valid());
@@ -270,6 +277,24 @@ void annotationIdentityIsExactAndUnique() {
   CHECK(validateSketchSchema(sketch).valid());
 }
 
+void radiusConstraintCanOwnAnAnnotation() {
+  Sketch sketch;
+  sketch.addCircle({0.0, 0.0}, 12.0);
+  const auto circle = sketch.circleId(0);
+  constexpr ConstraintId constraintId = 810;
+  CHECK(sketch.restoreConstraints({Constraint{
+      RadiusConstraint{circle, 12.0}, ConstraintMode::Driving,
+      constraintId}}));
+
+  Dimension radius;
+  radius.kind = DimensionKind::CircleRadius;
+  radius.geometryId = circle;
+  radius.constraintId = constraintId;
+  radius.valueMm = 12.0;
+  CHECK(sketch.storeDimension(radius));
+  CHECK(validateSketchSchema(sketch).valid());
+}
+
 }  // namespace
 
 int main() {
@@ -277,6 +302,7 @@ int main() {
   completeConstraintSchemaMatrix();
   publicMutationBoundariesPreserveAnnotationLinks();
   annotationIdentityIsExactAndUnique();
+  radiusConstraintCanOwnAnAnnotation();
   undoRedoPreservesExactIdentityAndMode();
   deterministicInsertDeleteReorderProperty();
   return 0;

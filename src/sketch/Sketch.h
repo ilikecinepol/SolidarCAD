@@ -204,7 +204,8 @@ enum class DimensionKind {
   PointDistanceX,
   PointDistanceY,
   LineAngle,
-  LineDistance
+  LineDistance,
+  CircleRadius
 };
 
 struct Dimension {
@@ -248,7 +249,8 @@ enum class ConstraintType {
   PointOnArc,
   Midpoint,
   PointOnXAxis,
-  PointOnYAxis};
+  PointOnYAxis,
+  Count};
 
 enum class ConstraintMode { Driving, Reference, Disabled };
 
@@ -274,6 +276,9 @@ struct PointOnArcConstraint { GeometryId arcId{kInvalidGeometryId}; PointReferen
 struct MidpointConstraint { GeometryId lineId{kInvalidGeometryId}; PointReference point; };
 struct PointOnXAxisConstraint { PointReference point; };
 struct PointOnYAxisConstraint { PointReference point; };
+struct UnsupportedConstraint {
+  ConstraintType rawType{ConstraintType::Count};
+};
 
 using ConstraintPayload = std::variant<
     HorizontalConstraint, VerticalConstraint, CoincidentConstraint,
@@ -283,7 +288,19 @@ using ConstraintPayload = std::variant<
     DistanceXConstraint, DistanceYConstraint, PointOnCircleConstraint,
     TangentConstraint, LineDistanceConstraint, LockConstraint,
     PointOnArcConstraint, MidpointConstraint, PointOnXAxisConstraint,
-    PointOnYAxisConstraint>;
+    PointOnYAxisConstraint, UnsupportedConstraint>;
+
+static_assert(std::variant_size_v<ConstraintPayload> ==
+              static_cast<std::size_t>(ConstraintType::Count) + 1,
+              "Each production ConstraintType needs one payload; the final "
+              "variant alternative is the fail-closed unsupported sentinel");
+
+[[nodiscard]] constexpr bool isProductionConstraintType(
+    ConstraintType type) noexcept {
+  const auto ordinal = static_cast<int>(type);
+  return ordinal >= static_cast<int>(ConstraintType::Horizontal) &&
+         ordinal < static_cast<int>(ConstraintType::Count);
+}
 
 class Constraint {
  public:
@@ -425,6 +442,11 @@ class Constraint {
   ValueView value{this};
 };
 
+[[nodiscard]] constexpr bool participatesInConstraintSystem(
+    const Constraint& constraint) noexcept {
+  return constraint.mode == ConstraintMode::Driving;
+}
+
 enum class GeometryKind { Line, Circle, Arc, Bezier };
 
 struct GeometryLocation {
@@ -522,6 +544,22 @@ struct SketchMutationResult {
   operator bool() const noexcept { return committed(); }
 };
 
+enum class SketchDeletionStatus {
+  Removed,
+  Locked,
+  Stale,
+  NoChange,
+};
+
+struct SketchDeletionResult {
+  SketchDeletionStatus status{SketchDeletionStatus::NoChange};
+  std::vector<GeometryId> removedGeometryIds;
+
+  [[nodiscard]] bool removed() const noexcept {
+    return status == SketchDeletionStatus::Removed;
+  }
+};
+
 enum class ConstraintApplyStatus {
   Accepted,
   Redundant,
@@ -613,12 +651,13 @@ class Sketch final {
   static void failNextNestedConstraintJournalForTesting() noexcept;
 
   void clear();
-  void setRectangle(double widthMm, double heightMm);
-  void addLine(Point start, Point end);
-  void addLine(Point start, Point end, std::size_t elementId);
-  void addRectangle(Point firstCorner, Point oppositeCorner);
-  void addRectangle(Point first, Point second, Point third, Point fourth);
-  void addCircle(Point center, double radiusMm);
+  SketchMutationResult setRectangle(double widthMm, double heightMm);
+  SketchMutationResult addLine(Point start, Point end);
+  SketchMutationResult addLine(Point start, Point end, std::size_t elementId);
+  SketchMutationResult addRectangle(Point firstCorner, Point oppositeCorner);
+  SketchMutationResult addRectangle(Point first, Point second, Point third,
+                                    Point fourth);
+  SketchMutationResult addCircle(Point center, double radiusMm);
   void addArc(Point center, double radiusMm, double startAngleRad,
               double sweepAngleRad, bool dashed = false);
   void addBezier(Point start, Point control1, Point control2, Point end,
@@ -628,6 +667,9 @@ class Sketch final {
   void removeArc(std::size_t index);
   void removeBezier(std::size_t index);
   void removeElement(std::size_t elementId);
+  [[nodiscard]] SketchDeletionResult removeSelection(
+      const std::vector<GeometryId>& geometryIds,
+      const std::vector<std::size_t>& elementIds);
   [[nodiscard]] SketchMutationResult translateElement(
       std::size_t elementId, double dxMm, double dyMm);
 
@@ -711,8 +753,9 @@ class Sketch final {
   bool storeDimension(const Dimension& dimension);
   bool removeDimension(std::size_t index);
   void clearDimensions();
-  bool setDimensionPlacement(std::size_t index, double offsetMm,
-                             double angleRad);
+  SketchMutationResult setDimensionPlacement(std::size_t index,
+                                             double offsetMm,
+                                             double angleRad);
   bool setDimensionValue(std::size_t index, double valueMm);
   bool setDimensionConstraint(std::size_t index, ConstraintId constraintId);
 

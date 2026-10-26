@@ -15,6 +15,7 @@ enum class SketchCommandError {
   StaleReference,
   Duplicate,
   Conflict,
+  Locked,
   Unsupported,
   SolverFailed,
   TransactionMismatch,
@@ -41,6 +42,7 @@ struct SketchCommandResult {
   std::vector<sketch::DimensionId> changedDimensionIds;
   std::optional<sketch::ConstraintApplyResult> constraintApplyResult;
   std::optional<sketch::SketchMutationResult> mutationResult;
+  std::optional<sketch::SketchDeletionResult> deletionResult;
 };
 
 struct SketchTransactionToken {

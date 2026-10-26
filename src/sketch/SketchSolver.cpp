@@ -148,7 +148,7 @@ SolveResult SketchSolver::solveStableComponent(
         return first;
       };
       for (const auto& constraint : local.constraints_) {
-        if (constraint.mode != ConstraintMode::Driving) continue;
+        if (!participatesInConstraintSystem(constraint)) continue;
         // During constraint creation only the new relation chooses the local
         // reference side.  Letting every pre-existing relation add another
         // transient lock can freeze both peers of the new constraint.
@@ -271,6 +271,56 @@ SolveResult SketchSolver::solveStableComponent(
         if (descriptor.variableIndex)
           request.previousCandidate[*descriptor.variableIndex] =
               referenceValue(descriptor);
+    }
+    if (preferredConstraintId != kInvalidConstraintId) {
+      const auto preferred = local.constraintIndex(preferredConstraintId);
+      if (preferred) {
+        const auto type = static_cast<ConstraintType>(
+            local.constraints_[*preferred].type);
+        if (type == ConstraintType::Horizontal ||
+            type == ConstraintType::Vertical) {
+          const GeometryId lineId = local.constraints_[*preferred].firstGeometry;
+          const auto lineIndex = local.lineIndex(lineId);
+          if (lineIndex) {
+            const Line& line = local.lines_[*lineIndex];
+            const double dx = line.end.xMm - line.start.xMm;
+            const double dy = line.end.yMm - line.start.yMm;
+            const double length = std::hypot(dx, dy);
+            const bool needsAxisSeed =
+                length > 1e-12 &&
+                ((type == ConstraintType::Vertical && std::abs(dy) <= 1e-12) ||
+                 (type == ConstraintType::Horizontal &&
+                  std::abs(dx) <= 1e-12));
+            if (needsAxisSeed) {
+              const auto layout =
+                  ParameterLayout::build(local, component.geometryIds);
+              if (request.previousCandidate.empty()) {
+                request.previousCandidate.assign(layout.variableCount(), 0.0);
+                for (const auto& descriptor : layout.parameters())
+                  if (descriptor.variableIndex)
+                    request.previousCandidate[*descriptor.variableIndex] =
+                        descriptor.value;
+              }
+              const auto seed = [&](ParameterRole role, double value) {
+                const auto domain = layout.parameterIndex(lineId, role);
+                if (!domain) return;
+                const auto variable =
+                    layout.parameters()[*domain].variableIndex;
+                if (variable) request.previousCandidate[*variable] = value;
+              };
+              if (type == ConstraintType::Vertical) {
+                seed(ParameterRole::LineEndX, line.start.xMm);
+                seed(ParameterRole::LineEndY,
+                     line.start.yMm + std::copysign(length, dx));
+              } else {
+                seed(ParameterRole::LineEndX,
+                     line.start.xMm + std::copysign(length, dy));
+                seed(ParameterRole::LineEndY, line.start.yMm);
+              }
+            }
+          }
+        }
+      }
     }
     if (useDirtyGeometryHints &&
         preferredConstraintId == kInvalidConstraintId) {
@@ -601,7 +651,7 @@ SolveResult SketchSolver::solveStable(
   visited.erase(std::unique(visited.begin(), visited.end()), visited.end());
   std::size_t unvisitedConstraintCount = 0;
   for (const auto& constraint : sketch.constraints_)
-    if (constraint.mode == ConstraintMode::Driving &&
+    if (participatesInConstraintSystem(constraint) &&
         !std::binary_search(visited.begin(), visited.end(), constraint.id))
       ++unvisitedConstraintCount;
   if (unvisitedConstraintCount != 0) {

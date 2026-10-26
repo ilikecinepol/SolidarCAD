@@ -276,7 +276,7 @@ struct BackendSvdAnalysis {
     const auto index = sketch.constraintIndex(id);
     if (!index) continue;
     const auto& constraint = sketch.constraints()[*index];
-    if (constraint.mode != ConstraintMode::Driving) continue;
+    if (!participatesInConstraintSystem(constraint)) continue;
     std::visit(
         [&](const auto& value) {
           using T = std::decay_t<decltype(value)>;

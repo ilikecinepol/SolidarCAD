@@ -5,6 +5,7 @@
 #include "sketch/SketchSolver.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -1541,6 +1542,791 @@ void constraintPreflightClassifiesAndRollsBackAtomically() {
   CHECK(history.constraints().front().id == accepted.constraintId);
 }
 
+void duplicatePolicyAndUnknownTypesFailClosed() {
+  {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 2.0});
+    const auto line = sketch.lineId(0);
+    Constraint horizontal{HorizontalConstraint{line}};
+    const auto firstId = sketch.addConstraint(horizontal);
+    CHECK(firstId != kInvalidConstraintId);
+    const auto constrainedFingerprint = sketch.semanticFingerprint();
+    const auto nextId = sketch.nextConstraintId();
+
+    CHECK(sketch.addConstraint(horizontal) == kInvalidConstraintId);
+    CHECK(sketch.constraints().size() == 1);
+    CHECK(sketch.nextConstraintId() == nextId);
+    CHECK(sketch.semanticFingerprint() == constrainedFingerprint);
+  }
+
+  {
+    Sketch sketch;
+    sketch.addLine({-10.0, 5.0}, {10.0, 5.0});
+    sketch.addCircle({0.0, 0.0}, 5.0);
+    const auto line = sketch.lineId(0);
+    const auto circle = sketch.circleId(0);
+    const auto first = sketch.tryApplyConstraint(
+        Constraint{TangentConstraint{line, circle}});
+    CHECK(first.status == ConstraintApplyStatus::Accepted);
+    const auto constrainedFingerprint = sketch.semanticFingerprint();
+    const auto nextId = sketch.nextConstraintId();
+
+    const auto reversed = sketch.tryApplyConstraint(
+        Constraint{TangentConstraint{circle, line}}, true);
+    CHECK(reversed.status == ConstraintApplyStatus::Redundant);
+    CHECK(reversed.constraintId == kInvalidConstraintId);
+    CHECK(reversed.relatedConstraintIds ==
+          std::vector<ConstraintId>{first.constraintId});
+    CHECK(sketch.constraints().size() == 1);
+    CHECK(sketch.nextConstraintId() == nextId);
+    CHECK(sketch.semanticFingerprint() == constrainedFingerprint);
+  }
+
+  {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 1.0});
+    Constraint unknown{HorizontalConstraint{sketch.lineId(0)}};
+    constexpr int unknownOrdinal = 999;
+    unknown.type = static_cast<ConstraintType>(unknownOrdinal);
+    CHECK(static_cast<int>(static_cast<ConstraintType>(unknown.type)) ==
+          unknownOrdinal);
+    const auto fingerprint = sketch.semanticFingerprint();
+    const auto nextId = sketch.nextConstraintId();
+
+    const auto applied = sketch.tryApplyConstraint(unknown);
+    CHECK(applied.status == ConstraintApplyStatus::Unsupported);
+    CHECK(applied.diagnosticCode ==
+          SketchMutationDiagnosticCode::UnsupportedConstraint);
+    CHECK(sketch.addConstraint(unknown) == kInvalidConstraintId);
+    CHECK(sketch.constraints().empty());
+    CHECK(sketch.nextConstraintId() == nextId);
+    CHECK(sketch.semanticFingerprint() == fingerprint);
+  }
+}
+
+void singularAngleAndTangentStartsAreDeterministic() {
+  const auto lineAngleDegrees = [](const Sketch& sketch) {
+    const auto& first = sketch.lines()[0];
+    const auto& second = sketch.lines()[1];
+    const double ax = first.end.xMm - first.start.xMm;
+    const double ay = first.end.yMm - first.start.yMm;
+    const double bx = second.end.xMm - second.start.xMm;
+    const double by = second.end.yMm - second.start.yMm;
+    const double cosine = std::clamp(
+        (ax * bx + ay * by) /
+            (std::hypot(ax, ay) * std::hypot(bx, by)),
+        -1.0, 1.0);
+    return std::acos(cosine) * 180.0 /
+           3.14159265358979323846;
+  };
+
+  const auto solveAngle = [&](bool antiparallel, bool reverseArguments,
+                              bool lockFirst) {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 0.0});
+    sketch.addLine(antiparallel ? Point{10.0, 5.0} : Point{0.0, 5.0},
+                   antiparallel ? Point{0.0, 5.0} : Point{10.0, 5.0});
+    sketch.addLine({100.0, 50.0}, {107.0, 53.0});
+    const auto unrelated = sketch.lines()[2];
+    if (lockFirst) {
+      const auto locked = sketch.tryApplyConstraint(
+          Constraint{LockConstraint{sketch.lineId(0)}});
+      CHECK(locked.accepted());
+    }
+    Constraint angle{AngleConstraint{
+        reverseArguments ? sketch.lineId(1) : sketch.lineId(0),
+        reverseArguments ? sketch.lineId(0) : sketch.lineId(1), 30.0}};
+    sketch.beginDeltaJournal();
+    const auto applied = sketch.tryApplyConstraint(angle);
+    if (applied.status != ConstraintApplyStatus::Accepted)
+      std::cerr << "singular angle rejected: status="
+                << static_cast<int>(applied.status)
+                << " solve=" << static_cast<int>(applied.solveResult.status)
+                << " diagnostic=" << applied.diagnostic << '\n';
+    CHECK(applied.status == ConstraintApplyStatus::Accepted);
+    const auto delta = sketch.finishDeltaJournal();
+    CHECK(!delta.empty());
+    CHECK(std::abs(lineAngleDegrees(sketch) - 30.0) <= 1e-6);
+    CHECK(sketch.lines()[2].start == unrelated.start);
+    CHECK(sketch.lines()[2].end == unrelated.end);
+    const auto solved = sketch.semanticFingerprint();
+    CHECK(sketch.applyDelta(delta, false));
+    CHECK(sketch.applyDelta(delta, true));
+    CHECK(sketch.semanticFingerprint() == solved);
+    return sketch;
+  };
+
+  const auto aligned = solveAngle(false, false, false);
+  const auto alignedSwapped = solveAngle(false, true, false);
+  CHECK(aligned.semanticFingerprint() == alignedSwapped.semanticFingerprint());
+  const auto opposed = solveAngle(true, false, false);
+  const auto opposedSwapped = solveAngle(true, true, false);
+  CHECK(opposed.semanticFingerprint() == opposedSwapped.semanticFingerprint());
+  static_cast<void>(solveAngle(false, false, true));
+
+  const auto solveTangent = [&](bool reverseLine, bool reverseArguments,
+                                bool lockLine = false) {
+    Sketch sketch;
+    sketch.addLine(reverseLine ? Point{10.0, 0.0} : Point{-10.0, 0.0},
+                   reverseLine ? Point{-10.0, 0.0} : Point{10.0, 0.0});
+    sketch.addCircle({0.0, 0.0}, 5.0);
+    sketch.addLine({100.0, 50.0}, {107.0, 53.0});
+    const auto unrelated = sketch.lines()[1];
+    const auto line = sketch.lineId(0);
+    const auto circle = sketch.circleId(0);
+    if (lockLine)
+      CHECK(sketch.tryApplyConstraint(Constraint{LockConstraint{line}})
+                .accepted());
+    sketch.beginDeltaJournal();
+    const auto applied = sketch.tryApplyConstraint(
+        reverseArguments ? Constraint{TangentConstraint{circle, line}}
+                         : Constraint{TangentConstraint{line, circle}});
+    CHECK(applied.status == ConstraintApplyStatus::Accepted);
+    const auto delta = sketch.finishDeltaJournal();
+    CHECK(!delta.empty());
+    const auto& resultLine = sketch.lines()[0];
+    const auto& resultCircle = sketch.circles()[0];
+    const double dx = resultLine.end.xMm - resultLine.start.xMm;
+    const double dy = resultLine.end.yMm - resultLine.start.yMm;
+    const double signedDistance =
+        (dx * (resultCircle.center.yMm - resultLine.start.yMm) -
+         dy * (resultCircle.center.xMm - resultLine.start.xMm)) /
+        std::hypot(dx, dy);
+    CHECK(std::abs(std::abs(signedDistance) - resultCircle.radiusMm) <= 1e-6);
+    CHECK(resultCircle.center.yMm > 0.0);
+    CHECK(sketch.lines()[1].start == unrelated.start);
+    CHECK(sketch.lines()[1].end == unrelated.end);
+    const auto solved = sketch.semanticFingerprint();
+    CHECK(sketch.applyDelta(delta, false));
+    CHECK(sketch.applyDelta(delta, true));
+    CHECK(sketch.semanticFingerprint() == solved);
+    const auto beforeDuplicate = sketch.semanticFingerprint();
+    const auto duplicate = sketch.tryApplyConstraint(
+        Constraint{TangentConstraint{circle, line}});
+    CHECK(duplicate.status == ConstraintApplyStatus::Redundant);
+    CHECK(sketch.semanticFingerprint() == beforeDuplicate);
+    if (!lockLine) {
+      const auto dragged = sketch.translatePoint(
+          PointReference{CircleCenterReference{circle}}, 2.0, 1.0);
+      CHECK(dragged.committed());
+      const auto& draggedLine = sketch.lines()[0];
+      const auto& draggedCircle = sketch.circles()[0];
+      const double draggedDx = draggedLine.end.xMm - draggedLine.start.xMm;
+      const double draggedDy = draggedLine.end.yMm - draggedLine.start.yMm;
+      const double draggedDistance =
+          (draggedDx * (draggedCircle.center.yMm - draggedLine.start.yMm) -
+           draggedDy * (draggedCircle.center.xMm - draggedLine.start.xMm)) /
+          std::hypot(draggedDx, draggedDy);
+      CHECK(std::abs(std::abs(draggedDistance) - draggedCircle.radiusMm) <=
+            1e-6);
+      CHECK(!analyzeConstraintSystem(sketch).conflicting);
+    }
+    return sketch;
+  };
+
+  const auto tangent = solveTangent(false, false);
+  const auto tangentSwapped = solveTangent(false, true);
+  CHECK(tangent.semanticFingerprint() == tangentSwapped.semanticFingerprint());
+  const auto tangentReversedLine = solveTangent(true, false);
+  CHECK(std::abs(tangent.circles()[0].center.yMm -
+                 tangentReversedLine.circles()[0].center.yMm) <= 1e-6);
+  static_cast<void>(solveTangent(false, false, true));
+
+  Sketch impossible;
+  impossible.addLine({-10.0, 0.0}, {10.0, 0.0});
+  impossible.addCircle({0.0, 0.0}, 5.0);
+  CHECK(impossible.tryApplyConstraint(
+             Constraint{LockConstraint{impossible.lineId(0)}})
+            .accepted());
+  CHECK(impossible.tryApplyConstraint(
+             Constraint{LockConstraint{impossible.circleId(0)}})
+            .accepted());
+  const auto before = impossible.semanticFingerprint();
+  const auto rejected = impossible.tryApplyConstraint(Constraint{
+      TangentConstraint{impossible.lineId(0), impossible.circleId(0)}});
+  CHECK(!rejected.accepted());
+  CHECK(impossible.semanticFingerprint() == before);
+}
+
+void nonDrivingConstraintsDoNotParticipateInSolverTopology() {
+  Sketch orientation;
+  orientation.addLine({0.0, 0.0}, {10.0, 2.0});
+  const auto line = orientation.lineId(0);
+  const auto baseline = analyzeConstraintSystem(orientation);
+
+  Constraint horizontal{HorizontalConstraint{line}};
+  const auto horizontalResult = orientation.tryApplyConstraint(horizontal);
+  CHECK(horizontalResult.accepted());
+  CHECK(orientation
+            .setConstraintMode(horizontalResult.constraintId,
+                               ConstraintMode::Disabled)
+            .committed());
+
+  const auto disabled = analyzeConstraintSystem(orientation);
+  CHECK(disabled.userEquationCount == baseline.userEquationCount);
+  CHECK(disabled.equationRank == baseline.equationRank);
+  CHECK(disabled.degreesOfFreedom == baseline.degreesOfFreedom);
+
+  Constraint vertical{VerticalConstraint{line}};
+  const auto verticalResult = orientation.tryApplyConstraint(vertical);
+  CHECK(verticalResult.accepted());
+
+  const auto disconnectedFixture = [](Constraint constraint) {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {5.0, 1.0});
+    sketch.addLine({20.0, 5.0}, {27.0, 8.0});
+    constraint.id = 101;
+    CHECK(sketch.restoreConstraints({constraint}));
+    const auto components = sketch.constraintComponents();
+    CHECK(components.size() == 2);
+    CHECK(components[0].geometryIds.size() == 1);
+    CHECK(components[1].geometryIds.size() == 1);
+
+    const auto untouched = sketch.lines()[1];
+    CHECK(sketch.translatePoint({sketch.lineId(0), true}, 3.0, -2.0)
+              .committed());
+    CHECK(sketch.lines()[1].start.xMm == untouched.start.xMm);
+    CHECK(sketch.lines()[1].start.yMm == untouched.start.yMm);
+    CHECK(sketch.lines()[1].end.xMm == untouched.end.xMm);
+    CHECK(sketch.lines()[1].end.yMm == untouched.end.yMm);
+    CHECK(sketch.lines()[1].elementId == untouched.elementId);
+  };
+
+  Constraint disabledParallel{
+      ParallelConstraint{GeometryId{1}, GeometryId{2}},
+      ConstraintMode::Disabled};
+  disconnectedFixture(disabledParallel);
+
+  Constraint referenceDistance{
+      DistanceConstraint{PointReference{GeometryId{1}, true},
+                         PointReference{GeometryId{2}, true}, std::nullopt},
+      ConstraintMode::Reference};
+  disconnectedFixture(referenceDistance);
+
+  const auto disabledCoincidentFixture = [] {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {5.0, 0.0});
+    sketch.addLine({20.0, 3.0}, {25.0, 3.0});
+    const auto first = sketch.lineId(0);
+    const auto second = sketch.lineId(1);
+    CHECK(sketch.restoreConstraints({Constraint{
+        CoincidentConstraint{PointReference{first, false},
+                             PointReference{second, true}},
+        ConstraintMode::Disabled, 201}}));
+    return sketch;
+  };
+  {
+    auto sketch = disabledCoincidentFixture();
+    const auto untouched = sketch.lines()[1];
+    CHECK(sketch.translatePoint({sketch.lineId(0), false}, 3.0, -2.0)
+              .committed());
+    CHECK(sketch.lines()[1].start == untouched.start);
+    CHECK(sketch.lines()[1].end == untouched.end);
+  }
+  {
+    auto sketch = disabledCoincidentFixture();
+    const auto untouched = sketch.lines()[1];
+    CHECK(sketch.translateElement(sketch.lines()[0].elementId, 3.0, -2.0)
+              .committed());
+    CHECK(sketch.lines()[1].start == untouched.start);
+    CHECK(sketch.lines()[1].end == untouched.end);
+  }
+  {
+    auto sketch = disabledCoincidentFixture();
+    const auto untouched = sketch.lines()[1];
+    CHECK(sketch.translateSelection({sketch.lines()[0].elementId}, {}, {},
+                                    3.0, -2.0)
+              .committed());
+    CHECK(sketch.lines()[1].start == untouched.start);
+    CHECK(sketch.lines()[1].end == untouched.end);
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 0.0});
+    sketch.addLine({2.0, 4.0}, {2.0, 8.0});
+    const auto carrier = sketch.lineId(0);
+    const auto follower = sketch.lineId(1);
+    CHECK(sketch.restoreConstraints({Constraint{
+        PointOnLineConstraint{carrier, PointReference{follower, true}},
+        ConstraintMode::Disabled, 202}}));
+    const auto untouched = sketch.lines()[1];
+    CHECK(sketch.translateElement(sketch.lines()[0].elementId, 5.0, 1.0)
+              .committed());
+    CHECK(sketch.lines()[1].start == untouched.start);
+    CHECK(sketch.lines()[1].end == untouched.end);
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({0.0, 0.0}, {10.0, 0.0});
+    const auto line = sketch.lineId(0);
+    CHECK(sketch.restoreConstraints({Constraint{
+        LockConstraint{line}, ConstraintMode::Disabled, 203}}));
+    CHECK(!sketch.isGeometryLocked(line));
+    CHECK(sketch.translateElement(sketch.lines()[0].elementId, 2.0, 1.0)
+              .committed());
+    sketch.removeLine(0);
+    CHECK(sketch.lines().empty());
+    CHECK(sketch.constraints().empty());
+  }
+
+  Sketch history;
+  history.addLine({0.0, 0.0}, {8.0, 0.0});
+  const auto historyResult = history.tryApplyConstraint(
+      Constraint{HorizontalConstraint{history.lineId(0)}});
+  CHECK(historyResult.accepted());
+  const auto modeOf = [&]() {
+    const auto index = history.constraintIndex(historyResult.constraintId);
+    CHECK(index.has_value());
+    return history.constraints()[*index].mode;
+  };
+  const auto checkTransition = [&](ConstraintMode before,
+                                   ConstraintMode after) {
+    CHECK(modeOf() == before);
+    history.beginDeltaJournal();
+    const auto mutation =
+        history.setConstraintMode(historyResult.constraintId, after);
+    if (!mutation.committed())
+      std::fprintf(stderr, "mode transition %u -> %u rejected: %u / %u\n",
+                   static_cast<unsigned>(before),
+                   static_cast<unsigned>(after),
+                   static_cast<unsigned>(mutation.status),
+                   static_cast<unsigned>(mutation.diagnosticCode));
+    CHECK(mutation.committed());
+    const auto delta = history.finishDeltaJournal();
+    CHECK(modeOf() == after);
+    CHECK(history.applyDelta(delta, false));
+    CHECK(modeOf() == before);
+    CHECK(history.applyDelta(delta, true));
+    CHECK(modeOf() == after);
+  };
+  checkTransition(ConstraintMode::Driving, ConstraintMode::Disabled);
+  checkTransition(ConstraintMode::Disabled, ConstraintMode::Driving);
+
+  Sketch referenceHistory;
+  referenceHistory.addLine({0.0, 0.0}, {8.0, 0.0});
+  const auto lengthResult = referenceHistory.tryApplyConstraint(Constraint{
+      LengthConstraint{referenceHistory.lineId(0), 8.0}});
+  CHECK(lengthResult.accepted());
+  referenceHistory.beginDeltaJournal();
+  CHECK(referenceHistory
+            .setConstraintMode(lengthResult.constraintId,
+                               ConstraintMode::Reference)
+            .committed());
+  const auto toReference = referenceHistory.finishDeltaJournal();
+  CHECK(referenceHistory.applyDelta(toReference, false));
+  CHECK(referenceHistory.constraints().front().mode ==
+        ConstraintMode::Driving);
+  CHECK(referenceHistory.applyDelta(toReference, true));
+  CHECK(referenceHistory.constraints().front().mode ==
+        ConstraintMode::Reference);
+
+  referenceHistory.beginDeltaJournal();
+  CHECK(referenceHistory
+            .setConstraintMode(lengthResult.constraintId,
+                               ConstraintMode::Driving, 8.0)
+            .committed());
+  const auto toDriving = referenceHistory.finishDeltaJournal();
+  CHECK(referenceHistory.applyDelta(toDriving, false));
+  CHECK(referenceHistory.constraints().front().mode ==
+        ConstraintMode::Reference);
+  CHECK(referenceHistory.applyDelta(toDriving, true));
+  CHECK(referenceHistory.constraints().front().mode ==
+        ConstraintMode::Driving);
+}
+
+void publicMutationBoundariesRejectNonFiniteAtomically() {
+  const std::array<double, 3> nonFinite{
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity()};
+  const auto unchangedAfter = [](Sketch& sketch, const auto& mutate) {
+    const auto fingerprint = sketch.semanticFingerprint();
+    const auto nextElement = sketch.nextElementId();
+    const auto nextGeometry = sketch.nextGeometryId();
+    const auto nextConstraint = sketch.nextConstraintId();
+    const auto nextDimension = sketch.nextDimensionId();
+    const auto lineCount = sketch.lines().size();
+    const auto circleCount = sketch.circles().size();
+    const auto arcCount = sketch.arcs().size();
+    const auto bezierCount = sketch.beziers().size();
+    sketch.beginDeltaJournal();
+    bool threw = false;
+    try {
+      mutate(sketch);
+    } catch (...) {
+      threw = true;
+    }
+    CHECK(!threw);
+    const auto delta = sketch.finishDeltaJournal();
+    CHECK(delta.empty());
+    CHECK(sketch.semanticFingerprint() == fingerprint);
+    CHECK(sketch.nextElementId() == nextElement);
+    CHECK(sketch.nextGeometryId() == nextGeometry);
+    CHECK(sketch.nextConstraintId() == nextConstraint);
+    CHECK(sketch.nextDimensionId() == nextDimension);
+    CHECK(sketch.lines().size() == lineCount);
+    CHECK(sketch.circles().size() == circleCount);
+    CHECK(sketch.arcs().size() == arcCount);
+    CHECK(sketch.beziers().size() == bezierCount);
+  };
+
+  for (const double value : nonFinite) {
+    for (int argument = 0; argument < 4; ++argument) {
+      Sketch sketch;
+      sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+      unchangedAfter(sketch, [=](Sketch& candidate) {
+        Point start{0.0, 0.0};
+        Point end{4.0, 2.0};
+        double* values[]{&start.xMm, &start.yMm, &end.xMm, &end.yMm};
+        *values[argument] = value;
+        const auto result = candidate.addLine(start, end);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+      Sketch grouped;
+      grouped.addLine({-3.0, -2.0}, {-1.0, -2.0});
+      unchangedAfter(grouped, [=](Sketch& candidate) {
+        Point start{0.0, 0.0};
+        Point end{4.0, 2.0};
+        double* values[]{&start.xMm, &start.yMm, &end.xMm, &end.yMm};
+        *values[argument] = value;
+        const auto result = candidate.addLine(start, end, 77);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+    }
+    for (int argument = 0; argument < 4; ++argument) {
+      Sketch sketch;
+      sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+      unchangedAfter(sketch, [=](Sketch& candidate) {
+        Point first{0.0, 0.0};
+        Point opposite{4.0, 2.0};
+        double* values[]{&first.xMm, &first.yMm, &opposite.xMm,
+                         &opposite.yMm};
+        *values[argument] = value;
+        const auto result = candidate.addRectangle(first, opposite);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+    }
+    for (int argument = 0; argument < 8; ++argument) {
+      Sketch sketch;
+      sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+      unchangedAfter(sketch, [=](Sketch& candidate) {
+        Point first{0.0, 0.0};
+        Point second{4.0, 0.0};
+        Point third{4.0, 2.0};
+        Point fourth{0.0, 2.0};
+        double* values[]{&first.xMm,  &first.yMm,  &second.xMm,
+                         &second.yMm, &third.xMm,  &third.yMm,
+                         &fourth.xMm, &fourth.yMm};
+        *values[argument] = value;
+        const auto result =
+            candidate.addRectangle(first, second, third, fourth);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+    }
+    for (int argument = 0; argument < 3; ++argument) {
+      Sketch sketch;
+      sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+      unchangedAfter(sketch, [=](Sketch& candidate) {
+        Point center{4.0, 2.0};
+        double radius = 3.0;
+        double* values[]{&center.xMm, &center.yMm, &radius};
+        *values[argument] = value;
+        const auto result = candidate.addCircle(center, radius);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+    }
+    for (int argument = 0; argument < 2; ++argument) {
+      Sketch sketch;
+      sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+      unchangedAfter(sketch, [=](Sketch& candidate) {
+        double width = 10.0;
+        double height = 8.0;
+        double* values[]{&width, &height};
+        *values[argument] = value;
+        const auto result = candidate.setRectangle(width, height);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+    }
+  }
+
+  {
+    Sketch sketch;
+    sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+    unchangedAfter(sketch, [](Sketch& candidate) {
+      const auto result = candidate.setRectangle(
+          std::numeric_limits<double>::denorm_min(), 10.0);
+      CHECK(!result.committed());
+      CHECK(result.diagnosticCode ==
+            SketchMutationDiagnosticCode::DegenerateGeometry);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+    unchangedAfter(sketch, [](Sketch& candidate) {
+      const Point same{2.0, 3.0};
+      const auto result =
+          candidate.addRectangle(same, same, same, same);
+      CHECK(!result.committed());
+      CHECK(result.diagnosticCode ==
+            SketchMutationDiagnosticCode::DegenerateGeometry);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+    unchangedAfter(sketch, [](Sketch& candidate) {
+      const double limit = std::numeric_limits<double>::max();
+      const auto result = candidate.addLine({-limit, 0.0}, {limit, 0.0});
+      CHECK(!result.committed());
+      CHECK(result.diagnosticCode ==
+            SketchMutationDiagnosticCode::NonFiniteGeometry);
+    });
+  }
+  {
+    Sketch curves;
+    curves.addLine({-3.0, -2.0}, {-1.0, -2.0});
+    unchangedAfter(curves, [](Sketch& candidate) {
+      const double limit = std::numeric_limits<double>::max();
+      candidate.addArc({limit, 0.0}, limit, 0.0, 1.0);
+    });
+    unchangedAfter(curves, [](Sketch& candidate) {
+      const double limit = std::numeric_limits<double>::max();
+      candidate.addBezier({-limit, 0.0}, {-limit, 1.0}, {limit, 1.0},
+                          {limit, 0.0});
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({-3.0, -2.0}, {-1.0, -2.0});
+    unchangedAfter(sketch, [](Sketch& candidate) {
+      const double limit = std::numeric_limits<double>::max();
+      const auto result = candidate.addCircle({limit, 0.0}, limit);
+      CHECK(!result.committed());
+      CHECK(result.diagnosticCode ==
+            SketchMutationDiagnosticCode::NonFiniteGeometry);
+    });
+  }
+
+  Sketch placement;
+  placement.addLine({0.0, 0.0}, {10.0, 0.0});
+  constexpr ConstraintId placementConstraint = 8301;
+  CHECK(placement.restoreConstraints({Constraint{
+      LengthConstraint{placement.lineId(0), std::nullopt},
+      ConstraintMode::Reference, placementConstraint}}));
+  Dimension dimension;
+  dimension.kind = DimensionKind::LineLength;
+  dimension.geometryId = placement.lineId(0);
+  dimension.constraintId = placementConstraint;
+  dimension.offsetMm = 2.0;
+  dimension.angleRad = 0.25;
+  CHECK(placement.storeDimension(dimension));
+  for (const double value : nonFinite) {
+    unchangedAfter(placement, [=](Sketch& candidate) {
+      const auto result = candidate.setDimensionPlacement(0, value, 0.25);
+      CHECK(!result.committed());
+      CHECK(result.diagnosticCode ==
+            SketchMutationDiagnosticCode::NonFiniteGeometry);
+    });
+    unchangedAfter(placement, [=](Sketch& candidate) {
+      const auto result = candidate.setDimensionPlacement(0, 2.0, value);
+      CHECK(!result.committed());
+      CHECK(result.diagnosticCode ==
+            SketchMutationDiagnosticCode::NonFiniteGeometry);
+    });
+  }
+
+  for (const double value : nonFinite) {
+    for (int argument = 0; argument < 2; ++argument) {
+      unchangedAfter(placement, [=](Sketch& candidate) {
+        const auto result = candidate.translateElement(
+            candidate.lines()[0].elementId,
+            argument == 0 ? value : 0.0,
+            argument == 1 ? value : 0.0);
+        CHECK(!result.committed());
+      });
+      unchangedAfter(placement, [=](Sketch& candidate) {
+        const auto result = candidate.translateSelection(
+            {candidate.lines()[0].elementId}, {}, {},
+            argument == 0 ? value : 0.0,
+            argument == 1 ? value : 0.0);
+        CHECK(!result.committed());
+      });
+      unchangedAfter(placement, [=](Sketch& candidate) {
+        const auto result = candidate.translateLinesByIds(
+            {candidate.lineId(0)}, argument == 0 ? value : 0.0,
+            argument == 1 ? value : 0.0);
+        CHECK(!result.committed());
+      });
+      unchangedAfter(placement, [=](Sketch& candidate) {
+        const auto result = candidate.translatePoint(
+            {candidate.lineId(0), true},
+            argument == 0 ? value : 0.0,
+            argument == 1 ? value : 0.0);
+        CHECK(!result.committed());
+        CHECK(result.diagnosticCode ==
+              SketchMutationDiagnosticCode::NonFiniteGeometry);
+      });
+    }
+  }
+
+  const auto outerJournalRejectsAtomically = [](Sketch& sketch,
+                                                const auto& mutate) {
+    const auto fingerprint = sketch.semanticFingerprint();
+    sketch.beginDeltaJournal();
+    const auto result = mutate(sketch);
+    CHECK(!result.committed());
+    CHECK(result.diagnosticCode ==
+          SketchMutationDiagnosticCode::NonFiniteGeometry);
+    const auto delta = sketch.finishDeltaJournal();
+    CHECK(delta.empty());
+    CHECK(sketch.semanticFingerprint() == fingerprint);
+    CHECK(std::isfinite(sketch.widthMm()));
+    CHECK(std::isfinite(sketch.heightMm()));
+  };
+  const double halfLimit = std::numeric_limits<double>::max() * 0.5;
+  {
+    Sketch sketch;
+    sketch.addLine({halfLimit, 0.0}, {halfLimit, 1.0});
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateElement(
+          candidate.lines()[0].elementId,
+          std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({halfLimit, 0.0}, {halfLimit, 1.0});
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateSelection(
+          {candidate.lines()[0].elementId}, {}, {},
+          std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({halfLimit, 0.0}, {halfLimit, 1.0});
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateLinesByIds(
+          {candidate.lineId(0)}, std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addLine({halfLimit, 0.0}, {halfLimit, 1.0});
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translatePoint(
+          {candidate.lineId(0), true},
+          std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addCircle({halfLimit, 0.0}, 1.0);
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateCircleById(
+          candidate.circleId(0), std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addArc({halfLimit, 0.0}, 1.0, 0.0, 1.0);
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateArcById(
+          candidate.arcId(0), std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  {
+    Sketch sketch;
+    sketch.addBezier({halfLimit, 0.0}, {halfLimit, 1.0},
+                     {halfLimit, 2.0}, {halfLimit, 3.0});
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateBezierById(
+          candidate.bezierId(0), std::numeric_limits<double>::max(), 0.0);
+    });
+  }
+  const auto linkedOverflowFixture = [] {
+    const double limit = std::numeric_limits<double>::max();
+    const double center = limit * 0.5;
+    Sketch sketch;
+    CHECK(sketch.addLine({center, 0.0}, {center, 1e292}).committed());
+    CHECK(sketch.addCircle({center, 0.0}, limit * 0.25).committed());
+    PointReference circleCenter;
+    circleCenter.circleId = sketch.circleId(0);
+    CHECK(sketch.restoreConstraints({Constraint{
+        CoincidentConstraint{PointReference{sketch.lineId(0), true},
+                             circleCenter},
+        ConstraintMode::Driving, 8401}}));
+    return sketch;
+  };
+  {
+    auto sketch = linkedOverflowFixture();
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateElement(
+          candidate.lines()[0].elementId,
+          std::numeric_limits<double>::max() * 0.4, 0.0);
+    });
+  }
+  {
+    auto sketch = linkedOverflowFixture();
+    outerJournalRejectsAtomically(sketch, [](Sketch& candidate) {
+      return candidate.translateSelection(
+          {candidate.lines()[0].elementId}, {}, {},
+          std::numeric_limits<double>::max() * 0.4, 0.0);
+    });
+  }
+  {
+    const double limit = std::numeric_limits<double>::max();
+    Sketch sketch;
+    sketch.addArc({limit * 0.75, 0.0}, limit * 0.5,
+                  3.14159265358979323846, 0.1);
+    CHECK(sketch.arcs().size() == 1);
+    outerJournalRejectsAtomically(sketch, [=](Sketch& candidate) {
+      return candidate.moveArcEndpointReshapeById(
+          candidate.arcId(0), true, {limit * 0.95, 0.0});
+    });
+  }
+
+  // Arc and Bezier already had finite guards. Keep their rejection semantics
+  // and allocation counters unchanged while the neighbouring APIs are fixed.
+  for (const double value : nonFinite) {
+    Sketch curves;
+    curves.addArc({0.0, 0.0}, 4.0, 0.0, 1.0);
+    curves.addBezier({0.0, 0.0}, {1.0, 2.0}, {3.0, 2.0}, {4.0, 0.0});
+    unchangedAfter(curves, [=](Sketch& candidate) {
+      candidate.addArc({value, 0.0}, 4.0, 0.0, 1.0);
+    });
+    unchangedAfter(curves, [=](Sketch& candidate) {
+      candidate.addBezier({0.0, 0.0}, {1.0, value}, {3.0, 2.0},
+                          {4.0, 0.0});
+    });
+    for (int argument = 0; argument < 2; ++argument) {
+      unchangedAfter(curves, [=](Sketch& candidate) {
+        CHECK(!candidate.translateArcById(
+            candidate.arcId(0), argument == 0 ? value : 0.0,
+            argument == 1 ? value : 0.0));
+      });
+      unchangedAfter(curves, [=](Sketch& candidate) {
+        CHECK(!candidate.translateBezierById(
+            candidate.bezierId(0), argument == 0 ? value : 0.0,
+            argument == 1 ? value : 0.0));
+      });
+    }
+  }
+}
+
 void interactiveConstraintSemanticsStayInSync() {
   const auto makeCase = [](ConstraintType type) {
     Sketch sketch;
@@ -1959,6 +2745,10 @@ int main() {
   equationSolverIgnoresPersistedConstraintVectorOrder();
   arcMidpointAndComponentDiagnosticsAreTruthful();
   constraintPreflightClassifiesAndRollsBackAtomically();
+  duplicatePolicyAndUnknownTypesFailClosed();
+  singularAngleAndTangentStartsAreDeterministic();
+  nonDrivingConstraintsDoNotParticipateInSolverTopology();
+  publicMutationBoundariesRejectNonFiniteAtomically();
   interactiveConstraintSemanticsStayInSync();
   r0FailedSolveIsAtomicAndObservable();
   rectangleSlotPolygonChainsStayExplicit();

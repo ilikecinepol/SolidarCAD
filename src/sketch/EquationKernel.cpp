@@ -164,6 +164,14 @@ Dual dualAcos(Dual value) {
   const double divisor = std::sqrt(std::max(0.0, 1.0 - clamped * clamped));
   return {std::acos(clamped), divisor > 1e-15 ? -value.derivative / divisor : 0.0};
 }
+Dual dualAtan2(Dual y, Dual x) {
+  const double denominator = x.value * x.value + y.value * y.value;
+  return {std::atan2(y.value, x.value),
+          denominator > 1e-28
+              ? (x.value * y.derivative - y.value * x.derivative) /
+                    denominator
+              : 0.0};
+}
 
 template <typename Scalar>
 struct Point2 {
@@ -482,7 +490,7 @@ std::vector<EvaluationRow> evaluateConstraint(const Sketch& sketch,
                                                const Constraint& constraint,
                                                std::optional<std::size_t> seed) {
   std::vector<EvaluationRow> rows;
-  if (constraint.mode != ConstraintMode::Driving) return rows;
+  if (!participatesInConstraintSystem(constraint)) return rows;
   EvaluationContext context(sketch, layout, seed);
   const auto malformed = [&] { addInvalid(rows, EquationStatus::MalformedReference); };
   const auto unsupported = [&] { addInvalid(rows, EquationStatus::UnsupportedCombination); };
@@ -618,16 +626,38 @@ std::vector<EvaluationRow> evaluateConstraint(const Sketch& sketch,
           break;
         }
         const Dual cosine = normalizedDot(a, b, status);
-        if (status != EquationStatus::Valid ||
-            std::abs(std::abs(cosine.value) - 1.0) <= 1e-14) {
-          addInvalid(rows, status == EquationStatus::Valid
-                               ? EquationStatus::DegenerateGeometry
-                               : status,
-                     EquationUnit::Angle);
+        if (status != EquationStatus::Valid) {
+          addInvalid(rows, status, EquationUnit::Angle);
           break;
         }
-        addRow(rows, dualAcos(cosine) - Dual{degrees * kPi / 180.0},
-               EquationUnit::Angle, status);
+        const double target = degrees * kPi / 180.0;
+        const Dual sine = normalizedCross(a, b, status);
+        if (sine.value == 0.0 &&
+            std::abs(std::abs(cosine.value) - 1.0) <= 1e-14) {
+          // acos has an unusable derivative at exactly parallel/antiparallel
+          // starts. Preserve its residual value and borrow only the derivative
+          // from an oriented atan2 branch for the first step.
+          // Stable IDs make argument permutation select the same physical
+          // branch; once the pose is non-singular the historical acos residual
+          // resumes unchanged.
+          const double branch = constraint.firstGeometry <
+                                        constraint.secondGeometry
+                                    ? 1.0
+                                    : -1.0;
+          Dual orientedSine = sine * Dual{branch};
+          // atan2 distinguishes +0 from -0 at the antiparallel branch cut.
+          // Normalize the value while preserving the useful derivative.
+          if (orientedSine.value == 0.0) orientedSine.value = 0.0;
+          const Dual oriented = dualAtan2(orientedSine, cosine);
+          const Dual regularizedAngle{
+              std::acos(std::clamp(cosine.value, -1.0, 1.0)),
+              oriented.derivative};
+          addRow(rows, regularizedAngle - Dual{target},
+                 EquationUnit::Angle, status);
+        } else {
+          addRow(rows, dualAcos(cosine) - Dual{target},
+                 EquationUnit::Angle, status);
+        }
       }
       break;
     }
@@ -743,13 +773,31 @@ std::vector<EvaluationRow> evaluateConstraint(const Sketch& sketch,
         // Tangency is defined against the line carrier.  Using the clamped
         // segment distance makes any endpoint lying on the circle appear
         // tangent even when the line direction cuts through the circle.
-        const Dual centerDistance =
-            dualAbs(signedLineDistance(data.center, line, status));
-        if (status != EquationStatus::Valid || centerDistance.value <= 1e-14) {
+        const Dual signedDistance = signedLineDistance(data.center, line, status);
+        if (status != EquationStatus::Valid || data.radius.value <= 1e-14) {
           addInvalid(rows, status == EquationStatus::Valid
                                ? EquationStatus::DegenerateGeometry
                                : status);
           break;
+        }
+        Dual centerDistance = dualAbs(signedDistance);
+        if (signedDistance.value == 0.0) {
+          // abs has zero derivative exactly when the radial center lies on the
+          // carrier. Pick one deterministic physical side. Compensating for
+          // endpoint reversal keeps the chosen side invariant for the same
+          // geometric line, while the stable IDs make argument permutation
+          // irrelevant.
+          const double dx = line.end.x.value - line.start.x.value;
+          const double dy = line.end.y.value - line.start.y.value;
+          const bool canonicalDirection =
+              dx > 0.0 || (dx == 0.0 && dy > 0.0);
+          const GeometryId lineId = firstLine ? constraint.firstGeometry
+                                              : constraint.secondGeometry;
+          const GeometryId radialId = firstRadial ? constraint.firstGeometry
+                                                  : constraint.secondGeometry;
+          const double stableSide = lineId < radialId ? 1.0 : -1.0;
+          centerDistance = signedDistance *
+                           Dual{stableSide * (canonicalDirection ? 1.0 : -1.0)};
         }
         addRow(rows, centerDistance - data.radius,
                EquationUnit::Length,
@@ -764,7 +812,7 @@ std::vector<EvaluationRow> evaluateConstraint(const Sketch& sketch,
         const GeometryId radialId = firstRadial ? constraint.firstGeometry
                                                 : constraint.secondGeometry;
         for (const auto& peer : sketch.constraints()) {
-          if (peer.mode != ConstraintMode::Driving) continue;
+          if (!participatesInConstraintSystem(peer)) continue;
           const auto* pointOnCircle =
               std::get_if<PointOnCircleConstraint>(&peer.payload());
           if (!pointOnCircle || pointOnCircle->circleId != radialId) continue;
@@ -1017,6 +1065,10 @@ constexpr std::array kRules{
     ConstraintEquationRule{ConstraintType::PointOnYAxis, 1, 1, EquationUnit::Length, false},
 };
 
+static_assert(kRules.size() ==
+              static_cast<std::size_t>(ConstraintType::Count),
+              "Every production ConstraintType needs an equation rule");
+
 }  // namespace
 
 ConstraintGraph ConstraintGraph::build(const Sketch& sketch) {
@@ -1046,6 +1098,7 @@ ConstraintGraph ConstraintGraph::build(const Sketch& sketch) {
   std::vector<std::pair<const Constraint*, std::vector<GeometryId>>> references;
   references.reserve(sketch.constraints().size());
   for (const auto& constraint : sketch.constraints()) {
+    if (!participatesInConstraintSystem(constraint)) continue;
     auto referenced = referencedGeometry(sketch, constraint);
     std::erase_if(referenced, [&](GeometryId id) { return !index.contains(id); });
     for (std::size_t i = 1; i < referenced.size(); ++i)
@@ -1058,7 +1111,7 @@ ConstraintGraph ConstraintGraph::build(const Sketch& sketch) {
   std::vector<ConstraintId> orphanConstraintIds;
   for (const auto& [constraint, referenced] : references) {
     if (referenced.empty()) {
-      if (constraint->mode == ConstraintMode::Driving)
+      if (participatesInConstraintSystem(*constraint))
         orphanConstraintIds.push_back(constraint->id);
       continue;
     }
@@ -1115,7 +1168,7 @@ ParameterLayout ParameterLayout::build(
   std::sort(ignored.begin(), ignored.end());
   ignored.erase(std::unique(ignored.begin(), ignored.end()), ignored.end());
   for (const auto& constraint : sketch.constraints()) {
-    if (constraint.mode != ConstraintMode::Driving ||
+    if (!participatesInConstraintSystem(constraint) ||
         static_cast<ConstraintType>(constraint.type) != ConstraintType::Lock ||
         std::binary_search(ignored.begin(), ignored.end(), constraint.id))
       continue;
@@ -1405,13 +1458,13 @@ std::optional<EquationSystem> ConstraintEquationRegistry::assemble(
   return assembleWithLayout(sketch, component, std::move(*layout), ignored);
 }
 
-const ConstraintEquationRule& ConstraintEquationRegistry::rule(
+const ConstraintEquationRule* ConstraintEquationRegistry::rule(
     ConstraintType type) noexcept {
   const auto found = std::find_if(kRules.begin(), kRules.end(),
                                   [type](const auto& item) {
                                     return item.type == type;
                                   });
-  return found == kRules.end() ? kRules.front() : *found;
+  return found == kRules.end() ? nullptr : &*found;
 }
 
 std::span<const ConstraintEquationRule> ConstraintEquationRegistry::rules()

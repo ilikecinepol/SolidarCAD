@@ -53,6 +53,7 @@ class SketchCanvas final : public QWidget {
     Bezier,
     Projection,
     AutoDimension,
+    RadiusDimension,
     LockConstraint,
     OrthogonalConstraint,
     CoincidentConstraint,
@@ -302,6 +303,7 @@ signals:
   void positionDimensionEditor();
   void commitDimensionEditor();
   void hideDimensionEditor();
+  [[nodiscard]] bool tryDeleteSelection();
   void notifyGeometryChanged();
   [[nodiscard]] SketchCommandResult executeCommand(
       const SketchCommand& command);

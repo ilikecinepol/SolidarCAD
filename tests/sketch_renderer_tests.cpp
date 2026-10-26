@@ -19,6 +19,27 @@
 #include <type_traits>
 #include <vector>
 
+namespace solidar::sketch {
+
+class SketchTestAccess final {
+ public:
+  static void populateDenseLines(Sketch& sketch, std::size_t count) {
+    sketch.lines_.reserve(count);
+    sketch.lineIds_.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+      const double x = static_cast<double>(index);
+      sketch.lines_.push_back({{x, 0.0}, {x, 1.0}, index + 1});
+      sketch.lineIds_.push_back(index + 1);
+    }
+    sketch.nextElementId_ = count + 1;
+    sketch.nextGeometryId_ = count + 1;
+    sketch.invalidateStructureIndexes();
+    sketch.updateBounds();
+  }
+};
+
+}  // namespace solidar::sketch
+
 namespace {
 
 using namespace solidar;
@@ -382,10 +403,8 @@ int main(int argc, char** argv) {
   // committed sketch, reference profile, and a scene-sketch reference.
   constexpr std::size_t denseGeometryCount = 10000;
   sketch::Sketch denseMain;
-  for (std::size_t index = 0; index < denseGeometryCount; ++index) {
-    const double x = static_cast<double>(index);
-    denseMain.addLine({x, 0.0}, {x, 1.0});
-  }
+  sketch::SketchTestAccess::populateDenseLines(denseMain,
+                                                denseGeometryCount);
   sketch::Sketch denseProfile = denseMain;
   sketch::Sketch denseReference = denseMain;
   std::vector<SketchSceneReference> denseReferences;

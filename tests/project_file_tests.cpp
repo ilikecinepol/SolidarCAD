@@ -1351,6 +1351,50 @@ int main(int argc, char* argv[]) {
           loadedSketch->geometry.semanticFingerprint());
   }
 
+  // Disabled and reference constraints survive persistence, but neither one
+  // joins otherwise independent solver components after load.
+  {
+    solidar::Document inactiveDocument;
+    auto& inactiveSketch = inactiveDocument.addSketch("Inactive constraints");
+    const auto inactiveSketchId = inactiveSketch.id;
+    inactiveSketch.geometry.addLine({0.0, 0.0}, {5.0, 1.0});
+    inactiveSketch.geometry.addLine({20.0, 5.0}, {27.0, 8.0});
+    const auto first = inactiveSketch.geometry.lineId(0);
+    const auto second = inactiveSketch.geometry.lineId(1);
+    CHECK(inactiveSketch.geometry.restoreConstraints({
+        solidar::sketch::Constraint{
+            solidar::sketch::ParallelConstraint{first, second},
+            solidar::sketch::ConstraintMode::Disabled, 7101},
+        solidar::sketch::Constraint{
+            solidar::sketch::DistanceConstraint{
+                solidar::sketch::PointReference{first, true},
+                solidar::sketch::PointReference{second, true}, std::nullopt},
+            solidar::sketch::ConstraintMode::Reference, 7102}}));
+    const QString inactivePath =
+        directory.filePath("inactive-constraints-v3.solidar");
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        inactivePath, inactiveDocument, &error));
+
+    solidar::Document loadedInactiveDocument;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        inactivePath, &loadedInactiveDocument, &error));
+    const auto* loadedInactive =
+        loadedInactiveDocument.findSketch(inactiveSketchId);
+    CHECK(loadedInactive);
+    CHECK(loadedInactive->geometry.constraints().size() == 2);
+    CHECK(loadedInactive->geometry.constraints()[0].mode ==
+          solidar::sketch::ConstraintMode::Disabled);
+    CHECK(loadedInactive->geometry.constraints()[1].mode ==
+          solidar::sketch::ConstraintMode::Reference);
+    const auto components = loadedInactive->geometry.constraintComponents();
+    CHECK(components.size() == 2);
+    CHECK(components[0].geometryIds.size() == 1);
+    CHECK(components[1].geometryIds.size() == 1);
+    const auto diagnostics =
+        solidar::sketch::analyzeConstraintSystem(loadedInactive->geometry);
+    CHECK(diagnostics.userEquationCount == 0);
+  }
+
   // A native Line + Arc profile remains editable after a complete project
   // round-trip. IDs and feature parameters must survive serialization, while
   // the B-Rep is rebuilt from the restored parametric history.
@@ -4339,6 +4383,83 @@ int main(int argc, char* argv[]) {
         {lineId}, -1.0, 0.5);
     CHECK(continued.committed());
     CHECK(loaded.sketches[0].geometry.deltaJournalDepth() == 0);
+  }
+
+  // Singular Angle/Tangent starts are solved before persistence. The v3
+  // round-trip must preserve the selected deterministic branch exactly.
+  {
+    solidar::project::SavedSketch saved;
+    auto& geometry = saved.geometry;
+    geometry.addLine({0.0, 0.0}, {10.0, 0.0});
+    geometry.addLine({0.0, 5.0}, {10.0, 5.0});
+    geometry.addLine({40.0, 0.0}, {60.0, 0.0});
+    geometry.addCircle({50.0, 0.0}, 5.0);
+    CHECK(geometry.tryApplyConstraint(solidar::sketch::Constraint{
+               solidar::sketch::AngleConstraint{
+                   geometry.lineId(0), geometry.lineId(1), 30.0}})
+              .accepted());
+    CHECK(geometry.tryApplyConstraint(solidar::sketch::Constraint{
+               solidar::sketch::TangentConstraint{
+                   geometry.lineId(2), geometry.circleId(0)}})
+              .accepted());
+    const auto solvedFingerprint = geometry.semanticFingerprint();
+
+    solidar::project::ProjectData data;
+    data.sketches.push_back(std::move(saved));
+    const QString path =
+        directory.filePath("singular-angle-tangent-v3.solidar");
+    QString singularError;
+    CHECK(solidar::project::ProjectFile::save(path, data, &singularError));
+    solidar::project::ProjectData loaded;
+    CHECK(solidar::project::ProjectFile::load(path, &loaded, &singularError));
+    CHECK(loaded.sketches.size() == 1);
+    CHECK(loaded.sketches[0].geometry.semanticFingerprint() ==
+          solvedFingerprint);
+    CHECK(loaded.sketches[0].geometry.constraints().size() == 2);
+  }
+
+  // The v4 writer/validator pipeline accepts a Radius-backed annotation and
+  // restores its stable identity and placement without a format-version bump.
+  {
+    solidar::Document radiusDocument;
+    auto& record = radiusDocument.addSketch("Radius v4 annotation");
+    const auto sketchId = record.id;
+    CHECK(record.geometry.addCircle({0.0, 0.0}, 9.0).committed());
+    const auto circleId = record.geometry.circleId(0);
+    const auto constraintId = record.geometry.addConstraint(
+        solidar::sketch::Constraint{
+            solidar::sketch::RadiusConstraint{circleId, 9.0}});
+    CHECK(constraintId != solidar::sketch::kInvalidConstraintId);
+    solidar::sketch::Dimension radius;
+    radius.kind = solidar::sketch::DimensionKind::CircleRadius;
+    radius.geometryId = circleId;
+    radius.constraintId = constraintId;
+    radius.valueMm = 9.0;
+    radius.offsetMm = 6.0;
+    radius.angleRad = 0.75;
+    CHECK(record.geometry.storeDimension(radius));
+
+    const QString path = directory.filePath("radius-annotation-v4.solidar");
+    const solidar::project::ProjectPersistenceState v4{
+        solidar::project::ProjectPersistenceFormat::V4};
+    QString radiusError;
+    CHECK(solidar::project::ProjectFile::saveDocument(
+        path, radiusDocument, v4, &radiusError));
+    solidar::Document restored;
+    CHECK(solidar::project::ProjectFile::loadDocument(
+        path, &restored, &radiusError));
+    const auto* restoredRecord = restored.findSketch(sketchId);
+    CHECK(restoredRecord);
+    CHECK(restoredRecord->geometry.dimensions().size() == 1);
+    CHECK(restoredRecord->geometry.dimensions()[0].kind ==
+          solidar::sketch::DimensionKind::CircleRadius);
+    CHECK(solidar::test::near(
+        restoredRecord->geometry.dimensions()[0].offsetMm, 6.0));
+    CHECK(solidar::test::near(
+        restoredRecord->geometry.dimensions()[0].angleRad, 0.75));
+    CHECK(restoredRecord->geometry.constraints().size() == 1);
+    CHECK(restoredRecord->geometry.constraints()[0].type ==
+          solidar::sketch::ConstraintType::Radius);
   }
 
   // R0 compatibility: geometry accepted by the existing persistence schema

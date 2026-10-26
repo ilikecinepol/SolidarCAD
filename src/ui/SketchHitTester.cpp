@@ -182,6 +182,7 @@ bool SketchHitTester::accepts(const SketchPickTarget& target,
     switch (dimension->kind) {
       case sketch::DimensionKind::LineLength:
       case sketch::DimensionKind::CircleDiameter:
+      case sketch::DimensionKind::CircleRadius:
       case sketch::DimensionKind::LineAngle:
       case sketch::DimensionKind::LineDistance:
         return dimension->geometryId != sketch::kInvalidGeometryId;

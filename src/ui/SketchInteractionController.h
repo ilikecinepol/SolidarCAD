@@ -21,6 +21,7 @@ enum class SketchInteractionTool {
   Bezier,
   Projection,
   AutoDimension,
+  RadiusDimension,
   LockConstraint,
   OrthogonalConstraint,
   CoincidentConstraint,
@@ -98,6 +99,7 @@ struct SketchAutoDimensionState {
   std::optional<sketch::GeometryId> angleSecondLine;
   std::optional<sketch::GeometryId> distanceFirstLine;
   std::optional<sketch::GeometryId> distanceSecondLine;
+  bool circleRadius{};
 };
 
 // Semantic identity for a dimension interaction. Dimensions do not yet own a
