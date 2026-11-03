@@ -97,11 +97,22 @@ int main(int argc, char** argv) {
     CHECK(app.palette().color(QPalette::Base) == c.surface);
     CHECK(app.palette().color(QPalette::Highlight) == c.accent);
     CHECK(app.palette().color(QPalette::HighlightedText) == c.onAccent);
+    CHECK(app.styleSheet().contains(
+        QStringLiteral("QTreeView::item")));
+    CHECK(app.styleSheet().contains(
+        QStringLiteral("alternate-background-color: %1")
+            .arg(c.surfaceAlt.name(QColor::HexRgb))));
+    CHECK(app.styleSheet().contains(
+        QStringLiteral("color: %1; background: transparent; height: 26px")
+            .arg(c.textPrimary.name(QColor::HexRgb))));
     if (resolved == ResolvedTheme::Dark) {
       CHECK(!app.styleSheet().contains(QStringLiteral("background: #ffffff"),
                                        Qt::CaseInsensitive));
     }
     CHECK(!app.styleSheet().contains(QLatin1Char('$')));
+    CHECK(!app.styleSheet().contains(QStringLiteral("Alt")));
+    CHECK(!app.styleSheet().contains(QStringLiteral("Soft")));
+    CHECK(!app.styleSheet().contains(QStringLiteral("Hover")));
   }
 
   return EXIT_SUCCESS;

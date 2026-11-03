@@ -38,6 +38,7 @@ bool equivalentV4ModelCandidate(const ProjectFormatV4ModelCandidate& lhs,
          leftEnvelope.deferredUnknowns == rightEnvelope.deferredUnknowns &&
          leftPayload.topologySites == rightPayload.topologySites &&
          leftPayload.featureOwners == rightPayload.featureOwners &&
+         leftPayload.rebuildWork == rightPayload.rebuildWork &&
          left.topologyReferences == right.topologyReferences &&
          left.topologyInspections == right.topologyInspections &&
          left.deferredUnsupported == right.deferredUnsupported &&

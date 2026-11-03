@@ -14,6 +14,12 @@ class ModelRibbon final : public QWidget {
   explicit ModelRibbon(QWidget* parent = nullptr);
   void clearActiveTool();
   void setRulerActive(bool active);
+  void setAuthoringEnabled(bool enabled, bool moveOnly = false);
+  void setMeshQualityControlEnabled(bool enabled);
+  void setCreateComponentFromBodyEnabled(bool enabled);
+  void setComponentHomePlacementEnabled(bool adoptEnabled,
+                                        bool restoreEnabled);
+  void setComponentEditing(bool active, bool rootComponent = false);
 
  signals:
   void createSketchRequested();
@@ -30,6 +36,9 @@ class ModelRibbon final : public QWidget {
   void mirrorRequested();
   void linearPatternRequested();
   void circularPatternRequested();
+  void createComponentFromBodyRequested();
+  void setComponentHomePlacementRequested();
+  void restoreComponentHomePlacementRequested();
   void rulerToggled(bool active);
   void displayModeRequested(int mode);
   void meshQualityRequested(int quality);
@@ -37,6 +46,10 @@ class ModelRibbon final : public QWidget {
  private:
   QButtonGroup* toolGroup_{nullptr};
   QToolButton* rulerButton_{nullptr};
+  QToolButton* meshQualityButton_{nullptr};
+  QToolButton* createComponentFromBodyButton_{nullptr};
+  QToolButton* setComponentHomePlacementButton_{nullptr};
+  QToolButton* restoreComponentHomePlacementButton_{nullptr};
 };
 
 }  // namespace solidar

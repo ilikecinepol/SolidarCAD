@@ -7,6 +7,8 @@
 #include <QStyleFactory>
 #include <QStyleHints>
 
+#include <algorithm>
+
 namespace solidar {
 namespace {
 
@@ -30,8 +32,13 @@ QString substituteColors(QString qss, const ThemeColors& c) {
       {"$danger", c.danger.name(QColor::HexRgb)},
       {"$warning", c.warning.name(QColor::HexRgb)},
   };
-  for (auto it = tokens.cbegin(); it != tokens.cend(); ++it)
-    qss.replace(it.key(), it.value());
+  auto keys = tokens.keys();
+  std::sort(keys.begin(), keys.end(), [](const QString& left,
+                                         const QString& right) {
+    if (left.size() != right.size()) return left.size() > right.size();
+    return left < right;
+  });
+  for (const QString& key : keys) qss.replace(key, tokens.value(key));
   return qss;
 }
 
@@ -175,10 +182,15 @@ QString ThemeManager::buildStylesheet(const ThemeColors& c) {
     QCheckBox:disabled, QRadioButton:disabled { color: $textDisabled; }
 
     QTreeWidget, QTreeView, QListWidget { background: $surface; color: $textPrimary;
-      border: none; outline: 0; }
-    QTreeWidget::item, QTreeView::item, QListWidget::item { height: 26px; border-radius: 5px; }
-    QTreeWidget::item:selected, QTreeView::item:selected, QListWidget::item:selected {
+      alternate-background-color: $surfaceAlt; border: none; outline: 0; }
+    QTreeWidget::item, QTreeView::item, QListWidget::item {
+      color: $textPrimary; background: transparent; height: 26px; border-radius: 5px; }
+    QTreeWidget::item:selected, QTreeView::item:selected, QListWidget::item:selected,
+    QTreeWidget::item:selected:!active, QTreeView::item:selected:!active,
+    QListWidget::item:selected:!active {
       background: $accentSoft; color: $selectionText; }
+    QTreeWidget::item:disabled, QTreeView::item:disabled, QListWidget::item:disabled {
+      color: $textDisabled; }
     QHeaderView::section { background: $surfaceAlt; color: $textSecondary;
       border: none; border-bottom: 1px solid $border; padding: 4px 8px; }
 

@@ -21,12 +21,14 @@
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 
 #include <array>
 #include "TestAssertions.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -52,7 +54,12 @@ bool sameMeshState(const solidar::BodyRenderMesh& a,
       a.triangles().size() != b.triangles().size() ||
       a.vertices().size() != b.vertices().size() ||
       a.triangleIndices() != b.triangleIndices() ||
-      a.edges().size() != b.edges().size())
+      a.edges().size() != b.edges().size() ||
+      a.localBounds().has_value() != b.localBounds().has_value())
+    return false;
+  if (a.localBounds() &&
+      (!samePoint(a.localBounds()->minimum(), b.localBounds()->minimum()) ||
+       !samePoint(a.localBounds()->maximum(), b.localBounds()->maximum())))
     return false;
 
   for (std::size_t i = 0; i < a.triangles().size(); ++i) {
@@ -184,6 +191,13 @@ int main() {
   solidar::BodyRenderMesh cache;
   const TopoDS_Shape box = BRepPrimAPI_MakeBox(80.0, 35.0, 50.0).Shape();
   cache.rebuild(box);
+  CHECK(cache.localBounds());
+  CHECK(std::abs(cache.localBounds()->minimum().x) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->minimum().y) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->minimum().z) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->maximum().x - 80.0) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->maximum().y - 35.0) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->maximum().z - 50.0) <= 1e-6);
   CHECK(cache.faceCount() == 6);
   CHECK(!cache.triangles().empty());
   CHECK(!cache.edges().empty());
@@ -318,6 +332,28 @@ int main() {
       BRepPrimAPI_MakeBox(25.0, 20.0, 15.0).Shape();
   BRepTools::Clean(isolatedSource);
   CHECK(!hasTriangulation(isolatedSource));
+
+  // A B-Rep's own TopLoc_Location belongs to definition-local geometry and is
+  // applied by the CPU mesh. Assembly occurrence placement is a separate
+  // renderer matrix and never enters this source cache.
+  gp_Trsf internalPlacement;
+  internalPlacement.SetTranslation(gp_Vec(100.0, -20.0, 7.0));
+  const TopoDS_Shape internallyLocated =
+      BRepPrimAPI_MakeBox(10.0, 20.0, 30.0)
+          .Shape()
+          .Located(TopLoc_Location(internalPlacement));
+  CHECK(cache.tryRebuild(internallyLocated,
+                         solidar::ViewportMeshQuality::Normal));
+  CHECK(std::abs(cache.center().x - 105.0) <= 1e-6);
+  CHECK(std::abs(cache.center().y + 10.0) <= 1e-6);
+  CHECK(std::abs(cache.center().z - 22.0) <= 1e-6);
+  CHECK(cache.localBounds());
+  CHECK(std::abs(cache.localBounds()->minimum().x - 100.0) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->minimum().y + 20.0) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->minimum().z - 7.0) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->maximum().x - 110.0) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->maximum().y) <= 1e-6);
+  CHECK(std::abs(cache.localBounds()->maximum().z - 37.0) <= 1e-6);
   const std::uint64_t revisionBeforeIsolation = cache.revision();
   CHECK(cache.tryRebuild(isolatedSource, solidar::ViewportMeshQuality::Normal));
   CHECK(cache.revision() == revisionBeforeIsolation + 1);
@@ -378,7 +414,46 @@ int main() {
     CHECK(bodyCache.resolve(active[1], box));
   }
 
+  // Epoch and definition identity are part of the collision-safe source key.
+  // Even an identical legacy five-field prefix, including the same pointer,
+  // must not alias a different product publication or definition.
+  {
+    const solidar::BodyMeshKey legacy{7, 8, 9, &box,
+                                      solidar::ViewportMeshQuality::Normal};
+    const solidar::BodyMeshKey epochA{7, 8, 9, &box,
+                                      solidar::ViewportMeshQuality::Normal,
+                                      1001, 2001};
+    const solidar::BodyMeshKey epochB{7, 8, 9, &box,
+                                      solidar::ViewportMeshQuality::Normal,
+                                      1002, 2001};
+    const solidar::BodyMeshKey definitionB{
+        7, 8, 9, &box, solidar::ViewportMeshQuality::Normal, 1001, 2002};
+    CHECK(legacy.productEpoch == 0);
+    CHECK(legacy.definitionId == 0);
+    CHECK(epochA != epochB);
+    CHECK(epochA != definitionB);
+    std::unordered_set<solidar::BodyMeshKey, solidar::BodyMeshKeyHash> keys;
+    CHECK(keys.insert(epochA).second);
+    CHECK(keys.insert(epochB).second);
+    CHECK(keys.insert(definitionB).second);
+    CHECK(keys.size() == 3);
+
+    // The key's shape pointer and local IDs stay identical while the supplied
+    // geometry changes across an epoch. Both meshes must be rebuilt and kept
+    // as distinct immutable sources.
+    solidar::BodyRenderMeshCache epochCache;
+    const auto first = epochCache.resolve(epochA, box);
+    const auto second = epochCache.resolve(epochB, cylinder);
+    CHECK(first);
+    CHECK(second);
+    CHECK(first != second);
+    CHECK(first->faceCount() != second->faceCount());
+    CHECK(epochCache.stats().buildAttempts == 2);
+    CHECK(epochCache.entryCount() == 2);
+  }
+
   cache.clear();
   CHECK(cache.triangles().empty());
   CHECK(cache.edges().empty());
+  CHECK(!cache.localBounds());
 }

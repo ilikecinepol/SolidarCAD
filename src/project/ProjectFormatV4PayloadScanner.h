@@ -55,6 +55,9 @@ struct ProjectFormatV4PayloadCandidate {
   std::vector<ProjectFormatV4TopologySite> topologySites;
   // Authored structural inventory only; this is not an ownership verdict.
   std::vector<ProjectFormatV4FeatureOwner> featureOwners;
+  // Work already accounted by the authoritative feature-codec validation.
+  // Product envelopes aggregate this value without duplicating codec logic.
+  qsizetype rebuildWork{};
 };
 
 struct ProjectFormatV4PayloadScanResult {

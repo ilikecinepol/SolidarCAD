@@ -8,6 +8,10 @@
     <file alias="extrude.png">extrude.png</file>
     <file alias="revolve.png">revolve.png</file>
     <file alias="fillet.png">fillet.png</file>
+    <file alias="assembly/create-component-from-body.png">assembly/create-component-from-body.png</file>
+    <file alias="assembly/fix-position.png">assembly/fix-position.png</file>
+    <file alias="assembly/restore-position.png">assembly/restore-position.png</file>
+    <file alias="assembly/connection.png">assembly/connection.png</file>
     <file alias="sketch/line.png">sketch/line.png</file>
     <file alias="sketch/rectangle.png">sketch/rectangle.png</file>
     <file alias="sketch/circle.png">sketch/circle.png</file>

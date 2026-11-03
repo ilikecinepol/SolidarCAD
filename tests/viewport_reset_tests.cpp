@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "ui/Viewport.h"
+#include "model/ImportedShapeFeature.h"
+#include "model/ProductDocument.h"
 
 // Targeted regression for Viewport::resetScene. The scene is populated through
 // the public API, reset, and the observable state is verified clean. The
@@ -252,6 +254,34 @@ int main(int argc, char** argv) {
           Qt::NoButton);
     CHECK(!marqueeView.marqueeActive());
   }
+
+  // Component ownership is cleared before legacy/Part scene state. The exact
+  // publication handle becomes stale during reset and cannot service a late
+  // hover callback.
+  auto componentDocument = std::make_unique<solidar::Document>();
+  auto& componentBody = componentDocument->addBody(201, "component body");
+  componentBody.addFeature(std::make_unique<solidar::ImportedShapeFeature>(
+      202, std::make_shared<const TopoDS_Shape>(
+               BRepPrimAPI_MakeBox(8.0, 9.0, 10.0).Shape()),
+      "component feature"));
+  CHECK(componentDocument->recompute());
+  std::vector<solidar::ComponentDefinition> componentDefinitions;
+  componentDefinitions.emplace_back(solidar::DefinitionId{203},
+                                    std::move(componentDocument));
+  auto componentProduct = solidar::ProductDocument::createComponentGraph(
+      std::move(componentDefinitions), solidar::DefinitionId{203});
+  CHECK(componentProduct);
+  auto componentSession = solidar::ComponentViewportSession::prepare(
+      *componentProduct.product, solidar::ProductPresentationEpoch{204},
+      solidar::AssemblyMeshProfile{solidar::AssemblyMeshQuality::Normal});
+  CHECK(componentSession);
+  viewport.installComponentSession(std::move(componentSession.session));
+  CHECK(viewport.componentSession());
+  const auto componentHandle = viewport.componentSession()->publicationHandle();
+  CHECK(componentHandle.isCurrent());
+  viewport.resetScene();
+  CHECK(!viewport.componentSession());
+  CHECK(!componentHandle.isCurrent());
 
   return EXIT_SUCCESS;
 }

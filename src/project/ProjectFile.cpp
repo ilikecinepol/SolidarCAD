@@ -4093,6 +4093,25 @@ bool ProjectFile::saveDocument(const QString& path, const Document& document,
                QString::fromUtf8(
                    "Формат v5 требует ProductDocument с identity."));
       return false;
+    case ProjectPersistenceFormat::V6:
+      setError(error,
+               QString::fromUtf8(
+                   "Формат v6 доступен только для staged сборки."));
+      return false;
+    case ProjectPersistenceFormat::V7:
+    case ProjectPersistenceFormat::V8:
+    case ProjectPersistenceFormat::V9:
+      setError(error,
+               QString::fromUtf8(
+                    "Формат сборки требует assembly ProductDocument."));
+      return false;
+    case ProjectPersistenceFormat::V10:
+    case ProjectPersistenceFormat::V11:
+    case ProjectPersistenceFormat::V12:
+      setError(error,
+               QString::fromUtf8(
+                   "Формат компонента требует component ProductDocument."));
+      return false;
   }
   setError(error, QString::fromUtf8("Неизвестный формат сохранения проекта."));
   return false;
@@ -6195,6 +6214,7 @@ bool equivalentV4ModelCandidate(const ProjectFormatV4ModelCandidate& lhs,
          leftEnvelope.deferredUnknowns == rightEnvelope.deferredUnknowns &&
          leftPayload.topologySites == rightPayload.topologySites &&
          leftPayload.featureOwners == rightPayload.featureOwners &&
+         leftPayload.rebuildWork == rightPayload.rebuildWork &&
          left.topologyReferences == right.topologyReferences &&
          left.topologyInspections == right.topologyInspections &&
          left.deferredUnsupported == right.deferredUnsupported &&

@@ -73,6 +73,8 @@ ProjectFormatV4TopologyAggregateResult aggregateProjectFormatV4Topology(
     return invalid(QStringLiteral("$: topologySites do not match authored payload"));
   if (payload.featureOwners != canonical.featureOwners)
     return invalid(QStringLiteral("$: featureOwners do not match authored payload"));
+  if (payload.rebuildWork != canonical.rebuildWork)
+    return invalid(QStringLiteral("$: rebuildWork does not match authored payload"));
 
   std::map<FeatureId, BodyId> featureOwners;
   for (const auto& owner : canonical.featureOwners) {

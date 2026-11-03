@@ -6,10 +6,12 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "model/GeometryOperation.h"
 #include "model/SketchPlacement.h"
+#include "ui/Bounds3d.h"
 
 class TopoDS_Shape;
 
@@ -17,15 +19,19 @@ namespace solidar {
 
 enum class ViewportMeshQuality { Normal, High };
 
-// Collision-safe immutable identity shared by the CPU cache, projected
-// picking scene and GPU cache. Hashes are used only for bucket selection;
-// every cache compares all model/source fields before reuse.
+// Collision-safe immutable identity shared by the CPU and GPU source caches.
+// The first five fields preserve the legacy aggregate-initialization order;
+// product/definition identity is appended so equal local model IDs from two
+// products or two definitions can never alias. Hashes select buckets only;
+// every cache compares every field before reuse.
 struct BodyMeshKey {
   std::uint64_t bodyId{};
   std::uint64_t featureId{};
   std::uint64_t shapeRevision{};
   const void* shapeIdentity{};
   ViewportMeshQuality quality{ViewportMeshQuality::Normal};
+  std::uint64_t productEpoch{};
+  std::uint64_t definitionId{};
   bool operator==(const BodyMeshKey&) const noexcept = default;
 };
 
@@ -64,8 +70,11 @@ struct RenderEdge {
   Point3d arcEnd{};    // Arc: end point in world space.
 };
 
-// Immutable world-space tessellation. Camera projection is deliberately kept
-// out of this cache, so mouse movement never invokes OCCT meshing.
+// Immutable source/definition-local tessellation. TopLoc_Location values that
+// are already part of the source B-Rep are applied while extracting geometry;
+// an assembly occurrence transform is never baked into this cache. Camera
+// projection is deliberately kept out, so mouse movement never invokes OCCT
+// meshing.
 class BodyRenderMesh final {
  public:
   // Lightweight indexed view. RenderTriangle values are materialized on
@@ -130,6 +139,7 @@ class BodyRenderMesh final {
   [[nodiscard]] const std::vector<RenderVertex>& vertices() const noexcept;
   [[nodiscard]] const std::vector<std::uint32_t>& triangleIndices() const noexcept;
   [[nodiscard]] const std::vector<RenderEdge>& edges() const noexcept;
+  [[nodiscard]] const std::optional<Bounds3d>& localBounds() const noexcept;
   [[nodiscard]] Point3d center() const noexcept;
   [[nodiscard]] double diagonal() const noexcept;
   [[nodiscard]] std::size_t faceCount() const noexcept;
@@ -151,6 +161,7 @@ class BodyRenderMesh final {
   std::vector<RenderVertex> vertices_;
   std::vector<std::uint32_t> triangleIndices_;
   std::vector<RenderEdge> edges_;
+  std::optional<Bounds3d> localBounds_;
   Point3d center_{};
   double diagonal_{};
   std::size_t faceCount_{};
@@ -177,6 +188,7 @@ class BodyRenderMeshCache final {
   [[nodiscard]] std::shared_ptr<const BodyRenderMesh> resolve(
       const BodyMeshKey& key, const TopoDS_Shape& shape,
       GeometryFailure* failure = nullptr);
+  [[nodiscard]] bool contains(const BodyMeshKey& key) const noexcept;
   // Called only after a complete viewport transaction succeeds. All meshes
   // in the published scene remain resident, regardless of body count; only a
   // small bounded tail of obsolete revisions is retained for undo/redo.

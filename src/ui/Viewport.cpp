@@ -1,4 +1,5 @@
 #include "ui/Viewport.h"
+#include "ui/AssemblyViewportFit.h"
 #include "ui/ViewportReferenceFactory.h"
 #include "ui/ThemeManager.h"
 #include "ui/WorldGrid.h"
@@ -48,6 +49,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <new>
+#include <type_traits>
 #include <utility>
 #include <numbers>
 
@@ -997,7 +1000,7 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   hoverFrameTimer_->setSingleShot(true);
   hoverFrameTimer_->setInterval(16);
   connect(hoverFrameTimer_, &QTimer::timeout, this,
-          [this] { flushPendingHover(); });
+          [this] { static_cast<void>(flushPendingHover()); });
   orientationAnimation_ = new QVariantAnimation(this);
   orientationAnimation_->setObjectName("viewOrientationTransition");
   orientationAnimation_->setDuration(200);
@@ -1063,6 +1066,727 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   connect(toolParameterHud_, &ToolParameterHud::cancelRequested, this, [this] {
     cancelActiveInteraction();
   });
+}
+
+void Viewport::installComponentSession(
+    std::unique_ptr<ComponentViewportSession> session) {
+  if (!session || !session->scene() || !session->scene()->isCurrent()) return;
+  resetScene();
+  componentSession_ = std::move(session);
+  ++componentSessionOwnershipRevision_;
+  fitAll();
+  update();
+}
+
+void Viewport::setComponentRootVisible(bool visible) noexcept {
+  if (componentRootVisible_ == visible) return;
+  componentRootVisible_ = visible;
+  if (!visible && componentSession_) componentSession_->clearInteraction();
+  cancelComponentPlacementDrag();
+  invalidatePendingHover();
+  update();
+}
+
+std::optional<Viewport::ComponentNotificationExpectation>
+Viewport::componentNotificationExpectation() const noexcept {
+  if (!componentSession_ || !componentSession_->scene()) return std::nullopt;
+  const auto& publication = componentSession_->publicationHandle();
+  if (!publication.isCurrent() ||
+      !publication.isSameCurrentPublication(
+          componentSession_->scene()->publicationHandle()))
+    return std::nullopt;
+  return ComponentNotificationExpectation{
+      componentSession_.get(), componentSession_->scene().get(), publication,
+      componentSessionOwnershipRevision_};
+}
+
+bool Viewport::matchesComponentNotificationExpectation(
+    const ComponentNotificationExpectation& expected) const noexcept {
+  return componentSession_.get() == expected.session && componentSession_->scene() &&
+         componentSession_->scene().get() == expected.scene &&
+         componentSessionOwnershipRevision_ == expected.ownershipRevision &&
+         expected.publication.isSameCurrentPublication(
+             componentSession_->publicationHandle()) &&
+         expected.publication.isSameCurrentPublication(
+             componentSession_->scene()->publicationHandle());
+}
+
+void Viewport::clearComponentSession() noexcept {
+  cancelComponentPlacementDrag();
+  invalidatePendingHover();
+  if (componentSession_) {
+    componentSession_->clearInteraction();
+    ++componentSessionOwnershipRevision_;
+  }
+  componentSession_.reset();
+  renderer_.detachComponentScene();
+  unsetCursor();
+}
+
+std::unique_ptr<ComponentViewportSession>
+Viewport::takeComponentSession() noexcept {
+  if (!componentSession_) return {};
+  cancelComponentPlacementDrag();
+  invalidatePendingHover();
+  componentSession_->clearInteraction();
+  ++componentSessionOwnershipRevision_;
+  renderer_.detachComponentScene();
+  unsetCursor();
+  return std::move(componentSession_);
+}
+
+void Viewport::setComponentEditContext(
+    std::shared_ptr<const ComponentViewportScene> scene,
+    ComponentInstanceAddress activeComponent) {
+  if (!scene || !scene->isCurrent()) return;
+  componentEditContextScene_ = std::move(scene);
+  componentEditActiveComponent_ = std::move(activeComponent);
+  update();
+}
+
+void Viewport::clearComponentEditContext() noexcept {
+  componentEditContextScene_.reset();
+  componentEditActiveComponent_.reset();
+  renderer_.clearComponentEditContextResources();
+  if (!destructionStarted_) update();
+}
+
+void Viewport::restoreComponentSession(
+    std::unique_ptr<ComponentViewportSession> session) {
+  if (!session || !session->scene() || !session->scene()->isCurrent()) return;
+  resetScene();
+  componentSession_ = std::move(session);
+  ++componentSessionOwnershipRevision_;
+  update();
+}
+
+void Viewport::replaceComponentSessionDuringEdit(
+    std::unique_ptr<ComponentViewportSession> session) noexcept {
+  if (!session || !session->scene() || !session->scene()->isCurrent()) return;
+  cancelComponentPlacementDrag();
+  invalidatePendingHover();
+  if (componentSession_) componentSession_->clearInteraction();
+  componentSession_.swap(session);
+  ++componentSessionOwnershipRevision_;
+  renderer_.detachComponentScene();
+  unsetCursor();
+  update();
+}
+
+bool Viewport::setSelectedComponent(
+    const std::optional<ComponentInstanceSelection>& component,
+    bool notify) noexcept {
+  if (componentPlacementDragArm_ &&
+      (!component ||
+       component->component() != componentPlacementDragArm_->component ||
+       !component->publication().isSameCurrentPublication(
+           componentPlacementDragArm_->publication)))
+    cancelComponentPlacementDrag();
+  const auto expected = componentNotificationExpectation();
+  if (!expected ||
+      !componentSession_->setSelectedComponent(component))
+    return false;
+  try {
+    if (notify) {
+      // Own every signal payload independently of componentSession_. A first
+      // direct receiver may synchronously clear/take/replace the session while
+      // Qt is still delivering this same signal to later receivers.
+      const auto committed = componentSession_->selectedComponent();
+      const auto publication = componentSession_->publicationHandle();
+      const QPointer<Viewport> lifetimeGuard(this);
+      if (committed) {
+        emit componentSelected(*committed);
+      } else {
+        emit componentSelectionCleared(publication);
+      }
+      if (!lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected))
+        return false;
+      const auto& current = componentSession_->selectedComponent();
+      if (current.has_value() != committed.has_value() ||
+          (current &&
+           (!current->publication().isSameCurrentPublication(
+                committed->publication()) ||
+            current->component() != committed->component())))
+        return false;
+    }
+    update();
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+bool Viewport::setHoveredComponent(
+    const std::optional<ComponentInstanceSelection>& component,
+    bool notify) noexcept {
+  const auto expected = componentNotificationExpectation();
+  if (!expected ||
+      !componentSession_->setHoveredComponent(component))
+    return false;
+  try {
+    if (notify) {
+      const auto committed = componentSession_->hoveredComponent();
+      const auto publication = componentSession_->publicationHandle();
+      const QPointer<Viewport> lifetimeGuard(this);
+      if (committed) {
+        emit componentHovered(*committed);
+      } else {
+        emit componentHoverCleared(publication);
+      }
+      if (!lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected))
+        return false;
+      const auto& current = componentSession_->hoveredComponent();
+      if (current.has_value() != committed.has_value() ||
+          (current &&
+           (!current->publication().isSameCurrentPublication(
+                committed->publication()) ||
+            current->component() != committed->component())))
+        return false;
+    }
+    update();
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+const std::optional<ComponentInstanceSelection>&
+Viewport::selectedComponentView() const noexcept {
+  static const std::optional<ComponentInstanceSelection> kNoSelection;
+  return componentSession_ ? componentSession_->selectedComponent()
+                           : kNoSelection;
+}
+
+ComponentFaceRayQueryResult Viewport::componentFaceAt(
+    QPointF logicalPosition) const noexcept {
+  return componentSession_ && componentRootVisible_
+             ? componentSession_->faceAt(componentCamera(), logicalPosition)
+             : ComponentFaceRayQueryResult{
+                   ComponentViewportPickingQueryStatus::NoScene, {}};
+}
+
+ComponentEdgeRayQueryResult Viewport::componentEdgeAt(
+    QPointF logicalPosition, double radiusLogicalPixels) const noexcept {
+  return componentSession_ && componentRootVisible_
+             ? componentSession_->edgeAt(componentCamera(), logicalPosition,
+                                         radiusLogicalPixels)
+             : ComponentEdgeRayQueryResult{
+                   ComponentViewportPickingQueryStatus::NoScene, {}};
+}
+
+void Viewport::installAssemblySession(
+    std::unique_ptr<AssemblyViewportSession> session) {
+  if (!session || !session->scene() || !session->scene()->isCurrent()) return;
+  resetScene();
+  assemblySession_ = std::move(session);
+  assemblyMatePreviewScene_.reset();
+  assemblyMatePickMode_ = false;
+  fitAll();
+  update();
+}
+
+void Viewport::installAssemblyVisibilitySession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  installAssemblyOccurrenceSession(std::move(session));
+}
+
+void Viewport::installAssemblyGroundingSession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  installAssemblyOccurrenceSession(std::move(session));
+}
+
+void Viewport::installAssemblySuppressionSession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  installAssemblyOccurrenceSession(std::move(session));
+}
+
+void Viewport::installAssemblyDuplicateSession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  installAssemblyOccurrenceSession(std::move(session));
+}
+
+void Viewport::installAssemblyRemoveSession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  installAssemblyOccurrenceSession(std::move(session));
+}
+
+void Viewport::installAssemblyDefinitionSession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  installAssemblyOccurrenceSession(std::move(session));
+}
+
+void Viewport::installAssemblyOccurrenceSession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  if (!session || !session->scene() || !session->scene()->isCurrent()) return;
+  invalidatePendingHover();
+  assemblySession_.swap(session);
+  assemblyMatePreviewScene_.reset();
+  update();
+}
+
+bool Viewport::installPreparedAssemblyIsolation(
+    PreparedAssemblyIsolationState&& prepared) noexcept {
+  if (!assemblySession_ || !prepared.displayedScene || !prepared.picking)
+    return false;
+  invalidatePendingHover();
+  assemblySession_->installPreparedIsolation(std::move(prepared));
+  update();
+  return true;
+}
+
+void Viewport::clearAssemblySession() noexcept {
+  invalidatePendingHover();
+  if (assemblySession_) assemblySession_->clearInteraction();
+  assemblySession_.reset();
+  assemblyMatePreviewScene_.reset();
+  assemblyMatePickMode_ = false;
+  assemblyPlacementPreview_.clear();
+  renderer_.detachAssemblyScene();
+}
+
+std::unique_ptr<AssemblyViewportSession>
+Viewport::suspendAssemblySession() noexcept {
+  if (!assemblySession_ ||
+      !renderer_.suspendAssemblySceneResources())
+    return {};
+  invalidatePendingHover();
+  assemblyPlacementPreview_.clear();
+  assemblyMatePreviewScene_.reset();
+  return std::move(assemblySession_);
+}
+
+void Viewport::resumeAssemblySession(
+    std::unique_ptr<AssemblyViewportSession> session) noexcept {
+  if (!session || !session->scene() || !session->scene()->isCurrent()) return;
+  resetScenePreservingSuspendedAssemblyResources();
+  assemblySession_ = std::move(session);
+  assemblyMatePreviewScene_.reset();
+  update();
+}
+
+void Viewport::setAssemblyMatePickMode(bool active) noexcept {
+  assemblyMatePickMode_ = active && assemblySession_ != nullptr;
+  if (!assemblyMatePickMode_) assemblyMatePreviewScene_.reset();
+  update();
+}
+
+bool Viewport::installAssemblyMatePreview(
+    std::shared_ptr<const AssemblyViewportScene> scene) noexcept {
+  if (!assemblySession_ || !assemblyMatePickMode_ || !scene ||
+      !scene->isCurrent() ||
+      !scene->publicationHandle().isSameCurrentPublication(
+          assemblySession_->publicationHandle()))
+    return false;
+  invalidatePendingHover();
+  static_cast<void>(assemblySession_->setHoveredOccurrence(std::nullopt));
+  unsetCursor();
+  assemblyMatePreviewScene_.swap(scene);
+  update();
+  return true;
+}
+
+void Viewport::clearAssemblyMatePreview() noexcept {
+  assemblyMatePreviewScene_.reset();
+  update();
+}
+
+void Viewport::restoreNavigationState(ViewportNavigationState state) noexcept {
+  yaw_ = state.yawDeg;
+  pitch_ = state.pitchDeg;
+  zoom_ = state.zoom;
+  cameraPan_ = state.pan;
+  update();
+}
+
+bool Viewport::setSelectedAssemblyOccurrence(
+    const std::optional<AssemblyOccurrenceSelection>& occurrence,
+    bool notify) noexcept {
+  if (!assemblySession_ ||
+      !assemblySession_->setSelectedOccurrence(occurrence))
+    return false;
+  try {
+    if (notify) {
+      const auto& committed = assemblySession_->selectedOccurrence();
+      if (committed)
+        emit assemblyOccurrenceSelected(*committed);
+      else
+        emit assemblyOccurrenceSelectionCleared(
+            assemblySession_->publicationHandle());
+    }
+    update();
+  } catch (...) {
+    // Qt connections are expected not to throw, but this is an external
+    // noexcept boundary.  A direct receiver must never turn selection into
+    // std::terminate; importantly, the signal payload itself is a reference
+    // to session-owned immutable storage and performs no OccurrencePath copy.
+    return false;
+  }
+  return true;
+}
+
+void Viewport::installPreparedAssemblySelection(
+    PreparedAssemblySelectionState&& prepared) noexcept {
+  if (!assemblySession_) return;
+  assemblySession_->installPreparedSelectedOccurrence(std::move(prepared));
+  update();
+}
+
+const std::optional<AssemblyOccurrenceSelection>&
+Viewport::selectedAssemblyOccurrenceView() const noexcept {
+  static const std::optional<AssemblyOccurrenceSelection> kNoSelection;
+  return assemblySession_ ? assemblySession_->selectedOccurrence()
+                          : kNoSelection;
+}
+
+bool Viewport::prepareAssemblyPlacementPreview(
+    const Document& source) noexcept {
+  const bool prepared = assemblyPlacementPreview_.prepare(source, meshQuality_);
+  if (prepared) update();
+  return prepared;
+}
+
+bool Viewport::setAssemblyPlacementPreviewTransform(
+    RigidTransform3d placement) noexcept {
+  const bool changed =
+      assemblyPlacementPreview_.setPlacement(std::move(placement));
+  if (changed) update();
+  return changed;
+}
+
+void Viewport::clearAssemblyPlacementPreview() noexcept {
+  assemblyPlacementPreview_.clear();
+  update();
+}
+
+ViewportCameraState Viewport::componentCamera() const noexcept {
+  if (rootComponentAuthoringActive()) {
+    if (bodyDisplayMeshes_.empty())
+      return componentSession_->camera(yaw_, pitch_, zoom_, cameraPan_, size());
+    return {yaw_, pitch_, zoom_, cameraPan_, size(), 1.0F,
+            displayedBodyCenter_, std::max(1.0, displayedBodyDiagonal_ * 3.0)};
+  }
+  return componentSession_
+             ? componentSession_->camera(yaw_, pitch_, zoom_, cameraPan_, size())
+             : ViewportCameraState{yaw_, pitch_, zoom_, cameraPan_, size()};
+}
+
+bool Viewport::rootComponentAuthoringActive() const noexcept {
+  return componentSession_ && componentEditContextScene_ &&
+         componentEditActiveComponent_ &&
+         componentEditActiveComponent_->rootInstance();
+}
+
+void Viewport::armComponentPlacementDrag(
+    const ComponentInstanceSelection& selection,
+    QPointF logicalPosition) noexcept {
+  cancelComponentPlacementDrag();
+  const auto expected = componentNotificationExpectation();
+  if (!expected || selection.component().rootInstance() ||
+      !selection.isCurrentFor(expected->publication) ||
+      !std::isfinite(logicalPosition.x()) ||
+      !std::isfinite(logicalPosition.y()))
+    return;
+  const auto state = std::find_if(
+      componentSession_->components().begin(),
+      componentSession_->components().end(),
+      [&selection](const ComponentInstanceSessionState& candidate) {
+        return candidate.address == selection.component();
+      });
+  if (state == componentSession_->components().end() ||
+      !state->effectivelyVisible || state->suppressed || state->grounded)
+    return;
+  try {
+    componentPlacementDragArm_ = ComponentPlacementDragArm{
+        expected->publication, selection.component(), logicalPosition,
+        componentCamera(), expected->ownershipRevision};
+  } catch (...) {
+    componentPlacementDragArm_.reset();
+  }
+}
+
+bool Viewport::updateComponentPlacementDrag(
+    QPointF logicalPosition) noexcept {
+  if (!componentPlacementDragArm_) return false;
+  const auto expected = componentNotificationExpectation();
+  const auto& arm = *componentPlacementDragArm_;
+  if (!expected || expected->ownershipRevision != arm.ownershipRevision ||
+      !arm.publication.isSameCurrentPublication(expected->publication) ||
+      arm.component.rootInstance()) {
+    cancelComponentPlacementDrag();
+    return false;
+  }
+  const auto mapped = mapComponentPlacementDrag(
+      arm.camera, arm.pressLogical, logicalPosition);
+  if (mapped.status == ComponentPlacementDragMapStatus::BelowThreshold)
+    return true;
+  if (!mapped) {
+    cancelComponentPlacementDrag();
+    return false;
+  }
+  auto preview = ComponentPlacementPreview::create(
+      arm.publication, arm.component, mapped.worldDeltaMm,
+      arm.ownershipRevision);
+  if (!preview) {
+    cancelComponentPlacementDrag();
+    return false;
+  }
+  componentPlacementPreview_ = std::move(preview);
+  invalidatePendingHover();
+  setCursor(Qt::ClosedHandCursor);
+  update();
+  return true;
+}
+
+void Viewport::cancelComponentPlacementDrag() noexcept {
+  const bool changed = componentPlacementDragArm_.has_value() ||
+                       componentPlacementPreview_.has_value();
+  componentPlacementPreview_.reset();
+  componentPlacementDragArm_.reset();
+  if (!changed) return;
+  unsetCursor();
+  if (!destructionStarted_) update();
+}
+
+void Viewport::paintComponentFrame(QPainter& painter,
+                                   const ThemeColors& theme) {
+  if (!componentSession_) return;
+  if (componentRootVisible_) {
+    painter.beginNativePainting();
+    static_cast<void>(renderer_.renderComponent(
+        componentSession_->scene(), size(),
+        static_cast<float>(devicePixelRatioF()), yaw_, pitch_, zoom_,
+        cameraPan_, displayMode_, componentSession_->selectedHighlight(),
+        componentSession_->hoveredHighlight(), theme,
+        componentPlacementPreview_ ? &*componentPlacementPreview_ : nullptr,
+        componentSessionOwnershipRevision_));
+    painter.endNativePainting();
+  }
+  if (!renderer_.error().isEmpty()) {
+    painter.setPen(theme.danger);
+    painter.drawText(rect().adjusted(24, 24, -24, -24),
+                     Qt::AlignLeft | Qt::AlignTop,
+                     tr("Не удалось отобразить компоненты.\n%1")
+                         .arg(renderer_.error()));
+  }
+  paintViewCube(painter, viewCubeGeometry(size(), {yaw_, pitch_}),
+                {yaw_, pitch_}, cubeHover_, cubePressed_,
+                ViewCubeStyle{theme.cubeTop, theme.cubeFront, theme.cubeSide,
+                              theme.cubeOutline, theme.cubeText,
+                              theme.cubeBevel, theme.cubeHover,
+                              theme.cubePressed, theme.cubeActive,
+                              theme.cubeAccent, theme.cubeShadow});
+}
+
+ViewportCameraState Viewport::assemblyCamera() const noexcept {
+  return assemblySession_
+             ? assemblySession_->camera(yaw_, pitch_, zoom_, cameraPan_, size())
+             : ViewportCameraState{yaw_, pitch_, zoom_, cameraPan_, size()};
+}
+
+bool Viewport::updateComponentHover(QPointF logicalPosition) {
+  const auto expected = componentNotificationExpectation();
+  if (!expected) return false;
+  const QPointer<Viewport> lifetimeGuard(this);
+  const auto face = componentFaceAt(logicalPosition);
+  if (face && face.hit) {
+    const auto selection = ComponentInstanceSelection::create(
+        face.hit->publication, face.hit->address.body.component);
+    if (!setHoveredComponent(selection, true) || !lifetimeGuard ||
+        !matchesComponentNotificationExpectation(*expected))
+      return false;
+    setCursor(Qt::PointingHandCursor);
+    return true;
+  }
+  const auto edge = componentEdgeAt(logicalPosition);
+  if (edge && edge.hit) {
+    const auto selection = ComponentInstanceSelection::create(
+        edge.hit->publication, edge.hit->address.body.component);
+    if (!setHoveredComponent(selection, true) || !lifetimeGuard ||
+        !matchesComponentNotificationExpectation(*expected))
+      return false;
+    setCursor(Qt::PointingHandCursor);
+    return true;
+  }
+  if (!setHoveredComponent(std::nullopt, true) || !lifetimeGuard ||
+      !matchesComponentNotificationExpectation(*expected))
+    return false;
+  unsetCursor();
+  return true;
+}
+
+bool Viewport::handleComponentPress(QMouseEvent* event) {
+  const auto expected = componentNotificationExpectation();
+  if (!expected || event->button() != Qt::LeftButton) return false;
+  const QPointer<Viewport> lifetimeGuard(this);
+  const bool hybridRoot = rootComponentAuthoringActive();
+  const auto fallThroughToPart = [&]() {
+    if (!componentSession_->selectedComponent()) return false;
+    if (!setSelectedComponent(std::nullopt, true) || !lifetimeGuard ||
+        !matchesComponentNotificationExpectation(*expected)) {
+      event->accept();
+      return true;
+    }
+    return false;
+  };
+  std::optional<ComponentInstanceSelection> dragSelection;
+  const auto face = componentFaceAt(event->position());
+  if (face && face.hit) {
+    const ComponentFaceRayHit hitPayload = *face.hit;
+    if (hybridRoot && hitPayload.address.body.component.rootInstance())
+      return fallThroughToPart();
+    const auto selection = ComponentInstanceSelection::create(
+        hitPayload.publication, hitPayload.address.body.component);
+    if (!setSelectedComponent(selection, true) || !lifetimeGuard ||
+        !matchesComponentNotificationExpectation(*expected)) {
+      event->accept();
+      return true;
+    }
+    try {
+      emit componentFacePicked(hitPayload);
+    } catch (...) {
+    }
+    if (!lifetimeGuard ||
+        !matchesComponentNotificationExpectation(*expected)) {
+      event->accept();
+      return true;
+    }
+    if (selection) dragSelection = *selection;
+  } else {
+    const auto edge = componentEdgeAt(event->position());
+    if (edge && edge.hit) {
+      const ComponentEdgeRayHit hitPayload = *edge.hit;
+      if (hybridRoot && hitPayload.address.body.component.rootInstance())
+        return fallThroughToPart();
+      const auto selection = ComponentInstanceSelection::create(
+          hitPayload.publication, hitPayload.address.body.component);
+      if (!setSelectedComponent(selection, true) || !lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected)) {
+        event->accept();
+        return true;
+      }
+      try {
+        emit componentEdgePicked(hitPayload);
+      } catch (...) {
+      }
+      if (!lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected)) {
+        event->accept();
+        return true;
+      }
+      if (selection) dragSelection = *selection;
+    } else {
+      if (hybridRoot) return fallThroughToPart();
+      if (!setSelectedComponent(std::nullopt, true) || !lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected)) {
+        event->accept();
+        return true;
+      }
+      emit selectionChanged(QString{});
+      if (!lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected)) {
+        event->accept();
+        return true;
+      }
+    }
+  }
+  if (dragSelection)
+    armComponentPlacementDrag(*dragSelection, event->position());
+  event->accept();
+  return true;
+}
+
+void Viewport::paintAssemblyFrame(QPainter& painter,
+                                  const ThemeColors& theme) {
+  if (!assemblySession_) return;
+  painter.beginNativePainting();
+  const auto& displayed = assemblyMatePreviewScene_
+                              ? assemblyMatePreviewScene_
+                              : assemblySession_->scene();
+  static_cast<void>(renderer_.renderAssembly(
+      displayed, size(), static_cast<float>(devicePixelRatioF()),
+      yaw_, pitch_, zoom_, cameraPan_, displayMode_,
+      assemblySession_->selectedHighlight(),
+      assemblySession_->hoveredHighlight(), theme));
+  painter.endNativePainting();
+  assemblyPlacementPreview_.paint(painter, assemblyCamera(),
+                                  theme.previewPositive,
+                                  theme.viewportHandle);
+  if (!renderer_.error().isEmpty()) {
+    painter.setPen(theme.danger);
+    painter.drawText(rect().adjusted(24, 24, -24, -24),
+                     Qt::AlignLeft | Qt::AlignTop,
+                     tr("Не удалось отобразить сборку.\n%1")
+                         .arg(renderer_.error()));
+  }
+  paintViewCube(painter, viewCubeGeometry(size(), {yaw_, pitch_}),
+                {yaw_, pitch_}, cubeHover_, cubePressed_,
+                ViewCubeStyle{theme.cubeTop, theme.cubeFront, theme.cubeSide,
+                              theme.cubeOutline, theme.cubeText,
+                              theme.cubeBevel, theme.cubeHover,
+                              theme.cubePressed, theme.cubeActive,
+                              theme.cubeAccent, theme.cubeShadow});
+  painter.setPen(theme.textSecondary);
+  painter.drawText(16, height() - 18,
+                   assemblyPlacementPreview_.active()
+                       ? QString::fromUtf8("Сборка: размещение компонента")
+                       : QString::fromUtf8("Сборка • вращение и масштаб доступны"));
+}
+
+void Viewport::updateAssemblyHover(QPointF logicalPosition) {
+  if (!assemblySession_) return;
+  if (assemblyMatePreviewScene_) {
+    static_cast<void>(assemblySession_->setHoveredOccurrence(std::nullopt));
+    unsetCursor();
+    update();
+    return;
+  }
+  const auto hit = assemblySession_->faceAt(assemblyCamera(), logicalPosition);
+  if (hit && hit.hit) {
+    static_cast<void>(assemblySession_->setHoveredOccurrence(
+        AssemblyOccurrenceSelection{hit.hit->publication,
+                                    hit.hit->address.occurrence}));
+    setCursor(Qt::PointingHandCursor);
+  } else {
+    static_cast<void>(assemblySession_->setHoveredOccurrence(std::nullopt));
+    unsetCursor();
+  }
+  update();
+}
+
+bool Viewport::handleAssemblyPress(QMouseEvent* event) {
+  if (!assemblySession_ || event->button() != Qt::LeftButton) return false;
+  if (assemblyMatePickMode_) {
+    event->accept();
+    // The committed scene is intentionally not pickable while candidate
+    // placements are displayed. Escape clears the preview before repicking.
+    if (assemblyMatePreviewScene_) return true;
+    try {
+      const auto hit =
+          assemblySession_->faceAt(assemblyCamera(), event->position());
+      if (hit && hit.hit) {
+        // This signal is connected DirectConnection on the GUI thread. The
+        // referenced hit remains alive for the complete synchronous delivery.
+        emit assemblyMateFacePicked(*hit.hit);
+      }
+    } catch (...) {
+      // No exception may cross the Qt event boundary.
+    }
+    return true;
+  }
+  const auto hit = assemblySession_->faceAt(assemblyCamera(), event->position());
+  if (hit && hit.hit) {
+    static_cast<void>(setSelectedAssemblyOccurrence(
+        AssemblyOccurrenceSelection{hit.hit->publication,
+                                    hit.hit->address.occurrence},
+        true));
+  } else {
+    static_cast<void>(setSelectedAssemblyOccurrence(std::nullopt, true));
+    emit selectionChanged(QString{});
+  }
+  event->accept();
+  return true;
 }
 
 void Viewport::setBox(BoxParameters parameters) {
@@ -1183,12 +1907,16 @@ void Viewport::setBodyShape(ShapeFeature::ShapePtr shape, BodyId bodyId,
 }
 
 void Viewport::setBodyShapes(std::vector<BodyViewShape> shapes) {
+  if (componentSession_ && !rootComponentAuthoringActive())
+    clearComponentSession();
   invalidatePendingHover();
   (void)rebuildBodyDisplay(shapes, true, meshQuality_);
 }
 
 Viewport::~Viewport() {
   destructionStarted_ = true;
+  clearComponentSession();
+  clearAssemblySession();
   QObject::disconnect(contextAboutToBeDestroyedConnection_);
   contextAboutToBeDestroyedConnection_ = {};
   releaseRendererResources();
@@ -1323,14 +2051,184 @@ QColor withAlpha(QColor color, int alpha) {
 
 }  // namespace
 
+PreparedBodyDisplayResult Viewport::prepareBodyDisplay(
+    std::vector<BodyViewShape> shapes, ViewportMeshQuality quality,
+    ProductPresentationEpoch epoch, DefinitionId definitionId,
+    BodyDisplayPrepareFailurePoint failurePoint) noexcept {
+  const auto failure = [](BodyDisplayPrepareStatus status,
+                          GeometryFailure detail = {}) {
+    return PreparedBodyDisplayResult{status, {}, std::move(detail)};
+  };
+  if ((quality != ViewportMeshQuality::Normal &&
+       quality != ViewportMeshQuality::High) ||
+      (epoch.isValid() != definitionId.isValid()))
+    return failure(BodyDisplayPrepareStatus::InvalidInput,
+                   {GeometryFailureKind::InvalidInput,
+                    "Invalid prepared body display identity"});
+  if (failurePoint == BodyDisplayPrepareFailurePoint::Resource)
+    return failure(BodyDisplayPrepareStatus::ResourceFailure,
+                   {GeometryFailureKind::ResourceLimit,
+                    "Injected prepared body display resource failure"});
+  try {
+    auto prepared = std::make_unique<PreparedBodyDisplay>();
+    prepared->quality_ = quality;
+    prepared->viewShapes_ = std::move(shapes);
+    prepared->topologyRanges_.reserve(prepared->viewShapes_.size());
+    prepared->meshes_.reserve(prepared->viewShapes_.size());
+    std::size_t firstFace{};
+    std::size_t firstEdge{};
+    std::optional<Bounds3d> bounds;
+    constexpr std::size_t kMaxViewportFaces = 1'000'000;
+    constexpr std::size_t kMaxViewportEdges = 2'000'000;
+    for (auto& item : prepared->viewShapes_) {
+      if (!item.shape || item.shape->IsNull() ||
+          item.bodyId == kInvalidBodyId ||
+          item.featureId == kInvalidFeatureId ||
+          item.shapeRevision == kInvalidShapeRevision)
+        return failure(BodyDisplayPrepareStatus::InvalidInput,
+                       {GeometryFailureKind::InvalidInput,
+                        "Invalid prepared body source"});
+      if (failurePoint == BodyDisplayPrepareFailurePoint::Topology)
+        return failure(BodyDisplayPrepareStatus::TopologyFailed,
+                       {GeometryFailureKind::InvalidBRep,
+                        "Injected topology preparation failure"});
+      auto topology = item.topologyIndex;
+      if (topology &&
+          (!topology->shape() || topology->shape().get() != item.shape.get() ||
+           (topology->revision() != kInvalidShapeRevision &&
+            topology->revision() != item.shapeRevision)))
+        topology.reset();
+      std::string topologyError;
+      if (!topology)
+        topology = TopologyIndex::build(item.shape, item.shapeRevision,
+                                        &topologyError);
+      if (!topology)
+        return failure(BodyDisplayPrepareStatus::TopologyFailed,
+                       {GeometryFailureKind::InvalidBRep,
+                        topologyError.empty()
+                            ? "Prepared body topology could not be indexed"
+                            : std::move(topologyError)});
+      item.topologyIndex = topology;
+      const std::size_t faceCount = topology->rawFaceCount();
+      const std::size_t edgeCount = topology->rawEdgeCount();
+      if (faceCount > kMaxViewportFaces - firstFace ||
+          edgeCount > kMaxViewportEdges - firstEdge)
+        return failure(BodyDisplayPrepareStatus::ResourceLimit,
+                       {GeometryFailureKind::ResourceLimit,
+                        "Prepared body topology range limit exceeded"});
+      if (failurePoint == BodyDisplayPrepareFailurePoint::Meshing)
+        return failure(BodyDisplayPrepareStatus::MeshFailed,
+                       {GeometryFailureKind::MeshingFailed,
+                        "Injected prepared body mesh failure"});
+      const BodyMeshKey identity{
+          item.bodyId,
+          item.featureId,
+          item.shapeRevision,
+          item.shape.get(),
+          quality,
+          epoch.value(),
+          definitionId.value(),
+      };
+      GeometryFailure meshFailure;
+      auto mesh = prepared->meshCache_.resolve(identity, *item.shape,
+                                               &meshFailure);
+      if (!mesh)
+        return failure(BodyDisplayPrepareStatus::MeshFailed,
+                       std::move(meshFailure));
+      if (failurePoint == BodyDisplayPrepareFailurePoint::Bounds)
+        return failure(BodyDisplayPrepareStatus::BoundsFailed,
+                       {GeometryFailureKind::InvalidBRep,
+                        "Injected prepared body bounds failure"});
+      if (!mesh->localBounds())
+        return failure(BodyDisplayPrepareStatus::BoundsFailed,
+                       {GeometryFailureKind::InvalidBRep,
+                        "Prepared body bounds are unavailable"});
+      bounds = bounds ? bounds->united(*mesh->localBounds())
+                      : mesh->localBounds();
+      if (!bounds)
+        return failure(BodyDisplayPrepareStatus::BoundsFailed,
+                       {GeometryFailureKind::InvalidBRep,
+                        "Prepared body bounds are invalid"});
+      prepared->topologyRanges_.push_back(
+          {item.bodyId, item.featureId, item.shape, topology, firstFace,
+           faceCount, firstEdge, edgeCount});
+      prepared->meshes_.push_back(
+          {std::move(mesh), identity, firstFace, firstEdge});
+      firstFace += faceCount;
+      firstEdge += edgeCount;
+      prepared->representativeShape_ = item.shape;
+      prepared->representativeBodyId_ = item.bodyId;
+      prepared->representativeFeatureId_ = item.featureId;
+    }
+    if (bounds) {
+      prepared->center_ = bounds->center();
+      prepared->diagonal_ = bounds->diagonal();
+      prepared->box_ = {bounds->maximum().x - bounds->minimum().x,
+                        bounds->maximum().y - bounds->minimum().y,
+                        bounds->maximum().z - bounds->minimum().z};
+      prepared->hasBox_ = true;
+    }
+    std::vector<BodyMeshKey> activeKeys;
+    activeKeys.reserve(prepared->meshes_.size());
+    for (const auto& mesh : prepared->meshes_) activeKeys.push_back(mesh.identity);
+    if (!activeKeys.empty()) prepared->meshCache_.retainActive(activeKeys);
+    if (failurePoint == BodyDisplayPrepareFailurePoint::Finalization)
+      return failure(BodyDisplayPrepareStatus::ResourceFailure,
+                     {GeometryFailureKind::ResourceLimit,
+                      "Injected prepared body finalization failure"});
+    return {BodyDisplayPrepareStatus::Prepared, std::move(prepared), {}};
+  } catch (const std::bad_alloc&) {
+    return failure(BodyDisplayPrepareStatus::ResourceFailure,
+                   {GeometryFailureKind::ResourceLimit,
+                    "Prepared body display allocation failed"});
+  } catch (...) {
+    return failure(BodyDisplayPrepareStatus::ResourceFailure,
+                   {GeometryFailureKind::UnknownException,
+                    "Prepared body display failed"});
+  }
+}
+
+bool Viewport::installPreparedBodyDisplay(
+    PreparedBodyDisplay&& prepared) noexcept {
+  if (componentSession_ || assemblySession_) return false;
+  static_assert(std::is_nothrow_move_assignable_v<BodyRenderMeshCache>);
+  bodyViewShapes_ = std::move(prepared.viewShapes_);
+  bodyTopologyRanges_ = std::move(prepared.topologyRanges_);
+  bodyDisplayMeshes_ = std::move(prepared.meshes_);
+  bodyMeshCache_ = std::move(prepared.meshCache_);
+  bodyShape_ = std::move(prepared.representativeShape_);
+  bodyId_ = prepared.representativeBodyId_;
+  bodyFeatureId_ = prepared.representativeFeatureId_;
+  displayedBodyCenter_ = prepared.center_;
+  displayedBodyDiagonal_ = prepared.diagonal_;
+  meshQuality_ = prepared.quality_;
+  if (prepared.hasBox_) box_ = prepared.box_;
+  pickingScene_.invalidate();
+  hoveredBodyFaceIndex_ = static_cast<std::size_t>(-1);
+  hoveredBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedFace_ = -1;
+  selectedBodyFaceIndices_.clear();
+  selectedBodyFaceReferences_.clear();
+  selectedBodyEdgeIndex_ = static_cast<std::size_t>(-1);
+  selectedBodyEdgeIndices_.clear();
+  selectedBodyEdgeReferences_.clear();
+  selectedBodyIds_.clear();
+  toolPreviewShape_.reset();
+  toolPreviewRenderMesh_.clear();
+  toolCutPreviewShape_.reset();
+  toolCutPreviewRenderMesh_.clear();
+  solidVisible_ = !bodyDisplayMeshes_.empty();
+  return true;
+}
+
 bool Viewport::rebuildBodyDisplay(const std::vector<BodyViewShape>& shapes,
                                   bool clearSelection,
                                   ViewportMeshQuality quality) {
   constexpr std::size_t kMaxViewportFaces = 1'000'000;
   constexpr std::size_t kMaxViewportEdges = 2'000'000;
   std::vector<BodyViewShape> pendingViewShapes;
-  std::vector<BodyTopologyRange> pendingRanges;
-  std::vector<BodyDisplayMesh> pendingMeshes;
+  std::vector<PreparedBodyTopologyRange> pendingRanges;
+  std::vector<PreparedBodyDisplayMesh> pendingMeshes;
   ShapeFeature::ShapePtr pendingShape;
   BodyId pendingBodyId = kInvalidBodyId;
   FeatureId pendingFeatureId = kInvalidFeatureId;
@@ -1497,7 +2395,7 @@ double Viewport::displayedBodyDiagonal() const noexcept {
 
 bool Viewport::hasDisplayedBodyTriangles() const noexcept {
   return std::any_of(bodyDisplayMeshes_.begin(), bodyDisplayMeshes_.end(),
-                     [](const BodyDisplayMesh& display) {
+                     [](const PreparedBodyDisplayMesh& display) {
                        return display.mesh && display.mesh->triangleCount() > 0;
                      });
 }
@@ -1895,7 +2793,25 @@ std::optional<double> Viewport::rulerDistanceMm() const noexcept {
   return ruler_.measuredDistanceMm();
 }
 
-void Viewport::resetScene() {
+void Viewport::resetScene() { resetSceneImpl(false); }
+
+void Viewport::resetScenePreservingSuspendedAssemblyResources() {
+  resetSceneImpl(true);
+}
+
+void Viewport::resetSceneImpl(bool preserveSuspendedAssemblyResources) {
+  clearComponentEditContext();
+  // Component publication/interaction is invalidated first so no queued hover
+  // can observe it while legacy assembly or Part state is being replaced.
+  clearComponentSession();
+  if (preserveSuspendedAssemblyResources) {
+    invalidatePendingHover();
+    if (assemblySession_) assemblySession_->clearInteraction();
+    assemblySession_.reset();
+    assemblyPlacementPreview_.clear();
+  } else {
+    clearAssemblySession();
+  }
   invalidatePendingHover();
   const bool rulerWasActive = ruler_.active();
   ruler_.cancel();
@@ -2986,6 +3902,25 @@ std::optional<Viewport::AngularVisual> Viewport::angularVisual() const {
 }
 
 void Viewport::fitAll() {
+  if (componentSession_) {
+    const auto fit = componentSession_->fit(size(), yaw_, pitch_);
+    if (fit && fit.fit) {
+      zoom_ = fit.fit->zoom;
+      cameraPan_ = fit.fit->pan;
+      update();
+    }
+    return;
+  }
+  if (assemblySession_) {
+    const auto fit = fitAssemblyViewport(assemblySession_->scene(), size(),
+                                         yaw_, pitch_);
+    if (fit && fit.fit) {
+      zoom_ = fit.fit->zoom;
+      cameraPan_ = fit.fit->pan;
+      update();
+    }
+    return;
+  }
   if (displayedBodyDiagonal() <= 1e-9) return;
   double minX = std::numeric_limits<double>::max();
   double minY = minX;
@@ -3174,6 +4109,30 @@ void Viewport::clearCubeHover() {
 
 void Viewport::leaveEvent(QEvent* event) {
   clearCubeHover();
+  if (componentPlacementDragArm_)
+    cancelComponentPlacementDrag();
+  if (componentSession_) {
+    const bool hybridRoot = rootComponentAuthoringActive();
+    const auto expected = componentNotificationExpectation();
+    const QPointer<Viewport> lifetimeGuard(this);
+    if (!expected || !setHoveredComponent(std::nullopt, true) ||
+        !lifetimeGuard ||
+        !matchesComponentNotificationExpectation(*expected))
+      return;
+    unsetCursor();
+    update();
+    if (!hybridRoot) {
+      QOpenGLWidget::leaveEvent(event);
+      return;
+    }
+  }
+  if (assemblySession_) {
+    static_cast<void>(assemblySession_->setHoveredOccurrence(std::nullopt));
+    unsetCursor();
+    update();
+    QOpenGLWidget::leaveEvent(event);
+    return;
+  }
   if (pickMode_ == PickMode::MirrorBody ||
       pickMode_ == PickMode::MoveBody ||
       pickMode_ == PickMode::JoinBodies ||
@@ -3423,6 +4382,15 @@ void Viewport::paintGL() {
   const ThemeColors& theme = ThemeManager::instance().colors();
   painter.fillRect(rect(), theme.viewportBackground);
 
+  if (componentSession_ && !rootComponentAuthoringActive()) {
+    paintComponentFrame(painter, theme);
+    return;
+  }
+  if (assemblySession_) {
+    paintAssemblyFrame(painter, theme);
+    return;
+  }
+
   // World-space work-plane grid. It shares the camera (including pan) with the
   // body, sketches, base planes and ViewCube, so orbit/pan/zoom move them all
   // together instead of leaving a screen-locked checkerboard behind.
@@ -3546,6 +4514,28 @@ void Viewport::paintGL() {
     painter.drawPolygon(destination);
   }
 
+  bool componentEditContextRendered = false;
+  bool componentEditContextDepthIsShared = false;
+  if (componentEditContextScene_ && componentEditActiveComponent_) {
+    painter.beginNativePainting();
+    componentEditContextRendered = renderer_.renderComponentEditContext(
+        componentEditContextScene_, *componentEditActiveComponent_, size(),
+        static_cast<float>(devicePixelRatioF()), yaw_, pitch_, zoom_,
+        cameraPan_, displayMode_, displayedBodyCenter_,
+        std::max(1.0, displayedBodyDiagonal_ * 3.0),
+        componentEditContextGhostsInactiveComponents(), theme,
+        componentSession_ ? componentSession_->selectedHighlight()
+                          : std::nullopt,
+        componentSession_ ? componentSession_->hoveredHighlight()
+                          : std::nullopt,
+        componentPlacementPreview_ ? &*componentPlacementPreview_ : nullptr,
+        componentSessionOwnershipRevision_);
+    componentEditContextDepthIsShared =
+        componentEditContextRendered &&
+        !componentEditContextGhostsInactiveComponents();
+    painter.endNativePainting();
+  }
+
   if ((solidVisible_ && hasParametricBody) || hasToolPreview) {
     painter.beginNativePainting();
     const bool replaceSourcePresentation =
@@ -3578,7 +4568,14 @@ void Viewport::paintGL() {
                      hoveredFaces, selectedEdges, hoveredEdge,
                      hasToolCutPreview ? &toolCutPreviewRenderMesh_ : nullptr,
                      toolPreviewPresentationRevision_,
-                     toolCutPreviewPresentationRevision_, theme);
+                     toolCutPreviewPresentationRevision_, theme,
+                     componentEditContextRendered
+                         ? OrdinaryRenderComposition{
+                               displayedBodyCenter_,
+                               std::max(1.0,
+                                        displayedBodyDiagonal_ * 3.0),
+                               componentEditContextDepthIsShared}
+                         : OrdinaryRenderComposition{});
     painter.endNativePainting();
     if (!renderer_.error().isEmpty()) {
       painter.setPen(theme.danger);
@@ -4396,7 +5393,14 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     return;
   }
   setFocus(Qt::MouseFocusReason);
-  flushPendingHover(event->position());
+  const auto componentBeforeFlush = componentNotificationExpectation();
+  const QPointer<Viewport> lifetimeGuard(this);
+  if (!flushPendingHover(event->position()) || !lifetimeGuard ||
+      (componentBeforeFlush &&
+       !matchesComponentNotificationExpectation(*componentBeforeFlush))) {
+    event->accept();
+    return;
+  }
   lastMousePosition_ = event->position().toPoint();
   draggingBody_ = false;
   bodyDragStart_ = {offsetX_, offsetY_};
@@ -4417,6 +5421,8 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     return;
   }
   if (event->button() != Qt::LeftButton) return;
+  if (handleComponentPress(event)) return;
+  if (handleAssemblyPress(event)) return;
   if (pickMode_ == PickMode::Ruler) {
     static_cast<void>(ruler_.updateHover(
         pickingScene(), event->position() - cameraPan_, true));
@@ -6372,20 +7378,20 @@ void Viewport::scheduleHover(QPointF viewPosition) {
     hoverFrameTimer_->start();
 }
 
-void Viewport::flushPendingHover(std::optional<QPointF> exactPosition) {
+bool Viewport::flushPendingHover(std::optional<QPointF> exactPosition) {
   if (hoverFrameTimer_) hoverFrameTimer_->stop();
   if (exactPosition) {
     pendingHoverPosition_ = *exactPosition;
     pendingHoverGeneration_ = sceneGeneration_;
   }
-  if (!pendingHoverPosition_) return;
+  if (!pendingHoverPosition_) return true;
   if (pendingHoverGeneration_ != sceneGeneration_) {
     pendingHoverPosition_.reset();
-    return;
+    return true;
   }
   const QPointF position = *pendingHoverPosition_;
   pendingHoverPosition_.reset();
-  processHoverAt(position, exactPosition.has_value());
+  return processHoverAt(position, exactPosition.has_value());
 }
 
 void Viewport::invalidatePendingHover() {
@@ -6394,13 +7400,46 @@ void Viewport::invalidatePendingHover() {
   if (hoverFrameTimer_) hoverFrameTimer_->stop();
 }
 
-void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
+bool Viewport::processHoverAt(QPointF viewPosition, bool exact) {
+  if (componentSession_) {
+    const bool hybridRoot = rootComponentAuthoringActive();
+    if (!componentRootVisible_ && !hybridRoot) return true;
+    if (!hybridRoot) {
+      static_cast<void>(exact);
+      return updateComponentHover(viewPosition);
+    }
+
+    bool childHit = false;
+    const auto face = componentFaceAt(viewPosition);
+    if (face && face.hit)
+      childHit = !face.hit->address.body.component.rootInstance();
+    else {
+      const auto edge = componentEdgeAt(viewPosition);
+      if (edge && edge.hit)
+        childHit = !edge.hit->address.body.component.rootInstance();
+    }
+    if (childHit) return updateComponentHover(viewPosition);
+
+    if (componentSession_->hoveredComponent()) {
+      const auto expected = componentNotificationExpectation();
+      const QPointer<Viewport> lifetimeGuard(this);
+      if (!expected || !setHoveredComponent(std::nullopt, true) ||
+          !lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected))
+        return false;
+    }
+  }
+  if (assemblySession_) {
+    static_cast<void>(exact);
+    updateAssemblyHover(viewPosition);
+    return true;
+  }
   const QPointF scenePosition = viewPosition - cameraPan_;
   if (pickMode_ == PickMode::Ruler) {
     static_cast<void>(ruler_.updateHover(pickingScene(), scenePosition, exact));
     setCursor(ruler_.hoverPoint() ? Qt::PointingHandCursor : Qt::CrossCursor);
     update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::MirrorBody ||
       pickMode_ == PickMode::MoveBody ||
@@ -6411,7 +7450,7 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
     setCursor(hoveredToolBodyId_ != kInvalidBodyId ? Qt::PointingHandCursor
                                                    : Qt::CrossCursor);
     update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::MirrorPlane) {
     updateMirrorPlaneHover(scenePosition);
@@ -6420,7 +7459,7 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
                   ? Qt::PointingHandCursor
                   : Qt::CrossCursor);
     update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::MirrorPreview ||
       pickMode_ == PickMode::MovePreview ||
@@ -6432,7 +7471,7 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
     hoveredToolBodyId_ = kInvalidBodyId;
     unsetCursor();
     update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::LinearPatternAxis ||
       pickMode_ == PickMode::CircularPatternAxis) {
@@ -6441,7 +7480,7 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
     setCursor(hoveredRevolveAxisToken_ != 0 ? Qt::PointingHandCursor
                                             : Qt::CrossCursor);
     if (previous != hoveredRevolveAxisToken_) update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::DraftAxis) {
     const auto previous = hoveredRevolveAxisToken_;
@@ -6461,7 +7500,7 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
     if (previous != hoveredRevolveAxisToken_ ||
         previousEdge != hoveredBodyEdgeIndex_)
       update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::DraftFace) {
     updateBodyHover(scenePosition, exact);
@@ -6469,7 +7508,7 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
                   ? Qt::PointingHandCursor
                   : Qt::CrossCursor);
     update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::RevolveAxis) {
     const auto previous = hoveredRevolveAxisToken_;
@@ -6491,25 +7530,35 @@ void Viewport::processHoverAt(QPointF viewPosition, bool exact) {
     if (previous != hoveredRevolveAxisToken_ ||
         hoveredRevolveAxisToken_ == 0)
       update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::ExtrusionSurface) {
     updateExtrusionHover(scenePosition);
     update();
-    return;
+    return true;
   }
   if (pickMode_ == PickMode::SketchPlane ||
       pickMode_ == PickMode::ImagePlane) {
     updateSketchPlaneHover(scenePosition);
     update();
-    return;
+    return true;
   }
   updateBodyHover(scenePosition, exact);
   update();
+  return true;
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
   if (cubePressed_) { event->accept(); return; }
+  if (componentPlacementDragArm_) {
+    if (event->buttons().testFlag(Qt::LeftButton)) {
+      static_cast<void>(updateComponentPlacementDrag(event->position()));
+    } else {
+      cancelComponentPlacementDrag();
+    }
+    event->accept();
+    return;
+  }
   if (marqueeActive_ && event->buttons().testFlag(Qt::LeftButton)) {
     marqueeCurrent_ = event->position() - cameraPan_;
     update();
@@ -6626,7 +7675,10 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     // Orbit around the real world-coordinate origin. Using the centre of the
     // current body bounds made the coordinate triad slide whenever geometry
     // changed and gave Sketcher a different pivot from the 3D view.
-    const Point3d orbitCenter{};
+    const Point3d orbitCenter =
+        componentSession_ ? componentCamera().center
+                          : assemblySession_ ? assemblyCamera().center
+                                             : Point3d{};
     const QPointF centerBefore = projectBodyPoint(
         orbitCenter, orbitCenter, size(), yaw_, pitch_, zoom_).screen;
     yaw_ += static_cast<float>(delta.x()) * 0.5F;
@@ -6641,7 +7693,39 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void Viewport::mouseReleaseEvent(QMouseEvent* event) {
-  flushPendingHover(event->position());
+  if (event->button() == Qt::LeftButton && componentPlacementDragArm_) {
+    const auto expected = componentNotificationExpectation();
+    static_cast<void>(updateComponentPlacementDrag(event->position()));
+    std::optional<ComponentPlacementDragRequest> request;
+    if (componentPlacementPreview_ && expected &&
+        componentPlacementPreview_->isCurrentFor(
+            *componentSession_->scene(), expected->ownershipRevision)) {
+      try {
+        request = componentPlacementPreview_->request();
+      } catch (...) {
+        request.reset();
+      }
+    }
+    cancelComponentPlacementDrag();
+    event->accept();
+    if (request) {
+      const QPointer<Viewport> lifetimeGuard(this);
+      emit componentPlacementDragRequested(std::move(*request));
+      if (!lifetimeGuard) return;
+      if (expected &&
+          !matchesComponentNotificationExpectation(*expected))
+        return;
+    }
+    return;
+  }
+  const auto componentBeforeFlush = componentNotificationExpectation();
+  const QPointer<Viewport> lifetimeGuard(this);
+  if (!flushPendingHover(event->position()) || !lifetimeGuard ||
+      (componentBeforeFlush &&
+       !matchesComponentNotificationExpectation(*componentBeforeFlush))) {
+    event->accept();
+    return;
+  }
   if (event->button() == Qt::LeftButton && cubePressed_) {
     const auto hit = viewCubeGeometry(size(), {yaw_,pitch_}).hitTest(event->position());
     const auto pressed = cubePressed_;
@@ -6731,6 +7815,8 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void Viewport::wheelEvent(QWheelEvent* event) {
+  if (componentPlacementDragArm_)
+    cancelComponentPlacementDrag();
   if (sketchViewTransitionActive_) {
     event->accept();
     return;
@@ -6750,10 +7836,30 @@ void Viewport::wheelEvent(QWheelEvent* event) {
   refreshSelectedExtrusionPolygon();
   pendingHoverPosition_.reset();
   if (hoverFrameTimer_) hoverFrameTimer_->stop();
-  processHoverAt(event->position());
+  const auto componentBeforeHover = componentNotificationExpectation();
+  const QPointer<Viewport> lifetimeGuard(this);
+  if (!processHoverAt(event->position()) || !lifetimeGuard ||
+      (componentBeforeHover &&
+       !matchesComponentNotificationExpectation(*componentBeforeHover))) {
+    event->accept();
+    return;
+  }
   event->accept();
   update();
 }
+
+bool Viewport::event(QEvent* event) {
+  // Qt sends UngrabMouse when an active grab is taken away by the window
+  // system, another widget, or a modal interaction.  A later synthetic or
+  // delayed release must not be allowed to commit the abandoned component
+  // preview.  Keep this narrowly scoped to component placement so existing
+  // Part/Sketch/legacy-assembly event handling remains unchanged.
+  if (event && event->type() == QEvent::UngrabMouse &&
+      componentPlacementDragArm_)
+    cancelComponentPlacementDrag();
+  return QOpenGLWidget::event(event);
+}
+
 bool Viewport::eventFilter(QObject* watched, QEvent* event) {
   if (watched != extrusionLengthEditor_)
     return QOpenGLWidget::eventFilter(watched, event);
@@ -6851,6 +7957,46 @@ void Viewport::resetToolInteraction() {
   update();
 }
 void Viewport::keyPressEvent(QKeyEvent* event) {
+  if (componentSession_ &&
+      (!rootComponentAuthoringActive() || componentPlacementDragArm_)) {
+    if (event->key() == Qt::Key_Escape) {
+      if (componentPlacementDragArm_) {
+        cancelComponentPlacementDrag();
+        event->accept();
+        return;
+      }
+      const auto expected = componentNotificationExpectation();
+      const QPointer<Viewport> lifetimeGuard(this);
+      if (!expected || !setSelectedComponent(std::nullopt, true) ||
+          !lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected)) {
+        event->accept();
+        return;
+      }
+      if (!setHoveredComponent(std::nullopt, true) || !lifetimeGuard ||
+          !matchesComponentNotificationExpectation(*expected)) {
+        event->accept();
+        return;
+      }
+      event->accept();
+      return;
+    }
+    QWidget::keyPressEvent(event);
+    return;
+  }
+  if (assemblySession_) {
+    // A5a has no assembly authoring, marquee, snap/ruler, Apply/Cancel, or
+    // Escape workflow. Consume legacy CAD shortcuts so they cannot enter a
+    // part-only interaction while the read-only session is installed.
+    if (event->key() == Qt::Key_Escape ||
+        event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab ||
+        event->matches(QKeySequence::SelectAll)) {
+      event->accept();
+      return;
+    }
+    QWidget::keyPressEvent(event);
+    return;
+  }
   if (sketchViewTransitionActive_) {
     event->accept();
     return;

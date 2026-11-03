@@ -10,7 +10,9 @@
 #include <QImage>
 #include <QMetaObject>
 #include <array>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 #include <optional>
 #include <string>
@@ -18,6 +20,10 @@
 #include "model/Document.h"
 #include "sketch/Sketch.h"
 #include "ui/BodyRenderMesh.h"
+#include "ui/AssemblyViewportSession.h"
+#include "ui/ComponentViewportSession.h"
+#include "ui/AssemblyPlacementPreview.h"
+#include "ui/ComponentPlacementDrag.h"
 #include "ui/ViewportPicking.h"
 #include "ui/ManipulatorLayout.h"
 #include "ui/ViewportRenderer.h"
@@ -34,10 +40,20 @@ class QKeyEvent;
 class QDoubleSpinBox;
 class QVariantAnimation;
 class QTimer;
+class QPainter;
 
 namespace solidar {
 
 class ToolParameterHud;
+
+struct ViewportNavigationState final {
+  float yawDeg{};
+  float pitchDeg{};
+  float zoom{};
+  QPointF pan;
+  friend bool operator==(const ViewportNavigationState&,
+                         const ViewportNavigationState&) = default;
+};
 
 struct BodyViewShape {
   BodyId bodyId{kInvalidBodyId};
@@ -45,6 +61,86 @@ struct BodyViewShape {
   ShapeFeature::ShapePtr shape;
   std::shared_ptr<const TopologyIndex> topologyIndex;
   ShapeRevision shapeRevision{kInvalidShapeRevision};
+};
+
+enum class BodyDisplayPrepareStatus : std::uint8_t {
+  Prepared,
+  InvalidInput,
+  TopologyFailed,
+  MeshFailed,
+  BoundsFailed,
+  ResourceLimit,
+  ResourceFailure,
+};
+
+enum class BodyDisplayPrepareFailurePoint : std::uint8_t {
+  None,
+  Topology,
+  Meshing,
+  Bounds,
+  Resource,
+  Finalization,
+};
+
+struct PreparedBodyTopologyRange final {
+  BodyId bodyId{kInvalidBodyId};
+  FeatureId featureId{kInvalidFeatureId};
+  ShapeFeature::ShapePtr shape;
+  std::shared_ptr<const TopologyIndex> topologyIndex;
+  std::size_t firstFace{};
+  std::size_t faceCount{};
+  std::size_t firstEdge{};
+  std::size_t edgeCount{};
+};
+
+struct PreparedBodyDisplayMesh final {
+  std::shared_ptr<const BodyRenderMesh> mesh;
+  BodyMeshKey identity;
+  std::size_t firstFace{};
+  std::size_t firstEdge{};
+};
+
+class PreparedBodyDisplay final {
+ public:
+  PreparedBodyDisplay() = default;
+  ~PreparedBodyDisplay() = default;
+  PreparedBodyDisplay(const PreparedBodyDisplay&) = delete;
+  PreparedBodyDisplay& operator=(const PreparedBodyDisplay&) = delete;
+  PreparedBodyDisplay(PreparedBodyDisplay&&) noexcept = default;
+  PreparedBodyDisplay& operator=(PreparedBodyDisplay&&) noexcept = default;
+
+  [[nodiscard]] std::size_t bodyCount() const noexcept {
+    return meshes_.size();
+  }
+  [[nodiscard]] Point3d center() const noexcept { return center_; }
+  [[nodiscard]] double diagonal() const noexcept { return diagonal_; }
+  [[nodiscard]] ViewportMeshQuality quality() const noexcept { return quality_; }
+
+ private:
+  friend class Viewport;
+
+  std::vector<BodyViewShape> viewShapes_;
+  std::vector<PreparedBodyTopologyRange> topologyRanges_;
+  std::vector<PreparedBodyDisplayMesh> meshes_;
+  BodyRenderMeshCache meshCache_;
+  ShapeFeature::ShapePtr representativeShape_;
+  BodyId representativeBodyId_{kInvalidBodyId};
+  FeatureId representativeFeatureId_{kInvalidFeatureId};
+  BoxParameters box_;
+  bool hasBox_{};
+  Point3d center_{};
+  double diagonal_{};
+  ViewportMeshQuality quality_{ViewportMeshQuality::Normal};
+};
+
+struct PreparedBodyDisplayResult final {
+  BodyDisplayPrepareStatus status{BodyDisplayPrepareStatus::InvalidInput};
+  std::unique_ptr<PreparedBodyDisplay> display;
+  GeometryFailure failure;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return status == BodyDisplayPrepareStatus::Prepared && display;
+  }
 };
 
 // Immutable-by-convention presentation snapshot rebuilt from Document.
@@ -77,11 +173,132 @@ class Viewport final : public QOpenGLWidget {
   static constexpr qulonglong kGlobalZAxisToken = 0xfffffffffffffff2ULL;
   explicit Viewport(QWidget* parent = nullptr);
   ~Viewport() override;
+  void installComponentSession(
+      std::unique_ptr<ComponentViewportSession> session);
+  void clearComponentSession() noexcept;
+  [[nodiscard]] std::unique_ptr<ComponentViewportSession>
+  takeComponentSession() noexcept;
+  void restoreComponentSession(
+      std::unique_ptr<ComponentViewportSession> session);
+  // Replaces only the product-side component session while the ordinary Part
+  // presentation remains installed. This is the hybrid root-component
+  // authoring path: child occurrences stay pickable/draggable without
+  // discarding the active root Document rendered by the Part path.
+  void replaceComponentSessionDuringEdit(
+      std::unique_ptr<ComponentViewportSession> session) noexcept;
+  [[nodiscard]] const ComponentViewportSession* componentSession()
+      const noexcept { return componentSession_.get(); }
+  void setComponentEditContext(
+      std::shared_ptr<const ComponentViewportScene> scene,
+      ComponentInstanceAddress activeComponent);
+  void clearComponentEditContext() noexcept;
+  [[nodiscard]] bool componentEditContextActive() const noexcept {
+    return componentEditContextScene_ && componentEditActiveComponent_;
+  }
+  [[nodiscard]] bool componentEditContextGhostsInactiveComponents()
+      const noexcept {
+    return componentEditActiveComponent_ &&
+           !componentEditActiveComponent_->rootInstance();
+  }
+  void setComponentRootVisible(bool visible) noexcept;
+  [[nodiscard]] bool componentRootVisible() const noexcept {
+    return componentRootVisible_;
+  }
+  [[nodiscard]] bool setSelectedComponent(
+      const std::optional<ComponentInstanceSelection>& component,
+      bool notify = false) noexcept;
+  [[nodiscard]] bool setHoveredComponent(
+      const std::optional<ComponentInstanceSelection>& component,
+      bool notify = false) noexcept;
+  [[nodiscard]] const std::optional<ComponentInstanceSelection>&
+  selectedComponentView() const noexcept;
+  [[nodiscard]] const std::optional<ComponentPlacementPreview>&
+  componentPlacementPreview() const noexcept {
+    return componentPlacementPreview_;
+  }
+  [[nodiscard]] bool componentPlacementDragArmed() const noexcept {
+    return componentPlacementDragArm_.has_value();
+  }
+  [[nodiscard]] ComponentFaceRayQueryResult componentFaceAt(
+      QPointF logicalPosition) const noexcept;
+  [[nodiscard]] ComponentEdgeRayQueryResult componentEdgeAt(
+      QPointF logicalPosition,
+      double radiusLogicalPixels = 9.0) const noexcept;
+  void installAssemblySession(std::unique_ptr<AssemblyViewportSession> session);
+  // Visibility keeps the camera and renderer caches intact.  The candidate is
+  // fully published and selection-prepared before this no-throw swap.
+  void installAssemblyVisibilitySession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  void installAssemblyGroundingSession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  void installAssemblySuppressionSession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  void installAssemblyDuplicateSession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  void installAssemblyRemoveSession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  void installAssemblyDefinitionSession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  [[nodiscard]] bool installPreparedAssemblyIsolation(
+      PreparedAssemblyIsolationState&& prepared) noexcept;
+  void clearAssemblySession() noexcept;
+  [[nodiscard]] std::unique_ptr<AssemblyViewportSession>
+  suspendAssemblySession() noexcept;
+  void resumeAssemblySession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
+  [[nodiscard]] const AssemblyViewportSession* assemblySession() const noexcept {
+    return assemblySession_.get();
+  }
+  void setAssemblyMatePickMode(bool active) noexcept;
+  [[nodiscard]] bool assemblyMatePickMode() const noexcept {
+    return assemblyMatePickMode_;
+  }
+  [[nodiscard]] bool installAssemblyMatePreview(
+      std::shared_ptr<const AssemblyViewportScene> scene) noexcept;
+  void clearAssemblyMatePreview() noexcept;
+  [[nodiscard]] const std::shared_ptr<const AssemblyViewportScene>&
+  assemblyMatePreviewScene() const noexcept {
+    return assemblyMatePreviewScene_;
+  }
+  [[nodiscard]] ViewportNavigationState navigationState() const noexcept {
+    return {yaw_, pitch_, zoom_, cameraPan_};
+  }
+  void restoreNavigationState(ViewportNavigationState state) noexcept;
+  [[nodiscard]] bool setSelectedAssemblyOccurrence(
+      const std::optional<AssemblyOccurrenceSelection>& occurrence,
+      bool notify = false) noexcept;
+  void installPreparedAssemblySelection(
+      PreparedAssemblySelectionState&& prepared) noexcept;
+  // Non-owning immutable view.  In particular, noexcept availability and
+  // semantic-state probes must not copy the OccurrencePath vector.
+  [[nodiscard]] const std::optional<AssemblyOccurrenceSelection>&
+  selectedAssemblyOccurrenceView() const noexcept;
+  [[nodiscard]] bool prepareAssemblyPlacementPreview(
+      const Document& source) noexcept;
+  [[nodiscard]] bool setAssemblyPlacementPreviewTransform(
+      RigidTransform3d placement) noexcept;
+  void clearAssemblyPlacementPreview() noexcept;
+  [[nodiscard]] const AssemblyPlacementPreview& assemblyPlacementPreview()
+      const noexcept { return assemblyPlacementPreview_; }
+  // Read-only renderer counters make no-upload publication contracts
+  // observable without exposing OpenGL object names or renderer ownership.
+  [[nodiscard]] RendererResourceDiagnostics rendererResourceDiagnostics()
+      const noexcept { return renderer_.resourceDiagnostics(); }
   void setBox(BoxParameters parameters);
   void setBodyShape(ShapeFeature::ShapePtr shape,
                     BodyId bodyId = kInvalidBodyId,
                     FeatureId featureId = kInvalidFeatureId);
   void setBodyShapes(std::vector<BodyViewShape> shapes);
+  [[nodiscard]] static PreparedBodyDisplayResult prepareBodyDisplay(
+      std::vector<BodyViewShape> shapes, ViewportMeshQuality quality,
+      ProductPresentationEpoch epoch = {}, DefinitionId definitionId = {},
+      BodyDisplayPrepareFailurePoint failurePoint =
+          BodyDisplayPrepareFailurePoint::None) noexcept;
+  [[nodiscard]] bool installPreparedBodyDisplay(
+      PreparedBodyDisplay&& prepared) noexcept;
+  [[nodiscard]] std::size_t displayedBodyCount() const noexcept {
+    return bodyDisplayMeshes_.size();
+  }
   void setSketch(const sketch::Sketch& sketch);
   void setSketch(const sketch::Sketch& sketch,
                  const SketchPlacement& placement);
@@ -109,6 +326,10 @@ class Viewport final : public QOpenGLWidget {
   [[nodiscard]] bool basePlaneVisible(int plane) const noexcept;
   [[nodiscard]] bool sketchPlaneSelectionActive() const noexcept;
   void resetScene();
+  // Used only while an assembly session is suspended for embedded-definition
+  // editing. It clears Part/tool state without cancelling renderer retention
+  // of the hidden assembly's resident source keys.
+  void resetScenePreservingSuspendedAssemblyResources();
   void beginSketchPlaneSelection();
   void beginImagePlaneSelection();
   void beginMirrorBodySelection();
@@ -152,6 +373,7 @@ class Viewport final : public QOpenGLWidget {
   // notification. MainWindow uses this before starting another tool so a
   // legacy pick mode/HUD cannot survive alongside the new tool's UI.
   void resetToolInteraction();
+  void resetSceneImpl(bool preserveSuspendedAssemblyResources);
   // True when the active tool manipulator is a directional (Face Extrude)
   // linear manipulator; paintGL suppresses the legacy prism/arrow/spinbox in
   // that case so the two preview generations can never render simultaneously.
@@ -267,6 +489,7 @@ class Viewport final : public QOpenGLWidget {
 
  signals:
   void selectionChanged(const QString& description);
+  void assemblyMateFacePicked(const AssemblyFaceRayHit& hit);
   void interactionCancelled(ViewportCancelReason reason);
   void sketchPlanePicked(const SketchPlanePick& pick);
   void imagePlanePicked(const SketchPlanePick& pick);
@@ -315,8 +538,25 @@ class Viewport final : public QOpenGLWidget {
   void rulerActiveChanged(bool active);
   void rulerPointPicked(int selectedPointCount);
   void rulerMeasurementChanged(double distanceMm);
+  void assemblyOccurrenceSelected(
+      const solidar::AssemblyOccurrenceSelection& occurrence);
+  void assemblyOccurrenceSelectionCleared(
+      const solidar::AssemblyScenePublicationHandle& publication);
+  void componentSelected(
+      const solidar::ComponentInstanceSelection& component);
+  void componentSelectionCleared(
+      const solidar::ComponentScenePublicationHandle& publication);
+  void componentHovered(
+      const solidar::ComponentInstanceSelection& component);
+  void componentHoverCleared(
+      const solidar::ComponentScenePublicationHandle& publication);
+  void componentFacePicked(const solidar::ComponentFaceRayHit& hit);
+  void componentEdgePicked(const solidar::ComponentEdgeRayHit& hit);
+  void componentPlacementDragRequested(
+      solidar::ComponentPlacementDragRequest request);
 
  protected:
+  bool event(QEvent* event) override;
   void initializeGL() override;
   void paintGL() override;
   void resizeEvent(QResizeEvent* event) override;
@@ -329,9 +569,37 @@ class Viewport final : public QOpenGLWidget {
   void leaveEvent(QEvent* event) override;
 
  private:
+  struct ComponentNotificationExpectation final {
+    const ComponentViewportSession* session{};
+    const ComponentViewportScene* scene{};
+    ComponentScenePublicationHandle publication;
+    std::uint64_t ownershipRevision{};
+  };
+
+  [[nodiscard]] std::optional<ComponentNotificationExpectation>
+  componentNotificationExpectation() const noexcept;
+  [[nodiscard]] bool matchesComponentNotificationExpectation(
+      const ComponentNotificationExpectation& expected) const noexcept;
+  void installAssemblyOccurrenceSession(
+      std::unique_ptr<AssemblyViewportSession> session) noexcept;
   friend class MainWindowUndoTestAccess;
 
   void animateOrientation(CameraOrientation target);
+  void paintComponentFrame(QPainter& painter, const ThemeColors& theme);
+  void paintAssemblyFrame(QPainter& painter, const ThemeColors& theme);
+  [[nodiscard]] ViewportCameraState componentCamera() const noexcept;
+  [[nodiscard]] ViewportCameraState assemblyCamera() const noexcept;
+  [[nodiscard]] bool handleComponentPress(QMouseEvent* event);
+  [[nodiscard]] bool handleAssemblyPress(QMouseEvent* event);
+  [[nodiscard]] bool updateComponentHover(QPointF logicalPosition);
+  [[nodiscard]] bool rootComponentAuthoringActive() const noexcept;
+  void armComponentPlacementDrag(
+      const ComponentInstanceSelection& selection,
+      QPointF logicalPosition) noexcept;
+  [[nodiscard]] bool updateComponentPlacementDrag(
+      QPointF logicalPosition) noexcept;
+  void cancelComponentPlacementDrag() noexcept;
+  void updateAssemblyHover(QPointF logicalPosition);
   void setStandardView(StandardView view);
   void clearCubeHover();
   QVariantAnimation* orientationAnimation_{nullptr};
@@ -374,9 +642,11 @@ class Viewport final : public QOpenGLWidget {
   void releaseRendererResources() noexcept;
   void synchronizeRendererResources();
   void scheduleHover(QPointF viewPosition);
-  void flushPendingHover(std::optional<QPointF> exactPosition = std::nullopt);
+  [[nodiscard]] bool flushPendingHover(
+      std::optional<QPointF> exactPosition = std::nullopt);
   void invalidatePendingHover();
-  void processHoverAt(QPointF viewPosition, bool exact = false);
+  [[nodiscard]] bool processHoverAt(QPointF viewPosition,
+                                    bool exact = false);
   void selectInRect(const QRectF& rect, bool additive, bool singleOnly = false);
   void cancelMarquee();
   void cancelActiveInteraction();
@@ -414,13 +684,7 @@ class Viewport final : public QOpenGLWidget {
   };
   BoxParameters box_;
   ShapeFeature::ShapePtr bodyShape_;
-  struct BodyDisplayMesh {
-    std::shared_ptr<const BodyRenderMesh> mesh;
-    BodyMeshKey identity;
-    std::size_t firstFace{};
-    std::size_t firstEdge{};
-  };
-  std::vector<BodyDisplayMesh> bodyDisplayMeshes_;
+  std::vector<PreparedBodyDisplayMesh> bodyDisplayMeshes_;
   BodyRenderMeshCache bodyMeshCache_;
   // Legacy callers do not own a model ShapeRevision. Give every explicit
   // replacement a fresh structural revision so reusing and mutating the same
@@ -442,6 +706,24 @@ class Viewport final : public QOpenGLWidget {
   ToolPreviewPresentation toolPreviewPresentation_{
       ToolPreviewPresentation::OverlaySourceSelection};
   ViewportRenderer renderer_;
+  std::unique_ptr<ComponentViewportSession> componentSession_;
+  std::shared_ptr<const ComponentViewportScene> componentEditContextScene_;
+  std::optional<ComponentInstanceAddress> componentEditActiveComponent_;
+  bool componentRootVisible_{true};
+  std::uint64_t componentSessionOwnershipRevision_{};
+  struct ComponentPlacementDragArm final {
+    ComponentScenePublicationHandle publication;
+    ComponentInstanceAddress component;
+    QPointF pressLogical;
+    ViewportCameraState camera;
+    std::uint64_t ownershipRevision{};
+  };
+  std::optional<ComponentPlacementDragArm> componentPlacementDragArm_;
+  std::optional<ComponentPlacementPreview> componentPlacementPreview_;
+  std::unique_ptr<AssemblyViewportSession> assemblySession_;
+  std::shared_ptr<const AssemblyViewportScene> assemblyMatePreviewScene_;
+  bool assemblyMatePickMode_{};
+  AssemblyPlacementPreview assemblyPlacementPreview_;
   QMetaObject::Connection contextAboutToBeDestroyedConnection_;
   bool destructionStarted_{};
   ViewportDisplayMode displayMode_{ViewportDisplayMode::ShadedWithEdges};
@@ -450,17 +732,7 @@ class Viewport final : public QOpenGLWidget {
   FeatureId toolPreviewFeatureId_{kInvalidFeatureId};
   std::vector<BodyId> toolPreviewReplacedBodyIds_;
   std::vector<BodyViewShape> bodyViewShapes_;
-  struct BodyTopologyRange {
-    BodyId bodyId{kInvalidBodyId};
-    FeatureId featureId{kInvalidFeatureId};
-    ShapeFeature::ShapePtr shape;
-    std::shared_ptr<const TopologyIndex> topologyIndex;
-    std::size_t firstFace{};
-    std::size_t faceCount{};
-    std::size_t firstEdge{};
-    std::size_t edgeCount{};
-  };
-  std::vector<BodyTopologyRange> bodyTopologyRanges_;
+  std::vector<PreparedBodyTopologyRange> bodyTopologyRanges_;
   BodyId bodyId_{kInvalidBodyId};
   FeatureId bodyFeatureId_{kInvalidFeatureId};
   sketch::Sketch sketch_;

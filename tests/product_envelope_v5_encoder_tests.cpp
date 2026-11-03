@@ -36,6 +36,12 @@ constexpr ProjectId kProjectB{
     {0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x49, 0x88,
      0x87, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00}};
 
+LinkedPartBinding binding() {
+  SourceContentHash hash;
+  hash.bytes[0] = 0x42;
+  return {{kProjectB, DefinitionId{99}}, "library/part.solidar", hash};
+}
+
 ProductEnvelopeV5Metadata metadata() {
   return {QString::fromUtf8("Изделие Ω"),
           QStringLiteral("2026-10-23T12:34:56Z")};
@@ -272,6 +278,21 @@ int main() {
     CHECK(identified->projectId() == kProjectA);
     CHECK(encoded.payload->root.value("projectId") ==
           QStringLiteral("ffeeddcc-bbaa-4988-8766-554433221100"));
+  }
+
+  {
+    DefinitionRegistry registry;
+    CHECK(registry.insert(PartDefinition(
+              kRootDefinition, std::make_unique<Document>(), binding())) ==
+          DefinitionInsertStatus::Inserted);
+    auto linked = ProductDocument::create(std::move(registry), kRootDefinition);
+    CHECK(linked);
+    const auto rejected = encodeProductEnvelopeV5Root(
+        *linked.product, kProjectA, metadata());
+    CHECK(rejected.status == ProductEnvelopeV5EncodeStatus::Invalid);
+    CHECK(!rejected.payload);
+    CHECK(rejected.error.contains(QStringLiteral("linked")));
+    CHECK(linked.product->rootPartDefinition()->isLinked());
   }
 
   // Invalid identity, registry cardinality, persisted ID range and nested

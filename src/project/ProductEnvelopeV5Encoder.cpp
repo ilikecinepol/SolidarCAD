@@ -50,6 +50,13 @@ ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
                      QStringLiteral(
                          "product envelope v5 requires exactly one definition"));
     }
+    const auto* rootPart =
+        source.definitions().findPart(source.rootDefinitionId());
+    if (!rootPart || rootPart->isLinked()) {
+      return failure(ProductEnvelopeV5EncodeStatus::Invalid,
+                     QStringLiteral(
+                         "product envelope v5 cannot persist linked parts"));
+    }
     const std::uint64_t definitionId = outputRootDefinitionId.value();
     if (definitionId == 0 ||
         definitionId > static_cast<std::uint64_t>(
@@ -62,7 +69,7 @@ ProductEnvelopeV5EncodeResult encodeProductEnvelopeV5Root(
     const detail::ProjectFormatV4DocumentMetadata nestedMetadata{
         metadata.name, metadata.createdAt};
     auto nested = detail::encodeProjectFormatV4DocumentRoot(
-        source.rootDocument(), nestedMetadata);
+        rootPart->document(), nestedMetadata);
     if (!nested.succeeded()) {
       return failure(
           nested.status ==

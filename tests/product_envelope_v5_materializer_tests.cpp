@@ -169,6 +169,7 @@ bool equivalentV4Candidate(const ProjectFormatV4ModelCandidate& lhs,
          le.deferredUnknowns == re.deferredUnknowns &&
          lp.topologySites == rp.topologySites &&
          lp.featureOwners == rp.featureOwners &&
+         lp.rebuildWork == rp.rebuildWork &&
          lt.topologyReferences == rt.topologyReferences &&
          lt.topologyInspections == rt.topologyInspections &&
          lt.deferredUnsupported == rt.deferredUnsupported &&
@@ -429,6 +430,9 @@ int main() {
             },
             [](auto& value) {
               ++value.embeddedPart->legacySketch.topology.provenanceRecordCount;
+            },
+            [](auto& value) {
+              ++value.embeddedPart->legacySketch.topology.payload.rebuildWork;
             },
             [](auto& value) {
               value.deferredUnknowns.push_back(

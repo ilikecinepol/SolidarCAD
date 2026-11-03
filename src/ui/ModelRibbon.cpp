@@ -15,6 +15,8 @@
 namespace solidar {
 namespace {
 
+constexpr auto kSourceCommandProperty = "sourceCommandObjectName";
+
 QString compactCommandTitle(QString title) {
   // QToolButton does not word-wrap ToolButtonTextUnderIcon labels.  At the
   // 125–150% scaling commonly used on Windows, long Russian captions used to
@@ -57,7 +59,7 @@ QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
   widget->setObjectName("modelToolGroup");
   widget->setProperty("groupTitle", title);
   auto* layout = new QVBoxLayout(widget);
-  layout->setContentsMargins(4, 3, 4, 2);
+  layout->setContentsMargins(0, 3, 0, 2);
   layout->setSpacing(2);
   layout->addLayout(commands);
   auto* caption = new QToolButton(widget);
@@ -65,6 +67,7 @@ QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
   caption->setText(title + QStringLiteral("  ▾"));
   caption->setPopupMode(QToolButton::InstantPopup);
   caption->setCursor(Qt::PointingHandCursor);
+  caption->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   auto* menu = new QMenu(caption);
   menu->setObjectName("modelGroupMenu");
   for (auto* button : menuButtons) {
@@ -74,15 +77,16 @@ QWidget* group(const QString& title, QLayout* commands, QWidget* parent,
             : button->property("commandTitle").toString();
     if (button->menu()) {
       button->menu()->setTitle(commandTitle);
-      menu->addMenu(button->menu());
+      auto* action = menu->addMenu(button->menu());
+      action->setProperty(kSourceCommandProperty, button->objectName());
       continue;
     }
     auto* action = menu->addAction(button->icon(), commandTitle);
     action->setObjectName(button->objectName() + QStringLiteral("Action"));
+    action->setProperty(kSourceCommandProperty, button->objectName());
     action->setEnabled(button->isEnabled());
-    if (button->isEnabled())
-      QObject::connect(action, &QAction::triggered, button,
-                       [button] { button->click(); });
+    QObject::connect(action, &QAction::triggered, button,
+                     [button] { button->click(); });
   }
   caption->setMenu(menu);
   layout->addWidget(caption, 0, Qt::AlignCenter);
@@ -103,7 +107,7 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   setFixedHeight(124);
   auto* root = new QHBoxLayout(this);
   root->setContentsMargins(4, 6, 4, 6);
-  root->setSpacing(3);
+  root->setSpacing(0);
 
   auto* createSketch = commandButton(QStringLiteral("createSketch"), this);
   auto* referenceImage =
@@ -129,7 +133,7 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   toolGroup_->addButton(pocket);
   toolGroup_->addButton(revolve);
   auto* creation = new QHBoxLayout;
-  creation->setSpacing(5);
+  creation->setSpacing(0);
   creation->addWidget(createSketch);
   creation->addWidget(extrude);
   creation->addWidget(pocket);
@@ -177,7 +181,7 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   toolGroup_->addButton(linearPattern);
   toolGroup_->addButton(circularPattern);
   auto* editing = new QHBoxLayout;
-  editing->setSpacing(5);
+  editing->setSpacing(0);
   editing->addWidget(fillet);
   editing->addWidget(chamfer);
   editing->addWidget(joinBodies);
@@ -190,6 +194,81 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   root->addWidget(group(QString::fromUtf8("РЕДАКТИРОВАНИЕ"), editing, this,
                         {fillet, chamfer, joinBodies, move, shell, draft, mirror, linearPattern,
                          circularPattern}));
+  root->addWidget(separator(this));
+
+  createComponentFromBodyButton_ = new QToolButton(this);
+  createComponentFromBodyButton_->setObjectName(
+      QStringLiteral("createComponentFromBodyCommand"));
+  createComponentFromBodyButton_->setText(
+      QString::fromUtf8("Создать компонент\nиз тела"));
+  createComponentFromBodyButton_->setProperty(
+      "commandTitle", QString::fromUtf8("Создать компонент из тела"));
+  createComponentFromBodyButton_->setToolTip(QString::fromUtf8(
+      "Перенести выбранное тело в новый вложенный компонент"));
+  createComponentFromBodyButton_->setAccessibleName(
+      QString::fromUtf8("Создать компонент из тела"));
+  createComponentFromBodyButton_->setProperty("uiRole", "modelCommand");
+  createComponentFromBodyButton_->setIcon(
+      modelCommandIcon(QStringLiteral("joinBodies")));
+  createComponentFromBodyButton_->setIconSize(QSize(42, 42));
+  createComponentFromBodyButton_->setToolButtonStyle(
+      Qt::ToolButtonTextUnderIcon);
+  createComponentFromBodyButton_->setFixedWidth(104);
+  createComponentFromBodyButton_->setMinimumHeight(78);
+  createComponentFromBodyButton_->setSizePolicy(QSizePolicy::Fixed,
+                                                 QSizePolicy::Preferred);
+  createComponentFromBodyButton_->setCursor(Qt::PointingHandCursor);
+  createComponentFromBodyButton_->setFocusPolicy(Qt::NoFocus);
+  createComponentFromBodyButton_->setCheckable(false);
+  createComponentFromBodyButton_->setEnabled(false);
+  const auto homePlacementButton = [this](const QString& objectName,
+                                          const QString& text,
+                                          const QString& title,
+                                          const QString& tooltip,
+                                          const QString& iconId) {
+    auto* button = new QToolButton(this);
+    button->setObjectName(objectName);
+    button->setText(text);
+    button->setProperty("commandTitle", title);
+    button->setToolTip(tooltip);
+    button->setAccessibleName(title);
+    button->setAccessibleDescription(tooltip);
+    button->setProperty("uiRole", "modelCommand");
+    button->setIcon(modelCommandIcon(iconId));
+    button->setIconSize(QSize(42, 42));
+    button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    button->setFixedWidth(104);
+    button->setMinimumHeight(78);
+    button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setCheckable(false);
+    button->setEnabled(false);
+    return button;
+  };
+  setComponentHomePlacementButton_ = homePlacementButton(
+      QStringLiteral("componentSetHomePlacementCommand"),
+      QString::fromUtf8("Закрепить\nположение"),
+      QString::fromUtf8("Закрепить положение"),
+      QString::fromUtf8("Сохранить текущее положение как исходное. "
+                        "Компонент останется перемещаемым."),
+      QStringLiteral("move"));
+  restoreComponentHomePlacementButton_ = homePlacementButton(
+      QStringLiteral("componentRestoreHomePlacementCommand"),
+      QString::fromUtf8("Вернуть исходное\nположение"),
+      QString::fromUtf8("Вернуть исходное положение"),
+      QString::fromUtf8(
+          "Вернуть все компоненты в сохранённые исходные положения."),
+      QStringLiteral("joinBodies"));
+  auto* assemblyCommands = new QHBoxLayout;
+  assemblyCommands->setSpacing(5);
+  assemblyCommands->addWidget(createComponentFromBodyButton_);
+  assemblyCommands->addWidget(setComponentHomePlacementButton_);
+  assemblyCommands->addWidget(restoreComponentHomePlacementButton_);
+  root->addWidget(group(QString::fromUtf8("СБОРКИ"), assemblyCommands, this,
+                        {createComponentFromBodyButton_,
+                         setComponentHomePlacementButton_,
+                         restoreComponentHomePlacementButton_}));
   root->addWidget(separator(this));
 
   auto* views = new QHBoxLayout;
@@ -218,31 +297,33 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
   addDisplayMode(QString::fromUtf8("Каркас"), 2);
   displayMode->setMenu(displayMenu);
 
-  auto* quality = new QToolButton(this);
-  quality->setObjectName("meshQualityCommand");
-  quality->setText(QString::fromUtf8("Качество:\nОбычное"));
-  quality->setToolTip(QString::fromUtf8("Качество сетки отображения"));
-  quality->setPopupMode(QToolButton::InstantPopup);
-  quality->setToolButtonStyle(Qt::ToolButtonTextOnly);
-  quality->setMinimumSize(92, 56);
-  auto* qualityMenu = new QMenu(quality);
+  meshQualityButton_ = new QToolButton(this);
+  meshQualityButton_->setObjectName("meshQualityCommand");
+  meshQualityButton_->setText(QString::fromUtf8("Качество:\nОбычное"));
+  meshQualityButton_->setToolTip(
+      QString::fromUtf8("Качество сетки отображения"));
+  meshQualityButton_->setPopupMode(QToolButton::InstantPopup);
+  meshQualityButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  meshQualityButton_->setMinimumSize(92, 56);
+  auto* qualityMenu = new QMenu(meshQualityButton_);
   auto* normalQuality = qualityMenu->addAction(QString::fromUtf8("Обычное"));
   auto* highQuality = qualityMenu->addAction(QString::fromUtf8("Высокое"));
-  connect(normalQuality, &QAction::triggered, this, [this, quality] {
-    quality->setText(QString::fromUtf8("Качество:\nОбычное"));
+  connect(normalQuality, &QAction::triggered, this, [this] {
+    meshQualityButton_->setText(QString::fromUtf8("Качество:\nОбычное"));
     emit meshQualityRequested(0);
   });
-  connect(highQuality, &QAction::triggered, this, [this, quality] {
-    quality->setText(QString::fromUtf8("Качество:\nВысокое"));
+  connect(highQuality, &QAction::triggered, this, [this] {
+    meshQualityButton_->setText(QString::fromUtf8("Качество:\nВысокое"));
     emit meshQualityRequested(1);
   });
-  quality->setMenu(qualityMenu);
+  meshQualityButton_->setMenu(qualityMenu);
   views->addWidget(rulerButton_);
   views->addWidget(referenceImage);
   views->addWidget(displayMode);
-  views->addWidget(quality);
+  views->addWidget(meshQualityButton_);
   root->addWidget(group(QString::fromUtf8("ОТОБРАЖЕНИЕ"), views, this,
-                        {rulerButton_, referenceImage, displayMode, quality}), 1);
+                        {rulerButton_, referenceImage, displayMode,
+                         meshQualityButton_}), 1);
 
   connect(createSketch, &QToolButton::clicked, this,
           &ModelRibbon::createSketchRequested);
@@ -268,6 +349,13 @@ ModelRibbon::ModelRibbon(QWidget* parent) : QWidget(parent) {
           &ModelRibbon::linearPatternRequested);
   connect(circularPattern, &QToolButton::clicked, this,
           &ModelRibbon::circularPatternRequested);
+  connect(createComponentFromBodyButton_, &QToolButton::clicked, this,
+          &ModelRibbon::createComponentFromBodyRequested);
+  connect(setComponentHomePlacementButton_, &QToolButton::clicked, this,
+          &ModelRibbon::setComponentHomePlacementRequested);
+  connect(restoreComponentHomePlacementButton_, &QToolButton::clicked, this,
+          &ModelRibbon::restoreComponentHomePlacementRequested);
+  setComponentEditing(false);
   connect(rulerButton_, &QToolButton::toggled, this,
           &ModelRibbon::rulerToggled);
 }
@@ -281,6 +369,63 @@ void ModelRibbon::clearActiveTool() {
 void ModelRibbon::setRulerActive(bool active) {
   const QSignalBlocker blocker(rulerButton_);
   rulerButton_->setChecked(active);
+}
+
+void ModelRibbon::setAuthoringEnabled(bool enabled, bool moveOnly) {
+  for (auto* button : toolGroup_->buttons()) {
+    const bool commandEnabled =
+        enabled || (moveOnly && button->objectName() ==
+                                    QStringLiteral("moveCommand"));
+    button->setEnabled(commandEnabled);
+    for (auto* action : findChildren<QAction*>())
+      if (action->property(kSourceCommandProperty).toString() ==
+          button->objectName())
+        action->setEnabled(commandEnabled);
+  }
+}
+
+void ModelRibbon::setMeshQualityControlEnabled(bool enabled) {
+  meshQualityButton_->setEnabled(enabled);
+  for (auto* action : meshQualityButton_->menu()->actions())
+    action->setEnabled(enabled);
+  for (auto* action : findChildren<QAction*>())
+    if (action->property(kSourceCommandProperty).toString() ==
+        meshQualityButton_->objectName())
+      action->setEnabled(enabled);
+}
+
+void ModelRibbon::setCreateComponentFromBodyEnabled(bool enabled) {
+  createComponentFromBodyButton_->setEnabled(enabled);
+  for (auto* action : findChildren<QAction*>())
+    if (action->property(kSourceCommandProperty).toString() ==
+        createComponentFromBodyButton_->objectName())
+      action->setEnabled(enabled);
+}
+
+void ModelRibbon::setComponentHomePlacementEnabled(bool adoptEnabled,
+                                                   bool restoreEnabled) {
+  const auto update = [this](QToolButton* button, bool enabled) {
+    button->setEnabled(enabled);
+    for (auto* action : findChildren<QAction*>())
+      if (action->property(kSourceCommandProperty).toString() ==
+          button->objectName())
+        action->setEnabled(enabled);
+  };
+  update(setComponentHomePlacementButton_, adoptEnabled);
+  update(restoreComponentHomePlacementButton_, restoreEnabled);
+}
+
+void ModelRibbon::setComponentEditing(bool active, bool rootComponent) {
+  static_cast<void>(active);
+  static_cast<void>(rootComponent);
+  const bool componentExtractionVisible = true;
+  createComponentFromBodyButton_->setVisible(componentExtractionVisible);
+  for (auto* action : findChildren<QAction*>()) {
+    const QString source =
+        action->property(kSourceCommandProperty).toString();
+    if (source == createComponentFromBodyButton_->objectName())
+      action->setVisible(componentExtractionVisible);
+  }
 }
 
 }  // namespace solidar

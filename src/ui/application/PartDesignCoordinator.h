@@ -3,6 +3,7 @@
 #include "model/EdgeReference.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <variant>
@@ -125,6 +126,11 @@ struct PartDesignUiEffect {
 enum class PartDesignAction { Apply, Cancel, Escape, ClearSelection };
 enum class PartDesignParameterSource { Panel, Manipulator, Boundary };
 
+enum class PartDesignReplacementStep {
+  ControllerCancelled,
+  SessionsCancelled,
+};
+
 class PartDesignCoordinator;
 class PartDesignCommitGuard final {
  public:
@@ -156,7 +162,9 @@ class PartDesignCoordinator final {
 
   [[nodiscard]] PartDesignCommitGuard startCommit() noexcept;
   PartDesignTransitionOutcome cancelActive() noexcept;
-  PartDesignTransitionOutcome prepareDocumentReplacement() noexcept;
+  PartDesignTransitionOutcome prepareDocumentReplacement(
+      const std::function<void(PartDesignReplacementStep)>& observer = {})
+      noexcept;
   PartDesignTransitionOutcome cancelAll() noexcept;
   PartDesignUiEffect dispatchActiveAction(PartDesignAction,
                                           const Document* = nullptr);

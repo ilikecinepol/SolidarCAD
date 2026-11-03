@@ -475,9 +475,9 @@ void sketchFreeCameraTests() {
 void sketchConstraintToolTests() {
   const auto screenPoint = [](const solidar::SketchCanvas& canvas,
                               double xMm, double yMm) {
-    const double centerX = 44.0 + (canvas.width() - 44.0) * 0.5;
-    const double centerY = 30.0 + (canvas.height() - 30.0) * 0.5;
-    return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
+    const QPointF origin = canvas.viewOriginScreenPosition();
+    const double scale = canvas.viewPixelsPerMillimeter();
+    return origin + QPointF(xMm * scale, -yMm * scale);
   };
   const auto move = [](solidar::SketchCanvas& canvas, QPointF at) {
     QMouseEvent event(QEvent::MouseMove, at, Qt::NoButton,
@@ -1044,10 +1044,15 @@ void circularEdgeProjectionTests() {
 void arcBodySelectionAndDragTests() {
   solidar::sketch::Sketch sketch;
   constexpr double almostFullSweep = 2.0 * std::numbers::pi - 1e-6;
+  constexpr double arcRadiusMm = 1300.0;
+  constexpr double hitAngle = almostFullSweep * 12.5 / 48.0;
   // A large-radius arc exposes hit tests that approximate the curve with a
-  // fixed number of straight segments. Keep the visible part near the sketch
-  // origin while its center remains far below the viewport.
-  sketch.addArc({0.0, -1300.0}, 1300.0, 0.0, almostFullSweep);
+  // fixed number of straight segments. Translate the arc so the intended hit
+  // point stays at the sketch origin on displays of every size.
+  const solidar::sketch::Point arcCenter{
+      -arcRadiusMm * std::cos(hitAngle),
+      -arcRadiusMm * std::sin(hitAngle)};
+  sketch.addArc(arcCenter, arcRadiusMm, 0.0, almostFullSweep);
 
   solidar::SketchCanvas canvas;
   canvas.resize(900, 650);
@@ -1057,17 +1062,11 @@ void arcBodySelectionAndDragTests() {
   canvas.show();
   QApplication::processEvents();
 
-  // Click halfway between two vertices of the former 48-segment hit-test.
-  // The point is exactly on the analytic arc but more than nine pixels from
-  // that coarse polyline. SketchCanvas starts at 5 px/mm and centers the
-  // sketch inside the ruler margins (44 px left, 30 px top).
-  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
-  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
-  constexpr double hitAngle = almostFullSweep * 12.5 / 48.0;
-  const double hitX = 1300.0 * std::cos(hitAngle);
-  const double hitY = -1300.0 + 1300.0 * std::sin(hitAngle);
-  const QPointF arcBody(centerX + hitX * 5.0,
-                        centerY - hitY * 5.0);
+  // This point is halfway between two vertices of the former 48-segment hit
+  // test. Use the canvas mapping instead of the requested top-level window
+  // size: some window managers constrain the widget when show() is called.
+  const QPointF arcBody = canvas.viewOriginScreenPosition();
+  CHECK(canvas.rect().contains(arcBody.toPoint()));
   const QPointF draggedTo = arcBody + QPointF(30.0, 20.0);
 
   QString selectionDescription;
@@ -1091,16 +1090,17 @@ void arcBodySelectionAndDragTests() {
 
   CHECK(canvas.sketch().arcs().size() == 1);
   const auto& moved = canvas.sketch().arcs().front();
-  CHECK(std::abs(moved.center.xMm - 6.0) <= 1e-6);
-  CHECK(std::abs(moved.center.yMm + 1304.0) <= 1e-6);
+  CHECK(std::abs(moved.center.xMm - (arcCenter.xMm + 6.0)) <= 1e-6);
+  CHECK(std::abs(moved.center.yMm - (arcCenter.yMm - 4.0)) <= 1e-6);
 }
 
 void draggedPointSnappingTests() {
   constexpr double kPi = std::numbers::pi;
-  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
-  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
-  const auto screenPoint = [](double xMm, double yMm) {
-    return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
+  const auto screenPoint = [](const solidar::SketchCanvas& canvas,
+                              double xMm, double yMm) {
+    const QPointF origin = canvas.viewOriginScreenPosition();
+    const double scale = canvas.viewPixelsPerMillimeter();
+    return origin + QPointF(xMm * scale, -yMm * scale);
   };
   const auto drag = [](solidar::SketchCanvas& canvas, QPointF from,
                        QPointF to) {
@@ -1137,9 +1137,9 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    click(canvas, screenPoint(2.5, 47.5));
-    click(canvas, screenPoint(2.0, -1.0));
-    click(canvas, screenPoint(-23.0, 23.5));
+    click(canvas, screenPoint(canvas, 2.5, 47.5));
+    click(canvas, screenPoint(canvas, 2.0, -1.0));
+    click(canvas, screenPoint(canvas, -23.0, 23.5));
 
     const auto& result = canvas.sketch();
     CHECK(result.arcs().size() == 1);
@@ -1180,7 +1180,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(10.0, 0.0));
+    drag(canvas, screenPoint(canvas, -20.0, 0.0),
+         screenPoint(canvas, 10.0, 0.0));
 
     const auto& constraints = canvas.sketch().constraints();
     CHECK(std::any_of(constraints.begin(), constraints.end(),
@@ -1214,14 +1215,16 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    QMouseEvent press(QEvent::MouseButtonPress, screenPoint(10.0, 0.0),
+    QMouseEvent press(QEvent::MouseButtonPress,
+                      screenPoint(canvas, 10.0, 0.0),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&canvas, &press);
-    QMouseEvent move(QEvent::MouseMove, screenPoint(5.0, 20.0), Qt::NoButton,
-                     Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, screenPoint(canvas, 5.0, 20.0),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&canvas, &move);
-    QMouseEvent release(QEvent::MouseButtonRelease, screenPoint(20.0, 20.0),
-                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease,
+                        screenPoint(canvas, 20.0, 20.0), Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(&canvas, &release);
 
     CHECK(std::any_of(canvas.sketch().constraints().begin(),
@@ -1252,7 +1255,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    drag(canvas, screenPoint(10.0, 0.0), screenPoint(5.0, 20.0));
+    drag(canvas, screenPoint(canvas, 10.0, 0.0),
+         screenPoint(canvas, 5.0, 20.0));
 
     const auto& constraints = canvas.sketch().constraints();
     CHECK(std::any_of(constraints.begin(), constraints.end(),
@@ -1281,8 +1285,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    click(canvas, screenPoint(0.0, 20.0));
-    click(canvas, screenPoint(30.0, 20.0));
+    click(canvas, screenPoint(canvas, 0.0, 20.0));
+    click(canvas, screenPoint(canvas, 30.0, 20.0));
     CHECK(std::any_of(canvas.sketch().constraints().begin(),
                       canvas.sketch().constraints().end(),
                       [lineId, arcId](const auto& constraint) {
@@ -1320,8 +1324,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    click(canvas, screenPoint(0.0, 50.0));
-    click(canvas, screenPoint(0.0, 55.0));
+    click(canvas, screenPoint(canvas, 0.0, 50.0));
+    click(canvas, screenPoint(canvas, 0.0, 55.0));
 
     const auto& result = canvas.sketch();
     CHECK(std::any_of(
@@ -1358,8 +1362,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    click(canvas, screenPoint(-20.0, 0.0));
-    click(canvas, screenPoint(0.0, 10.0));
+    click(canvas, screenPoint(canvas, -20.0, 0.0));
+    click(canvas, screenPoint(canvas, 0.0, 10.0));
     CHECK(std::any_of(canvas.sketch().constraints().begin(),
                       canvas.sketch().constraints().end(),
                       [lineId, arcId](const auto& constraint) {
@@ -1388,8 +1392,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    click(canvas, screenPoint(0.0, 20.0));
-    click(canvas, screenPoint(0.0, 10.0));
+    click(canvas, screenPoint(canvas, 0.0, 20.0));
+    click(canvas, screenPoint(canvas, 0.0, 10.0));
     CHECK(std::any_of(canvas.sketch().constraints().begin(),
                       canvas.sketch().constraints().end(),
                       [lineId, arcId](const auto& constraint) {
@@ -1423,7 +1427,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(0.0, 10.0));
+    drag(canvas, screenPoint(canvas, -20.0, 0.0),
+         screenPoint(canvas, 0.0, 10.0));
     const auto& constraints = canvas.sketch().constraints();
     CHECK(std::any_of(constraints.begin(), constraints.end(),
                       [lineId, circleId](const auto& constraint) {
@@ -1449,7 +1454,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(0.0, 10.0));
+    drag(canvas, screenPoint(canvas, -20.0, 0.0),
+         screenPoint(canvas, 0.0, 10.0));
     const auto& constraints = canvas.sketch().constraints();
     CHECK(std::any_of(constraints.begin(), constraints.end(),
                       [lineId, arcId](const auto& constraint) {
@@ -1476,8 +1482,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    click(canvas, screenPoint(0.0, 20.0));
-    click(canvas, screenPoint(15.0, 5.0));
+    click(canvas, screenPoint(canvas, 0.0, 20.0));
+    click(canvas, screenPoint(canvas, 15.0, 5.0));
 
     CHECK(std::any_of(
         canvas.sketch().constraints().begin(),
@@ -1505,7 +1511,8 @@ void draggedPointSnappingTests() {
     canvas.show();
     QApplication::processEvents();
 
-    drag(canvas, screenPoint(-20.0, 0.0), screenPoint(10.0, 20.0));
+    drag(canvas, screenPoint(canvas, -20.0, 0.0),
+         screenPoint(canvas, 10.0, 20.0));
     const auto& constraints = canvas.sketch().constraints();
     CHECK(std::any_of(constraints.begin(), constraints.end(),
                       [lineId, circleId](const auto& constraint) {
@@ -1548,10 +1555,10 @@ void attachedRectangleArcDragTests() {
   canvas.show();
   QApplication::processEvents();
 
-  constexpr double centerX = 44.0 + (900.0 - 44.0) * 0.5;
-  constexpr double centerY = 30.0 + (650.0 - 30.0) * 0.5;
-  const auto point = [](double xMm, double yMm) {
-    return QPointF(centerX + xMm * 5.0, centerY - yMm * 5.0);
+  const auto point = [&canvas](double xMm, double yMm) {
+    const QPointF origin = canvas.viewOriginScreenPosition();
+    const double scale = canvas.viewPixelsPerMillimeter();
+    return origin + QPointF(xMm * scale, -yMm * scale);
   };
   const auto drag = [&canvas](QPointF from, QPointF to) {
     QMouseEvent press(QEvent::MouseButtonPress, from, Qt::LeftButton,

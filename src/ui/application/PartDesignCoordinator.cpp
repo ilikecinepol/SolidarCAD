@@ -125,13 +125,26 @@ PartDesignTransitionOutcome PartDesignCoordinator::cancelActive() noexcept {
 }
 
 PartDesignTransitionOutcome
-PartDesignCoordinator::prepareDocumentReplacement() noexcept {
+PartDesignCoordinator::prepareDocumentReplacement(
+    const std::function<void(PartDesignReplacementStep)>& observer) noexcept {
   const auto previous = activeTool();
   committingTool_ = PartDesignToolKind::None;
   committingToken_ = {};
   controller_.cancelActive();
+  if (observer) {
+    try {
+      observer(PartDesignReplacementStep::ControllerCancelled);
+    } catch (...) {
+    }
+  }
   for (const auto kind : kSessionKinds)
     if (kind != previous) session(kind)->cancel();
+  if (observer) {
+    try {
+      observer(PartDesignReplacementStep::SessionsCancelled);
+    } catch (...) {
+    }
+  }
   advanceRevision();
   return {PartDesignTransitionEffect::Cancelled, previous,
           PartDesignToolKind::None, revisionToken()};

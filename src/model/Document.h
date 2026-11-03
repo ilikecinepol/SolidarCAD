@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -11,6 +13,8 @@
 #include "sketch/Sketch.h"
 
 namespace solidar {
+
+class ProductDocument;
 
 using ReferenceImageId = std::uint64_t;
 inline constexpr ReferenceImageId kInvalidReferenceImageId = 0;
@@ -102,6 +106,65 @@ struct RecomputeResult {
   std::vector<RecomputeFailure> primaryFailures;
 };
 
+enum class ComponentExtractionPlanStatus {
+  Planned,
+  InvalidBodyId,
+  BodyMissing,
+  InvalidDependencyGraph,
+  CrossDefinitionDependency,
+  ResourceFailure,
+};
+
+struct ComponentExtractionSketchLocation final {
+  SketchId id{kInvalidSketchId};
+  std::size_t originalIndex{};
+
+  friend bool operator==(const ComponentExtractionSketchLocation&,
+                         const ComponentExtractionSketchLocation&) = default;
+};
+
+// A face-supported sketch may cross the new component boundary even when all
+// of its authored consumers stay together. Extraction preserves its resolved
+// world placement and turns only that external support into a fixed placement
+// in the destination definition.
+struct ComponentExtractionFrozenSketchSupport final {
+  SketchId id{kInvalidSketchId};
+  bool movesToChild{};
+  FaceReference authoredFace;
+
+  friend bool operator==(
+      const ComponentExtractionFrozenSketchSupport&,
+      const ComponentExtractionFrozenSketchSupport&) = default;
+};
+
+struct ComponentExtractionPlan final {
+  ComponentExtractionPlanStatus status{
+      ComponentExtractionPlanStatus::InvalidBodyId};
+  BodyId bodyId{kInvalidBodyId};
+  std::size_t originalBodyIndex{};
+  std::vector<FeatureId> featureIds;
+  std::vector<ComponentExtractionSketchLocation> sketches;
+  std::vector<ComponentExtractionFrozenSketchSupport> frozenSketchSupports;
+  std::string diagnostic;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return status == ComponentExtractionPlanStatus::Planned;
+  }
+  friend bool operator==(const ComponentExtractionPlan&,
+                         const ComponentExtractionPlan&) = default;
+};
+
+enum class ComponentExtractionStageStatus {
+  Staged,
+  PlanNotApplicable,
+  StalePlan,
+  ParentRecomputeFailed,
+  ChildRecomputeFailed,
+  ResourceFailure,
+};
+
+struct ComponentExtractionStageResult;
+
 class Document final {
  public:
   Document();
@@ -154,6 +217,10 @@ class Document final {
       BodyId bodyId, FeatureId featureId) const;
   [[nodiscard]] FeatureRemovalPlan planSketchRemoval(SketchId sketchId) const;
   [[nodiscard]] FeatureRemovalPlan planBodyRemoval(BodyId bodyId) const;
+  [[nodiscard]] ComponentExtractionPlan planComponentExtraction(
+      BodyId bodyId) const noexcept;
+  [[nodiscard]] ComponentExtractionStageResult stageComponentExtraction(
+      const ComponentExtractionPlan& plan) const noexcept;
   // Apply exactly the plan that was presented to the user. The plan is
   // recomputed and compared before any mutation, so stale confirmations fail
   // without changing the Document.
@@ -182,6 +249,12 @@ class Document final {
                                 std::optional<ReferenceImage> image);
 
  private:
+  friend class ProductDocument;
+
+  // ProductDocument definition-edit transactions exchange complete validated
+  // states without replacing the authoritative Document allocation.
+  void swapCommittedState(Document& other) noexcept;
+
   static SketchId nextSketchId() noexcept;
   static ReferenceImageId nextReferenceImageId() noexcept;
   bool applyValidatedRemovalPlan(const FeatureRemovalPlan& plan,
@@ -193,6 +266,18 @@ class Document final {
   std::vector<Body> bodies_;
   BoxParameters box_;
   std::string dependencyError_;
+};
+
+struct ComponentExtractionStageResult final {
+  ComponentExtractionStageStatus status{
+      ComponentExtractionStageStatus::PlanNotApplicable};
+  std::unique_ptr<Document> parentAfter;
+  std::unique_ptr<Document> child;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return status == ComponentExtractionStageStatus::Staged && parentAfter &&
+           child;
+  }
 };
 
 }  // namespace solidar

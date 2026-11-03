@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
+#include <new>
 #include <utility>
 #include <vector>
 
@@ -550,6 +551,8 @@ std::shared_ptr<const TopologyIndex> TopologyIndex::build(
                          message
                    : "OpenCASCADE topology indexing failed";
     }
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (const std::exception& failure) {
     if (error)
       *error = std::string("Topology indexing failed: ") + failure.what();
@@ -669,6 +672,8 @@ FaceResolution TopologyIndex::resolveFace(
           TopologyMatchMethod::LegacyIndex);
     failure.failure = TopologyResolutionFailure::Missing;
     failure.error = "Topology face legacy fallback failed";
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     failure.failure = TopologyResolutionFailure::Unexpected;
     failure.error = "Unexpected failure while resolving topology face";
@@ -709,6 +714,8 @@ FaceResolution TopologyIndex::resolveFace(
                           TopologyMatchMethod::OperationProvenance);
     failure.failure = TopologyResolutionFailure::Missing;
     failure.error = "Topology v2 face provenance no longer exists";
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     failure.failure = TopologyResolutionFailure::Unexpected;
     failure.error = "Unexpected failure while resolving topology v2 face";
@@ -763,6 +770,8 @@ EdgeResolution TopologyIndex::resolveEdge(
           TopologyMatchMethod::LegacyIndex);
     failure.failure = TopologyResolutionFailure::Missing;
     failure.error = "Topology edge legacy fallback failed";
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     failure.failure = TopologyResolutionFailure::Unexpected;
     failure.error = "Unexpected failure while resolving topology edge";
@@ -803,6 +812,8 @@ EdgeResolution TopologyIndex::resolveEdge(
                           TopologyMatchMethod::OperationProvenance);
     failure.failure = TopologyResolutionFailure::Missing;
     failure.error = "Topology v2 edge provenance no longer exists";
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     failure.failure = TopologyResolutionFailure::Unexpected;
     failure.error = "Unexpected failure while resolving topology v2 edge";
@@ -924,6 +935,8 @@ FaceReferenceV2Creation TopologyIndex::createFaceReferenceV2(
     result.reference = FaceReference::fromV2(std::move(reference));
     result.status = FaceReferenceV2CreationStatus::Created;
     return result;
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     result.status = FaceReferenceV2CreationStatus::Unexpected;
     result.error = "Unexpected failure while creating topology v2 face reference";
@@ -1021,6 +1034,8 @@ EdgeReferenceV2Creation TopologyIndex::createEdgeReferenceV2(
     result.reference = EdgeReference::fromV2(std::move(reference));
     result.status = EdgeReferenceV2CreationStatus::Created;
     return result;
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     result.status = EdgeReferenceV2CreationStatus::Unexpected;
     result.error = "Unexpected failure while creating topology v2 edge reference";

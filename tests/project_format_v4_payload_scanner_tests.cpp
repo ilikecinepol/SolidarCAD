@@ -414,6 +414,7 @@ int main() {
     const auto result = scan(root);
     checkCandidate(result);
     CHECK(result.candidate->featureOwners == expected);
+    CHECK(result.candidate->rebuildWork > 0);
   }
 
   // Every documented embedding family is enumerated in authored order. Inner

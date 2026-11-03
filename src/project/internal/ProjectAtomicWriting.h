@@ -9,6 +9,7 @@ enum class ProjectAtomicWriteFailure {
   None,
   Encode,
   SerializedPayloadValidation,
+  MaterializationValidation,
   PayloadTooLarge,
   OpenTemporary,
   WriteTemporary,

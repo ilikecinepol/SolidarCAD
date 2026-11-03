@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "model/ChamferFeature.h"
 #include "model/CircularPatternFeature.h"
+#include "model/ComponentGraphAnalysis.h"
 #include "model/DraftFeature.h"
 #include "model/ExtrudeFeature.h"
 #include "model/FilletFeature.h"
@@ -20,8 +23,20 @@
 #include "model/PocketFeature.h"
 #include "model/RevolveFeature.h"
 #include "model/ShellFeature.h"
+#include "ui/application/internal/ModelCommandHistoryTestAccess.h"
 
 namespace solidar {
+
+class DocumentDelta::Storage {
+ public:
+  virtual ~Storage() = default;
+  [[nodiscard]] virtual bool empty() const noexcept = 0;
+  [[nodiscard]] virtual std::size_t sliceCount() const noexcept = 0;
+  [[nodiscard]] virtual std::size_t retainedBytes() const noexcept = 0;
+  virtual void apply(Document& document, bool forward,
+                     bool recompute) const = 0;
+};
+
 namespace {
 
 std::size_t topologyReferenceBytes(const EdgeReference& reference) {
@@ -443,7 +458,7 @@ struct ReferenceImageDeltaSlice {
   std::optional<ReferenceImage> afterImage;
 };
 
-struct DocumentDelta {
+struct DocumentDeltaStorage final : DocumentDelta::Storage {
   std::vector<BodyDeltaSlice> bodies;
   std::vector<BodyStateDelta> bodyStates;
   std::vector<FeatureDeltaSlice> features;
@@ -451,20 +466,29 @@ struct DocumentDelta {
   std::vector<ReferenceImageDeltaSlice> referenceImages;
   BoxParameters beforeBox;
   BoxParameters afterBox;
-  std::size_t retainedBytes{};
+  std::size_t retainedByteCount{};
 
-  [[nodiscard]] bool empty() const noexcept {
+  [[nodiscard]] bool empty() const noexcept override {
     return bodies.empty() && bodyStates.empty() && features.empty() &&
            sketches.empty() && referenceImages.empty() &&
            beforeBox.widthMm == afterBox.widthMm &&
            beforeBox.depthMm == afterBox.depthMm &&
            beforeBox.heightMm == afterBox.heightMm;
   }
+  [[nodiscard]] std::size_t retainedBytes() const noexcept override {
+    return retainedByteCount;
+  }
+  [[nodiscard]] std::size_t sliceCount() const noexcept override {
+    return bodies.size() + bodyStates.size() + features.size() +
+           sketches.size() + referenceImages.size();
+  }
+  void apply(Document& document, bool forward, bool recompute) const override;
 };
 
-DocumentDelta makeDocumentDelta(const Document& before,
-                                const Document& after) {
-  DocumentDelta delta;
+std::shared_ptr<const DocumentDeltaStorage> makeDocumentDeltaStorage(
+    const Document& before, const Document& after) {
+  auto storage = std::make_shared<DocumentDeltaStorage>();
+  auto& delta = *storage;
   delta.beforeBox = before.box();
   delta.afterBox = after.box();
   for (std::size_t i = 0; i < before.bodies().size(); ++i) {
@@ -482,7 +506,7 @@ DocumentDelta makeDocumentDelta(const Document& before,
       slice.beforeIndex = i;
       slice.afterIndex = newBodyIndex;
       slice.beforeBody = cloneHistoryBody(oldBody);
-      delta.retainedBytes += bodyOwnedBytes(*slice.beforeBody);
+      delta.retainedByteCount += bodyOwnedBytes(*slice.beforeBody);
       delta.bodies.push_back(std::move(slice));
       continue;
     }
@@ -490,7 +514,7 @@ DocumentDelta makeDocumentDelta(const Document& before,
         oldBody.visible() != found->visible()) {
       delta.bodyStates.push_back({oldBody.id(), oldBody.name(), found->name(),
                                   oldBody.visible(), found->visible()});
-      delta.retainedBytes += sizeof(BodyStateDelta) +
+      delta.retainedByteCount += sizeof(BodyStateDelta) +
                              oldBody.name().capacity() +
                              found->name().capacity();
     }
@@ -518,9 +542,9 @@ DocumentDelta makeDocumentDelta(const Document& before,
       slice.beforeFeature = cloneHistoryFeature(*oldFeature);
       if (current != found->features().end())
         slice.afterFeature = cloneHistoryFeature(**current);
-      delta.retainedBytes += featureOwnedBytes(*slice.beforeFeature);
+      delta.retainedByteCount += featureOwnedBytes(*slice.beforeFeature);
       if (slice.afterFeature)
-        delta.retainedBytes += featureOwnedBytes(*slice.afterFeature);
+        delta.retainedByteCount += featureOwnedBytes(*slice.afterFeature);
       delta.features.push_back(std::move(slice));
     }
     for (std::size_t newIndex = 0; newIndex < found->features().size();
@@ -537,7 +561,7 @@ DocumentDelta makeDocumentDelta(const Document& before,
       slice.beforeIndex = oldBody.features().size();
       slice.afterIndex = newIndex;
       slice.afterFeature = cloneHistoryFeature(*feature);
-      delta.retainedBytes += featureOwnedBytes(*slice.afterFeature);
+      delta.retainedByteCount += featureOwnedBytes(*slice.afterFeature);
       delta.features.push_back(std::move(slice));
     }
   }
@@ -548,7 +572,7 @@ DocumentDelta makeDocumentDelta(const Document& before,
     slice.beforeIndex = before.bodies().size();
     slice.afterIndex = index;
     slice.afterBody = cloneHistoryBody(body);
-    delta.retainedBytes += bodyOwnedBytes(*slice.afterBody);
+    delta.retainedByteCount += bodyOwnedBytes(*slice.afterBody);
     delta.bodies.push_back(std::move(slice));
   }
   for (std::size_t index = 0; index < before.sketches().size(); ++index) {
@@ -565,9 +589,9 @@ DocumentDelta makeDocumentDelta(const Document& before,
     } else {
       slice.afterIndex = after.sketches().size();
     }
-    delta.retainedBytes += documentSketchOwnedBytes(old);
+    delta.retainedByteCount += documentSketchOwnedBytes(old);
     if (slice.afterSketch)
-      delta.retainedBytes += documentSketchOwnedBytes(*slice.afterSketch);
+      delta.retainedByteCount += documentSketchOwnedBytes(*slice.afterSketch);
     delta.sketches.push_back(std::move(slice));
   }
   for (std::size_t index = 0; index < after.sketches().size(); ++index) {
@@ -577,7 +601,7 @@ DocumentDelta makeDocumentDelta(const Document& before,
     slice.beforeIndex = before.sketches().size();
     slice.afterIndex = index;
     slice.afterSketch = sketch;
-    delta.retainedBytes += documentSketchOwnedBytes(sketch);
+    delta.retainedByteCount += documentSketchOwnedBytes(sketch);
     delta.sketches.push_back(std::move(slice));
   }
   for (std::size_t index = 0; index < before.referenceImages().size(); ++index) {
@@ -594,9 +618,9 @@ DocumentDelta makeDocumentDelta(const Document& before,
     } else {
       slice.afterIndex = after.referenceImages().size();
     }
-    delta.retainedBytes += referenceImageOwnedBytes(old);
+    delta.retainedByteCount += referenceImageOwnedBytes(old);
     if (slice.afterImage)
-      delta.retainedBytes += referenceImageOwnedBytes(*slice.afterImage);
+      delta.retainedByteCount += referenceImageOwnedBytes(*slice.afterImage);
     delta.referenceImages.push_back(std::move(slice));
   }
   for (std::size_t index = 0; index < after.referenceImages().size(); ++index) {
@@ -606,21 +630,21 @@ DocumentDelta makeDocumentDelta(const Document& before,
     slice.beforeIndex = before.referenceImages().size();
     slice.afterIndex = index;
     slice.afterImage = image;
-    delta.retainedBytes += referenceImageOwnedBytes(image);
+    delta.retainedByteCount += referenceImageOwnedBytes(image);
     delta.referenceImages.push_back(std::move(slice));
   }
-  delta.retainedBytes += delta.bodies.capacity() * sizeof(BodyDeltaSlice) +
+  delta.retainedByteCount += delta.bodies.capacity() * sizeof(BodyDeltaSlice) +
                          delta.bodyStates.capacity() * sizeof(BodyStateDelta) +
                          delta.features.capacity() *
                              sizeof(FeatureDeltaSlice) +
                          delta.sketches.capacity() * sizeof(SketchDeltaSlice) +
                          delta.referenceImages.capacity() *
                              sizeof(ReferenceImageDeltaSlice);
-  return delta;
+  return storage;
 }
 
-void applyDocumentDelta(Document& document, const DocumentDelta& delta,
-                        bool forward) {
+void applyDocumentDelta(Document& document, const DocumentDeltaStorage& delta,
+                        bool forward, bool recompute) {
   const auto desiredBody = [forward](const BodyDeltaSlice& slice)
       -> const std::optional<Body>& {
     return forward ? slice.afterBody : slice.beforeBody;
@@ -748,8 +772,13 @@ void applyDocumentDelta(Document& document, const DocumentDelta& delta,
       throw std::runtime_error("history reference image apply failed");
   }
   document.setBox(forward ? delta.afterBox : delta.beforeBox);
-  if (!document.recompute())
+  if (recompute && !document.recompute())
     throw std::runtime_error(document.rebuildError());
+}
+
+void DocumentDeltaStorage::apply(Document& document, bool forward,
+                                 bool recompute) const {
+  applyDocumentDelta(document, *this, forward, recompute);
 }
 
 std::string exceptionText(const char* fallback) noexcept {
@@ -768,47 +797,1143 @@ std::string exceptionText(const char* fallback) noexcept {
 
 }  // namespace
 
+DocumentDelta DocumentDelta::create(const Document& before,
+                                    const Document& after) {
+  return DocumentDelta(makeDocumentDeltaStorage(before, after));
+}
+
+void DocumentDelta::applyForward(Document& document) const {
+  if (!storage_) throw std::logic_error("empty DocumentDelta storage");
+  storage_->apply(document, true, true);
+}
+
+void DocumentDelta::applyBackward(Document& document) const {
+  if (!storage_) throw std::logic_error("empty DocumentDelta storage");
+  storage_->apply(document, false, true);
+}
+
+void DocumentDelta::applyForwardUnrecomputed(Document& document) const {
+  if (!storage_) throw std::logic_error("empty DocumentDelta storage");
+  storage_->apply(document, true, false);
+}
+
+void DocumentDelta::applyBackwardUnrecomputed(Document& document) const {
+  if (!storage_) throw std::logic_error("empty DocumentDelta storage");
+  storage_->apply(document, false, false);
+}
+
+bool DocumentDelta::empty() const noexcept {
+  return !storage_ || storage_->empty();
+}
+
+std::size_t DocumentDelta::retainedBytes() const noexcept {
+  return storage_ ? storage_->retainedBytes() : 0;
+}
+
+std::size_t DocumentDelta::sliceCount() const noexcept {
+  return storage_ ? storage_->sliceCount() : 0;
+}
+
+bool componentWorkspaceInstanceKeyLess(
+    const ComponentWorkspaceInstanceKey& left,
+    const ComponentWorkspaceInstanceKey& right) noexcept {
+  if (left.path.has_value() != right.path.has_value())
+    return !left.path.has_value();
+  if (left.path) {
+    const auto& a = left.path->entries();
+    const auto& b = right.path->entries();
+    const auto mismatch = std::mismatch(a.begin(), a.end(), b.begin(), b.end());
+    if (mismatch.first != a.end() && mismatch.second != b.end())
+      return mismatch.first->value() < mismatch.second->value();
+    if (a.size() != b.size()) return a.size() < b.size();
+  }
+  return left.definitionId < right.definitionId;
+}
+
+bool componentWorkspaceBodyKeyLess(
+    const ComponentWorkspaceBodyKey& left,
+    const ComponentWorkspaceBodyKey& right) noexcept {
+  if (componentWorkspaceInstanceKeyLess(left.instance, right.instance))
+    return true;
+  if (componentWorkspaceInstanceKeyLess(right.instance, left.instance))
+    return false;
+  return left.bodyId < right.bodyId;
+}
+
+bool componentWorkspaceDrawingKeyLess(
+    const ComponentWorkspaceDrawingKey& left,
+    const ComponentWorkspaceDrawingKey& right) noexcept {
+  if (componentWorkspaceInstanceKeyLess(left.instance, right.instance))
+    return true;
+  if (componentWorkspaceInstanceKeyLess(right.instance, left.instance))
+    return false;
+  return left.drawingId < right.drawingId;
+}
+
 class ModelCommandHistory::Impl final {
  public:
-  struct Command {
-    std::shared_ptr<const DocumentDelta> delta;
+  struct DocumentCommand {
+    DocumentDelta delta;
     EditorCommittedState before;
     EditorCommittedState after;
+  };
+
+  using Payload =
+      std::variant<DocumentCommand, ComponentExtractionColdCommand,
+                   ComponentPlacementColdCommand,
+                   ComponentHomePlacementColdCommand>;
+
+  struct Command {
+    Payload payload;
     std::size_t retainedBytes{};
     std::uint64_t beforeRevision{};
     std::uint64_t afterRevision{};
   };
 
+  struct Pending {
+    Command command;
+    std::size_t retainedAfterCommit{};
+    std::size_t dropFrontCount{};
+  };
+
   explicit Impl(std::size_t budget) : byteBudget(budget) {}
 
-  void eraseRedo() noexcept {
-    for (const auto& command : redo)
-      retained -= std::min(retained, command.retainedBytes);
-    redo.clear();
+  [[nodiscard]] static ModelCommandKind kind(const Command& command) noexcept {
+    if (std::holds_alternative<DocumentCommand>(command.payload))
+      return ModelCommandKind::DocumentTransition;
+    if (std::holds_alternative<ComponentExtractionColdCommand>(
+            command.payload))
+      return ModelCommandKind::ComponentExtraction;
+    if (std::holds_alternative<ComponentPlacementColdCommand>(
+            command.payload))
+      return ModelCommandKind::ComponentPlacement;
+    return ModelCommandKind::ComponentHomePlacement;
   }
 
   void enforceBudget() noexcept {
-    while (!undo.empty() &&
-           (undo.size() > ModelCommandHistory::kMaxCommands ||
+    pending.reset();
+    while (!commands.empty() &&
+           (commands.size() > ModelCommandHistory::kMaxCommands ||
             retained > byteBudget)) {
-      retained -= std::min(retained, undo.front().retainedBytes);
-      undo.erase(undo.begin());
-    }
-    while (!redo.empty() && retained > byteBudget) {
-      retained -= std::min(retained, redo.front().retainedBytes);
-      redo.erase(redo.begin());
+      if (cursor != 0) {
+        retained -= std::min(retained, commands.front().retainedBytes);
+        commands.erase(commands.begin());
+        --cursor;
+      } else {
+        retained -= std::min(retained, commands.back().retainedBytes);
+        commands.pop_back();
+      }
     }
   }
 
-  std::vector<Command> undo;
-  std::vector<Command> redo;
+  [[nodiscard]] bool prepare(Command command) {
+    if (pending || applying) return false;
+    if (command.afterRevision == 0 ||
+        command.afterRevision == std::numeric_limits<std::uint64_t>::max())
+      return false;
+    if (command.retainedBytes > byteBudget) return false;
+
+    std::size_t prospective{};
+    for (std::size_t index = 0; index < cursor; ++index) {
+      if (commands[index].retainedBytes >
+          std::numeric_limits<std::size_t>::max() - prospective)
+        return false;
+      prospective += commands[index].retainedBytes;
+    }
+    if (command.retainedBytes >
+        std::numeric_limits<std::size_t>::max() - prospective)
+      return false;
+    prospective += command.retainedBytes;
+
+    std::size_t drop{};
+    const std::size_t prospectiveCount = cursor + 1;
+    while (drop < cursor &&
+           (prospectiveCount - drop > ModelCommandHistory::kMaxCommands ||
+            prospective > byteBudget)) {
+      prospective -= commands[drop].retainedBytes;
+      ++drop;
+    }
+    if (prospective > byteBudget) return false;
+
+    commands.reserve(cursor + 1);
+    pending.emplace(Pending{std::move(command), prospective, drop});
+    return true;
+  }
+
+  std::vector<Command> commands;
+  std::size_t cursor{};
+  std::optional<Pending> pending;
   std::size_t retained{};
   std::size_t byteBudget{ModelCommandHistory::kDefaultByteBudget};
   bool applying{};
   std::uint64_t currentRevision{1};
   std::optional<std::uint64_t> savepointRevision{1};
   std::uint64_t nextRevision{2};
+  bool revisionExhausted{};
 };
+
+namespace {
+
+std::optional<std::size_t> checkedAdd(std::size_t left,
+                                      std::size_t right) noexcept {
+  if (right > std::numeric_limits<std::size_t>::max() - left)
+    return std::nullopt;
+  return left + right;
+}
+
+std::optional<std::size_t> checkedMultiply(std::size_t left,
+                                           std::size_t right) noexcept {
+  if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left)
+    return std::nullopt;
+  return left * right;
+}
+
+std::optional<std::size_t> instanceKeyDynamicBytes(
+    const ComponentWorkspaceInstanceKey& key) noexcept {
+  if (!key.path) return std::size_t{0};
+  return checkedMultiply(key.path->entries().capacity(), sizeof(OccurrenceId));
+}
+
+std::optional<std::size_t> componentSemanticStateDynamicBytes(
+    const ComponentWorkspaceSemanticState& state) noexcept {
+  std::size_t bytes = state.diagnostic.capacity();
+  const auto addKey = [&bytes](const ComponentWorkspaceInstanceKey& key) {
+    const auto dynamic = instanceKeyDynamicBytes(key);
+    if (!dynamic) return false;
+    const auto sum = checkedAdd(bytes, *dynamic);
+    if (!sum) return false;
+    bytes = *sum;
+    return true;
+  };
+  if (!addKey(state.activeInstance) ||
+      (state.selectedInstance && !addKey(*state.selectedInstance)) ||
+      (state.selectedBody && !addKey(state.selectedBody->instance)))
+    return std::nullopt;
+  return bytes;
+}
+
+template <class Key>
+std::optional<std::size_t> workspaceProjectionDynamicBytes(
+    const std::vector<Key>& keys) noexcept {
+  const auto storage = checkedMultiply(keys.capacity(), sizeof(Key));
+  if (!storage) return std::nullopt;
+  std::size_t bytes = *storage;
+  for (const auto& key : keys) {
+    const ComponentWorkspaceInstanceKey& instance = [&]() -> const auto& {
+      if constexpr (std::is_same_v<Key, ComponentWorkspaceInstanceKey>)
+        return key;
+      else
+        return key.instance;
+    }();
+    const auto dynamic = instanceKeyDynamicBytes(instance);
+    if (!dynamic) return std::nullopt;
+    const auto sum = checkedAdd(bytes, *dynamic);
+    if (!sum) return std::nullopt;
+    bytes = *sum;
+  }
+  return bytes;
+}
+
+std::optional<std::size_t> componentDrawingsDynamicBytes(
+    const std::vector<ComponentDrawing>& drawings) noexcept {
+  const auto storage =
+      checkedMultiply(drawings.capacity(), sizeof(ComponentDrawing));
+  if (!storage) return std::nullopt;
+  std::size_t bytes = *storage;
+  for (const auto& drawing : drawings) {
+    const auto sources = checkedMultiply(drawing.sourceBodyIds().capacity(),
+                                         sizeof(BodyId));
+    if (!sources) return std::nullopt;
+    const auto withName = checkedAdd(bytes, drawing.nameUtf8().capacity());
+    if (!withName) return std::nullopt;
+    const auto withSources = checkedAdd(*withName, *sources);
+    if (!withSources) return std::nullopt;
+    bytes = *withSources;
+  }
+  return bytes;
+}
+
+std::optional<std::size_t> componentExtractionOwnedBytes(
+    const ComponentExtractionColdCommand& command) noexcept {
+  std::size_t bytes = sizeof(ComponentExtractionColdCommand);
+  const auto featureBytes = checkedMultiply(
+      command.transaction.plan.featureIds.capacity(), sizeof(FeatureId));
+  const auto sketchBytes = checkedMultiply(
+      command.transaction.plan.sketches.capacity(),
+      sizeof(ComponentExtractionSketchLocation));
+  const auto frozenSupportBytes = checkedMultiply(
+      command.transaction.plan.frozenSketchSupports.capacity(),
+      sizeof(ComponentExtractionFrozenSketchSupport));
+  std::size_t frozenSupportReferenceBytes = 0;
+  for (const auto& frozen :
+       command.transaction.plan.frozenSketchSupports) {
+    const auto sum = checkedAdd(
+        frozenSupportReferenceBytes,
+        topologyReferenceBytes(frozen.authoredFace));
+    if (!sum) return std::nullopt;
+    frozenSupportReferenceBytes = *sum;
+  }
+  const auto beforeBytes =
+      componentSemanticStateDynamicBytes(command.beforeState);
+  const auto afterBytes =
+      componentSemanticStateDynamicBytes(command.afterState);
+  const auto beforeInstanceBytes =
+      workspaceProjectionDynamicBytes(command.beforeInstances);
+  const auto afterInstanceBytes =
+      workspaceProjectionDynamicBytes(command.afterInstances);
+  const auto beforeBodyBytes =
+      workspaceProjectionDynamicBytes(command.beforeBodies);
+  const auto afterBodyBytes =
+      workspaceProjectionDynamicBytes(command.afterBodies);
+  const auto beforeDrawingBytes =
+      workspaceProjectionDynamicBytes(command.beforeDrawings);
+  const auto afterDrawingBytes =
+      workspaceProjectionDynamicBytes(command.afterDrawings);
+  const auto beforeOwnerDrawingBytes =
+      componentDrawingsDynamicBytes(command.transaction.beforeOwnerDrawings);
+  const auto afterOwnerDrawingBytes =
+      componentDrawingsDynamicBytes(command.transaction.afterOwnerDrawings);
+  const auto childDrawingBytes = componentDrawingsDynamicBytes(
+      command.transaction.createdChildDrawings);
+  if (!featureBytes || !sketchBytes || !frozenSupportBytes || !beforeBytes ||
+      !afterBytes ||
+      !beforeInstanceBytes || !afterInstanceBytes || !beforeBodyBytes ||
+      !afterBodyBytes || !beforeDrawingBytes || !afterDrawingBytes ||
+      !beforeOwnerDrawingBytes || !afterOwnerDrawingBytes ||
+      !childDrawingBytes)
+    return std::nullopt;
+  for (const std::size_t value :
+       {*featureBytes, *sketchBytes, *frozenSupportBytes,
+        frozenSupportReferenceBytes,
+        command.transaction.plan.diagnostic.capacity(), *beforeBytes,
+        *afterBytes, *beforeInstanceBytes, *afterInstanceBytes,
+        *beforeBodyBytes, *afterBodyBytes, *beforeDrawingBytes,
+        *afterDrawingBytes, *beforeOwnerDrawingBytes,
+        *afterOwnerDrawingBytes, *childDrawingBytes}) {
+    const auto sum = checkedAdd(bytes, value);
+    if (!sum) return std::nullopt;
+    bytes = *sum;
+  }
+  return bytes;
+}
+
+std::optional<std::size_t> componentPlacementOwnedBytes(
+    const ComponentPlacementColdCommand& command) noexcept {
+  std::size_t bytes = sizeof(ComponentPlacementColdCommand);
+  const auto requestPathBytes = command.transaction.request.path
+                                    ? instanceKeyDynamicBytes(
+                                          {command.transaction.request
+                                               .expectedTargetDefinitionId,
+                                           command.transaction.request.path})
+                                    : std::optional<std::size_t>{0};
+  const auto beforeBytes =
+      componentSemanticStateDynamicBytes(command.beforeState);
+  const auto afterBytes =
+      componentSemanticStateDynamicBytes(command.afterState);
+  const auto beforeInstanceBytes =
+      workspaceProjectionDynamicBytes(command.beforeInstances);
+  const auto afterInstanceBytes =
+      workspaceProjectionDynamicBytes(command.afterInstances);
+  const auto beforeBodyBytes =
+      workspaceProjectionDynamicBytes(command.beforeBodies);
+  const auto afterBodyBytes =
+      workspaceProjectionDynamicBytes(command.afterBodies);
+  if (!requestPathBytes || !beforeBytes || !afterBytes ||
+      !beforeInstanceBytes || !afterInstanceBytes || !beforeBodyBytes ||
+      !afterBodyBytes)
+    return std::nullopt;
+  for (const std::size_t value :
+       {*requestPathBytes, *beforeBytes, *afterBytes, *beforeInstanceBytes,
+        *afterInstanceBytes, *beforeBodyBytes, *afterBodyBytes}) {
+    const auto sum = checkedAdd(bytes, value);
+    if (!sum) return std::nullopt;
+    bytes = *sum;
+  }
+  return bytes;
+}
+
+std::optional<std::size_t> componentHomePlacementOwnedBytes(
+    const ComponentHomePlacementColdCommand& command) noexcept {
+  std::size_t bytes = sizeof(ComponentHomePlacementColdCommand);
+  const auto requestPathBytes = instanceKeyDynamicBytes(
+      {command.transaction.request.expectedTargetDefinitionId,
+       command.transaction.request.path});
+  const auto beforeBytes =
+      componentSemanticStateDynamicBytes(command.beforeState);
+  const auto afterBytes = componentSemanticStateDynamicBytes(command.afterState);
+  const auto beforeInstanceBytes =
+      workspaceProjectionDynamicBytes(command.beforeInstances);
+  const auto afterInstanceBytes =
+      workspaceProjectionDynamicBytes(command.afterInstances);
+  const auto beforeBodyBytes =
+      workspaceProjectionDynamicBytes(command.beforeBodies);
+  const auto afterBodyBytes =
+      workspaceProjectionDynamicBytes(command.afterBodies);
+  if (!requestPathBytes || !beforeBytes || !afterBytes ||
+      !beforeInstanceBytes || !afterInstanceBytes || !beforeBodyBytes ||
+      !afterBodyBytes)
+    return std::nullopt;
+  for (const std::size_t value :
+       {*requestPathBytes, *beforeBytes, *afterBytes, *beforeInstanceBytes,
+        *afterInstanceBytes, *beforeBodyBytes, *afterBodyBytes}) {
+    const auto sum = checkedAdd(bytes, value);
+    if (!sum) return std::nullopt;
+    bytes = *sum;
+  }
+  const auto transactionBytes = checkedMultiply(
+      command.additionalTransactions.capacity(),
+      sizeof(ComponentHomePlacementTransaction));
+  if (!transactionBytes) return std::nullopt;
+  if (const auto sum = checkedAdd(bytes, *transactionBytes))
+    bytes = *sum;
+  else
+    return std::nullopt;
+  for (const auto& transaction : command.additionalTransactions) {
+    const auto pathBytes = instanceKeyDynamicBytes(
+        {transaction.request.expectedTargetDefinitionId,
+         transaction.request.path});
+    if (!pathBytes) return std::nullopt;
+    if (const auto sum = checkedAdd(bytes, *pathBytes))
+      bytes = *sum;
+    else
+      return std::nullopt;
+  }
+  return bytes;
+}
+
+constexpr std::size_t kMaximumWorkspaceInstances = 65537;
+constexpr std::size_t kMaximumWorkspaceBodies = 65536;
+constexpr std::size_t kMaximumWorkspaceDrawings = 65536;
+
+bool validInstanceKey(const ComponentWorkspaceInstanceKey& key) noexcept {
+  if (!key.definitionId.isValid()) return false;
+  if (!key.path) return true;
+  if (key.path->entries().empty() || key.path->entries().size() > 32)
+    return false;
+  return std::all_of(key.path->entries().begin(), key.path->entries().end(),
+                     [](OccurrenceId id) { return id.isValid(); });
+}
+
+bool sameInstancePath(const ComponentWorkspaceInstanceKey& left,
+                      const ComponentWorkspaceInstanceKey& right) noexcept {
+  return left.path == right.path;
+}
+
+class ProjectionWorkLimitExceeded final {};
+
+struct ProjectionWorkBudget final {
+  std::size_t limit{};
+  std::size_t count{};
+
+  bool instanceLess(const ComponentWorkspaceInstanceKey& left,
+                    const ComponentWorkspaceInstanceKey& right) {
+    consume();
+    return componentWorkspaceInstanceKeyLess(left, right);
+  }
+  bool bodyLess(const ComponentWorkspaceBodyKey& left,
+                const ComponentWorkspaceBodyKey& right) {
+    consume();
+    return componentWorkspaceBodyKeyLess(left, right);
+  }
+  bool drawingLess(const ComponentWorkspaceDrawingKey& left,
+                   const ComponentWorkspaceDrawingKey& right) {
+    consume();
+    return componentWorkspaceDrawingKeyLess(left, right);
+  }
+
+ private:
+  void consume() {
+    if (count >= limit) throw ProjectionWorkLimitExceeded{};
+    ++count;
+  }
+};
+
+bool containsInstance(
+    const std::vector<ComponentWorkspaceInstanceKey>& instances,
+    const ComponentWorkspaceInstanceKey& expected,
+    ProjectionWorkBudget& work) {
+  const auto found = std::lower_bound(
+      instances.begin(), instances.end(), expected,
+      [&work](const auto& left, const auto& right) {
+        return work.instanceLess(left, right);
+      });
+  return found != instances.end() && *found == expected;
+}
+
+bool containsBody(const std::vector<ComponentWorkspaceBodyKey>& bodies,
+                  const ComponentWorkspaceBodyKey& expected,
+                  ProjectionWorkBudget& work) {
+  const auto found = std::lower_bound(
+      bodies.begin(), bodies.end(), expected,
+      [&work](const auto& left, const auto& right) {
+        return work.bodyLess(left, right);
+      });
+  return found != bodies.end() && *found == expected;
+}
+
+bool containsDrawing(
+    const std::vector<ComponentWorkspaceDrawingKey>& drawings,
+    const ComponentWorkspaceDrawingKey& expected,
+    ProjectionWorkBudget& work) {
+  const auto found = std::lower_bound(
+      drawings.begin(), drawings.end(), expected,
+      [&work](const auto& left, const auto& right) {
+        return work.drawingLess(left, right);
+      });
+  return found != drawings.end() && *found == expected;
+}
+
+bool validWorkspaceProjection(
+    const std::vector<ComponentWorkspaceInstanceKey>& instances,
+    const std::vector<ComponentWorkspaceBodyKey>& bodies,
+    const std::vector<ComponentWorkspaceDrawingKey>& drawings,
+    DefinitionId rootDefinitionId, ProjectionWorkBudget& work) {
+  if (instances.empty() || instances.size() > kMaximumWorkspaceInstances ||
+      bodies.size() > kMaximumWorkspaceBodies ||
+      drawings.size() > kMaximumWorkspaceDrawings)
+    return false;
+  std::size_t roots{};
+  for (std::size_t index = 0; index < instances.size(); ++index) {
+    const auto& instance = instances[index];
+    if (!validInstanceKey(instance)) return false;
+    if (!instance.path) {
+      ++roots;
+      if (instance.definitionId != rootDefinitionId) return false;
+    }
+    if (index != 0 &&
+        (!work.instanceLess(instances[index - 1], instance) ||
+         sameInstancePath(instances[index - 1], instance)))
+      return false;
+  }
+  if (roots != 1) return false;
+  for (std::size_t index = 0; index < bodies.size(); ++index) {
+    const auto& body = bodies[index];
+    if (body.bodyId == kInvalidBodyId ||
+        !containsInstance(instances, body.instance, work))
+      return false;
+    if (index != 0 && !work.bodyLess(bodies[index - 1], body)) return false;
+  }
+  for (std::size_t index = 0; index < drawings.size(); ++index) {
+    const auto& drawing = drawings[index];
+    if (!drawing.drawingId.isValid() ||
+        !containsInstance(instances, drawing.instance, work))
+      return false;
+    if (index != 0 &&
+        !work.drawingLess(drawings[index - 1], drawing))
+      return false;
+  }
+  return true;
+}
+
+bool validWorkspaceProjection(
+    const std::vector<ComponentWorkspaceInstanceKey>& instances,
+    const std::vector<ComponentWorkspaceBodyKey>& bodies,
+    DefinitionId rootDefinitionId, ProjectionWorkBudget& work) {
+  return validWorkspaceProjection(instances, bodies, {}, rootDefinitionId,
+                                  work);
+}
+
+bool validSemanticState(
+    const ComponentWorkspaceSemanticState& state,
+    const std::vector<ComponentWorkspaceInstanceKey>& instances,
+    const std::vector<ComponentWorkspaceBodyKey>& bodies,
+    ProjectionWorkBudget& work) {
+  return containsInstance(instances, state.activeInstance, work) &&
+         (!state.selectedInstance ||
+          containsInstance(instances, *state.selectedInstance, work)) &&
+         (!state.selectedBody ||
+          containsBody(bodies, *state.selectedBody, work));
+}
+
+bool isPartPersistenceFormat(
+    project::ProjectPersistenceFormat format) noexcept {
+  return format == project::ProjectPersistenceFormat::V3 ||
+         format == project::ProjectPersistenceFormat::V4 ||
+         format == project::ProjectPersistenceFormat::V5;
+}
+
+bool isComponentPersistenceFormat(
+    project::ProjectPersistenceFormat format) noexcept {
+  return project::isWritableComponentPersistenceFormat(format);
+}
+
+bool productHasComponentDrawings(const ProductDocument& product) {
+  for (const DefinitionId id : product.definitions().definitionIds()) {
+    const auto* component = product.definitions().findComponent(id);
+    if (component && !component->drawings().empty()) return true;
+  }
+  return false;
+}
+
+bool validComponentPersistenceTransition(
+    const ProductDocument& product,
+    project::ProjectPersistenceState before,
+    project::ProjectPersistenceState after, bool convertedPartRoot) {
+  if (convertedPartRoot)
+    return isPartPersistenceFormat(before.format) &&
+           after.format == project::ProjectPersistenceFormat::V10;
+  if (!isComponentPersistenceFormat(before.format) ||
+      !isComponentPersistenceFormat(after.format))
+    return false;
+  if (before.format == project::ProjectPersistenceFormat::V12)
+    return after.format == project::ProjectPersistenceFormat::V12;
+  if (after.format == project::ProjectPersistenceFormat::V12) return true;
+  const auto expected =
+      before.format == project::ProjectPersistenceFormat::V11 ||
+              productHasComponentDrawings(product)
+          ? project::ProjectPersistenceFormat::V11
+          : project::ProjectPersistenceFormat::V10;
+  return before.format == expected && after.format == expected;
+}
+
+std::optional<ComponentWorkspaceInstanceKey> nestedComponentInstance(
+    const ComponentWorkspaceInstanceKey& owner, DefinitionId childDefinition,
+    OccurrenceId childOccurrence) {
+  std::vector<OccurrenceId> entries;
+  if (owner.path) entries = owner.path->entries();
+  entries.push_back(childOccurrence);
+  auto path = OccurrencePath::create(std::move(entries));
+  if (!path) return std::nullopt;
+  return ComponentWorkspaceInstanceKey{childDefinition,
+                                       std::move(*path.path)};
+}
+
+bool validWorkspaceTransition(
+    const ComponentExtractionColdCommand& command,
+    ProjectionWorkBudget& work) {
+  const auto& transaction = command.transaction;
+  const auto root = transaction.address.rootDefinitionId;
+  const auto ownerDefinition = transaction.address.ownerDefinitionId;
+  const auto child = transaction.address.childDefinitionId;
+  const auto occurrence = transaction.address.childOccurrenceId;
+  if (!validWorkspaceProjection(command.beforeInstances, command.beforeBodies,
+                                command.beforeDrawings, root, work) ||
+      !validWorkspaceProjection(command.afterInstances, command.afterBodies,
+                                command.afterDrawings, root, work) ||
+      !validSemanticState(command.beforeState, command.beforeInstances,
+                          command.beforeBodies, work) ||
+      !validSemanticState(command.afterState, command.afterInstances,
+                          command.afterBodies, work))
+    return false;
+  if (transaction.convertedPartRoot) {
+    if (!isPartPersistenceFormat(command.beforePersistence.format) ||
+        command.beforeInstances.size() != 1 ||
+        command.beforeInstances.front().definitionId != root ||
+        command.beforeInstances.front().path)
+      return false;
+  } else if (!isComponentPersistenceFormat(
+                 command.beforePersistence.format)) {
+    return false;
+  }
+  if (!isComponentPersistenceFormat(command.afterPersistence.format))
+    return false;
+  std::vector<std::pair<ComponentWorkspaceInstanceKey,
+                        ComponentWorkspaceInstanceKey>>
+      createdInstances;
+  for (const auto& before : command.beforeInstances) {
+    if (before.definitionId != ownerDefinition) continue;
+    const auto created = nestedComponentInstance(before, child, occurrence);
+    if (!created) return false;
+    createdInstances.emplace_back(before, *created);
+  }
+  if (createdInstances.empty() ||
+      command.afterInstances.size() !=
+          command.beforeInstances.size() + createdInstances.size() ||
+      command.afterBodies.size() != command.beforeBodies.size() ||
+      command.afterDrawings.size() != command.beforeDrawings.size())
+    return false;
+  for (const auto& before : command.beforeInstances) {
+    if (!containsInstance(command.afterInstances, before, work)) return false;
+    if (before.definitionId == child) return false;
+  }
+  for (const auto& after : command.afterInstances) {
+    if (containsInstance(command.beforeInstances, after, work)) continue;
+    const auto created = std::find_if(
+        createdInstances.begin(), createdInstances.end(),
+        [&after](const auto& pair) { return pair.second == after; });
+    if (created == createdInstances.end()) return false;
+  }
+  for (const auto& pair : createdInstances)
+    if (!containsInstance(command.afterInstances, pair.second, work))
+      return false;
+
+  for (const auto& before : command.beforeBodies) {
+    ComponentWorkspaceBodyKey expected = before;
+    if (before.bodyId == transaction.address.bodyId) {
+      const auto created = std::find_if(
+          createdInstances.begin(), createdInstances.end(),
+          [&before](const auto& pair) {
+            return pair.first == before.instance;
+          });
+      if (created != createdInstances.end()) expected.instance = created->second;
+    }
+    if (!containsBody(command.afterBodies, expected, work)) return false;
+  }
+  for (const auto& after : command.afterBodies) {
+    ComponentWorkspaceBodyKey expected = after;
+    if (after.bodyId == transaction.address.bodyId) {
+      const auto created = std::find_if(
+          createdInstances.begin(), createdInstances.end(),
+          [&after](const auto& pair) {
+            return pair.second == after.instance;
+          });
+      if (created != createdInstances.end()) expected.instance = created->first;
+    }
+    if (!containsBody(command.beforeBodies, expected, work)) return false;
+  }
+  const auto drawingMovesToChild = [&transaction](DrawingId id) {
+    return std::any_of(
+        transaction.createdChildDrawings.begin(),
+        transaction.createdChildDrawings.end(),
+        [id](const ComponentDrawing& drawing) { return drawing.id() == id; });
+  };
+  for (const auto& before : command.beforeDrawings) {
+    ComponentWorkspaceDrawingKey expected = before;
+    if (drawingMovesToChild(before.drawingId)) {
+      const auto created = std::find_if(
+          createdInstances.begin(), createdInstances.end(),
+          [&before](const auto& pair) {
+            return pair.first == before.instance;
+          });
+      if (created != createdInstances.end()) expected.instance = created->second;
+    }
+    if (!containsDrawing(command.afterDrawings, expected, work)) return false;
+  }
+  for (const auto& after : command.afterDrawings) {
+    ComponentWorkspaceDrawingKey expected = after;
+    if (drawingMovesToChild(after.drawingId)) {
+      const auto created = std::find_if(
+          createdInstances.begin(), createdInstances.end(),
+          [&after](const auto& pair) {
+            return pair.second == after.instance;
+          });
+      if (created != createdInstances.end()) expected.instance = created->first;
+    }
+    if (!containsDrawing(command.beforeDrawings, expected, work)) return false;
+  }
+  return true;
+}
+
+enum class ProjectionValidationStatus { Valid, Invalid, ResourceFailure };
+
+ProjectionValidationStatus workspaceProjectionMatchesProduct(
+    const ProductDocument& product,
+    const ComponentExtractionColdCommand& command,
+    ProjectionWorkBudget& work) noexcept {
+  try {
+    const auto& transaction = command.transaction;
+    if (product.incarnation() != transaction.address.productIncarnation ||
+        product.rootDefinitionId() != transaction.address.rootDefinitionId ||
+        product.definitionStateId(transaction.address.ownerDefinitionId) !=
+            transaction.beforeOwnerStateId)
+      return ProjectionValidationStatus::Invalid;
+    std::vector<ComponentWorkspaceInstanceKey> instances;
+    std::vector<ComponentWorkspaceBodyKey> bodies;
+    std::vector<ComponentWorkspaceDrawingKey> drawings;
+    if (const auto* part = product.rootPartDefinition()) {
+      if (!transaction.convertedPartRoot)
+        return ProjectionValidationStatus::Invalid;
+      ComponentWorkspaceInstanceKey root{product.rootDefinitionId(),
+                                         std::nullopt};
+      instances.push_back(root);
+      bodies.reserve(part->document().bodies().size());
+      for (const auto& body : part->document().bodies())
+        bodies.push_back({root, body.id()});
+    } else if (product.rootComponentDefinition()) {
+      if (transaction.convertedPartRoot)
+        return ProjectionValidationStatus::Invalid;
+      const auto traversal =
+          expandComponentGraph(product.definitions(), product.rootDefinitionId());
+      if (!traversal) return ProjectionValidationStatus::ResourceFailure;
+      instances.reserve(traversal.visits.size());
+      for (const auto& visit : traversal.visits) {
+        ComponentWorkspaceInstanceKey instance{visit.definitionId, visit.path};
+        instances.push_back(instance);
+        const auto* definition =
+            product.definitions().findComponent(visit.definitionId);
+        const auto* document =
+            definition ? &definition->document() : nullptr;
+        if (!document) return ProjectionValidationStatus::Invalid;
+        if (document->bodies().size() >
+            kMaximumWorkspaceBodies - bodies.size())
+          return ProjectionValidationStatus::ResourceFailure;
+        for (const auto& body : document->bodies())
+          bodies.push_back({instance, body.id()});
+        if (definition->drawings().size() >
+            kMaximumWorkspaceDrawings - drawings.size())
+          return ProjectionValidationStatus::ResourceFailure;
+        for (const auto& drawing : definition->drawings())
+          drawings.push_back({instance, drawing.id()});
+      }
+    } else {
+      return ProjectionValidationStatus::Invalid;
+    }
+    std::sort(instances.begin(), instances.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.instanceLess(left, right);
+              });
+    std::sort(bodies.begin(), bodies.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.bodyLess(left, right);
+              });
+    std::sort(drawings.begin(), drawings.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.drawingLess(left, right);
+              });
+    if (instances.size() != command.beforeInstances.size() ||
+        bodies.size() != command.beforeBodies.size() ||
+        drawings.size() != command.beforeDrawings.size())
+      return ProjectionValidationStatus::Invalid;
+    return instances == command.beforeInstances &&
+                   bodies == command.beforeBodies &&
+                   drawings == command.beforeDrawings
+               ? ProjectionValidationStatus::Valid
+               : ProjectionValidationStatus::Invalid;
+  } catch (const ProjectionWorkLimitExceeded&) {
+    return ProjectionValidationStatus::ResourceFailure;
+  } catch (...) {
+    return ProjectionValidationStatus::ResourceFailure;
+  }
+}
+
+bool validComponentExtractionCommand(
+    const ComponentExtractionColdCommand& command,
+    ProjectionWorkBudget& work) {
+  const auto& transaction = command.transaction;
+  const auto& address = transaction.address;
+  std::vector<ComponentDrawing> expectedParentDrawings;
+  std::vector<ComponentDrawing> expectedChildDrawings;
+  expectedParentDrawings.reserve(transaction.beforeOwnerDrawings.size());
+  expectedChildDrawings.reserve(transaction.beforeOwnerDrawings.size());
+  for (const auto& drawing : transaction.beforeOwnerDrawings) {
+    const bool moved = std::binary_search(drawing.sourceBodyIds().begin(),
+                                          drawing.sourceBodyIds().end(),
+                                          address.bodyId);
+    if (moved) {
+      if (drawing.sourceBodyIds().size() != 1) return false;
+      expectedChildDrawings.push_back(drawing);
+    } else {
+      expectedParentDrawings.push_back(drawing);
+    }
+  }
+  if (!address.productIncarnation.isValid() ||
+      !address.rootDefinitionId.isValid() ||
+      !address.ownerDefinitionId.isValid() ||
+      !address.expectedOwnerStateId.isValid() ||
+      address.bodyId == kInvalidBodyId || !address.childDefinitionId.isValid() ||
+      address.childDefinitionId == address.ownerDefinitionId ||
+      !address.childOccurrenceId.isValid() ||
+      transaction.plan.status != ComponentExtractionPlanStatus::Planned ||
+      transaction.plan.bodyId != address.bodyId ||
+      !transaction.beforeOwnerStateId.isValid() ||
+      !transaction.afterOwnerStateId.isValid() ||
+      !transaction.createdChildStateId.isValid() ||
+      transaction.beforeNextStateIdValue == 0 ||
+      transaction.afterNextStateIdValue == 0 ||
+      transaction.createdChildNextStateIdValue == 0 ||
+      address.expectedOwnerStateId != transaction.beforeOwnerStateId ||
+      transaction.afterOwnerStateId.value() !=
+          transaction.beforeNextStateIdValue ||
+      transaction.beforeNextStateIdValue ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      transaction.afterNextStateIdValue !=
+          transaction.beforeNextStateIdValue + 1 ||
+      transaction.createdChildStateId != DefinitionStateId{1} ||
+      transaction.createdChildNextStateIdValue != 2 ||
+      (transaction.convertedPartRoot &&
+       address.ownerDefinitionId != address.rootDefinitionId) ||
+      (transaction.convertedPartRoot &&
+       (!transaction.beforeOwnerDrawings.empty() ||
+        !transaction.afterOwnerDrawings.empty() ||
+        !transaction.createdChildDrawings.empty())) ||
+      (!transaction.convertedPartRoot &&
+       (transaction.afterOwnerDrawings != expectedParentDrawings ||
+        transaction.createdChildDrawings != expectedChildDrawings)) ||
+      !validWorkspaceTransition(command, work))
+    return false;
+  return true;
+}
+
+bool validComponentPlacementCommand(
+    const ComponentPlacementColdCommand& command,
+    ProjectionWorkBudget& work) {
+  const auto& transaction = command.transaction;
+  const auto& request = transaction.request;
+  if (!request.productIncarnation.isValid() ||
+      !request.rootDefinitionId.isValid() || !request.path ||
+      !request.expectedTargetDefinitionId.isValid() ||
+      !request.expectedOwnerStateId.isValid() ||
+      !transaction.ownerDefinitionId.isValid() ||
+      !transaction.beforeOwnerStateId.isValid() ||
+      !transaction.afterOwnerStateId.isValid() ||
+      request.expectedOwnerStateId != transaction.beforeOwnerStateId ||
+      request.expectedPlacement != transaction.beforePlacement ||
+      transaction.beforePlacement == transaction.afterPlacement ||
+      transaction.afterOwnerStateId.value() !=
+          transaction.beforeNextStateIdValue ||
+      transaction.beforeNextStateIdValue == 0 ||
+      transaction.beforeNextStateIdValue ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      transaction.afterNextStateIdValue !=
+          transaction.beforeNextStateIdValue + 1 ||
+      !isComponentPersistenceFormat(command.beforePersistence.format) ||
+      !isComponentPersistenceFormat(command.afterPersistence.format) ||
+      !validWorkspaceProjection(command.beforeInstances, command.beforeBodies,
+                                request.rootDefinitionId, work) ||
+      !validWorkspaceProjection(command.afterInstances, command.afterBodies,
+                                request.rootDefinitionId, work) ||
+      command.beforeInstances != command.afterInstances ||
+      command.beforeBodies != command.afterBodies ||
+      !validSemanticState(command.beforeState, command.beforeInstances,
+                          command.beforeBodies, work) ||
+      !validSemanticState(command.afterState, command.afterInstances,
+                          command.afterBodies, work))
+    return false;
+  return true;
+}
+
+bool validComponentHomePlacementCommand(
+    const ComponentHomePlacementColdCommand& command,
+    ProjectionWorkBudget& work) {
+  const auto& transaction = command.transaction;
+  const auto& request = transaction.request;
+  const auto validTransaction = [](const ComponentHomePlacementTransaction& item) {
+    const auto& itemRequest = item.request;
+    if (!itemRequest.productIncarnation.isValid() ||
+        !itemRequest.rootDefinitionId.isValid() ||
+        itemRequest.path.entries().empty() ||
+        !itemRequest.expectedTargetDefinitionId.isValid() ||
+        !itemRequest.expectedOwnerDefinitionId.isValid() ||
+        !itemRequest.expectedOwnerStateId.isValid() ||
+        !item.ownerDefinitionId.isValid() ||
+        item.ownerDefinitionId != itemRequest.expectedOwnerDefinitionId ||
+        !item.beforeOwnerStateId.isValid() ||
+        !item.afterOwnerStateId.isValid() ||
+        itemRequest.expectedOwnerStateId != item.beforeOwnerStateId ||
+        itemRequest.expectedPlacement != item.beforePlacement ||
+        itemRequest.expectedHomePlacement != item.beforeHomePlacement ||
+        item.beforePlacement == item.beforeHomePlacement ||
+        item.afterOwnerStateId.value() != item.beforeNextStateIdValue ||
+        item.beforeNextStateIdValue == 0 ||
+        item.beforeNextStateIdValue ==
+            std::numeric_limits<std::uint64_t>::max() ||
+        item.afterNextStateIdValue != item.beforeNextStateIdValue + 1)
+      return false;
+    if (itemRequest.operation == ComponentHomePlacementOperation::AdoptCurrent)
+      return item.afterPlacement == item.beforePlacement &&
+             item.afterHomePlacement == item.beforePlacement;
+    return item.afterPlacement == item.beforeHomePlacement &&
+           item.afterHomePlacement == item.beforeHomePlacement;
+  };
+  if (!validTransaction(transaction) ||
+      !request.rootDefinitionId.isValid() ||
+      !isComponentPersistenceFormat(command.beforePersistence.format) ||
+      !isComponentPersistenceFormat(command.afterPersistence.format) ||
+      !validWorkspaceProjection(command.beforeInstances, command.beforeBodies,
+                                request.rootDefinitionId, work) ||
+      !validWorkspaceProjection(command.afterInstances, command.afterBodies,
+                                request.rootDefinitionId, work) ||
+      command.beforeInstances != command.afterInstances ||
+      command.beforeBodies != command.afterBodies ||
+      !validSemanticState(command.beforeState, command.beforeInstances,
+                          command.beforeBodies, work) ||
+      !validSemanticState(command.afterState, command.afterInstances,
+                          command.afterBodies, work))
+    return false;
+  for (const auto& additional : command.additionalTransactions) {
+    if (!validTransaction(additional) ||
+        request.operation != ComponentHomePlacementOperation::Restore ||
+        additional.request.operation != ComponentHomePlacementOperation::Restore ||
+        additional.request.productIncarnation != request.productIncarnation ||
+        additional.request.rootDefinitionId != request.rootDefinitionId)
+      return false;
+  }
+  return true;
+}
+
+ProjectionValidationStatus workspaceProjectionMatchesProduct(
+    const ProductDocument& product,
+    const ComponentPlacementColdCommand& command,
+    ProjectionWorkBudget& work) noexcept {
+  try {
+    const auto& transaction = command.transaction;
+    const auto prepared =
+        product.prepareComponentPlacement(transaction.request);
+    if (!prepared || *prepared.transaction != transaction)
+      return ProjectionValidationStatus::Invalid;
+    if (product.incarnation() !=
+            transaction.request.productIncarnation ||
+        product.rootDefinitionId() !=
+            transaction.request.rootDefinitionId ||
+        product.rootComponentDefinition() == nullptr ||
+        product.definitionStateId(transaction.ownerDefinitionId) !=
+            transaction.beforeOwnerStateId)
+      return ProjectionValidationStatus::Invalid;
+    const auto traversal = expandComponentGraph(
+        product.definitions(), product.rootDefinitionId());
+    if (!traversal) return ProjectionValidationStatus::ResourceFailure;
+    std::vector<ComponentWorkspaceInstanceKey> instances;
+    std::vector<ComponentWorkspaceBodyKey> bodies;
+    instances.reserve(traversal.visits.size());
+    for (const auto& visit : traversal.visits) {
+      ComponentWorkspaceInstanceKey instance{visit.definitionId, visit.path};
+      instances.push_back(instance);
+      const auto* document = product.componentDocument(visit.definitionId);
+      if (!document) return ProjectionValidationStatus::Invalid;
+      if (document->bodies().size() >
+          kMaximumWorkspaceBodies - bodies.size())
+        return ProjectionValidationStatus::ResourceFailure;
+      for (const auto& body : document->bodies())
+        bodies.push_back({instance, body.id()});
+    }
+    std::sort(instances.begin(), instances.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.instanceLess(left, right);
+              });
+    std::sort(bodies.begin(), bodies.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.bodyLess(left, right);
+              });
+    return instances == command.beforeInstances &&
+                   bodies == command.beforeBodies
+               ? ProjectionValidationStatus::Valid
+               : ProjectionValidationStatus::Invalid;
+  } catch (const ProjectionWorkLimitExceeded&) {
+    return ProjectionValidationStatus::ResourceFailure;
+  } catch (...) {
+    return ProjectionValidationStatus::ResourceFailure;
+  }
+}
+
+ProjectionValidationStatus workspaceProjectionMatchesProduct(
+    const ProductDocument& product,
+    const ComponentHomePlacementColdCommand& command,
+    ProjectionWorkBudget& work) noexcept {
+  try {
+    const auto& transaction = command.transaction;
+    if (command.additionalTransactions.empty()) {
+      const auto prepared =
+          product.prepareComponentHomePlacement(transaction.request);
+      if (!prepared || *prepared.transaction != transaction)
+        return ProjectionValidationStatus::Invalid;
+    } else {
+      const auto prepared = product.prepareAllComponentHomePlacements();
+      if (!prepared || prepared.transactions.size() !=
+                           command.additionalTransactions.size() + 1 ||
+          prepared.transactions.front() != transaction ||
+          !std::equal(command.additionalTransactions.begin(),
+                      command.additionalTransactions.end(),
+                      prepared.transactions.begin() + 1))
+        return ProjectionValidationStatus::Invalid;
+    }
+    if (product.incarnation() != transaction.request.productIncarnation ||
+        product.rootDefinitionId() !=
+            transaction.request.rootDefinitionId ||
+        product.rootComponentDefinition() == nullptr ||
+        product.definitionStateId(transaction.ownerDefinitionId) !=
+            transaction.beforeOwnerStateId)
+      return ProjectionValidationStatus::Invalid;
+    const auto traversal = expandComponentGraph(
+        product.definitions(), product.rootDefinitionId());
+    if (!traversal) return ProjectionValidationStatus::ResourceFailure;
+    std::vector<ComponentWorkspaceInstanceKey> instances;
+    std::vector<ComponentWorkspaceBodyKey> bodies;
+    instances.reserve(traversal.visits.size());
+    for (const auto& visit : traversal.visits) {
+      ComponentWorkspaceInstanceKey instance{visit.definitionId, visit.path};
+      instances.push_back(instance);
+      const auto* document = product.componentDocument(visit.definitionId);
+      if (!document) return ProjectionValidationStatus::Invalid;
+      if (document->bodies().size() >
+          kMaximumWorkspaceBodies - bodies.size())
+        return ProjectionValidationStatus::ResourceFailure;
+      for (const auto& body : document->bodies())
+        bodies.push_back({instance, body.id()});
+    }
+    std::sort(instances.begin(), instances.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.instanceLess(left, right);
+              });
+    std::sort(bodies.begin(), bodies.end(),
+              [&work](const auto& left, const auto& right) {
+                return work.bodyLess(left, right);
+              });
+    return instances == command.beforeInstances &&
+                   bodies == command.beforeBodies
+               ? ProjectionValidationStatus::Valid
+               : ProjectionValidationStatus::Invalid;
+  } catch (const ProjectionWorkLimitExceeded&) {
+    return ProjectionValidationStatus::ResourceFailure;
+  } catch (...) {
+    return ProjectionValidationStatus::ResourceFailure;
+  }
+}
+
+ModelCommandHistoryStatus extractionFailureStatus(
+    ComponentExtractionStatus status) noexcept {
+  switch (status) {
+    case ComponentExtractionStatus::SuccessorRejected:
+      return ModelCommandHistoryStatus::SuccessorRejected;
+    case ComponentExtractionStatus::SuccessorResourceFailure:
+      return ModelCommandHistoryStatus::SuccessorResourceFailure;
+    case ComponentExtractionStatus::ResourceFailure:
+      return ModelCommandHistoryStatus::ResourceLimit;
+    case ComponentExtractionStatus::Committed:
+    case ComponentExtractionStatus::Reverted:
+      return ModelCommandHistoryStatus::Committed;
+    default:
+      return ModelCommandHistoryStatus::ModelRejected;
+  }
+}
+
+ModelCommandHistoryStatus placementFailureStatus(
+    ComponentPlacementStatus status) noexcept {
+  switch (status) {
+    case ComponentPlacementStatus::SuccessorRejected:
+      return ModelCommandHistoryStatus::SuccessorRejected;
+    case ComponentPlacementStatus::SuccessorResourceFailure:
+      return ModelCommandHistoryStatus::SuccessorResourceFailure;
+    case ComponentPlacementStatus::ResourceFailure:
+      return ModelCommandHistoryStatus::ResourceLimit;
+    case ComponentPlacementStatus::Committed:
+    case ComponentPlacementStatus::Reverted:
+      return ModelCommandHistoryStatus::Committed;
+    case ComponentPlacementStatus::NoChange:
+      return ModelCommandHistoryStatus::NoChange;
+    default:
+      return ModelCommandHistoryStatus::ModelRejected;
+  }
+}
+
+ModelCommandHistoryStatus homePlacementFailureStatus(
+    ComponentHomePlacementStatus status) noexcept {
+  switch (status) {
+    case ComponentHomePlacementStatus::SuccessorRejected:
+      return ModelCommandHistoryStatus::SuccessorRejected;
+    case ComponentHomePlacementStatus::SuccessorResourceFailure:
+      return ModelCommandHistoryStatus::SuccessorResourceFailure;
+    case ComponentHomePlacementStatus::ResourceFailure:
+      return ModelCommandHistoryStatus::ResourceLimit;
+    case ComponentHomePlacementStatus::Committed:
+    case ComponentHomePlacementStatus::Reverted:
+      return ModelCommandHistoryStatus::Committed;
+    case ComponentHomePlacementStatus::NoChange:
+      return ModelCommandHistoryStatus::NoChange;
+    default:
+      return ModelCommandHistoryStatus::ModelRejected;
+  }
+}
+
+class ApplyingGuard final {
+ public:
+  explicit ApplyingGuard(bool& value) : value_(value) { value_ = true; }
+  ~ApplyingGuard() { value_ = false; }
+
+ private:
+  bool& value_;
+};
+
+}  // namespace
 
 ModelCommandHistory::ModelCommandHistory(std::size_t byteBudget)
     : impl_(std::make_unique<Impl>(byteBudget)) {}
@@ -818,6 +1943,37 @@ ModelCommandHistory::ModelCommandHistory(ModelCommandHistory&&) noexcept =
     default;
 ModelCommandHistory& ModelCommandHistory::operator=(
     ModelCommandHistory&&) noexcept = default;
+
+void ModelCommandHistory::throwInjectedFailure(std::uint8_t point) {
+  if (testFailurePoint_ != point) return;
+  switch (static_cast<detail::ModelCommandHistoryFailureKind>(
+      testFailureKind_)) {
+    case detail::ModelCommandHistoryFailureKind::BadAlloc:
+      throw std::bad_alloc();
+    case detail::ModelCommandHistoryFailureKind::Runtime:
+      throw std::runtime_error("model command history injected failure");
+    case detail::ModelCommandHistoryFailureKind::Unknown:
+      throw 1;
+    default:
+      return;
+  }
+}
+
+void ModelCommandHistory::setNextRevisionForTesting(
+    std::uint64_t value) noexcept {
+  impl_->nextRevision = value;
+  impl_->revisionExhausted = false;
+}
+
+void ModelCommandHistory::setProjectionCompareLimitForTesting(
+    std::size_t value) noexcept {
+  testProjectionCompareLimit_ = value;
+}
+
+std::size_t ModelCommandHistory::projectionCompareCountForTesting() const
+    noexcept {
+  return testProjectionCompareCount_;
+}
 
 HistoryCommitResult ModelCommandHistory::recordTransition(
     Document& current, Document previous, EditorCommittedState before,
@@ -829,16 +1985,18 @@ HistoryCommitResult ModelCommandHistory::recordTransition(
     return result;
   }
   try {
-    auto delta = makeDocumentDelta(previous, current);
+    auto delta = DocumentDelta::create(previous, current);
     if (delta.empty() && before.presentation == after.presentation) {
       result.status = HistoryCommitStatus::NoChange;
       result.state = std::move(before);
       return result;
     }
-    const std::size_t retained =
-        delta.retainedBytes + sizeof(Impl::Command) +
-        editorStateOwnedBytes(before) + editorStateOwnedBytes(after);
-    if (retained > impl_->byteBudget) {
+    auto retained = checkedAdd(delta.retainedBytes(), sizeof(Impl::Command));
+    if (retained)
+      retained = checkedAdd(*retained, editorStateOwnedBytes(before));
+    if (retained)
+      retained = checkedAdd(*retained, editorStateOwnedBytes(after));
+    if (!retained || *retained > impl_->byteBudget) {
       static_assert(std::is_nothrow_move_assignable_v<Document>);
       current = std::move(previous);
       result.status = HistoryCommitStatus::Rejected;
@@ -846,18 +2004,22 @@ HistoryCommitResult ModelCommandHistory::recordTransition(
       result.error = "history byte budget exceeded";
       return result;
     }
-    impl_->undo.reserve(impl_->undo.size() + 1);
-    auto sharedDelta = std::make_shared<const DocumentDelta>(std::move(delta));
     result.state = after;
     const std::uint64_t beforeRevision = impl_->currentRevision;
-    const std::uint64_t afterRevision = impl_->nextRevision++;
-    Impl::Command command{std::move(sharedDelta), std::move(before),
-                          std::move(after), retained, beforeRevision,
-                          afterRevision};
-    impl_->eraseRedo();
-    impl_->undo.push_back(std::move(command));
-    impl_->retained += retained;
-    impl_->enforceBudget();
+    const std::uint64_t afterRevision = impl_->nextRevision;
+    // Keep the caller-owned rollback values intact until reserve/preparation
+    // succeeds. A failure must restore both Document and editor state.
+    Impl::DocumentCommand documentCommand{delta, before, after};
+    Impl::Command command{std::move(documentCommand), *retained,
+                          beforeRevision, afterRevision};
+    if (!impl_->prepare(std::move(command))) {
+      current = std::move(previous);
+      result.status = HistoryCommitStatus::Rejected;
+      result.state = std::move(before);
+      result.error = "history byte budget exceeded";
+      return result;
+    }
+    (void)commitPrepared();
     impl_->currentRevision = afterRevision;
     result.status = HistoryCommitStatus::Accepted;
     return result;
@@ -871,17 +2033,6 @@ HistoryCommitResult ModelCommandHistory::recordTransition(
   }
 }
 
-namespace {
-class ApplyingGuard final {
- public:
-  explicit ApplyingGuard(bool& value) : value_(value) { value_ = true; }
-  ~ApplyingGuard() { value_ = false; }
-
- private:
-  bool& value_;
-};
-}  // namespace
-
 HistoryApplyResult ModelCommandHistory::undo(
     Document& current, const EditorCommittedState& currentState) noexcept {
   HistoryApplyResult result;
@@ -891,23 +2042,28 @@ HistoryApplyResult ModelCommandHistory::undo(
     result.error = exceptionText("history undo state capture failed");
     return result;
   }
-  if (impl_->undo.empty() || impl_->applying) return result;
+  if (impl_->cursor == 0 || impl_->applying || impl_->pending) return result;
+  if (impl_->kind(impl_->commands[impl_->cursor - 1]) !=
+      ModelCommandKind::DocumentTransition) {
+    result.error = "history command kind mismatch";
+    return result;
+  }
   try {
-    impl_->redo.reserve(impl_->redo.size() + 1);
     Document rollback = current;
-    result.state = impl_->undo.back().before;
+    auto& command = impl_->commands[impl_->cursor - 1];
+    const auto& document = std::get<Impl::DocumentCommand>(command.payload);
+    result.state = document.before;
     ApplyingGuard guard(impl_->applying);
     try {
-      applyDocumentDelta(current, *impl_->undo.back().delta, false);
+      document.delta.applyBackward(current);
     } catch (...) {
       current = std::move(rollback);
       result.state = currentState;
       result.error = exceptionText("history undo failed");
       return result;
     }
-    impl_->redo.push_back(std::move(impl_->undo.back()));
-    impl_->currentRevision = impl_->redo.back().beforeRevision;
-    impl_->undo.pop_back();
+    --impl_->cursor;
+    impl_->currentRevision = command.beforeRevision;
     result.changed = true;
     return result;
   } catch (...) {
@@ -926,23 +2082,30 @@ HistoryApplyResult ModelCommandHistory::redo(
     result.error = exceptionText("history redo state capture failed");
     return result;
   }
-  if (impl_->redo.empty() || impl_->applying) return result;
+  if (impl_->cursor >= impl_->commands.size() || impl_->applying ||
+      impl_->pending)
+    return result;
+  if (impl_->kind(impl_->commands[impl_->cursor]) !=
+      ModelCommandKind::DocumentTransition) {
+    result.error = "history command kind mismatch";
+    return result;
+  }
   try {
-    impl_->undo.reserve(impl_->undo.size() + 1);
     Document rollback = current;
-    result.state = impl_->redo.back().after;
+    auto& command = impl_->commands[impl_->cursor];
+    const auto& document = std::get<Impl::DocumentCommand>(command.payload);
+    result.state = document.after;
     ApplyingGuard guard(impl_->applying);
     try {
-      applyDocumentDelta(current, *impl_->redo.back().delta, true);
+      document.delta.applyForward(current);
     } catch (...) {
       current = std::move(rollback);
       result.state = currentState;
       result.error = exceptionText("history redo failed");
       return result;
     }
-    impl_->undo.push_back(std::move(impl_->redo.back()));
-    impl_->currentRevision = impl_->undo.back().afterRevision;
-    impl_->redo.pop_back();
+    ++impl_->cursor;
+    impl_->currentRevision = command.afterRevision;
     result.changed = true;
     return result;
   } catch (...) {
@@ -952,12 +2115,459 @@ HistoryApplyResult ModelCommandHistory::redo(
   }
 }
 
+ModelCommandHistoryStatus ModelCommandHistory::prepareComponentExtraction(
+    const ProductDocument& product,
+    const ComponentExtractionColdCommand& command) noexcept {
+  if (impl_->applying || impl_->pending)
+    return ModelCommandHistoryStatus::Busy;
+  ProjectionWorkBudget work{testProjectionCompareLimit_, 0};
+  testProjectionCompareCount_ = 0;
+  try {
+    if (!validComponentExtractionCommand(command, work)) {
+      testProjectionCompareCount_ = work.count;
+      return ModelCommandHistoryStatus::InvalidCommand;
+    }
+    if (!validComponentPersistenceTransition(
+            product, command.beforePersistence, command.afterPersistence,
+            command.transaction.convertedPartRoot)) {
+      testProjectionCompareCount_ = work.count;
+      return ModelCommandHistoryStatus::InvalidCommand;
+    }
+    const auto projection =
+        workspaceProjectionMatchesProduct(product, command, work);
+    testProjectionCompareCount_ = work.count;
+    if (projection == ProjectionValidationStatus::ResourceFailure)
+      return ModelCommandHistoryStatus::ResourceLimit;
+    if (projection != ProjectionValidationStatus::Valid)
+      return ModelCommandHistoryStatus::InvalidCommand;
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::PrepareAccounting));
+    ComponentExtractionColdCommand retainedCommand = command;
+    const auto retained = componentExtractionOwnedBytes(retainedCommand);
+    if (!retained || *retained > impl_->byteBudget)
+      return ModelCommandHistoryStatus::ResourceLimit;
+    Impl::Command entry{std::move(retainedCommand), *retained,
+                        impl_->currentRevision, impl_->nextRevision};
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::PrepareReserve));
+    if (!impl_->prepare(std::move(entry)))
+      return ModelCommandHistoryStatus::ResourceLimit;
+    return ModelCommandHistoryStatus::Prepared;
+  } catch (const ProjectionWorkLimitExceeded&) {
+    testProjectionCompareCount_ = work.count;
+    return ModelCommandHistoryStatus::ResourceLimit;
+  } catch (...) {
+    testProjectionCompareCount_ = work.count;
+    return ModelCommandHistoryStatus::ResourceLimit;
+  }
+}
+
+ModelCommandHistoryStatus ModelCommandHistory::commitPrepared() noexcept {
+  if (!impl_->pending) return ModelCommandHistoryStatus::NoChange;
+  static_assert(std::is_nothrow_move_constructible_v<Impl::Command>);
+  static_assert(std::is_nothrow_move_assignable_v<Impl::Command>);
+  auto pending = std::move(*impl_->pending);
+  impl_->pending.reset();
+  impl_->commands.erase(impl_->commands.begin() +
+                            static_cast<std::ptrdiff_t>(impl_->cursor),
+                        impl_->commands.end());
+  impl_->commands.push_back(std::move(pending.command));
+  if (pending.dropFrontCount != 0) {
+    impl_->commands.erase(
+        impl_->commands.begin(),
+        impl_->commands.begin() +
+            static_cast<std::ptrdiff_t>(pending.dropFrontCount));
+  }
+  impl_->cursor = impl_->commands.size();
+  impl_->retained = pending.retainedAfterCommit;
+  impl_->currentRevision = impl_->commands.back().afterRevision;
+  ++impl_->nextRevision;
+  return ModelCommandHistoryStatus::Committed;
+}
+
+void ModelCommandHistory::discardPrepared() noexcept { impl_->pending.reset(); }
+
+ComponentExtractionHistoryResult
+ModelCommandHistory::undoComponentExtraction(
+    ProductDocument& product,
+    ProductDocumentSuccessor& prepareSuccessor) noexcept {
+  ComponentExtractionHistoryResult result;
+  if (impl_->applying || impl_->pending) {
+    result.status = ModelCommandHistoryStatus::Busy;
+    return result;
+  }
+  if (impl_->cursor == 0) {
+    result.status = ModelCommandHistoryStatus::NothingToUndo;
+    return result;
+  }
+  auto& entry = impl_->commands[impl_->cursor - 1];
+  if (impl_->kind(entry) != ModelCommandKind::ComponentExtraction) {
+    result.status = ModelCommandHistoryStatus::WrongCommandKind;
+    return result;
+  }
+  const auto& command =
+      std::get<ComponentExtractionColdCommand>(entry.payload);
+  try {
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::UndoStatePreparation));
+    auto state = command.beforeState;
+    auto persistence = command.beforePersistence;
+    ApplyingGuard guard(impl_->applying);
+    const auto model = product.revertComponentExtraction(
+        command.transaction, prepareSuccessor);
+    result.modelStatus = model;
+    result.status = extractionFailureStatus(model);
+    if (model != ComponentExtractionStatus::Reverted) return result;
+    --impl_->cursor;
+    impl_->currentRevision = entry.beforeRevision;
+    result.restoredState = std::move(state);
+    result.restoredPersistence = persistence;
+    return result;
+  } catch (...) {
+    result.status = ModelCommandHistoryStatus::ResourceLimit;
+    return result;
+  }
+}
+
+ComponentExtractionHistoryResult
+ModelCommandHistory::redoComponentExtraction(
+    ProductDocument& product,
+    ProductDocumentSuccessor& prepareSuccessor) noexcept {
+  ComponentExtractionHistoryResult result;
+  if (impl_->applying || impl_->pending) {
+    result.status = ModelCommandHistoryStatus::Busy;
+    return result;
+  }
+  if (impl_->cursor >= impl_->commands.size()) {
+    result.status = ModelCommandHistoryStatus::NothingToRedo;
+    return result;
+  }
+  auto& entry = impl_->commands[impl_->cursor];
+  if (impl_->kind(entry) != ModelCommandKind::ComponentExtraction) {
+    result.status = ModelCommandHistoryStatus::WrongCommandKind;
+    return result;
+  }
+  const auto& command =
+      std::get<ComponentExtractionColdCommand>(entry.payload);
+  try {
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::RedoStatePreparation));
+    auto state = command.afterState;
+    auto persistence = command.afterPersistence;
+    ApplyingGuard guard(impl_->applying);
+    const auto model = product.applyComponentExtraction(
+        command.transaction, prepareSuccessor);
+    result.modelStatus = model;
+    result.status = extractionFailureStatus(model);
+    if (model != ComponentExtractionStatus::Committed) return result;
+    ++impl_->cursor;
+    impl_->currentRevision = entry.afterRevision;
+    result.restoredState = std::move(state);
+    result.restoredPersistence = persistence;
+    return result;
+  } catch (...) {
+    result.status = ModelCommandHistoryStatus::ResourceLimit;
+    return result;
+  }
+}
+
+ModelCommandHistoryStatus ModelCommandHistory::prepareComponentPlacement(
+    const ProductDocument& product,
+    const ComponentPlacementColdCommand& command) noexcept {
+  if (impl_->applying || impl_->pending)
+    return ModelCommandHistoryStatus::Busy;
+  ProjectionWorkBudget work{testProjectionCompareLimit_, 0};
+  testProjectionCompareCount_ = 0;
+  try {
+    if (!validComponentPlacementCommand(command, work)) {
+      testProjectionCompareCount_ = work.count;
+      return ModelCommandHistoryStatus::InvalidCommand;
+    }
+    if (!validComponentPersistenceTransition(
+            product, command.beforePersistence, command.afterPersistence,
+            false)) {
+      testProjectionCompareCount_ = work.count;
+      return ModelCommandHistoryStatus::InvalidCommand;
+    }
+    const auto projection =
+        workspaceProjectionMatchesProduct(product, command, work);
+    testProjectionCompareCount_ = work.count;
+    if (projection == ProjectionValidationStatus::ResourceFailure)
+      return ModelCommandHistoryStatus::ResourceLimit;
+    if (projection != ProjectionValidationStatus::Valid)
+      return ModelCommandHistoryStatus::InvalidCommand;
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::PrepareAccounting));
+    ComponentPlacementColdCommand retainedCommand = command;
+    const auto retained = componentPlacementOwnedBytes(retainedCommand);
+    if (!retained || *retained > impl_->byteBudget)
+      return ModelCommandHistoryStatus::ResourceLimit;
+    Impl::Command entry{std::move(retainedCommand), *retained,
+                        impl_->currentRevision, impl_->nextRevision};
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::PrepareReserve));
+    if (!impl_->prepare(std::move(entry)))
+      return ModelCommandHistoryStatus::ResourceLimit;
+    return ModelCommandHistoryStatus::Prepared;
+  } catch (const ProjectionWorkLimitExceeded&) {
+    testProjectionCompareCount_ = work.count;
+    return ModelCommandHistoryStatus::ResourceLimit;
+  } catch (...) {
+    testProjectionCompareCount_ = work.count;
+    return ModelCommandHistoryStatus::ResourceLimit;
+  }
+}
+
+ComponentPlacementHistoryResult ModelCommandHistory::undoComponentPlacement(
+    ProductDocument& product,
+    ProductDocumentSuccessor& prepareSuccessor) noexcept {
+  ComponentPlacementHistoryResult result;
+  if (impl_->applying || impl_->pending) {
+    result.status = ModelCommandHistoryStatus::Busy;
+    return result;
+  }
+  if (impl_->cursor == 0) {
+    result.status = ModelCommandHistoryStatus::NothingToUndo;
+    return result;
+  }
+  auto& entry = impl_->commands[impl_->cursor - 1];
+  if (impl_->kind(entry) != ModelCommandKind::ComponentPlacement) {
+    result.status = ModelCommandHistoryStatus::WrongCommandKind;
+    return result;
+  }
+  const auto& command =
+      std::get<ComponentPlacementColdCommand>(entry.payload);
+  try {
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::UndoStatePreparation));
+    auto state = command.beforeState;
+    auto persistence = command.beforePersistence;
+    ApplyingGuard guard(impl_->applying);
+    const auto model = product.revertComponentPlacement(
+        command.transaction, prepareSuccessor);
+    result.modelStatus = model;
+    result.status = placementFailureStatus(model);
+    if (model != ComponentPlacementStatus::Reverted) return result;
+    --impl_->cursor;
+    impl_->currentRevision = entry.beforeRevision;
+    result.restoredState = std::move(state);
+    result.restoredPersistence = persistence;
+    return result;
+  } catch (...) {
+    result.status = ModelCommandHistoryStatus::ResourceLimit;
+    return result;
+  }
+}
+
+ComponentPlacementHistoryResult ModelCommandHistory::redoComponentPlacement(
+    ProductDocument& product,
+    ProductDocumentSuccessor& prepareSuccessor) noexcept {
+  ComponentPlacementHistoryResult result;
+  if (impl_->applying || impl_->pending) {
+    result.status = ModelCommandHistoryStatus::Busy;
+    return result;
+  }
+  if (impl_->cursor >= impl_->commands.size()) {
+    result.status = ModelCommandHistoryStatus::NothingToRedo;
+    return result;
+  }
+  auto& entry = impl_->commands[impl_->cursor];
+  if (impl_->kind(entry) != ModelCommandKind::ComponentPlacement) {
+    result.status = ModelCommandHistoryStatus::WrongCommandKind;
+    return result;
+  }
+  const auto& command =
+      std::get<ComponentPlacementColdCommand>(entry.payload);
+  try {
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::RedoStatePreparation));
+    auto state = command.afterState;
+    auto persistence = command.afterPersistence;
+    ApplyingGuard guard(impl_->applying);
+    const auto model = product.applyComponentPlacement(
+        command.transaction, prepareSuccessor);
+    result.modelStatus = model;
+    result.status = placementFailureStatus(model);
+    if (model != ComponentPlacementStatus::Committed) return result;
+    ++impl_->cursor;
+    impl_->currentRevision = entry.afterRevision;
+    result.restoredState = std::move(state);
+    result.restoredPersistence = persistence;
+    return result;
+  } catch (...) {
+    result.status = ModelCommandHistoryStatus::ResourceLimit;
+    return result;
+  }
+}
+
+ModelCommandHistoryStatus ModelCommandHistory::prepareComponentHomePlacement(
+    const ProductDocument& product,
+    const ComponentHomePlacementColdCommand& command) noexcept {
+  if (impl_->applying || impl_->pending)
+    return ModelCommandHistoryStatus::Busy;
+  ProjectionWorkBudget work{testProjectionCompareLimit_, 0};
+  testProjectionCompareCount_ = 0;
+  try {
+    if (!validComponentHomePlacementCommand(command, work)) {
+      testProjectionCompareCount_ = work.count;
+      return ModelCommandHistoryStatus::InvalidCommand;
+    }
+    if (!validComponentPersistenceTransition(
+            product, command.beforePersistence, command.afterPersistence,
+            false)) {
+      testProjectionCompareCount_ = work.count;
+      return ModelCommandHistoryStatus::InvalidCommand;
+    }
+    const auto projection =
+        workspaceProjectionMatchesProduct(product, command, work);
+    testProjectionCompareCount_ = work.count;
+    if (projection == ProjectionValidationStatus::ResourceFailure)
+      return ModelCommandHistoryStatus::ResourceLimit;
+    if (projection != ProjectionValidationStatus::Valid)
+      return ModelCommandHistoryStatus::InvalidCommand;
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::PrepareAccounting));
+    ComponentHomePlacementColdCommand retainedCommand = command;
+    const auto retained = componentHomePlacementOwnedBytes(retainedCommand);
+    if (!retained || *retained > impl_->byteBudget)
+      return ModelCommandHistoryStatus::ResourceLimit;
+    Impl::Command entry{std::move(retainedCommand), *retained,
+                        impl_->currentRevision, impl_->nextRevision};
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::PrepareReserve));
+    if (!impl_->prepare(std::move(entry)))
+      return ModelCommandHistoryStatus::ResourceLimit;
+    return ModelCommandHistoryStatus::Prepared;
+  } catch (const ProjectionWorkLimitExceeded&) {
+    testProjectionCompareCount_ = work.count;
+    return ModelCommandHistoryStatus::ResourceLimit;
+  } catch (...) {
+    testProjectionCompareCount_ = work.count;
+    return ModelCommandHistoryStatus::ResourceLimit;
+  }
+}
+
+ComponentHomePlacementHistoryResult
+ModelCommandHistory::undoComponentHomePlacement(
+    ProductDocument& product,
+    ProductDocumentSuccessor& prepareSuccessor) noexcept {
+  ComponentHomePlacementHistoryResult result;
+  if (impl_->applying || impl_->pending) {
+    result.status = ModelCommandHistoryStatus::Busy;
+    return result;
+  }
+  if (impl_->cursor == 0) {
+    result.status = ModelCommandHistoryStatus::NothingToUndo;
+    return result;
+  }
+  auto& entry = impl_->commands[impl_->cursor - 1];
+  if (impl_->kind(entry) != ModelCommandKind::ComponentHomePlacement) {
+    result.status = ModelCommandHistoryStatus::WrongCommandKind;
+    return result;
+  }
+  const auto& command =
+      std::get<ComponentHomePlacementColdCommand>(entry.payload);
+  try {
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::UndoStatePreparation));
+    auto state = command.beforeState;
+    auto persistence = command.beforePersistence;
+    ApplyingGuard guard(impl_->applying);
+    ComponentHomePlacementStatus model{};
+    if (command.additionalTransactions.empty()) {
+      model = product.revertComponentHomePlacement(command.transaction,
+                                                    prepareSuccessor);
+    } else {
+      std::vector<ComponentHomePlacementTransaction> transactions;
+      transactions.reserve(command.additionalTransactions.size() + 1);
+      transactions.push_back(command.transaction);
+      transactions.insert(transactions.end(),
+                          command.additionalTransactions.begin(),
+                          command.additionalTransactions.end());
+      model = product.revertAllComponentHomePlacements(transactions,
+                                                       prepareSuccessor);
+    }
+    result.modelStatus = model;
+    result.status = homePlacementFailureStatus(model);
+    if (model != ComponentHomePlacementStatus::Reverted) return result;
+    --impl_->cursor;
+    impl_->currentRevision = entry.beforeRevision;
+    result.restoredState = std::move(state);
+    result.restoredPersistence = persistence;
+    return result;
+  } catch (...) {
+    result.status = ModelCommandHistoryStatus::ResourceLimit;
+    return result;
+  }
+}
+
+ComponentHomePlacementHistoryResult
+ModelCommandHistory::redoComponentHomePlacement(
+    ProductDocument& product,
+    ProductDocumentSuccessor& prepareSuccessor) noexcept {
+  ComponentHomePlacementHistoryResult result;
+  if (impl_->applying || impl_->pending) {
+    result.status = ModelCommandHistoryStatus::Busy;
+    return result;
+  }
+  if (impl_->cursor >= impl_->commands.size()) {
+    result.status = ModelCommandHistoryStatus::NothingToRedo;
+    return result;
+  }
+  auto& entry = impl_->commands[impl_->cursor];
+  if (impl_->kind(entry) != ModelCommandKind::ComponentHomePlacement) {
+    result.status = ModelCommandHistoryStatus::WrongCommandKind;
+    return result;
+  }
+  const auto& command =
+      std::get<ComponentHomePlacementColdCommand>(entry.payload);
+  try {
+    throwInjectedFailure(static_cast<std::uint8_t>(
+        detail::ModelCommandHistoryFailurePoint::RedoStatePreparation));
+    auto state = command.afterState;
+    auto persistence = command.afterPersistence;
+    ApplyingGuard guard(impl_->applying);
+    ComponentHomePlacementStatus model{};
+    if (command.additionalTransactions.empty()) {
+      model = product.applyComponentHomePlacement(command.transaction,
+                                                   prepareSuccessor);
+    } else {
+      std::vector<ComponentHomePlacementTransaction> transactions;
+      transactions.reserve(command.additionalTransactions.size() + 1);
+      transactions.push_back(command.transaction);
+      transactions.insert(transactions.end(),
+                          command.additionalTransactions.begin(),
+                          command.additionalTransactions.end());
+      model = product.applyAllComponentHomePlacements(transactions,
+                                                      prepareSuccessor);
+    }
+    result.modelStatus = model;
+    result.status = homePlacementFailureStatus(model);
+    if (model != ComponentHomePlacementStatus::Committed) return result;
+    ++impl_->cursor;
+    impl_->currentRevision = entry.afterRevision;
+    result.restoredState = std::move(state);
+    result.restoredPersistence = persistence;
+    return result;
+  } catch (...) {
+    result.status = ModelCommandHistoryStatus::ResourceLimit;
+    return result;
+  }
+}
+
 void ModelCommandHistory::clear(bool currentIsSavepoint) noexcept {
-  impl_->undo.clear();
-  impl_->redo.clear();
+  if (impl_->revisionExhausted || impl_->nextRevision == 0) return;
+  const std::uint64_t replacementRevision = impl_->nextRevision;
+  impl_->commands.clear();
+  impl_->cursor = 0;
+  impl_->pending.reset();
   impl_->retained = 0;
   impl_->applying = false;
-  impl_->currentRevision = impl_->nextRevision++;
+  impl_->currentRevision = replacementRevision;
+  if (replacementRevision == std::numeric_limits<std::uint64_t>::max())
+    impl_->revisionExhausted = true;
+  else
+    ++impl_->nextRevision;
   if (currentIsSavepoint)
     impl_->savepointRevision = impl_->currentRevision;
   else
@@ -974,19 +2584,19 @@ void ModelCommandHistory::setByteBudget(std::size_t bytes) noexcept {
 }
 
 bool ModelCommandHistory::canUndo() const noexcept {
-  return !impl_->undo.empty();
+  return impl_->cursor != 0;
 }
 bool ModelCommandHistory::canRedo() const noexcept {
-  return !impl_->redo.empty();
+  return impl_->cursor < impl_->commands.size();
 }
 bool ModelCommandHistory::isApplying() const noexcept {
   return impl_->applying;
 }
 std::size_t ModelCommandHistory::undoCount() const noexcept {
-  return impl_->undo.size();
+  return impl_->cursor;
 }
 std::size_t ModelCommandHistory::redoCount() const noexcept {
-  return impl_->redo.size();
+  return impl_->commands.size() - impl_->cursor;
 }
 std::size_t ModelCommandHistory::retainedBytes() const noexcept {
   return impl_->retained;
@@ -1002,13 +2612,56 @@ std::uint64_t ModelCommandHistory::currentRevision() const noexcept {
   return impl_->currentRevision;
 }
 
+std::optional<ModelCommandKind> ModelCommandHistory::nextUndoKind() const
+    noexcept {
+  if (impl_->cursor == 0) return std::nullopt;
+  return Impl::kind(impl_->commands[impl_->cursor - 1]);
+}
+
+std::optional<ModelCommandKind> ModelCommandHistory::nextRedoKind() const
+    noexcept {
+  if (impl_->cursor >= impl_->commands.size()) return std::nullopt;
+  return Impl::kind(impl_->commands[impl_->cursor]);
+}
+
+std::optional<std::reference_wrapper<
+    const ComponentWorkspaceSemanticState>>
+ModelCommandHistory::nextUndoComponentWorkspaceState() const noexcept {
+  if (impl_->cursor == 0) return std::nullopt;
+  const auto& command = impl_->commands[impl_->cursor - 1];
+  const auto* extraction =
+      std::get_if<ComponentExtractionColdCommand>(&command.payload);
+  if (extraction) return std::cref(extraction->beforeState);
+  const auto* placement =
+      std::get_if<ComponentPlacementColdCommand>(&command.payload);
+  if (placement) return std::cref(placement->beforeState);
+  const auto* homePlacement =
+      std::get_if<ComponentHomePlacementColdCommand>(&command.payload);
+  if (!homePlacement) return std::nullopt;
+  return std::cref(homePlacement->beforeState);
+}
+
+std::optional<std::reference_wrapper<
+    const ComponentWorkspaceSemanticState>>
+ModelCommandHistory::nextRedoComponentWorkspaceState() const noexcept {
+  if (impl_->cursor >= impl_->commands.size()) return std::nullopt;
+  const auto& command = impl_->commands[impl_->cursor];
+  const auto* extraction =
+      std::get_if<ComponentExtractionColdCommand>(&command.payload);
+  if (extraction) return std::cref(extraction->afterState);
+  const auto* placement =
+      std::get_if<ComponentPlacementColdCommand>(&command.payload);
+  if (placement) return std::cref(placement->afterState);
+  const auto* homePlacement =
+      std::get_if<ComponentHomePlacementColdCommand>(&command.payload);
+  if (!homePlacement) return std::nullopt;
+  return std::cref(homePlacement->afterState);
+}
+
 DocumentDeltaMetrics ModelCommandHistory::inspectDelta(
     const Document& before, const Document& after) {
-  const auto delta = makeDocumentDelta(before, after);
-  return {delta.bodies.size() + delta.bodyStates.size() +
-              delta.features.size() + delta.sketches.size() +
-              delta.referenceImages.size(),
-          delta.retainedBytes};
+  const auto delta = DocumentDelta::create(before, after);
+  return {delta.sliceCount(), delta.retainedBytes()};
 }
 
 }  // namespace solidar

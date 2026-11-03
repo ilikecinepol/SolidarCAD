@@ -643,6 +643,9 @@ int main() {
     tampered = canonical;
     tampered.featureOwners.push_back(tampered.featureOwners[0]);
     expectTamperInvalid(std::move(tampered));
+    tampered = canonical;
+    ++tampered.rebuildWork;
+    expectTamperInvalid(std::move(tampered));
 
     tampered = canonical;
     tampered.topologySites[0].path += ".deterministic";

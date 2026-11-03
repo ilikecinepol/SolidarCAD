@@ -7,6 +7,12 @@ function(solidar_warnings target)
 endfunction()
 
 add_library(solidar_model
+  model/AssemblyGraphAnalysis.cpp
+  model/AssemblyGraphAnalysis.h
+  model/ComponentGraphAnalysis.cpp
+  model/ComponentGraphAnalysis.h
+  model/AssemblyMate.cpp
+  model/AssemblyMate.h
   model/Body.cpp
   model/Body.h
   model/Document.cpp
@@ -56,7 +62,12 @@ add_library(solidar_model
   model/PatternTypes.h
   model/ProductDocument.cpp
   model/ProductDocument.h
+    model/internal/ComponentIdentityTransitionTestAccess.h
+  model/PlanarMateSolver.cpp
+  model/PlanarMateSolver.h
   model/ProjectId.h
+  model/RigidTransform3d.cpp
+  model/RigidTransform3d.h
   model/MirrorFeature.cpp
   model/MirrorFeature.h
   model/MirrorToolSession.cpp
@@ -66,6 +77,12 @@ add_library(solidar_model
   model/MoveToolSession.cpp
   model/MoveToolSession.h
   model/ModelIds.h
+  model/OccurrenceDelta.cpp
+  model/OccurrenceDelta.h
+  model/OccurrenceDuplicate.cpp
+  model/OccurrenceDuplicate.h
+  model/OccurrenceRemove.cpp
+  model/OccurrenceRemove.h
   model/LinearPatternFeature.cpp
   model/LinearPatternFeature.h
   model/LinearPatternToolSession.cpp
@@ -151,7 +168,31 @@ target_link_libraries(solidar_model PUBLIC
 target_compile_features(solidar_model PUBLIC cxx_std_20)
 solidar_warnings(solidar_model)
 
+add_library(solidar_presentation
+  presentation/AssemblyPresentation.cpp
+  presentation/AssemblyPresentation.h
+  presentation/AssemblyPresentationBuilder.cpp
+  presentation/AssemblyPresentationBuilder.h
+  presentation/AssemblyScenePublicationCoordinator.cpp
+  presentation/AssemblyScenePublicationCoordinator.h
+  presentation/internal/ScenePublicationCore.h
+  presentation/ComponentPresentation.cpp
+  presentation/ComponentPresentation.h
+  presentation/ComponentPresentationBuilder.cpp
+  presentation/ComponentPresentationBuilder.h
+  presentation/ComponentScenePublicationCoordinator.cpp
+  presentation/ComponentScenePublicationCoordinator.h
+)
+target_include_directories(solidar_presentation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(solidar_presentation PUBLIC solidar_model)
+target_compile_features(solidar_presentation PUBLIC cxx_std_20)
+solidar_warnings(solidar_presentation)
+
 add_library(solidar_project
+  project/LinkedPartSourceFileSystem.cpp
+  project/LinkedPartSourceResolver.cpp
+  project/LinkedPartSourceResolver.h
+  project/internal/LinkedPartSourceFileSystem.h
   project/ProjectFile.cpp
   project/ProjectFile.h
   project/ProductEnvelopeV5Decoder.cpp
@@ -162,20 +203,85 @@ add_library(solidar_project
   project/ProductEnvelopeV5Encoder.h
   project/ProductEnvelopeV5Materialization.cpp
   project/ProductEnvelopeV5Materialization.h
+  project/ProductEnvelopeV5Relocation.cpp
+  project/ProductEnvelopeV5Relocation.h
+  project/ProductEnvelopeV6Decoder.cpp
+  project/ProductEnvelopeV6Decoder.h
+  project/ProductEnvelopeV6Encoder.cpp
+  project/ProductEnvelopeV6Encoder.h
+  project/ProductEnvelopeV6Materialization.cpp
+  project/ProductEnvelopeV6Materialization.h
+  project/ProductEnvelopeV7Decoder.cpp
+  project/ProductEnvelopeV7Decoder.h
+  project/ProductEnvelopeV7Encoder.cpp
+  project/ProductEnvelopeV7Encoder.h
+  project/ProductEnvelopeV7AtomicWriting.cpp
+  project/ProductEnvelopeV7Materialization.cpp
+  project/ProductEnvelopeV7Materialization.h
+  project/ProductEnvelopeV8Decoder.cpp
+  project/ProductEnvelopeV8Decoder.h
+  project/ProductEnvelopeV8Encoder.cpp
+  project/ProductEnvelopeV8Encoder.h
+  project/StrictOccurrenceCodec.cpp
+  project/ProductEnvelopeV8AtomicWriting.cpp
+  project/ProductEnvelopeV8Materialization.cpp
+  project/ProductEnvelopeV8Materialization.h
+  project/ProductEnvelopeV9Decoder.cpp
+  project/ProductEnvelopeV9Decoder.h
+  project/ProductEnvelopeV9Encoder.cpp
+  project/ProductEnvelopeV9Encoder.h
+  project/ProductEnvelopeV9AtomicWriting.cpp
+  project/ProductEnvelopeV9Materialization.cpp
+  project/ProductEnvelopeV9Materialization.h
+  project/ProductEnvelopeV10Decoder.cpp
+  project/ProductEnvelopeV10Decoder.h
+  project/ProductEnvelopeV10Encoder.cpp
+  project/ProductEnvelopeV10Encoder.h
+  project/ProductEnvelopeV10AtomicWriting.cpp
+  project/ProductEnvelopeV10Materialization.cpp
+  project/ProductEnvelopeV10Materialization.h
+  project/ProductEnvelopeV11Decoder.cpp
+  project/ProductEnvelopeV11Decoder.h
+  project/ProductEnvelopeV11Encoder.cpp
+  project/ProductEnvelopeV11Encoder.h
+  project/ProductEnvelopeV11AtomicWriting.cpp
+  project/ProductEnvelopeV11Materialization.cpp
+  project/ProductEnvelopeV11Materialization.h
+  project/ProductEnvelopeV12Decoder.cpp
+  project/ProductEnvelopeV12Decoder.h
+  project/ProductEnvelopeV12Encoder.cpp
+  project/ProductEnvelopeV12Encoder.h
+  project/ProductEnvelopeV12AtomicWriting.cpp
+  project/ProductEnvelopeV12Materialization.cpp
+  project/ProductEnvelopeV12Materialization.h
   project/ProjectPersistenceState.h
   project/internal/ProjectAtomicWriting.h
   project/internal/ProjectIdCodec.h
   project/internal/ProductEnvelopeV5AtomicWriting.h
+  project/internal/ProductEnvelopeV5Relocation.h
+  project/internal/ProductEnvelopeV6Budgets.h
+  project/internal/ProductEnvelopeV7Budgets.h
+  project/internal/ProductEnvelopeV7AtomicWriting.h
+  project/internal/ProductEnvelopeV8AtomicWriting.h
+  project/internal/ProductEnvelopeV8Encoding.h
+  project/internal/StrictOccurrenceCodec.h
+  project/internal/ProductEnvelopeV9AtomicWriting.h
+  project/internal/ProductEnvelopeV10AtomicWriting.h
+  project/internal/ProductEnvelopeV11AtomicWriting.h
+  project/internal/ProductEnvelopeV12AtomicWriting.h
+  project/internal/ProjectFileRelocation.h
   project/internal/ProjectFormatV3ModelSemanticValidation.h
   project/internal/ProjectFormatV3TypedSketchValidation.h
   project/internal/ProjectFormatV4AtomicWriting.h
   project/internal/ProjectFormatV4ApplicationGate.h
+  project/internal/ProjectFormatV4CandidateComparison.h
   project/internal/ProjectFormatV4DocumentEncoding.h
   project/internal/ProjectFormatV4DocumentMaterialization.h
   project/ProjectAtomicWriting.cpp
   project/ProjectIdCodec.cpp
   project/ProductEnvelopeV5AtomicWriting.cpp
   project/ProjectFormatV4AtomicWriting.cpp
+  project/ProjectFormatV4CandidateComparison.cpp
   project/ProjectFormatV4ReferenceDecoder.cpp
   project/ProjectFormatV4ReferenceDecoder.h
   project/ProjectFormatV4ReferenceEncoder.h
@@ -253,8 +359,41 @@ target_link_libraries(solidar_drawing_ui PUBLIC solidar_model solidar_theme
 solidar_warnings(solidar_drawing_ui)
 
 add_library(solidar_viewport3d
+  ui/AssemblyOccurrenceSelection.h
+  ui/AssemblyPlacementPreview.cpp
+  ui/AssemblyPlacementPreview.h
+  ui/AssemblyViewportFit.cpp
+  ui/AssemblyViewportFit.h
+  ui/AssemblyViewportPicking.cpp
+  ui/AssemblyViewportPicking.h
+  ui/AssemblyViewportRuler.cpp
+  ui/AssemblyViewportRuler.h
+  ui/AssemblyViewportScene.cpp
+  ui/AssemblyViewportScene.h
+  ui/AssemblyViewportSession.cpp
+  ui/AssemblyViewportSession.h
+  ui/internal/ViewportFitGeometry.cpp
+  ui/internal/ViewportFitGeometry.h
+  ui/internal/ViewportPickingTopology.cpp
+  ui/internal/ViewportPickingTopology.h
+  ui/internal/ViewportPickingRaycast.cpp
+  ui/internal/ViewportPickingRaycast.h
+  ui/internal/ViewportScenePreparation.cpp
+  ui/internal/ViewportScenePreparation.h
   ui/BodyRenderMesh.cpp
   ui/BodyRenderMesh.h
+  ui/Bounds3d.h
+  ui/ComponentViewportFit.cpp
+  ui/ComponentViewportFit.h
+  ui/ComponentViewportPicking.cpp
+  ui/ComponentViewportPicking.h
+  ui/ComponentPlacementDrag.cpp
+  ui/ComponentPlacementDrag.h
+  ui/ComponentViewportScene.cpp
+  ui/ComponentViewportScene.h
+  ui/ComponentViewportSession.cpp
+  ui/ComponentViewportSession.h
+  ui/RigidTransform3dOps.h
   ui/EdgeSelectionState.h
   ui/ExtrusionPreviewGeometry.cpp
   ui/ExtrusionPreviewGeometry.h
@@ -293,13 +432,35 @@ add_library(solidar_viewport3d
   ui/tools/ToolParameterHud.h
 )
 target_include_directories(solidar_viewport3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(solidar_viewport3d PUBLIC solidar_model solidar_theme Qt6::Widgets
+target_link_libraries(solidar_viewport3d PUBLIC solidar_model solidar_presentation solidar_theme Qt6::Widgets
   Qt6::OpenGL Qt6::OpenGLWidgets)
 solidar_warnings(solidar_viewport3d)
 
 add_library(solidar_editor
+  ui/AssemblyTreeModel.cpp
+  ui/AssemblyTreeModel.h
+  ui/ComponentTreeModel.cpp
+  ui/ComponentTreeModel.h
+  ui/ComponentWorkspace.cpp
+  ui/ComponentWorkspace.h
+  ui/AssemblyWorkspace.cpp
+  ui/AssemblyWorkspace.h
+  ui/application/AssemblyCommandHistory.cpp
+  ui/application/AssemblyCommandHistory.h
+  ui/application/internal/AssemblyCommandHistoryTestAccess.h
+  ui/application/AssemblyMateToolSession.cpp
+  ui/application/AssemblyMateToolSession.h
+  ui/application/AssemblyInsertToolSession.cpp
+  ui/application/AssemblyInsertToolSession.h
+  ui/application/LinkedPartLifecycleService.cpp
+  ui/application/LinkedPartLifecycleService.h
   ui/application/ModelCommandHistory.cpp
   ui/application/ModelCommandHistory.h
+  ui/application/internal/ModelCommandHistoryTestAccess.h
+  ui/application/ModelWorkspaceProjectionSuccessor.cpp
+  ui/application/ModelWorkspaceProjectionSuccessor.h
+  ui/application/PartWorkspaceProjection.cpp
+  ui/application/PartWorkspaceProjection.h
   ui/application/PartDesignCoordinator.cpp
   ui/application/PartDesignCoordinator.h
   ui/application/PartDesignCommitPolicy.cpp
@@ -308,6 +469,8 @@ add_library(solidar_editor
   ui/application/ProjectApplicationService.h
   ui/application/internal/ProductCloneApplicationService.h
   ui/application/internal/ProductConversionApplicationService.h
+  ui/application/internal/ProductRelocationApplicationService.h
+  ui/application/internal/AssemblyLinkedOpenPolicy.h
   ui/EditorFactory.cpp
   ui/EditorFactory.h
   ui/FeatureUiRegistry.cpp

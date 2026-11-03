@@ -478,6 +478,15 @@ bool equivalentPlans(const FeatureRemovalPlan& left,
 
 Document::Document() = default;
 
+void Document::swapCommittedState(Document& other) noexcept {
+  using std::swap;
+  swap(sketches_, other.sketches_);
+  swap(referenceImages_, other.referenceImages_);
+  swap(bodies_, other.bodies_);
+  swap(box_, other.box_);
+  swap(dependencyError_, other.dependencyError_);
+}
+
 DocumentSketch& Document::addSketch(std::string name) {
   return addSketch(nextSketchId(), std::move(name));
 }
@@ -972,6 +981,173 @@ FeatureRemovalPlan Document::planBodyRemoval(BodyId bodyId) const {
   return plan;
 }
 
+ComponentExtractionPlan Document::planComponentExtraction(
+    BodyId bodyId) const noexcept {
+  ComponentExtractionPlan plan;
+  plan.bodyId = bodyId;
+  if (bodyId == kInvalidBodyId) {
+    plan.status = ComponentExtractionPlanStatus::InvalidBodyId;
+    plan.diagnostic = "Component extraction requires a valid BodyId";
+    return plan;
+  }
+  try {
+    const DocumentIndex index = buildDocumentIndex(*this);
+    if (!index.error.empty()) {
+      plan.status = ComponentExtractionPlanStatus::InvalidDependencyGraph;
+      plan.diagnostic = index.error;
+      return plan;
+    }
+    const auto bodyLocation = index.bodies.find(bodyId);
+    if (bodyLocation == index.bodies.end()) {
+      plan.status = ComponentExtractionPlanStatus::BodyMissing;
+      plan.diagnostic = "Body selected for component extraction was not found";
+      return plan;
+    }
+    plan.originalBodyIndex = bodyLocation->second;
+    const Body& selectedBody = bodies_[plan.originalBodyIndex];
+    std::set<SketchId> movedSketches;
+    for (const auto& feature : selectedBody.features()) {
+      plan.featureIds.push_back(feature->id());
+      const auto ordinal = index.nodeIndex(featureNode(feature->id()));
+      if (!ordinal) {
+        plan.status = ComponentExtractionPlanStatus::InvalidDependencyGraph;
+        plan.diagnostic = "Selected Body Feature is absent from dependency graph";
+        return plan;
+      }
+      for (const std::size_t dependency : index.dependencies[*ordinal]) {
+        const DependencyNode node = index.nodes[dependency];
+        if (node.kind == DependencyNodeKind::Sketch)
+          movedSketches.insert(static_cast<SketchId>(node.id));
+      }
+    }
+
+    const auto nodeMoves = [&](DependencyNode node) {
+      if (node.kind == DependencyNodeKind::Sketch)
+        return movedSketches.contains(static_cast<SketchId>(node.id));
+      const auto location =
+          index.features.find(static_cast<FeatureId>(node.id));
+      return location != index.features.end() &&
+             location->second.bodyId == bodyId;
+    };
+    std::set<SketchId> frozenSketchSupports;
+    for (std::size_t upstream = 0; upstream < index.nodes.size(); ++upstream) {
+      for (const std::size_t dependent : index.dependents[upstream]) {
+        if (nodeMoves(index.nodes[upstream]) ==
+            nodeMoves(index.nodes[dependent]))
+          continue;
+        const DependencyNode upstreamNode = index.nodes[upstream];
+        const DependencyNode dependentNode = index.nodes[dependent];
+        if (upstreamNode.kind == DependencyNodeKind::Feature &&
+            dependentNode.kind == DependencyNodeKind::Sketch) {
+          const SketchId sketchId =
+              static_cast<SketchId>(dependentNode.id);
+          const auto sketchLocation = index.sketches.find(sketchId);
+          const auto featureLocation = index.features.find(
+              static_cast<FeatureId>(upstreamNode.id));
+          if (sketchLocation != index.sketches.end() &&
+              featureLocation != index.features.end()) {
+            const DocumentSketch& sketch = sketches_[sketchLocation->second];
+            if (sketch.support.type == SketchSupportType::Face &&
+                sketch.support.face.bodyId() ==
+                    featureLocation->second.bodyId &&
+                sketch.support.face.featureId() == upstreamNode.id &&
+                sketch.supportResolved && !sketch.placementDirty) {
+              frozenSketchSupports.insert(sketchId);
+              continue;
+            }
+          }
+        }
+        plan.status =
+            ComponentExtractionPlanStatus::CrossDefinitionDependency;
+        plan.diagnostic =
+            "Component extraction would split dependency '" +
+            nodeLabel(index, index.nodes[upstream]) + "' -> '" +
+            nodeLabel(index, index.nodes[dependent]) + "'";
+        return plan;
+      }
+    }
+    for (std::size_t sketchIndex = 0; sketchIndex < sketches_.size();
+         ++sketchIndex)
+      if (movedSketches.contains(sketches_[sketchIndex].id))
+        plan.sketches.push_back(
+            {sketches_[sketchIndex].id, sketchIndex});
+    for (const auto& sketch : sketches_)
+      if (frozenSketchSupports.contains(sketch.id))
+        plan.frozenSketchSupports.push_back(
+            {sketch.id, movedSketches.contains(sketch.id),
+             sketch.support.face});
+    plan.status = ComponentExtractionPlanStatus::Planned;
+    if (!plan.frozenSketchSupports.empty())
+      plan.diagnostic =
+          "External face-supported Sketch placements will be frozen";
+    return plan;
+  } catch (...) {
+    plan.status = ComponentExtractionPlanStatus::ResourceFailure;
+    plan.diagnostic = "Component extraction planning exhausted resources";
+    return plan;
+  }
+}
+
+ComponentExtractionStageResult Document::stageComponentExtraction(
+    const ComponentExtractionPlan& plan) const noexcept {
+  if (!plan)
+    return {ComponentExtractionStageStatus::PlanNotApplicable, nullptr,
+            nullptr};
+  try {
+    const ComponentExtractionPlan current =
+        planComponentExtraction(plan.bodyId);
+    if (!current || current != plan)
+      return {ComponentExtractionStageStatus::StalePlan, nullptr, nullptr};
+
+    auto parentAfter = std::make_unique<Document>(*this);
+    auto child = std::make_unique<Document>();
+    child->box_ = box_;
+    child->bodies_.push_back(bodies_[plan.originalBodyIndex]);
+    child->sketches_.reserve(plan.sketches.size());
+    for (const auto& location : plan.sketches)
+      child->sketches_.push_back(sketches_[location.originalIndex]);
+
+    const auto freezeSupport = [](DocumentSketch& sketch) {
+      sketch.support = {};
+      sketch.effectiveSupportAuthoredFace.reset();
+      sketch.effectiveSupportFace.reset();
+      sketch.supportFailure = {};
+      sketch.supportResolved = true;
+      sketch.placementDirty = true;
+    };
+    for (const auto& frozen : plan.frozenSketchSupports) {
+      Document* destination = frozen.movesToChild ? child.get()
+                                                  : parentAfter.get();
+      DocumentSketch* sketch = destination->findSketch(frozen.id);
+      if (!sketch)
+        return {ComponentExtractionStageStatus::StalePlan, nullptr, nullptr};
+      freezeSupport(*sketch);
+    }
+
+    parentAfter->bodies_.erase(
+        parentAfter->bodies_.begin() +
+        static_cast<std::ptrdiff_t>(plan.originalBodyIndex));
+    for (auto location = plan.sketches.rbegin();
+         location != plan.sketches.rend(); ++location)
+      parentAfter->sketches_.erase(
+          parentAfter->sketches_.begin() +
+          static_cast<std::ptrdiff_t>(location->originalIndex));
+    parentAfter->dependencyError_.clear();
+
+    if (!parentAfter->recomputeDetailed().success)
+      return {ComponentExtractionStageStatus::ParentRecomputeFailed, nullptr,
+              nullptr};
+    if (!child->recomputeDetailed().success)
+      return {ComponentExtractionStageStatus::ChildRecomputeFailed, nullptr,
+              nullptr};
+    return {ComponentExtractionStageStatus::Staged, std::move(parentAfter),
+            std::move(child)};
+  } catch (...) {
+    return {ComponentExtractionStageStatus::ResourceFailure, nullptr,
+            nullptr};
+  }
+}
+
 bool Document::applyValidatedRemovalPlan(const FeatureRemovalPlan& plan,
                                          std::string* error) {
   std::set<BodyId> removedBodies;
@@ -1325,8 +1501,10 @@ bool Document::applyFeatureSlice(BodyId bodyId, std::size_t index,
 
 bool Document::applySketchSlice(std::size_t index,
                                 std::optional<DocumentSketch> sketch) {
+  SketchId changedId = kInvalidSketchId;
   if (sketch) {
     if (index > sketches_.size()) return false;
+    changedId = sketch->id;
     if (index == sketches_.size()) sketches_.push_back(std::move(*sketch));
     else if (sketches_[index].id == sketch->id)
       sketches_[index] = std::move(*sketch);
@@ -1335,8 +1513,13 @@ bool Document::applySketchSlice(std::size_t index,
         std::move(*sketch));
   } else {
     if (index >= sketches_.size()) return false;
+    changedId = sketches_[index].id;
+    // Dirties authored dependents before the sketch disappears.  Delta
+    // application may subsequently remove those dependents as well.
+    markSketchDirty(changedId);
     sketches_.erase(sketches_.begin() + static_cast<std::ptrdiff_t>(index));
   }
+  if (sketch) markSketchDirty(changedId);
   reserveIdsForEditing();
   return true;
 }

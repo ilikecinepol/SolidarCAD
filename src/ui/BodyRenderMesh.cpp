@@ -90,6 +90,8 @@ std::size_t BodyMeshKeyHash::operator()(const BodyMeshKey& key) const noexcept {
   combine(std::hash<std::uint64_t>{}(key.shapeRevision));
   combine(std::hash<const void*>{}(key.shapeIdentity));
   combine(std::hash<int>{}(static_cast<int>(key.quality)));
+  combine(std::hash<std::uint64_t>{}(key.productEpoch));
+  combine(std::hash<std::uint64_t>{}(key.definitionId));
   return result;
 }
 
@@ -160,6 +162,7 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
         std::vector<RenderVertex> pendingVertices;
         std::vector<std::uint32_t> pendingTriangleIndices;
         std::vector<RenderEdge> pendingEdges;
+        std::optional<Bounds3d> pendingBounds;
         Point3d pendingCenter{};
         double pendingDiagonal = 0.0;
         std::size_t pendingFaceCount = 0;
@@ -183,12 +186,12 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
             z1 < z0)
           return setFailure(result, GeometryFailureKind::InvalidBRep,
                             "BodyRenderMesh input bounds are invalid");
-        pendingCenter = {x0 + (x1 - x0) * 0.5, y0 + (y1 - y0) * 0.5,
-                         z0 + (z1 - z0) * 0.5};
-        pendingDiagonal = std::hypot(x1 - x0, y1 - y0, z1 - z0);
-        if (!finite(pendingCenter) || !std::isfinite(pendingDiagonal))
+        pendingBounds = Bounds3d::create({x0, y0, z0}, {x1, y1, z1});
+        if (!pendingBounds)
           return setFailure(result, GeometryFailureKind::InvalidBRep,
                             "BodyRenderMesh input bounds are non-finite");
+        pendingCenter = pendingBounds->center();
+        pendingDiagonal = pendingBounds->diagonal();
 
         // Both profiles are scale-aware. High reduces the chord error
         // fourfold and angular error by more than half.
@@ -203,8 +206,11 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
           return setFailure(result, GeometryFailureKind::InvalidMesh,
                             "BodyRenderMesh deflection is invalid");
 
+        // OCCT work stays sequential on the owner thread. Enabling OCCT's
+        // internal parallel mesher here would require a separate proof for
+        // allocator/cache/thread lifetime across every supported OCCT build.
         BRepMesh_IncrementalMesh mesher(pendingShape, pendingLinearDeflection,
-                                        false, pendingAngularDeflection, true);
+                                        false, pendingAngularDeflection, false);
         if (!mesher.IsDone())
           return setFailure(result, GeometryFailureKind::MeshingFailed,
                             "BodyRenderMesh tessellation did not complete");
@@ -408,6 +414,7 @@ bool BodyRenderMesh::tryRebuild(const TopoDS_Shape& shape,
         vertices_.swap(pendingVertices);
         triangleIndices_.swap(pendingTriangleIndices);
         edges_.swap(pendingEdges);
+        localBounds_ = pendingBounds;
         center_ = pendingCenter;
         diagonal_ = pendingDiagonal;
         faceCount_ = pendingFaceCount;
@@ -426,6 +433,7 @@ void BodyRenderMesh::clear() noexcept {
   std::vector<RenderVertex>().swap(vertices_);
   std::vector<std::uint32_t>().swap(triangleIndices_);
   std::vector<RenderEdge>().swap(edges_);
+  localBounds_.reset();
   center_ = {};
   diagonal_ = 0.0;
   faceCount_ = 0;
@@ -524,6 +532,9 @@ const std::vector<std::uint32_t>& BodyRenderMesh::triangleIndices() const noexce
   return triangleIndices_;
 }
 const std::vector<RenderEdge>& BodyRenderMesh::edges() const noexcept { return edges_; }
+const std::optional<Bounds3d>& BodyRenderMesh::localBounds() const noexcept {
+  return localBounds_;
+}
 Point3d BodyRenderMesh::center() const noexcept { return center_; }
 double BodyRenderMesh::diagonal() const noexcept { return diagonal_; }
 std::size_t BodyRenderMesh::faceCount() const noexcept { return faceCount_; }
@@ -562,6 +573,11 @@ std::shared_ptr<const BodyRenderMesh> BodyRenderMeshCache::resolve(
   if (!pending->tryRebuild(shape, key.quality, failure)) return {};
   entries_.push_back({key, pending, useClock_});
   return pending;
+}
+
+bool BodyRenderMeshCache::contains(const BodyMeshKey& key) const noexcept {
+  return std::any_of(entries_.begin(), entries_.end(),
+                     [&key](const Entry& entry) { return entry.key == key; });
 }
 
 void BodyRenderMeshCache::retainActive(

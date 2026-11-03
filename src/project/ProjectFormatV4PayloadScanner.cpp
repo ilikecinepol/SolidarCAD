@@ -753,7 +753,8 @@ bool validateFeature(
 bool validateModel(
     const QJsonObject& model, qsizetype* documentGeometryCount,
     std::vector<ProjectFormatV4TopologySite>* sites,
-    std::vector<ProjectFormatV4FeatureOwner>* featureOwners, QString* error) {
+    std::vector<ProjectFormatV4FeatureOwner>* featureOwners,
+    qsizetype* validatedRebuildWork, QString* error) {
   const auto codecs = featureCodecDescriptors();
   if (!completeCodecRegistry(codecs, error)) return false;
   const QJsonArray sketches = model.value(QStringLiteral("sketches")).toArray();
@@ -953,6 +954,7 @@ bool validateModel(
     if (width * height > 100000000LL)
       return fail(error, path, QStringLiteral("exceeds image pixel limit"));
   }
+  *validatedRebuildWork = documentRebuildWork;
   return true;
 }
 
@@ -979,14 +981,17 @@ ProjectFormatV4PayloadScanResult scanProjectFormatV4Payload(
 
   std::vector<ProjectFormatV4TopologySite> sites;
   std::vector<ProjectFormatV4FeatureOwner> featureOwners;
+  qsizetype rebuildWork = 0;
   if (!validateModel(root.value(QStringLiteral("model")).toObject(),
-                     &documentGeometryCount, &sites, &featureOwners, &error))
+                     &documentGeometryCount, &sites, &featureOwners,
+                     &rebuildWork, &error))
     return invalid(std::move(error));
 
   ProjectFormatV4PayloadCandidate candidate;
   candidate.envelope = std::move(envelope);
   candidate.topologySites = std::move(sites);
   candidate.featureOwners = std::move(featureOwners);
+  candidate.rebuildWork = rebuildWork;
   ProjectFormatV4PayloadScanResult result;
   result.status = ProjectFormatV4PayloadScanStatus::Candidate;
   result.candidate = std::move(candidate);
